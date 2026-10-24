@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/environments"
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
@@ -467,24 +468,32 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 				if err = verifyImageArchitecture(ctx, im); err != nil {
 					return nil, w.Wrapf(err, "refusing to push %s", im)
 				}
-				cmd := exec.CommandContext(ctx, "docker", "push", im)
-				if pushErr := cmd.Run(); pushErr != nil {
+				if pushErr := pushLegacyImage(ctx, b.world.Env, im); pushErr != nil {
 					return nil, w.Wrapf(pushErr, "cannot push docker image")
 				}
+			}
+		}
+		// The digest is read from the reference that was pushed: only it has a
+		// repository digest.
+		var deployed string
+		if len(buildResult.Images) == 1 {
+			deployed = buildResult.Images[0]
+			if b.world.Push {
+				deployed = pushReference(b.world.Env, deployed)
 			}
 		}
 		if b.world.Mode == SnapshotMode && len(buildResult.Images) > 0 {
 			if len(buildResult.Images) != 1 {
 				return nil, w.NewError("snapshot build returned %d images for %s; exactly one deployable image is required", len(buildResult.Images), b.instance.Unique())
 			}
-			b.imageDigest, err = inspectImageDigest(ctx, buildResult.Images[0])
+			b.imageDigest, err = inspectImageDigest(ctx, deployed)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
 			}
 		} else if b.world.CaptureImageDigest && b.world.Push && len(buildResult.Images) == 1 {
 			// The image is already pushed; resolving its digest is best-effort
 			// for reporting, so a lookup failure must not fail the build.
-			if digest, digestErr := inspectImageDigest(ctx, buildResult.Images[0]); digestErr != nil {
+			if digest, digestErr := inspectImageDigest(ctx, deployed); digestErr != nil {
 				w.Warn("built and pushed but could not resolve image digest", wool.ErrField(digestErr))
 			} else {
 				b.imageDigest = digest
@@ -511,6 +520,25 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 }
 
 var sha256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// runDocker runs one docker command of the legacy push path. A seam so a test
+// needs no daemon.
+var runDocker = func(ctx context.Context, args ...string) error {
+	return exec.CommandContext(ctx, "docker", args...).Run()
+}
+
+// pushLegacyImage pushes an image an agent built in-process. One named by the
+// cell's pull repository is tagged and pushed to the registry that repository
+// mirrors (pushReference, recipeAsBuilt's rule).
+func pushLegacyImage(ctx context.Context, env *environments.Environment, image string) error {
+	pushed := pushReference(env, image)
+	if pushed != image {
+		if err := runDocker(ctx, "tag", image, pushed); err != nil {
+			return fmt.Errorf("tag %s as %s: %w", image, pushed, err)
+		}
+	}
+	return runDocker(ctx, "push", pushed)
+}
 
 func inspectImageDigest(ctx context.Context, image string) (string, error) {
 	output, err := exec.CommandContext(

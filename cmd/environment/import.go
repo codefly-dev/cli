@@ -465,10 +465,12 @@ func applyContractFields(target, declaration *yaml.Node) {
 
 // contractOwnedOptional names the keys a coordinate contract owns whose ABSENCE is
 // itself a statement (docs/coordinate-contract-conventions.md in infra-base): an absent
-// registry.mirrors means "pull the upstream as the Dockerfile names it". Merging alone
-// would keep a mirror the contract withdrew, and the builder would keep mapping to a
-// repository that no longer exists.
-var contractOwnedOptional = map[string][]string{"registry": {"mirrors"}}
+// registry.mirrors means "pull the upstream as the Dockerfile names it", an absent
+// registry.artifacts "publish bundles to registry.url", an absent registry.auth "log
+// in to nothing". Merging alone would keep a value the contract withdrew, and the
+// render would keep pulling from, publishing to or logging in to a registry the
+// environment no longer holds.
+var contractOwnedOptional = map[string][]string{"registry": {"mirrors", "artifacts", "auth"}}
 
 // withdrawContractOwnedAbsences removes each contract-owned optional key the contract
 // no longer carries, under a parent the contract does declare. A parent the contract

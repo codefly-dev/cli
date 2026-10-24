@@ -1055,8 +1055,8 @@ it** — a mirror serves the same content, so the resolved digest is the same an
 it is the digest, never the registry it came from, that the reuse key binds.
 
 A mirror is **not** authenticated by `registry.auth`, which is the push side and
-covers `registry.url` alone (and today is wired for `ecr` and `acr` only — `gar`
-and `ghcr` are stubs). Both halves of a mirrored read use the host's Docker
+covers `registry.url` alone (wired for `ecr`, `acr` and `ghcr`; `gar` is a
+stub). Both halves of a mirrored read use the host's Docker
 credential store instead: `docker buildx imagetools inspect` for the resolution,
 and the container-driver builder for the pull. So log in to the mirror's
 registry on the machine that renders before it renders — for an Artifact
@@ -1089,6 +1089,49 @@ indistinguishable — the digest is the same either way, which is the whole
 premise — but it also means neither the build output nor the reuse key records
 *which* registry answered, so a mirror serving something else would be
 bound as if it were upstream.
+
+**A cell pulls the environment's own images through a mirror too.** A mirror
+declared for the host of `registry.url` itself makes the push and the pull two
+registries: the build pushes to `registry.url`, and the rendered manifests (and
+so the cell file) name the image under the mirror, with the pushed digest. This
+is how one canonical private registry serves every cell: each cell reads it
+through a same-cloud pull-through repository with its own workload identity,
+and no registry credential is ever placed in a cell.
+
+```yaml
+environments:
+  - name: staging
+    registry:
+      url: ghcr.io/example            # pushed to, once, by whoever renders
+      auth: ghcr                      # requires a ghcr.io url
+      mirrors:
+        ghcr.io: us-east1-docker.pkg.dev/example/ghcr    # a remote repository of ghcr.io
+      artifacts: us-east1-docker.pkg.dev/example/bundles # frontend bundles
+```
+
+Here `ghcr.io/example/<module>/<service>:<version>` is pushed and
+`us-east1-docker.pkg.dev/example/ghcr/example/<module>/<service>@sha256:…` is
+deployed — the mirror's repository path is the upstream path, with the same
+normalization a base image is mirrored with. Every registry read the build makes
+(the released-version check, the reuse cache, the check that a kept image still
+exists) uses the pushed reference. An image the recipe names under any other
+repository is untouched. With no mirror for the `registry.url` host, nothing
+changes: the image is pushed and pulled where `registry.url` names it.
+
+`auth: ghcr` logs Docker in to `ghcr.io` with a token from `GITHUB_TOKEN`, else
+`GH_TOKEN`, else `gh auth token`, as `GITHUB_ACTOR`, else the `gh` login; the
+token reaches `docker login` on stdin and is never logged. An image pushed to
+`ghcr.io` is labelled (and, multi-platform, its index annotated)
+`org.opencontainers.image.source` with the workspace's GitHub repository, which
+is what links a private package to the repository whose access it inherits. The
+label is added after the image's identity is computed, so it never causes a
+rebuild.
+
+`registry.artifacts` is where frontend bundles are published and read instead
+of `registry.url`. Bundles are OCI artifacts rather than images, and a
+pull-through repository is not proven to serve them, so an environment whose
+`registry.url` is mirrored names a registry its hosts read bundles from
+directly. Absent, bundles go to `registry.url` as before.
 
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
@@ -2355,10 +2398,11 @@ former spelling of `--coordinate-contract` for one release.
 Declared fields replace their exact named values. Maps merge by explicit key;
 omitted fields and unrelated entries remain intact. Explicit empty maps, empty
 sequences and nulls clear the corresponding field where its schema permits.
-One key is the contract's alone and its absence is a statement: `registry.mirrors`.
-A contract that declares `registry` without `mirrors` withdraws any mirror an earlier
-import wrote, so the builder stops mapping to a repository the environment no longer
-holds.
+Three keys are the contract's alone and their absence is a statement:
+`registry.mirrors`, `registry.artifacts` and `registry.auth`. A contract that declares
+`registry` without one of them withdraws the value an earlier import wrote, so the
+render stops pulling from, publishing bundles to or logging in to a registry the
+environment no longer holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
@@ -3999,8 +4043,12 @@ nothing is built — when that label equals this build's inputs. A published
 image recording **other** inputs refuses the build: its version was not moved
 with its code, and the fix is a new release, never a rebuild under the old
 version. One recording none (pushed before builds recorded their inputs) is
-built again. With a registry whose tags are immutable, each version then holds
-exactly one build for good.
+built again. Only the registry answering that the tag does not exist lets a
+released version be built: any other failed read (an authorization refusal, a
+timeout, an unreachable registry) stops the render, because building over it
+would overwrite a released tag on any registry whose tags are mutable. With a
+registry whose tags are immutable, each version then holds exactly one build
+for good.
 
 A build also reuses the image this workspace already built from the same inputs
 instead of building it again. A configuration-only change — an edit to a value

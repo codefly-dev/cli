@@ -739,11 +739,15 @@ func serviceRenderPath(module, service string) string {
 // declares an auth method, logs in so `docker push` can resolve the immutable
 // snapshot digest. Managed registries authenticate out-of-band and declare no
 // auth, so login is skipped. Runs once per render rather than per service.
+//
+// Images are named by the repository the cell pulls from (PullRepository, the
+// mirror of the registry when one is declared), so the rendered manifests and
+// the cell file name it; the build pushes to registry.url and logs in there.
 func prepareSnapshotRegistry(ctx context.Context, env *environments.Environment) error {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
 	}
-	builder.SetRepository(env.Registry.URL)
+	builder.SetRepository(env.Registry.PullRepository())
 	if env.Registry.Auth != "" {
 		if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
 			return fmt.Errorf("authenticate snapshot registry: %w", err)

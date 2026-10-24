@@ -488,7 +488,7 @@ var resolveImageManifestDigest = func(ctx context.Context, reference, builderNam
 	args = append(args, "--raw", reference)
 	manifest, err := exec.CommandContext(probe, "docker", args...).Output()
 	if err != nil {
-		return "", err
+		return "", classifyImageProbeError(err)
 	}
 	if len(bytes.TrimSpace(manifest)) == 0 {
 		return "", fmt.Errorf("registry served no manifest for %s", reference)
@@ -496,6 +496,34 @@ var resolveImageManifestDigest = func(ctx context.Context, reference, builderNam
 	sum := sha256.Sum256(manifest)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
+
+// errImageNotFound is a registry's answer that a reference names nothing.
+var errImageNotFound = errors.New("image not found")
+
+// imageNotFoundAnswers are how a registry, through buildx, says a reference
+// does not exist: the distribution spec's error codes and buildx's own
+// rendering of a 404.
+var imageNotFoundAnswers = []string{"not found", "manifest unknown", "name unknown"}
+
+// classifyImageProbeError marks a probe the registry answered with "no such
+// image" as errImageNotFound, keeping every other failure (an auth refusal, a
+// timeout, an unreachable registry) what it was.
+func classifyImageProbeError(err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		answer := strings.ToLower(string(exit.Stderr))
+		for _, notFound := range imageNotFoundAnswers {
+			if strings.Contains(answer, notFound) {
+				return fmt.Errorf("%w: %s", errImageNotFound, strings.TrimSpace(string(exit.Stderr)))
+			}
+		}
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+	}
+	return err
+}
+
+// isImageNotFound reports whether a probe found the reference absent.
+func isImageNotFound(err error) bool { return errors.Is(err, errImageNotFound) }
 
 // imageRegistryProbeTimeout bounds every registry read the reuse decision makes.
 // A registry that accepts a connection and then stalls would otherwise hang a
