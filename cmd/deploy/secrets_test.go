@@ -125,9 +125,9 @@ func (store *outputSafetyStore) Describe(context.Context, string) (deploysecrets
 func (store *outputSafetyStore) Read(context.Context, string) (map[string]string, error) {
 	return store.document, nil
 }
-func (store *outputSafetyStore) Write(context.Context, string, map[string]string, bool) error {
+func (store *outputSafetyStore) Write(context.Context, string, map[string]string, bool) (string, error) {
 	store.writes++
-	return nil
+	return "1", nil
 }
 
 func TestSecretsCommandRefusesMissingNoOpBeforeConfirmation(t *testing.T) {
@@ -150,5 +150,24 @@ func TestSecretsCommandRefusesMissingNoOpBeforeConfirmation(t *testing.T) {
 	}
 	if err = finishSecretsPlan(context.Background(), plan, store, false, true, confirm); err != nil {
 		t.Fatal("explicit allow-missing should permit a no-op")
+	}
+}
+
+// A --rotate selector resolves to the key a rendered ExternalSecret reads, is
+// refused when none reads it, and reaches only the store group reading it.
+func TestRotationKeysResolveAgainstTheRender(t *testing.T) {
+	const key = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__PASSWORD"
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{RemoteKey: "evidence", Services: []string{"tracing/evidence"},
+		Properties: []gitops.RenderedSecretProperty{{Property: key, Keys: []string{key}}}}}}
+	groups := renderedByStore(rendered)
+	keys, err := rotationKeys(rendered, groups, []string{"tracing/evidence/clickhouse:PASSWORD"})
+	if err != nil || len(keys) != 1 || keys[0] != key {
+		t.Fatalf("rotationKeys = %v, %v; want %s", keys, err, key)
+	}
+	if got := readBy(gitops.RenderedEnvironment{}, keys); len(got) != 0 {
+		t.Errorf("a group reading nothing was handed %v", got)
+	}
+	if _, err = rotationKeys(rendered, groups, []string{"tracing/evidence/clickhouse:USER"}); err == nil || !strings.Contains(err.Error(), "no rendered ExternalSecret reads") {
+		t.Errorf("an unread key = %v, want a refusal", err)
 	}
 }

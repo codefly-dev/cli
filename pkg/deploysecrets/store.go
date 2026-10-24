@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -26,8 +27,9 @@ type Store interface {
 	// Read returns the remote key's current document.
 	Read(ctx context.Context, key string) (map[string]string, error)
 	// Write stores document as the remote key's new current version, creating
-	// the key when Describe reported it absent.
-	Write(ctx context.Context, key string, document map[string]string, create bool) error
+	// the key when Describe reported it absent, and returns that version's
+	// identifier. A write never destroys an earlier version.
+	Write(ctx context.Context, key string, document map[string]string, create bool) (string, error)
 	// Name identifies the store in output: its backend and location, never a
 	// credential.
 	Name() string
@@ -198,22 +200,25 @@ func (store *GoogleSecretManager) Read(ctx context.Context, key string) (map[str
 	return decodeDocument(key, payload)
 }
 
-func (store *GoogleSecretManager) Write(ctx context.Context, key string, document map[string]string, create bool) error {
+func (store *GoogleSecretManager) Write(ctx context.Context, key string, document map[string]string, create bool) (string, error) {
 	payload, err := json.Marshal(document)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if create {
 		// The replication policy is Secret Manager's default; the store's other
 		// secrets use it too, and nothing in the environment declares otherwise.
 		if _, err = store.Run(ctx, nil, "gcloud", "secrets", "create", key, "--project", store.Project, "--replication-policy=automatic"); err != nil {
-			return err
+			return "", err
 		}
 	}
 	// The value travels on stdin, never on the command line where the process
-	// table would show it.
-	_, err = store.Run(ctx, payload, "gcloud", "secrets", "versions", "add", key, "--project", store.Project, "--data-file=-")
-	return err
+	// table would show it. The output is the new version's resource name only.
+	name, err := store.Run(ctx, payload, "gcloud", "secrets", "versions", "add", key, "--project", store.Project, "--data-file=-", "--format=value(name)")
+	if err != nil {
+		return "", err
+	}
+	return path.Base(strings.TrimSpace(string(name))), nil
 }
 
 // notFound reports whether a backend command failed because the remote key does
