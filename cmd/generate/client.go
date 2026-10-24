@@ -381,15 +381,24 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot read proto sources: %w", err)
 		}
+		// The contract's package is the one the service's own protos declare
+		// their services in, as `generate contracts` settles it; an endpoint
+		// declaring none in service.codefly.yaml is the common case.
+		pkg := grpc.Package
+		if pkg == "" {
+			if pkg, err = serviceContractPackage(&set, protoDir, nil); err != nil {
+				return nil, nil, nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
+			}
+		}
 		return descriptorSet, &composition.APIContractEndpoint{
 			Service:  service.Name,
 			Endpoint: endpoint.Name,
 			API:      endpoint.Api,
 			Kind:     composition.APIContractKindProtobuf,
-			Package:  grpc.Package,
+			Package:  pkg,
 			Path:     "contract.binpb",
 			Digest:   composition.APIContractDigest(descriptorSet),
-			Services: composition.ProtobufServices(&set, grpc.Package),
+			Services: composition.ProtobufServices(&set, pkg),
 		}, protoSources, nil
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
