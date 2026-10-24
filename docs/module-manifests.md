@@ -520,7 +520,16 @@ it beside itself, in `configurations/<environment>/module-envelope.json`
 (`{"principals": {"<principal>": <grant>}}`, each grant in the host's own
 shape), read across the composition exactly as a native run reads it — every
 composed workspace's file first, then the consuming workspace's own, which
-decides a principal it states.
+decides a principal it states. The file is resolved through the
+environment's own configuration profile and the profiles it derives from
+(`derives-from` in `profile.codefly.yaml`), the most derived copy winning, the
+way a single-file declaration such as `dns.codefly.yaml` is: so every cell
+whose profile derives from one shared profile (`blue` → `hosted-development` →
+`hosted`) is delivered the ceiling `configurations/hosted/module-envelope.json`
+states, and a new cell needs no envelope file of its own. Only the
+environment's own profile is resolved, never a later profile of its chain: a
+workspace holding no directory for that profile states no envelope for it,
+rather than lending the envelope it states for `local`.
 
 `codefly deploy gitops publish` delivers it the way it delivers a manifest,
 and only in the publish of the module that serves the delivery API
@@ -1012,7 +1021,8 @@ run, the CLI is:
 - **the administrator** — before delivering, it makes sure the host holds the
   composition's envelope: `{"revision": N, "principals": {"<module>":
   {"grant": <grant>}}}`, each grant read from the `principals` of
-  `configurations/<environment>/module-envelope.json` (already in the host's
+  `configurations/<profile>/module-envelope.json`, resolved through the
+  profile's derivation as above (already in the host's
   grant shape) — every composed workspace's file first, then the consuming
   workspace's own, which decides a principal it states: a platform base
   states its modules' grants, and a solution composed on it states only its

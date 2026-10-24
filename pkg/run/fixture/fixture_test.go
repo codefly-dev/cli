@@ -167,3 +167,48 @@ func TestStatesPrincipalsSeparatesAnAuthoredEmptyFromAnOmission(t *testing.T) {
 		t.Fatal("a malformed file must be read as an error, never as no statement")
 	}
 }
+
+// Every cell whose profile derives from one shared profile reads the module
+// envelope that profile states, unless it states its own; a workspace with no
+// directory for the profile states none for it, whatever it states for local.
+func TestEnvelopeFollowsTheProfileDerivation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(profile, name, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, "configurations", profile), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "configurations", profile, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("hosted", "module-envelope.json", `{"principals":{"records":{"grant":{}}},"minimum_revision":3}`)
+	write("hosted-development", "profile.codefly.yaml", "derives-from: hosted\n")
+	write("blue", "profile.codefly.yaml", "derives-from: hosted-development\n")
+	write("local", "module-envelope.json", `{"principals":{"wiki":{"grant":{"tenant":"t"}}}}`)
+
+	principals, err := ReadGrants(dir, "blue")
+	if err != nil || len(principals) != 1 || principals["records"] == nil {
+		t.Fatalf("blue's grants = %v, %v, want hosted's", principals, err)
+	}
+	if floor, err := ReadMinimumRevision(dir, "blue"); err != nil || floor != 3 {
+		t.Fatalf("blue's floor = %d, %v, want hosted's 3", floor, err)
+	}
+	if stated, err := statesPrincipalsIn(dir, "blue"); err != nil || !stated {
+		t.Fatalf("blue states principals = %v, %v", stated, err)
+	}
+
+	write("blue", "module-envelope.json", `{"principals":{"compute":{"grant":{}}}}`)
+	if principals, err = ReadGrants(dir, "blue"); err != nil || principals["compute"] == nil || principals["records"] != nil {
+		t.Fatalf("blue's own envelope = %v, %v, want it to replace hosted's", principals, err)
+	}
+
+	if principals, err = ReadGrants(dir, "green"); err != nil || len(principals) != 0 {
+		t.Fatalf("a profile the workspace holds no directory for = %v, %v, want none", principals, err)
+	}
+
+	write("broken", "profile.codefly.yaml", "derives-from: missing\n")
+	if _, err = ReadGrants(dir, "broken"); err == nil {
+		t.Fatal("a derivation that cannot be honoured read as no envelope")
+	}
+}

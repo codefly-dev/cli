@@ -528,7 +528,11 @@ func carriesDelivery(workspace *resources.Workspace, env *environments.Environme
 	if !inventory.HostsDelivery || env.Host == nil || workspace == nil {
 		return false, nil
 	}
-	return fixture.StatesGrants(workspace, env.Name)
+	profile, err := env.ConfigurationProfileName()
+	if err != nil {
+		return false, err
+	}
+	return fixture.StatesGrants(workspace, profile)
 }
 
 // cellDelivery is the presence carrier of a module that carries delivery for a

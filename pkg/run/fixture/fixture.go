@@ -4,6 +4,7 @@
 package fixture
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -54,10 +56,14 @@ func ReadAdministrator(moduleDir, fixture string) (Administrator, error) {
 	return Administrator{}, fmt.Errorf("fixture %q seeds no super_admin, so nobody can write the envelope", fixture)
 }
 
-// ReadGrants reads configurations/<env>/module-envelope.json: each principal's
-// grant, raw. No file is an empty envelope.
-func ReadGrants(workspaceDir, environment string) (map[string]json.RawMessage, error) {
-	path := grantsPath(workspaceDir, environment)
+// ReadGrants reads the module envelope a workspace states for a configuration
+// profile (grantsPath): each principal's grant, raw. No file is an empty
+// envelope.
+func ReadGrants(workspaceDir, profile string) (map[string]json.RawMessage, error) {
+	path, err := grantsPath(workspaceDir, profile)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]json.RawMessage{}, nil
@@ -79,8 +85,11 @@ func ReadGrants(workspaceDir, environment string) (map[string]json.RawMessage, e
 // envelope may carry, 0 when the file states none. A stated floor is an
 // integer of at least 1. A native run never reads it: it writes the envelope
 // at the host's next revision, whatever the floor.
-func ReadMinimumRevision(workspaceDir, environment string) (uint64, error) {
-	path := grantsPath(workspaceDir, environment)
+func ReadMinimumRevision(workspaceDir, profile string) (uint64, error) {
+	path, err := grantsPath(workspaceDir, profile)
+	if err != nil {
+		return 0, err
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
@@ -111,21 +120,21 @@ func ReadMinimumRevision(workspaceDir, environment string) (uint64, error) {
 // workspace does not decide, are refused by name rather than resolved to
 // either: a floor is a statement about the host's history, and only the
 // workspace that publishes to it knows which history is true.
-func ReadCompositionMinimumRevision(workspace *resources.Workspace, environment string) (uint64, error) {
-	own, err := ReadMinimumRevision(workspace.Dir(), environment)
+func ReadCompositionMinimumRevision(workspace *resources.Workspace, profile string) (uint64, error) {
+	own, err := ReadMinimumRevision(workspace.Dir(), profile)
 	if err != nil {
 		return 0, err
 	}
 	children := composedWorkspacesOf(workspace)
 	composed := make([]FloorSource, 0, len(children))
 	for _, child := range children {
-		floor, readErr := ReadMinimumRevision(child.Dir(), environment)
+		floor, readErr := ReadMinimumRevision(child.Dir(), profile)
 		if readErr != nil {
 			return 0, readErr
 		}
 		composed = append(composed, FloorSource{Workspace: child.Name, Floor: floor})
 	}
-	return MergeMinimumRevision(FloorSource{Workspace: workspace.Name, Floor: own}, composed, environment)
+	return MergeMinimumRevision(FloorSource{Workspace: workspace.Name, Floor: own}, composed, profile)
 }
 
 // FloorSource is one workspace's minimum_revision, 0 when it states none.
@@ -136,7 +145,7 @@ type FloorSource struct {
 
 // MergeMinimumRevision is the composition's floor from its sources (see
 // ReadCompositionMinimumRevision).
-func MergeMinimumRevision(own FloorSource, composed []FloorSource, environment string) (uint64, error) {
+func MergeMinimumRevision(own FloorSource, composed []FloorSource, profile string) (uint64, error) {
 	if own.Floor > 0 {
 		return own.Floor, nil
 	}
@@ -148,7 +157,7 @@ func MergeMinimumRevision(own FloorSource, composed []FloorSource, environment s
 			decided = source
 		default:
 			return 0, fmt.Errorf("workspaces %q and %q state minimum_revision %d and %d, and workspace %q does not decide it: state it in %s/configurations/%s/module-envelope.json",
-				decided.Workspace, source.Workspace, decided.Floor, source.Floor, own.Workspace, own.Workspace, environment)
+				decided.Workspace, source.Workspace, decided.Floor, source.Floor, own.Workspace, own.Workspace, profile)
 		}
 	}
 	return decided.Floor, nil
@@ -169,30 +178,34 @@ type GrantSource struct {
 // solution composed on a platform adds its principal without restating the
 // platform's. Two composed workspaces must agree on a principal the consuming
 // workspace does not decide.
-func ReadCompositionGrants(workspace *resources.Workspace, environment string) (map[string]json.RawMessage, error) {
+func ReadCompositionGrants(workspace *resources.Workspace, profile string) (map[string]json.RawMessage, error) {
 	var composed []GrantSource
 	for _, child := range composedWorkspacesOf(workspace) {
-		principals, err := ReadGrants(child.Dir(), environment)
+		principals, err := ReadGrants(child.Dir(), profile)
 		if err != nil {
 			return nil, err
 		}
 		composed = append(composed, GrantSource{Workspace: child.Name, Principals: principals})
 	}
-	own, err := ReadGrants(workspace.Dir(), environment)
+	own, err := ReadGrants(workspace.Dir(), profile)
 	if err != nil {
 		return nil, err
 	}
 	return MergeGrants(GrantSource{Workspace: workspace.Name, Principals: own}, composed)
 }
 
-// StatesGrants reports whether any workspace of the composition writes
-// configurations/<env>/module-envelope.json at all. Reading the grants cannot
+// StatesGrants reports whether any workspace of the composition states the
+// profile's module envelope at all (grantsPath). Reading the grants cannot
 // tell: no file reads as an empty envelope, and "states nothing" is not the
 // statement "grants nothing" ({"principals": {}}) when an envelope was
 // delivered before.
-func StatesGrants(workspace *resources.Workspace, environment string) (bool, error) {
+func StatesGrants(workspace *resources.Workspace, profile string) (bool, error) {
 	for _, dir := range append(composedDirsOf(workspace), workspace.Dir()) {
-		_, err := os.Stat(grantsPath(dir, environment))
+		path, err := grantsPath(dir, profile)
+		if err != nil {
+			return false, err
+		}
+		_, err = os.Stat(path)
 		if err == nil {
 			return true, nil
 		}
@@ -213,9 +226,9 @@ func StatesGrants(workspace *resources.Workspace, environment string) (bool, err
 // refusal has to be made here too, because by the time the grants are merged a
 // renderer's omission and an authored {} are the same empty map. An explicit
 // null is an omission, not a revocation.
-func StatesPrincipals(workspace *resources.Workspace, environment string) (bool, error) {
+func StatesPrincipals(workspace *resources.Workspace, profile string) (bool, error) {
 	for _, dir := range append(composedDirsOf(workspace), workspace.Dir()) {
-		stated, err := statesPrincipalsIn(dir, environment)
+		stated, err := statesPrincipalsIn(dir, profile)
 		if err != nil {
 			return false, err
 		}
@@ -226,8 +239,11 @@ func StatesPrincipals(workspace *resources.Workspace, environment string) (bool,
 	return false, nil
 }
 
-func statesPrincipalsIn(workspaceDir, environment string) (bool, error) {
-	path := grantsPath(workspaceDir, environment)
+func statesPrincipalsIn(workspaceDir, profile string) (bool, error) {
+	path, err := grantsPath(workspaceDir, profile)
+	if err != nil {
+		return false, err
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -259,9 +275,23 @@ func composedDirsOf(workspace *resources.Workspace) []string {
 	return dirs
 }
 
-func grantsPath(workspaceDir, environment string) string {
-	return filepath.Join(workspaceDir, "configurations", environment, "module-envelope.json")
+// grantsPath is the module envelope a workspace states for a configuration
+// profile: configurations/<profile>/module-envelope.json in the most derived
+// layer of the profile's derivation (core configurations.ProfileFile, the
+// resolution a dns.codefly.yaml has), so every cell whose profile derives from
+// one shared profile reads the ceiling that profile states. Only the profile
+// itself is resolved, never a later profile of the environment's chain: a
+// workspace holding no directory for it states no envelope for it, rather
+// than lending the envelope it states for another environment.
+func grantsPath(workspaceDir, profile string) (string, error) {
+	path, _, err := configurations.ProfileFile(context.Background(), workspaceDir, "configurations", []string{profile}, envelopeFile)
+	if err != nil {
+		return "", fmt.Errorf("resolve the module envelope of configuration profile %q in %s: %w", profile, workspaceDir, err)
+	}
+	return path, nil
 }
+
+const envelopeFile = "module-envelope.json"
 
 // composedWorkspacesOf is every workspace the composition inherits from, the
 // deepest first, so a base's base is read before the base.
