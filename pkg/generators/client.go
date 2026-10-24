@@ -303,14 +303,18 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		Services:    entry.Services,
 		Facade:      facade,
 	}
+	var set descriptorpb.FileDescriptorSet
+	if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
+		return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
+	}
 	var mapped []upstreamProtoModule
 	if len(entry.ProtoSources) > 0 {
+		// Generated from sources, buf compiles only the entry's own files: the
+		// shared modules it imports are left to their distributions, exactly as
+		// when they are marked as imports below.
 		req.Sources = entry.ProtoSources
+		mapped = upstreamModulesIn(&set, lang)
 	} else {
-		var set descriptorpb.FileDescriptorSet
-		if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
-			return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
-		}
 		image, marked, err := markUpstreamModulesAsImports(&set, lang)
 		if err != nil {
 			return nil, fmt.Errorf("cannot prepare contract descriptor set: %w", err)
@@ -400,10 +404,12 @@ func (n bufModuleName) identity() string {
 	return n.remote + "/" + n.owner + "/" + n.repository
 }
 
-const (
-	googleapisPyPI    = "googleapis-common-protos"
-	protovalidatePyPI = "protovalidate"
-)
+// googleapisPyPI ships google/api, google/rpc and google/type. buf/validate
+// has no PyPI distribution: `protovalidate` imports buf.validate without
+// shipping it (1.x) or ships it under its own package (2.x). The proto
+// companion's Python plugin drops an import used only for an option, which is
+// all a client ever makes of buf/validate, so the bindings never import it.
+const googleapisPyPI = "googleapis-common-protos"
 
 var (
 	googleapisModule    = bufModuleName{remote: "buf.build", owner: "googleapis", repository: "googleapis"}
@@ -428,7 +434,7 @@ var upstreamProtoModules = []upstreamProtoModule{
 	{pathPrefix: "google/api/", protoPackage: "google.api", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
 	{pathPrefix: "google/rpc/", protoPackage: "google.rpc", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
 	{pathPrefix: "google/type/", protoPackage: "google.type", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
-	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule, pythonPackage: protovalidatePyPI},
+	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule},
 }
 
 // buf marks a file that an image carries only to resolve imports with
@@ -487,6 +493,21 @@ func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang lang
 		return nil, nil, err
 	}
 	return data, marked, nil
+}
+
+// upstreamModulesIn is the set of upstream proto modules set's files belong
+// to, once each.
+func upstreamModulesIn(set *descriptorpb.FileDescriptorSet, lang languages.Language) []upstreamProtoModule {
+	var modules []upstreamProtoModule
+	seen := map[string]bool{}
+	for _, file := range set.GetFile() {
+		module, found := upstreamModuleFor(file, lang)
+		if found && !seen[module.bufModule.identity()] {
+			seen[module.bufModule.identity()] = true
+			modules = append(modules, module)
+		}
+	}
+	return modules
 }
 
 func upstreamModuleFor(file *descriptorpb.FileDescriptorProto, lang languages.Language) (upstreamProtoModule, bool) {

@@ -191,7 +191,7 @@ func TestMarkUpstreamModulesAsImportsReportsPythonPackages(t *testing.T) {
 
 	_, marked := markSet(t, set, languages.PYTHON)
 	got := pythonPackagesFor(marked)
-	want := []string{"googleapis-common-protos", "protovalidate"}
+	want := []string{"googleapis-common-protos"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("pythonPackagesFor = %v, want %v", got, want)
 	}
@@ -206,6 +206,38 @@ func TestMarkUpstreamModulesAsImportsReportsPythonPackages(t *testing.T) {
 	}, languages.PYTHON)
 	if got := pythonPackagesFor(wktOnly); len(got) != 0 {
 		t.Fatalf("pythonPackagesFor(well-known types only) = %v, want none", got)
+	}
+}
+
+// TestUpstreamModulesInReportsWhatMarkingWould pins the sources path against
+// the descriptor-set path: a library generated from proto sources leaves the
+// same shared modules to their distributions, so it must declare the same
+// packages, and its own first-party files declare none.
+func TestUpstreamModulesInReportsWhatMarkingWould(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{Name: googleproto.String("google/protobuf/timestamp.proto"), Package: googleproto.String("google.protobuf")},
+			{Name: googleproto.String("google/api/annotations.proto"), Package: googleproto.String("google.api")},
+			{Name: googleproto.String("google/api/http.proto"), Package: googleproto.String("google.api")},
+			{Name: googleproto.String("buf/validate/validate.proto"), Package: googleproto.String("buf.validate")},
+			{Name: googleproto.String("authority/v1/authority.proto"), Package: googleproto.String("authority.v1")},
+		},
+	}
+
+	_, marked := markSet(t, set, languages.PYTHON)
+	fromSources := upstreamModulesIn(set, languages.PYTHON)
+	if got, want := pythonPackagesFor(fromSources), pythonPackagesFor(marked); !slices.Equal(got, want) {
+		t.Fatalf("sources path declares %v, descriptor-set path %v", got, want)
+	}
+	if got := pythonPackagesFor(fromSources); !slices.Equal(got, []string{"googleapis-common-protos"}) {
+		t.Fatalf("pythonPackagesFor(upstreamModulesIn) = %v", got)
+	}
+
+	ownOnly := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		{Name: googleproto.String("authority/v1/authority.proto"), Package: googleproto.String("authority.v1")},
+	}}
+	if got := upstreamModulesIn(ownOnly, languages.PYTHON); len(got) != 0 {
+		t.Fatalf("upstreamModulesIn(first-party only) = %v, want none", got)
 	}
 }
 
