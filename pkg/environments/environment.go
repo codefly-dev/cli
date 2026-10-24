@@ -2,6 +2,7 @@ package environments
 
 import (
 	"fmt"
+	"github.com/codefly-dev/cli/pkg/secretgen"
 	"maps"
 	"path/filepath"
 	"regexp"
@@ -762,6 +763,14 @@ type EnvironmentServiceSecrets struct {
 	MayBeEmpty []string `yaml:"may-be-empty,omitempty"`
 }
 
+// Stored reports whether the block names a secret store, as a cluster's does. A
+// block that declares only generators names none: its keys live in the
+// workspace's own secret configurations, which a local run generates, and a
+// render, which carries secrets only as references into a store, refuses it.
+func (s *EnvironmentServiceSecrets) Stored() bool {
+	return s != nil && s.SecretStore != (EnvironmentSecretStoreReference{})
+}
+
 // Secret generator scopes: which configuration a generator's keys belong to.
 const (
 	SecretGeneratorScopeWorkspace = "workspace"
@@ -795,6 +804,24 @@ type EnvironmentSecretGenerator struct {
 	Keys          []string `yaml:"keys"`
 	Format        string   `yaml:"format,omitempty"`
 	Bytes         int      `yaml:"bytes,omitempty"`
+}
+
+// Encoding is how the generator's values are minted: its format, hex by
+// default, and its size in bytes, 32 by default (12 for an identifier). A local
+// run and `codefly deploy secrets` mint through it alike.
+func (generator EnvironmentSecretGenerator) Encoding() (secretgen.Format, int) {
+	format := secretgen.Format(generator.Format)
+	if format == "" {
+		format = secretgen.FormatHex
+	}
+	size := generator.Bytes
+	if size == 0 {
+		size = 32
+		if format == secretgen.FormatIdentifier {
+			size = 12
+		}
+	}
+	return format, size
 }
 
 // UnmarshalYAML refuses an unknown key: a mistyped `keys` would otherwise leave a
@@ -1027,6 +1054,19 @@ func (ref EnvironmentSecretStoreReference) validate(label string) error {
 // workspace load instead. A nil receiver is a valid "not declared" state.
 func (s *EnvironmentServiceSecrets) Validate() error {
 	if s == nil {
+		return nil
+	}
+	if !s.Stored() && s.Defaults == nil && len(s.Services) == 0 && len(s.MayBeEmpty) == 0 {
+		// Generators alone: the store is the workspace's own secret
+		// configurations, which a local run writes (codefly run).
+		if len(s.Generate) == 0 {
+			return fmt.Errorf("service-secrets declares neither a secret-store nor a generator")
+		}
+		for index := range s.Generate {
+			if err := s.Generate[index].validate(index); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if err := s.SecretStore.validate("service-secrets secret-store"); err != nil {
