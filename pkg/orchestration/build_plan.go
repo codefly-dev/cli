@@ -16,6 +16,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
@@ -159,7 +160,14 @@ func (b *Builder) decideImageReuse(
 	// built. An unversioned service (0.0.0, never published) is not a release and
 	// is built as before.
 	if shouldPush && releasedVersionTag(recipe.GetImage()) {
-		if digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder); err == nil && digest != "" {
+		digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
+		if err != nil && !isImageNotFound(err) {
+			// Only the registry saying the tag does not exist means it is not
+			// published: building over a probe that failed for any other reason
+			// would overwrite a released tag wherever tags are mutable.
+			return decision, w.Wrapf(err, "cannot tell whether %s is already published", recipe.GetImage())
+		}
+		if err == nil && digest != "" {
 			// The version alone is not proof: a service whose version was not moved
 			// with its code would hand back another release's image. The published
 			// image records the inputs it was built from, and only those inputs
@@ -220,13 +228,24 @@ func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
 }
 
 // recipeAsBuilt is the recipe as buildRecipe builds it: targeted to the
-// environment's platforms when the image is pushed. The reuse decision is taken
-// on this form, so it binds the platforms the build will actually run.
+// environment's platforms when the image is pushed, and named by the
+// reference it is pushed to (pushReference) when the cell pulls it through a
+// mirror. The reuse decision is taken on this form, so it binds the platforms
+// the build will actually run and probes the registry the image is pushed to;
+// the manifests keep the name the cell pulls, with the pushed digest.
 func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush bool) (*builderv0.DockerBuildRecipe, error) {
 	if !shouldPush {
 		return recipe, nil
 	}
-	return b.targetEnvironmentPlatforms(recipe)
+	targeted, err := b.targetEnvironmentPlatforms(recipe)
+	if err != nil {
+		return nil, err
+	}
+	if pushed := pushReference(b.world.Env, targeted.GetImage()); pushed != targeted.GetImage() {
+		targeted = proto.CloneOf(targeted)
+		targeted.Image = pushed
+	}
+	return targeted, nil
 }
 
 // recipeContextRoot is the directory a recipe's context is resolved against.
@@ -390,6 +409,9 @@ func (b *Builder) buildRecipe(
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err == nil {
 		args = withBuildInputsLabel(args, identity.Key)
+		if shouldPush {
+			args = withSourceLabel(args, b.world.Env, workspaceSourceRepository(ctx, b.world.Workspace.Dir()), multiArch)
+		}
 	}
 	if err != nil {
 		return err
@@ -1014,14 +1036,60 @@ func withBuildInputsLabel(args []string, identityKey string) []string {
 	if identityKey == "" {
 		return args
 	}
+	return withBuildFlags(args, "--label", buildInputsLabel+"="+identityKey)
+}
+
+// withBuildFlags inserts flags right after the `build` subcommand of a buildx
+// argv, leaving an argv with none unchanged.
+func withBuildFlags(args []string, flags ...string) []string {
 	for index, argument := range args {
 		if argument == "build" {
 			labelled := append([]string(nil), args[:index+1]...)
-			labelled = append(labelled, "--label", buildInputsLabel+"="+identityKey)
+			labelled = append(labelled, flags...)
 			return append(labelled, args[index+1:]...)
 		}
 	}
 	return args
+}
+
+// imageSourceLabel is the OCI annotation GitHub Container Registry links a
+// package to its repository by, which is how a private package inherits the
+// repository's access.
+const imageSourceLabel = "org.opencontainers.image.source"
+
+// withSourceLabel links an image pushed to ghcr.io to the workspace's GitHub
+// repository. Like withBuildInputsLabel it is added after the identity was
+// computed, so it is never an input to it; a multi-platform push also
+// annotates the index, which is the manifest the registry reads it from.
+func withSourceLabel(args []string, env *environments.Environment, source string, multiArch bool) []string {
+	if source == "" || env == nil || env.Registry == nil {
+		return args
+	}
+	if host, _, _ := strings.Cut(env.Registry.URL, "/"); host != environments.GHCRRegistry {
+		return args
+	}
+	flags := []string{"--label", imageSourceLabel + "=" + source}
+	if multiArch {
+		flags = append(flags, "--annotation", "index:"+imageSourceLabel+"="+source)
+	}
+	return withBuildFlags(args, flags...)
+}
+
+// githubRemote matches the GitHub remotes a workspace is cloned from.
+var githubRemote = regexp.MustCompile(`^(?:git@github\.com:|(?:https|ssh)://(?:git@)?github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
+
+// workspaceSourceRepository is the https URL of the GitHub repository the
+// workspace is checked out from, or "" when it is not one. A seam for tests.
+var workspaceSourceRepository = func(ctx context.Context, dir string) string {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	match := githubRemote.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if match == nil {
+		return ""
+	}
+	return "https://github.com/" + match[1] + "/" + match[2]
 }
 
 // resolveImageBuildInputs reads the build-inputs label every platform of a

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -168,6 +169,8 @@ type imageCacheHarness struct {
 	client       *coreservices.BuilderAgent
 	push         bool
 	rebuild      bool
+	// env is the environment the build targets, nil for none.
+	env *environments.Environment
 	// goCalls records every go command the prefetch of each build runs.
 	goCalls []goCall
 	// gitCalls records every git command the git source prefetch runs.
@@ -236,6 +239,7 @@ func (harness *imageCacheHarness) build(t *testing.T) string {
 	instance.Builder = &services.BuilderInstance{Instance: instance, Builder: harness.client}
 	world := &World{
 		Workspace:          workspace,
+		Env:                harness.env,
 		Push:               harness.push,
 		CaptureImageDigest: harness.push,
 		BuildxBuilder:      "stub",
@@ -867,7 +871,7 @@ func stubPublishedImage(t *testing.T, digest, inputs string) func() {
 	resolveImageManifestDigest = func(ctx context.Context, reference, builder string) (string, error) {
 		if strings.HasSuffix(reference, ":1.2.3") {
 			if digest == "" {
-				return "", fmt.Errorf("not published")
+				return "", fmt.Errorf("%w: not published", errImageNotFound)
 			}
 			return digest, nil
 		}
@@ -905,7 +909,7 @@ func (harness *imageCacheHarness) tryBuild(ctx context.Context, t *testing.T) er
 	service.WithDir(harness.serviceDir)
 	instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "saas"}}
 	instance.Builder = &services.BuilderInstance{Instance: instance, Builder: harness.client}
-	world := &World{Workspace: workspace, Push: harness.push, CaptureImageDigest: harness.push, BuildxBuilder: "stub"}
+	world := &World{Workspace: workspace, Env: harness.env, Push: harness.push, CaptureImageDigest: harness.push, BuildxBuilder: "stub"}
 	prefetch := newGoModulePrefetch()
 	prefetch.run = recordingGo(&harness.goCalls, nil)
 	world.goModulePrefetch = prefetch

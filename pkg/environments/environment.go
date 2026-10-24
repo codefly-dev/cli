@@ -61,18 +61,100 @@ type EnvironmentCluster struct {
 //	     "621829027644.dkr.ecr.us-east-1.amazonaws.com/myrepo".
 //	Auth: how to authenticate before push — "" (anonymous / docker-creds),
 //	      "ecr" (run `aws ecr get-login-password`), "gcr" / "gar" (gcloud
-//	      access token), "ghcr" (GITHUB_TOKEN env). The CLI handles auth
+//	      access token), "ghcr" (a GitHub token; requires a ghcr.io URL). The CLI handles auth
 //	      side-effects based on this value.
 //	Mirrors: where to READ an image from instead of the registry its
 //	      reference names, keyed by that registry's canonical host
 //	      ("docker.io": "us-east1-docker.pkg.dev/<project>/<remote-repo>").
 //	      It is a read-side substitution only: nothing is pushed to a mirror,
 //	      and the reference a recipe is written against never changes. See
-//	      Validate for what a key and a value may be.
+//	      Validate for what a key and a value may be. A mirror of the
+//	      registry URL itself names where a cell pulls the images it pushes
+//	      (PullRepository): the push goes to URL, the manifests name the mirror.
+//	Artifacts: where frontend bundles are published and read instead of URL.
+//	      Images pull through a mirror; a non-image OCI artifact is not proven
+//	      to, so an environment whose URL is mirrored names a registry its
+//	      hosts read bundles from directly.
 type EnvironmentRegistry struct {
-	URL     string            `yaml:"url,omitempty"`
-	Auth    string            `yaml:"auth,omitempty"`
-	Mirrors map[string]string `yaml:"mirrors,omitempty"`
+	URL       string            `yaml:"url,omitempty"`
+	Auth      string            `yaml:"auth,omitempty"`
+	Mirrors   map[string]string `yaml:"mirrors,omitempty"`
+	Artifacts string            `yaml:"artifacts,omitempty"`
+}
+
+// GHCRRegistry is GitHub Container Registry's host, the only registry the
+// `ghcr` auth logs in to.
+const GHCRRegistry = "ghcr.io"
+
+// PullRepository is the repository a cell reads this environment's images
+// from: URL, read through the mirror declared for its registry when there is
+// one, with the same normalization a base image is mirrored with
+// (MirroredReference). Without a mirror for it, it is URL unchanged.
+func (registry *EnvironmentRegistry) PullRepository() string {
+	if registry == nil {
+		return ""
+	}
+	base := strings.TrimSuffix(registry.URL, "/")
+	if base == "" {
+		return registry.URL
+	}
+	// A repository prefix is not a reference: "myorg" names docker.io/myorg,
+	// not docker.io/library/myorg. Parsing it with one more path component
+	// gives the parser the prefix a pushed image actually starts with.
+	probe := base + "/" + mirrorHostProbe
+	mirrored := MirroredReference(probe, registry.Mirrors)
+	if mirrored == probe {
+		return registry.URL
+	}
+	return strings.TrimSuffix(mirrored, "/"+mirrorHostProbe)
+}
+
+// MirroredReference is the reference to read ref from: the same repository and
+// tag under the mirror declared for its registry, or ref itself when no mirror
+// is declared for it.
+//
+// A mirror of Docker Hub holds the upstream repository path verbatim, which for
+// an unqualified reference is the `library` namespace Docker resolves it to —
+// so `debian:trixie-slim` is read as `<mirror>/library/debian:trixie-slim`,
+// which is what an Artifact Registry remote repository (and a pull-through
+// registry generally) serves it at.
+func MirroredReference(ref string, mirrors map[string]string) string {
+	if len(mirrors) == 0 {
+		return ref
+	}
+	host, repository, ok := ReferenceRegistry(ref)
+	if !ok {
+		return ref
+	}
+	mirror := mirrors[host]
+	if mirror == "" {
+		return ref
+	}
+	return mirror + "/" + repository
+}
+
+// ReferenceRegistry splits an image reference into the host of the registry it
+// resolves against and the repository (with its tag or digest) within it, using
+// the same parser the daemon, BuildKit and containerd all normalize references
+// with — so the host this keys a mirror on is the host BuildKit will look that
+// mirror up under, and the two cannot disagree about what a reference names.
+//
+// That parser folds exactly one alias, `index.docker.io`, into `docker.io`, and
+// puts a reference with no path component in Hub's `library` namespace. A
+// reference this cannot parse is reported unsplit.
+func ReferenceRegistry(ref string) (string, string, bool) {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return "", "", false
+	}
+	repository := reference.Path(named)
+	if tagged, ok := named.(reference.Tagged); ok {
+		repository += ":" + tagged.Tag()
+	}
+	if digested, ok := named.(reference.Digested); ok {
+		repository += "@" + digested.Digest().String()
+	}
+	return reference.Domain(named), repository, true
 }
 
 // DockerHubRegistry is Docker Hub's canonical registry host: the one an
@@ -114,6 +196,16 @@ func (registry *EnvironmentRegistry) Validate() error {
 	if registry == nil {
 		return nil
 	}
+	if registry.Artifacts != "" {
+		if err := validateRegistryReference("registry artifacts", registry.Artifacts); err != nil {
+			return err
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(registry.Auth), "ghcr") {
+		if host, _, _ := strings.Cut(registry.URL, "/"); host != GHCRRegistry {
+			return fmt.Errorf("registry auth %q logs in to %s, but registry url %q is not on %s", registry.Auth, GHCRRegistry, registry.URL, GHCRRegistry)
+		}
+	}
 	for host, mirror := range registry.Mirrors {
 		if err := validateRegistryReference("registry mirror key", host); err != nil {
 			return err
@@ -147,7 +239,7 @@ func validateRegistryReference(kind, value string) error {
 		return fmt.Errorf("%s %q carries a scheme; write the host alone", kind, value)
 	}
 	if strings.Contains(value, "@") {
-		return fmt.Errorf("%s %q carries a digest; a mirror is a registry, not an image", kind, value)
+		return fmt.Errorf("%s %q carries a digest; it names a registry, not an image", kind, value)
 	}
 	components := strings.Split(value, "/")
 	for index, component := range components {
@@ -157,7 +249,7 @@ func validateRegistryReference(kind, value string) error {
 		// Only a registry host may carry a port; a colon anywhere else is the
 		// tag separator, and a mirror names no image.
 		if index > 0 && strings.Contains(component, ":") {
-			return fmt.Errorf("%s %q carries a tag; a mirror is a registry, not an image", kind, value)
+			return fmt.Errorf("%s %q carries a tag; it names a registry, not an image", kind, value)
 		}
 	}
 	return nil
