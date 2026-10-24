@@ -16,8 +16,8 @@ import (
 
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/solutionhost"
-	"google.golang.org/grpc"
 	"google.golang.org/genproto/googleapis/api/annotations"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
@@ -49,8 +49,9 @@ func policyPackage(t *testing.T, tamper bool) string {
 		if name == "WhoAmI" {
 			// Bound to HTTP too: the route rows carry the method's policy.
 			proto.SetExtension(m.Options, annotations.E_Http, &annotations.HttpRule{
-				Pattern:            &annotations.HttpRule_Get{Get: "/v1/console/whoami"},
-				AdditionalBindings: []*annotations.HttpRule{{Pattern: &annotations.HttpRule_Post{Post: "/v1/console/identities/{id=**}:whoami"}}}})
+				Pattern: &annotations.HttpRule_Get{Get: "/v1/console/whoami"},
+				AdditionalBindings: []*annotations.HttpRule{{Pattern: &annotations.HttpRule_Post{Post: "/v1/console/identities/{id=**}:whoami"}},
+					{Pattern: &annotations.HttpRule_Post{Post: "/v1/console/{ref=reviews/*}:settle"}}}})
 		}
 		service.Method = append(service.Method, m)
 	}
@@ -103,14 +104,14 @@ contracts:
 
 func TestMethodPoliciesAreReadFromThePublishedContract(t *testing.T) {
 	methods, ok, err := MethodPolicies(policyPackage(t, false))
-	if err != nil || !ok || len(methods) != 5 {
+	if err != nil || !ok || len(methods) != 6 {
 		t.Fatalf("methods: %v %v %v", methods, ok, err)
 	}
 	byName := map[string]*compositionv1.MethodPolicyV1{}
 	for _, m := range methods {
 		byName[m.GetMethod()] = m
 	}
-	for _, name := range []string{"/api.ApiService/WhoAmI", "GET /v1/console/whoami", "POST /v1/console/identities/{id=**}:whoami"} {
+	for _, name := range []string{"/api.ApiService/WhoAmI", "GET /v1/console/whoami", "POST /v1/console/identities/{id=**}:whoami", "POST /v1/console/reviews/{ref}:settle"} {
 		if r := byName[name].GetRequires(); len(r) != 1 || r[0].GetResourceKind() != "console.identity" || r[0].GetActions()[0] != "read" {
 			t.Fatalf("%s: %v", name, byName[name])
 		}
@@ -126,6 +127,22 @@ func TestMethodPoliciesAreReadFromThePublishedContract(t *testing.T) {
 	}
 	if _, ok, err := MethodPolicies(t.TempDir()); ok || err != nil {
 		t.Fatalf("a module with no package declares no method policy: %v %v", ok, err)
+	}
+}
+
+func TestATemplateIsSpelledOneVariablePerSegment(t *testing.T) {
+	for template, want := range map[string]string{
+		"/v1/x/{name}":          "/v1/x/{name}",
+		"/v1/x/{name=*}":        "/v1/x/{name}",
+		"/v1/x/{name=**}":       "/v1/x/{name=**}",
+		"/v1/x/{name=a/*}:verb": "/v1/x/a/{name}:verb",
+		"/v1/x/{name=a/*/b/**}": "/v1/x/a/{name}/b/{name=**}",
+		"/v1/{a}/{b=*}/{c=d/*}": "/v1/{a}/{b}/d/{c}",
+		"/v1/x/{broken":         "/v1/x/{broken",
+	} {
+		if got := plainTemplate(template); got != want {
+			t.Errorf("%s: %s, want %s", template, got, want)
+		}
 	}
 }
 

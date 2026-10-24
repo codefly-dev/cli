@@ -172,10 +172,50 @@ func httpRoutes(options *descriptorpb.MethodOptions) []string {
 			verb, template = strings.ToUpper(pattern.Custom.GetKind()), pattern.Custom.GetPath()
 		}
 		if verb != "" && template != "" {
-			out = append(out, verb+" "+template)
+			out = append(out, verb+" "+plainTemplate(template))
 		}
 	}
 	return out
+}
+
+// plainTemplate spells a google.api.http template with one "{name}" per
+// segment a variable takes: "{name=*}" is "{name}", "{name=a/*}" is "a/{name}",
+// "{name=a/**}" is "a/{name=**}", and "{name=**}" stays, the one form that
+// takes the rest of the path. The authority matches segments, not variables.
+func plainTemplate(template string) string {
+	var out strings.Builder
+	for {
+		open := strings.IndexByte(template, '{')
+		if open < 0 {
+			out.WriteString(template)
+			return out.String()
+		}
+		end := strings.IndexByte(template[open:], '}')
+		if end < 0 {
+			out.WriteString(template)
+			return out.String()
+		}
+		out.WriteString(template[:open])
+		name, sub, bound := strings.Cut(template[open+1:open+end], "=")
+		switch {
+		case !bound || sub == "*":
+			out.WriteString("{" + name + "}")
+		case sub == "**":
+			out.WriteString("{" + name + "=**}")
+		default:
+			segments := strings.Split(sub, "/")
+			for i, segment := range segments {
+				switch segment {
+				case "*":
+					segments[i] = "{" + name + "}"
+				case "**":
+					segments[i] = "{" + name + "=**}"
+				}
+			}
+			out.WriteString(strings.Join(segments, "/"))
+		}
+		template = template[open+end+1:]
+	}
 }
 
 // PolicyExtension is the OpenAPI operation extension that declares what a call
