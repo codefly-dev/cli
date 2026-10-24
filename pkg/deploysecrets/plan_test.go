@@ -29,6 +29,11 @@ type fakeStore struct {
 	mutex  sync.Mutex
 	reads  []string
 	writes []string
+	// versions counts each key's versions; failWrite fails the write of a key,
+	// and landThenFail stores it and then reports a failure.
+	versions     map[string]int
+	failWrite    map[string]bool
+	landThenFail map[string]bool
 }
 
 func newFakeStore(documents map[string]map[string]string) *fakeStore {
@@ -44,7 +49,11 @@ func (store *fakeStore) Describe(_ context.Context, key string) (Description, er
 		return Description{Exists: true}, nil
 	}
 	_, exists := store.documents[key]
-	return Description{Exists: exists, HasVersion: exists}, nil
+	description := Description{Exists: exists, HasVersion: exists}
+	if exists {
+		description.Version = fmt.Sprint(store.versions[key])
+	}
+	return description, nil
 }
 
 func (store *fakeStore) Read(_ context.Context, key string) (map[string]string, error) {
@@ -58,15 +67,34 @@ func (store *fakeStore) Read(_ context.Context, key string) (map[string]string, 
 	return maps.Clone(document), nil
 }
 
-func (store *fakeStore) Write(_ context.Context, key string, document map[string]string, create bool) error {
+func (store *fakeStore) Write(_ context.Context, key string, document map[string]string, create bool) (string, error) {
 	_, exists := store.documents[key]
 	if create == exists && !store.empty[key] {
-		return fmt.Errorf("write %s with create=%v on a key that exists=%v", key, create, exists)
+		return "", fmt.Errorf("write %s with create=%v on a key that exists=%v", key, create, exists)
+	}
+	if store.failWrite[key] {
+		return "", fmt.Errorf("write %s refused", key)
 	}
 	store.writes = append(store.writes, key)
 	store.documents[key] = maps.Clone(document)
 	delete(store.empty, key)
-	return nil
+	if store.versions == nil {
+		store.versions = map[string]int{}
+	}
+	store.versions[key]++
+	if store.landThenFail[key] {
+		delete(store.landThenFail, key)
+		return "", fmt.Errorf("write %s timed out", key)
+	}
+	return fmt.Sprint(store.versions[key]), nil
+}
+
+func writtenKeys(written []Written) []string {
+	keys := make([]string, 0, len(written))
+	for _, write := range written {
+		keys = append(keys, write.Key)
+	}
+	return keys
 }
 
 const (
@@ -187,7 +215,7 @@ func TestPlanSeedsANewModuleConsistentlyWithTheSeededCell(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	// Writes follow the render's order, and only keys with something to write.
-	if !slices.Equal(written, []string{"notes-backend", "tasks-store"}) {
+	if !slices.Equal(writtenKeys(written), []string{"notes-backend", "tasks-store"}) {
 		t.Errorf("written %v, want notes-backend then tasks-store", written)
 	}
 	if store.documents["notes-backend"][internalToken] != "shared-internal-token" {

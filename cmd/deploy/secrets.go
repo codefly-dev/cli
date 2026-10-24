@@ -27,6 +27,7 @@ var (
 	secretsAllowMissing bool
 	secretsYes          bool
 	secretsModules      []string
+	secretsRotate       []string
 )
 
 // SecretsCmd seeds an environment's secret store with what its render reads.
@@ -43,9 +44,9 @@ operator, and named). The store is the backend behind the SecretStore the render
 names, read from the environment's cluster; a render reading through several
 stores is planned and written store by store.
 
-A stored value is never rotated: a property the store already holds is kept even
-when a configuration file holds one too, and the two disagreeing is refused
-rather than resolved. A configured key with an empty value supplies nothing, so
+A stored value is never rotated unless --rotate names it: a property the store
+already holds is kept even when a configuration file holds one too, and the two
+disagreeing is refused rather than resolved. A configured key with an empty value supplies nothing, so
 a tracked placeholder file still leaves its properties to be supplied.
 
 Each property is resolved by the secret key the render reads out of it, not by
@@ -60,7 +61,19 @@ reads a stored value: it knows which remote keys exist, not what they hold.
 
 --module limits the plan to the remote keys the named modules' services read.
 Every other remote key is still read, so a scoped key keeps agreeing with what
-the store already holds, but nothing outside the scope is planned or written.`,
+the store already holds, but nothing outside the scope is planned or written.
+
+--rotate <module>/<service>/<configuration>:<KEY> (or <configuration>:<KEY> for a
+workspace configuration, or the CODEFLY__… secret key) replaces a GENERATED key's
+stored value with a new one, in every remote key holding it, and rewrites every
+stored value derived from it in the same apply: a stored URL whose password is
+the old value gets the new one. Any other stored value embedding the old one,
+and any key service-secrets.generate does not declare, is refused by name. Each
+write is a new version, refused if the key moved since the plan read it; a
+rotation failing part-way restores what it wrote. The CLI changes the store
+only: force-sync the ExternalSecrets, make the server accept the new credential
+(a restart only does that for an agent that re-applies it on every start), then
+restart its consumers. An identifier or signing key is never rotated.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
@@ -92,6 +105,11 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
 		}
+		groups := renderedByStore(rendered)
+		rotate, err := rotationKeys(rendered, groups, secretsRotate)
+		if err != nil {
+			return err
+		}
 		// The operator's own configuration files, read once for the whole
 		// environment: they are a property of the workspace, not of a store, so
 		// every per-store plan below resolves against the same index.
@@ -103,7 +121,7 @@ the store already holds, but nothing outside the scope is planned or written.`,
 		// per-key store such as an identity provider's) is planned and written
 		// store by store: one plan writes one store, and each is confirmed on
 		// its own.
-		for _, group := range renderedByStore(rendered) {
+		for _, group := range groups {
 			store, err := resolveSecretStore(ctx, env, group)
 			if err != nil {
 				return err
@@ -117,6 +135,7 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				Modules:      secretsModules,
 				MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
 				Configured:   configured,
+				Rotate:       readBy(group, rotate),
 			})
 			if err != nil {
 				return err
@@ -176,10 +195,46 @@ func finishSecretsPlan(ctx context.Context, plan *deploysecrets.Plan, store depl
 		return fmt.Errorf("write not confirmed")
 	}
 	written, err := plan.Apply(ctx, store, allowMissing)
-	for _, key := range written {
-		cli.Info("Wrote %s", key)
+	for _, write := range written {
+		verb := "Wrote"
+		if write.Restored {
+			verb = "Restored the previous document of"
+		}
+		cli.Info("%s %s as version %s (%s)", verb, write.Key, write.Version, strings.Join(write.Properties, ", "))
 	}
 	return err
+}
+
+// rotationKeys resolves every --rotate selector, refusing one no rendered
+// ExternalSecret reads or whose configuration spans stores.
+func rotationKeys(rendered gitops.RenderedEnvironment, groups []gitops.RenderedEnvironment, selectors []string) ([]string, error) {
+	keys := make([]string, 0, len(selectors))
+	for _, selector := range selectors {
+		key, err := deploysecrets.RotationKey(selector)
+		if err != nil {
+			return nil, err
+		}
+		if !deploysecrets.ReadsKey(rendered, key) {
+			return nil, fmt.Errorf("--rotate %s: no rendered ExternalSecret reads %s", selector, key)
+		}
+		if err = deploysecrets.CheckRotationStores(groups, key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// readBy keeps the rotated keys one store group reads; each is rotated by the
+// plan of the store holding it.
+func readBy(group gitops.RenderedEnvironment, keys []string) []string {
+	var read []string
+	for _, key := range keys {
+		if deploysecrets.ReadsKey(group, key) {
+			read = append(read, key)
+		}
+	}
+	return read
 }
 
 // resolveSecretStore resolves the one store every ExternalSecret of a
@@ -271,4 +326,5 @@ func init() {
 	SecretsCmd.Flags().BoolVar(&secretsAllowMissing, "allow-missing", false, "Write what can be resolved even when some properties must still be supplied")
 	SecretsCmd.Flags().BoolVarP(&secretsYes, "yes", "y", false, "Write without an interactive confirmation")
 	SecretsCmd.Flags().StringSliceVar(&secretsModules, "module", nil, "Plan only these modules' remote keys (comma-separated or repeated)")
+	SecretsCmd.Flags().StringSliceVar(&secretsRotate, "rotate", nil, "Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)")
 }

@@ -2295,9 +2295,9 @@ operator, and named). The store is the backend behind the SecretStore the render
 names, read from the environment's cluster; a render reading through several
 stores is planned and written store by store.
 
-A stored value is never rotated: a property the store already holds is kept even
-when a configuration file holds one too, and the two disagreeing is refused
-rather than resolved. A configured key with an empty value supplies nothing, so
+A stored value is never rotated unless --rotate names it: a property the store
+already holds is kept even when a configuration file holds one too, and the two
+disagreeing is refused rather than resolved. A configured key with an empty value supplies nothing, so
 a tracked placeholder file still leaves its properties to be supplied.
 
 Each property is resolved by the secret key the render reads out of it, not by
@@ -2313,6 +2313,18 @@ reads a stored value: it knows which remote keys exist, not what they hold.
 --module limits the plan to the remote keys the named modules' services read.
 Every other remote key is still read, so a scoped key keeps agreeing with what
 the store already holds, but nothing outside the scope is planned or written.
+
+--rotate <module>/<service>/<configuration>:<KEY> (or <configuration>:<KEY> for a
+workspace configuration, or the CODEFLY__… secret key) replaces a GENERATED key's
+stored value with a new one, in every remote key holding it, and rewrites every
+stored value derived from it in the same apply: a stored URL whose password is
+the old value gets the new one. Any other stored value embedding the old one,
+and any key service-secrets.generate does not declare, is refused by name. Each
+write is a new version, refused if the key moved since the plan read it; a
+rotation failing part-way restores what it wrote. The CLI changes the store
+only: force-sync the ExternalSecrets, make the server accept the new credential
+(a restart only does that for an agent that re-applies it on every start), then
+restart its consumers. An identifier or signing key is never rotated.
 ```
 
 ```
@@ -2327,6 +2339,7 @@ Flags:
       --env string       Environment whose rendered ExternalSecrets to seed (default "local")
       --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
       --module strings   Plan only these modules' remote keys (comma-separated or repeated)
+      --rotate strings   Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
   -y, --yes              Write without an interactive confirmation
 ```
 

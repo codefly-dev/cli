@@ -1214,6 +1214,7 @@ codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exi
 codefly deploy secrets --env staging --dry-run                  # full plan; reads the store in memory
 codefly deploy secrets --env staging                            # write it (confirms; --yes to skip)
 codefly deploy secrets --env staging --module runtime --dry-run  # one module's keys only
+codefly deploy secrets --env staging --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD  # rotate a generated key
 ```
 
 It reads every `ExternalSecret` the render projected for `--env` under
@@ -1224,11 +1225,12 @@ resolves every remote property to a source, never printing a value:
 
 | action | source |
 | --- | --- |
-| `keep` | the store already holds it; nothing stored is ever rotated |
+| `keep` | the store already holds it; nothing stored is rotated unless `--rotate` names it |
 | `propagate` | a configuration value (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`, `CODEFLY__SERVICE_SECRET_CONFIGURATION__…`) is one value however many services read it, so it is copied from the remote key that holds it |
 | `configured` | the environment's own `configurations/<profile>/<group>.secret.env` holds the value — the file `codefly config set` writes — and the plan seeds the store from it, naming the file as its source |
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
+| `rotate` | `--rotate` names its generated key, or its stored value is derived from one that is ([below](#rotating-a-generated-key)) |
 
 **`configured`: the environment's own files are a source.** `codefly config set
 <group> KEY=VALUE --env <env>` writes
@@ -1251,8 +1253,9 @@ key reaches its value whichever way the group or key was spelled.
 
 Four rules bound it:
 
-- **A stored value still wins and is never rotated.** A property the store
-  already holds is `keep`, file or no file.
+- **A stored value still wins and is never rotated** (bar an explicit
+  `--rotate`, which refuses a configured key). A property the store already
+  holds is `keep`, file or no file.
 - **A stored value that differs from the configured one is refused**, like two
   remote keys disagreeing: keeping it would leave the deployed workload on one
   value and every local run on the other, reported as `keep`. Change the
@@ -1355,6 +1358,83 @@ generated value it is written only where no remote key holds it, so a key a
 service already signs with is never replaced by a second run. It is one
 workload's key: a plan in which more than one service reads it is refused, and
 the remedy is to remove the extra reader, never to re-mint the key.
+
+#### Rotating a generated key
+
+`--rotate` replaces a stored value. It is explicit and narrow:
+
+```bash
+codefly deploy secrets --env blue --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD --dry-run
+codefly deploy secrets --env blue --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD
+```
+
+The selector is spelled like the `service-secrets.generate` entry that declares
+the key — `<module>/<service>/<configuration>:<KEY>`, `<configuration>:<KEY>`
+for a workspace configuration — or is the `CODEFLY__…_SECRET_CONFIGURATION__…`
+key itself; it is repeatable. Only a key `service-secrets.generate` declares is
+rotated. Each of these is refused with its reason: a supplied key (`require`); a
+configured one (change the file instead); an `ed25519-pkcs8` signing key (its
+public half is registered elsewhere); an `identifier` key (a new user or
+database name in the store renames nothing on the server); and a key no rendered
+ExternalSecret reads.
+
+The new value is minted as the generator would mint it and written to **every**
+remote key holding the old one; a holder outside `--module` is refused rather
+than left behind. Then every **derived** value moves in the same apply. What is
+derived is read from the store, not guessed from a name: every stored property
+of the store is examined, and one that parses as a URL whose **decoded** userinfo
+password is the old value — the connection an agent exports without a template,
+stored by hand because the plan reported it `require` — has that password
+replaced in its userinfo and every other byte kept. Any other stored value
+holding the old one, raw or percent-encoded, is refused, naming
+`remote-key#property`, because codefly cannot recompute it and a stale derived
+value is the failure rotation must not leave. A connection its producer declares
+as a template (below) is not stored at all: External Secrets re-assembles it from
+the rotated primitive on its next sync. A configuration read through more than
+one store is refused: a plan sees one store. **What is not seen:** a copy of the
+value in another store, or one that no rendered ExternalSecret reads (a value
+outside codefly's render), is not examined; find those before rotating.
+
+`--dry-run` shows `rotate` rows by property name, no value; with
+`--metadata-only` it shows the rotated key's rows only, since derived values are
+found by reading the store. Each write adds a **new version** (nothing is
+destroyed) and the result lists each remote key, the properties it set and the
+version the store assigned. Before each write the key's newest version is
+compared with the one the plan read, and a key that moved is refused by name
+(the store has no conditional write, so this narrows the race; it does not close
+it). A rotation failing part-way writes the previous document of every key it
+wrote back as a new version — including the failing key when its write landed
+anyway, and never a key someone else wrote since — on a context of its own, so
+the source and its derived values still agree and the same command can be run
+again. If a restore fails too, the error names the keys that may still hold the
+rotated document. After success a plain `deploy secrets` re-run writes nothing;
+running `--rotate` again rotates again.
+
+**The CLI changes the store only — not the server's credential.** Whether a new
+value in the store changes the credential the server accepts is the producing
+agent's behaviour, and the CLI cannot tell which an agent does:
+
+- An agent that **re-applies the credential from its environment on every
+  start** follows a restart. The ClickHouse agent is one: its entrypoint
+  rewrites `users.d` from `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD` on every start
+  (service-clickhouse `main.go`).
+- An agent whose image applies it **only when the data directory is first
+  created** (the official Postgres image, for one) does not: after a restart the
+  store and every consumer URL carry the new password while the database user
+  keeps the old one. Change the credential on the server yourself (for Postgres,
+  `ALTER ROLE … PASSWORD …` with the new value) before restarting consumers, or
+  do not rotate that key here.
+
+Then, in order:
+
+1. force-sync the affected ExternalSecrets (`kubectl annotate externalsecret <name> force-sync=$(date +%s) --overwrite`, or wait for their refresh interval);
+2. restart (or re-credential, above) the server that reads the rotated value;
+3. restart its consumers, which read the derived connection.
+
+**Undo.** Every earlier version is kept. To go back, make each written key's
+previous version current again by adding it as a new version, without printing
+it — `gcloud secrets versions access <previous> --secret <key> --project <project> | gcloud secrets versions add <key> --project <project> --data-file=-`
+for each key the result listed — then repeat the three steps above.
 
 A key its producer declares as a template (core's `ConfigurationValue.template`
 — a Postgres agent's `READ_WRITE_CONNECTION`, say: role, address and database
