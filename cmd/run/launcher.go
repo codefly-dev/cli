@@ -3,6 +3,11 @@ package run
 import (
 	"context"
 	"fmt"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"os"
 	"path/filepath"
 	"slices"
@@ -532,6 +537,43 @@ func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 // state, and the delivery account's credential. It also answers the gateway's
 // current address, which the envelope follows.
 func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
+	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, strings.Split(cluster.env.Host.Delivery, "/")[2])
+	if err != nil {
+		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
+	}
+	// A host that implements codefly.dev/composition receives manifests through
+	// ApplyManifest and holds the manifest as the ceiling: no envelope, no
+	// gateway, nothing of the host known here but the interface it declares.
+	if cluster.hostImplements(ctx, compositionInterface) {
+		conn, err := grpc.NewClient(strings.TrimPrefix(strings.TrimPrefix(deliveryURL, "http://"), "grpc://"), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return nil, "", fmt.Errorf("dial the host's composition interface: %w", err)
+		}
+		composition := gitops.NewCompositionDelivery(conn, cluster.signer,
+			func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+				m, err := cluster.composed().LoadModuleFromName(ctx, module)
+				if err != nil {
+					return nil, false, err
+				}
+				return gitops.MethodPolicies(m.Dir())
+			},
+			func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
+				m, err := cluster.composed().LoadModuleFromName(ctx, module)
+				if err != nil {
+					return nil, err
+				}
+				return gitops.ScopeCeilings(m.Dir())
+			})
+		return &gitops.NativeDeliverer{
+			Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
+			StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,
+			Token: func(module string) (string, error) {
+				return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
+			},
+			ObserverToken: func() (string, error) { return cluster.vouch.Issue(cluster.vouch.Observer()) },
+			Post:          composition.Post, Applied: composition.Applied,
+		}, "", nil
+	}
 	gatewayModule, gatewayService, ok := strings.Cut(cluster.env.Host.Gateway, "/")
 	if !ok {
 		return nil, "", fmt.Errorf("a native run writes the envelope through the host gateway, and host.gateway %q names no <module>/<service>", cluster.env.Host.Gateway)
@@ -539,10 +581,6 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, gatewayModule, gatewayService, "rest")
 	if err != nil {
 		return nil, "", fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
-	}
-	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, strings.Split(cluster.env.Host.Delivery, "/")[2])
-	if err != nil {
-		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
 	}
 	return &gitops.NativeDeliverer{
 		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
@@ -705,8 +743,12 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 	if err != nil {
 		return err
 	}
-	if err = cluster.ensureEnvelope(ctx, gatewayURL); err != nil {
-		return err
+	// A host reached through the composition interface holds the manifest as the
+	// ceiling and takes no envelope.
+	if gatewayURL != "" {
+		if err = cluster.ensureEnvelope(ctx, gatewayURL); err != nil {
+			return err
+		}
 	}
 	bundle, err := cluster.frontendBundle(ctx, loaded)
 	if err != nil {
@@ -787,4 +829,29 @@ func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.Envelope
 		out[prefix] = gitops.EnvelopeGrant(grant)
 	}
 	return out, nil
+}
+
+// compositionInterface is the Codefly interface a host declares when it receives
+// manifests through ApplyManifest.
+const compositionInterface = "codefly.dev/composition"
+
+// hostImplements reports whether the run's host service declares, in its
+// module's interface endpoints, that it implements the named Codefly interface at
+// any version.
+func (cluster *launcher) hostImplements(ctx context.Context, name string) bool {
+	module, err := cluster.composed().LoadModuleFromName(ctx, cluster.hostModule)
+	if err != nil || module.Interface == nil {
+		return false
+	}
+	for _, endpoint := range module.Interface.Endpoints {
+		if endpoint.Service != cluster.hostService {
+			continue
+		}
+		for _, implemented := range endpoint.Implements {
+			if implemented == name || strings.HasPrefix(implemented, name+"@") {
+				return true
+			}
+		}
+	}
+	return false
 }

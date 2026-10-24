@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"os"
 	"path/filepath"
 	"slices"
@@ -79,7 +80,14 @@ func moduleAuthority(
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
 	}
-	resolved, err := request.contract.Resolve(workspaceValues{provided: provided})
+	callees := newComposedCallees(func(name string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+		callee, err := workspace.LoadModuleFromName(ctx, name)
+		if err != nil {
+			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", err)
+		}
+		return MethodPolicies(callee.Dir())
+	})
+	resolved, err := request.contract.Resolve(workspaceValues{provided: provided}, modulecontract.WithCallees(callees))
 	if err != nil {
 		return nil, fmt.Errorf("module %s: %w", module.Name, err)
 	}
@@ -263,4 +271,55 @@ func refuseUndeclaredDestinations(module string, contract *modulecontract.Resolv
 		return nil
 	}
 	return fmt.Errorf("%w: module %s declares the destinations %s, and none of its services declares such an endpoint; declare the endpoint on the service or withdraw the destination", errUnrenderedDestination, module, strings.Join(missing, ", "))
+}
+
+// composedCallees is modulecontract.Callees over the composed modules: what a
+// call to one requires is that module's own method policy for it, read from
+// its published contracts, so a binding that names its calls carries exactly
+// what the callee declares and the caller names none of its kinds. A callee's
+// policies are read once per resolution.
+type composedCallees struct {
+	read     func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)
+	policies map[string]map[string]*compositionv1.MethodPolicyV1
+}
+
+func newComposedCallees(read func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)) *composedCallees {
+	return &composedCallees{read: read, policies: map[string]map[string]*compositionv1.MethodPolicyV1{}}
+}
+
+// Requires implements modulecontract.Callees. A call the audience does not
+// serve, or one it serves declaring nothing (which the hop refuses), is an
+// error naming it; a call open to any checked caller requires no scope.
+func (c *composedCallees) Requires(audience, call string) ([]string, error) {
+	methods, held := c.policies[audience]
+	if !held {
+		served, declared, err := c.read(audience)
+		if err != nil {
+			return nil, err
+		}
+		if !declared {
+			return nil, fmt.Errorf("%s publishes no contracts, so what its calls require cannot be read", audience)
+		}
+		methods = make(map[string]*compositionv1.MethodPolicyV1, len(served))
+		for _, method := range served {
+			methods[method.GetMethod()] = method
+		}
+		c.policies[audience] = methods
+	}
+	method, served := methods[call]
+	switch {
+	case !served:
+		return nil, fmt.Errorf("%s does not serve it", audience)
+	case method.GetAnyCheckedCaller():
+		return nil, nil
+	case len(method.GetRequires()) == 0:
+		return nil, fmt.Errorf("%s declares nothing for it, and the hop refuses a call to a method that declares nothing", audience)
+	}
+	var scopes []string
+	for _, required := range method.GetRequires() {
+		for _, action := range required.GetActions() {
+			scopes = append(scopes, required.GetResourceKind()+":"+action)
+		}
+	}
+	return scopes, nil
 }

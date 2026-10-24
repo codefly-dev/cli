@@ -835,3 +835,17 @@ func TestServiceSecretProjectionReadsAKeyThroughItsOwnStore(t *testing.T) {
 		t.Fatalf("the service's own store needs no sourceRef: %+v", projection.Spec.Data[0])
 	}
 }
+
+// A render carries a secret only as a reference into a store. An environment
+// whose service-secrets declares generators alone (a local run's) names none,
+// and a service reading a secret there is refused by name, never projected
+// against store "".
+func TestARenderRefusesSecretsWithNoStore(t *testing.T) {
+	secrets := &environments.EnvironmentServiceSecrets{Generate: []environments.EnvironmentSecretGenerator{
+		{Scope: environments.SecretGeneratorScopeWorkspace, Configuration: "hop", Keys: []string{"PROOF"}},
+	}}
+	_, err := serviceSecretProjection(unitScope{Namespace: "platform"}, "tasks", secrets, []string{"PROOF"})
+	if err == nil || !strings.Contains(err.Error(), "names none") {
+		t.Fatalf("a store-less render: %v", err)
+	}
+}

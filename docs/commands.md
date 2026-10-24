@@ -286,6 +286,38 @@ manifests, and build and deployment operations ignore them. In-process callers
 select the identical resolver through
 `control.RunRequest{Service: "mind/mind", Profile: "local"}`.
 
+#### Generated secrets
+
+A run generates the secrets its environment declares, the way `codefly deploy
+secrets` generates a cell's: under `service-secrets.generate`. An environment
+run locally names no secret store, since its store is the workspace's own
+secret configurations, so it declares the generators alone:
+
+```yaml
+environments:
+  - name: local
+    service-secrets:
+      generate:
+        - scope: workspace
+          configuration: hop
+          keys: [PROOF]
+        - scope: workspace
+          configuration: tracing-read-cursors
+          keys: [CURSOR_KEY]
+```
+
+Before it loads configuration, the run sets every declared key the
+configuration does not hold yet to a value minted by the same generator, into
+the file `codefly config generate` writes (`configurations/<profile>/<group>.secret.env`,
+0600, refused when git would track it), and says which keys it generated,
+never their values. A held value is never rotated. A `service` generator names
+the services it covers; a local run guesses none. An environment whose
+`service-secrets` names a store keeps its secrets there, and a run writes
+nothing for it; a render refuses a secret in an environment that names no
+store, since it carries secrets only as references into one. So a playground
+needs no make target or script that calls `codefly config generate` before it
+runs: its environment says what is generated.
+
 ### `codefly run solution`
 
 Boot a whole solution as a unit from its root. A solution root is a workspace

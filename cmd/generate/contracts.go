@@ -186,8 +186,13 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		// always carries a contract, so a missing proto there stays a hard
 		// error (surfaced by writeProtobufContract).
 		serviceHasProto, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), "proto", "buf.yaml"))
+		// A rest endpoint's contract is the OpenAPI document its service carries
+		// where core loads it (standards.OpenAPIPath). The exported endpoint is
+		// read from the module's interface and carries no API details, so it
+		// cannot answer this; asking it skipped every REST face.
+		serviceHasOpenAPI, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), standards.OpenAPIPath))
 
-		carriers := contractCarriers(ctx, serviceName, exported, serviceHasProto)
+		carriers := contractCarriers(ctx, serviceName, exported, serviceHasProto, serviceHasOpenAPI)
 		if len(carriers) == 0 {
 			continue
 		}
@@ -248,7 +253,7 @@ func anyCarriesContract(exported []*basev0.Endpoint) bool {
 
 // contractCarriers keeps the exported endpoints that carry a machine-readable
 // contract, saying why each of the others is skipped.
-func contractCarriers(ctx context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto bool) []*basev0.Endpoint {
+func contractCarriers(ctx context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto, serviceHasOpenAPI bool) []*basev0.Endpoint {
 	var carriers []*basev0.Endpoint
 	for _, endpoint := range exported {
 		switch {
@@ -256,7 +261,7 @@ func contractCarriers(ctx context.Context, serviceName string, exported []*basev
 			cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
 		case endpoint.Api == standards.CONNECT && !serviceHasProto:
 			cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
-		case endpoint.Api == standards.REST && restWithoutOpenAPI(ctx, endpoint):
+		case endpoint.Api == standards.REST && !serviceHasOpenAPI:
 			cli.Info("endpoint %s/%s (api rest) has no OpenAPI document; exported for reachability only, skipped", serviceName, endpoint.Name)
 		default:
 			carriers = append(carriers, endpoint)
@@ -317,14 +322,6 @@ func resolvePackageIdentity(module *resources.Module) (string, string, *composit
 		return "", "", nil, err
 	}
 	return manifest.ID, manifest.Version, manifest, nil
-}
-
-// restWithoutOpenAPI reports whether a rest endpoint carries no OpenAPI
-// document to export: either core attached no REST details to it or the
-// document is empty.
-func restWithoutOpenAPI(ctx context.Context, endpoint *basev0.Endpoint) bool {
-	rest := resources.IsRest(ctx, endpoint)
-	return rest == nil || len(rest.Openapi) == 0
 }
 
 // endpointCarriesContract reports whether an endpoint's API can be exported as

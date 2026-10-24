@@ -604,7 +604,7 @@ func fallbackSource(property gitops.RenderedSecretProperty, generators map[strin
 			Source: "no key holds it, no configuration file supplies it, and service-secrets.generate declares no generator for " +
 				strings.Join(property.Keys, ", ")}, "", nil
 	}
-	format, size := generatorFormat(&generator)
+	format, size := generator.Encoding()
 	// One value per stored key, so every remote key reading that key is handed
 	// the same one: a configuration value is one value however many properties
 	// file it.
@@ -619,21 +619,6 @@ func fallbackSource(property gitops.RenderedSecretProperty, generators map[strin
 	}
 	return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionGenerate,
 		Source: fmt.Sprintf("service-secrets.generate %s/%s for %s (%s, %d bytes)", generator.Scope, generator.Configuration, declaredKey, format, size)}, value, nil
-}
-
-func generatorFormat(generator *environments.EnvironmentSecretGenerator) (secretgen.Format, int) {
-	format := secretgen.Format(generator.Format)
-	if format == "" {
-		format = secretgen.FormatHex
-	}
-	size := generator.Bytes
-	if size == 0 {
-		size = 32
-		if format == secretgen.FormatIdentifier {
-			size = 12
-		}
-	}
-	return format, size
 }
 
 // generatorIndex maps every stored key a generator covers to it. A key two
@@ -697,8 +682,8 @@ func declaredGenerator(property gitops.RenderedSecretProperty, generators map[st
 		if !declared {
 			continue
 		}
-		candidateFormat, candidateSize := generatorFormat(&candidate)
-		format, size := generatorFormat(&generator)
+		candidateFormat, candidateSize := candidate.Encoding()
+		format, size := generator.Encoding()
 		if declaredKey != "" && (candidateFormat != format || candidateSize != size) {
 			return "", environments.EnvironmentSecretGenerator{}, fmt.Errorf("property %s is read as both %s and %s, which service-secrets.generate declares differently",
 				property.Property, declaredKey, key)

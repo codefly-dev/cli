@@ -119,7 +119,7 @@ func projectServiceInjectionInTree(ctx context.Context, tree *renderRoot, root, 
 	if err := validateInjectionClassification(service, injection); err != nil {
 		return err
 	}
-	if len(injection.Secrets) > 0 && env.ServiceSecrets == nil {
+	if len(injection.Secrets) > 0 && !env.ServiceSecrets.Stored() {
 		return fmt.Errorf(
 			"service %q needs %s, which a render carries only as references into the environment's secret store, and environment %q declares no service secret store",
 			service, strings.Join(sortedKeys(injection.Secrets), ", "), env.Name)

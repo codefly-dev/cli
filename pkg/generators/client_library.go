@@ -201,11 +201,16 @@ func finalizePythonLibrary(langDir, pyPackage string, upstreamPackages []string)
 	if err := writePythonScaffold(langDir, pyPackage); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	if err := ensurePythonDependencies(langDir, upstreamPackages); err != nil {
+	if err := ensurePythonDependencies(langDir, append([]string{pythonGrpcRequirement}, upstreamPackages...)); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "python", Path: "python/", Exports: []string{pyPackage}}, nil
 }
+
+// pythonGrpcRequirement is the grpcio the generated `*_pb2_grpc` stubs need:
+// they refuse to import under a grpcio older than the grpc_tools that
+// generated them (GRPC_GENERATED_VERSION), which the proto companion pins.
+const pythonGrpcRequirement = "grpcio>=1.71.0"
 
 // pyprojectDependenciesRe matches pyproject.toml's single-line project
 // dependencies array, the shape writePythonScaffold writes.
@@ -234,9 +239,13 @@ func ensurePythonDependencies(langDir string, packages []string) error {
 		return fmt.Errorf("cannot find a dependencies array in %s", path)
 	}
 	existing := string(data[match[2]:match[3]])
+	declared := map[string]bool{}
+	for _, requirement := range strings.Split(existing, ",") {
+		declared[pythonDistribution(strings.Trim(strings.TrimSpace(requirement), `"`))] = true
+	}
 	var missing []string
 	for _, pkg := range packages {
-		if !strings.Contains(existing, `"`+pkg+`"`) {
+		if !declared[pythonDistribution(pkg)] {
 			missing = append(missing, `"`+pkg+`"`)
 		}
 	}
@@ -252,6 +261,17 @@ func ensurePythonDependencies(langDir string, packages []string) error {
 	updated = append(updated, added...)
 	updated = append(updated, data[match[3]:]...)
 	return os.WriteFile(path, updated, 0o644) //nolint:gosec
+}
+
+// pythonDistribution is the distribution a requirement names, without its
+// version specifier, so a developer's own pin of a package counts as declaring
+// it.
+func pythonDistribution(requirement string) string {
+	name, _, _ := strings.Cut(requirement, ";")
+	if i := strings.IndexAny(name, "<>=!~[ "); i >= 0 {
+		name = name[:i]
+	}
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "_", "-"))
 }
 
 // assembleOpenAPILibrary synthesizes a basev0.Endpoint carrying the raw
@@ -694,7 +714,7 @@ func writePythonScaffold(langDir, pyPackage string) error {
 	pyproject := fmt.Sprintf(`[project]
 name = %q
 version = "0.0.1"
-dependencies = ["protobuf>=5.29.3,<7"]
+dependencies = ["protobuf>=5.29.3,<7", %q]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -702,6 +722,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = [%q, %q]
-`, strings.ReplaceAll(pyPackage, "_", "-"), pyPackage, pyPackage+".*")
+`, strings.ReplaceAll(pyPackage, "_", "-"), pythonGrpcRequirement, pyPackage, pyPackage+".*")
 	return writeFileIfMissing(filepath.Join(langDir, "pyproject.toml"), []byte(pyproject))
 }

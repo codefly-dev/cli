@@ -891,6 +891,13 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
+	generated, err := provisionGeneratedSecrets(ctx, workspace, env)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	if len(generated) > 0 {
+		cli.Info("generated %s, as environment %s's service-secrets declare (values never printed)", strings.Join(generated, ", "), env.Name)
+	}
 
 	// Parse remote services
 	remoteServices, err := parseRemote(workspace, remotes)

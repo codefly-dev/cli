@@ -922,3 +922,41 @@ func loadDeploymentWorkspace(ctx context.Context, dir string) (*deploymentWorksp
 	}
 	return &deploymentWorkspace{Workspace: w, Environments: envs}, nil
 }
+
+// A local environment declares the secrets its run generates the way a cell's
+// does, under service-secrets.generate, and names no store: its keys live in
+// the workspace's own secret configurations. A block declaring neither a store
+// nor a generator is refused.
+func TestEnvironmentServiceSecretsGeneratorsAloneNameNoStore(t *testing.T) {
+	root := t.TempDir()
+	workspace := `name: platform
+layout: modules
+environments:
+  - name: local
+    service-secrets:
+      generate:
+        - scope: workspace
+          configuration: hop
+          keys: [PROOF]
+`
+	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadDeploymentWorkspace(context.Background(), root)
+	if err != nil {
+		t.Fatalf("generators alone: %v", err)
+	}
+	secrets := loaded.Environments[0].ServiceSecrets
+	if secrets.Stored() || len(secrets.Generate) != 1 {
+		t.Fatalf("loaded %+v", secrets)
+	}
+	if format, size := secrets.Generate[0].Encoding(); format != "hex" || size != 32 {
+		t.Fatalf("default encoding %s/%d", format, size)
+	}
+	if err := (&environments.EnvironmentServiceSecrets{}).Validate(); err == nil || !strings.Contains(err.Error(), "neither a secret-store nor a generator") {
+		t.Fatalf("an empty block: %v", err)
+	}
+	if !(&environments.EnvironmentServiceSecrets{SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell", Kind: "ClusterSecretStore"}}).Stored() {
+		t.Fatal("a named store is stored")
+	}
+}
