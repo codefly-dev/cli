@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -136,8 +137,11 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []*compositionv1.MethodPolicyV1{{Method: "/api.ApiService/WhoAmI", Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "console.identity", Actions: []string{"read"}}}}}
+	ceilings := []*authorityv1.WorkScopeV1{{ResourceKind: "console.identity", Actions: []string{"read"}}}
 	d := NewCompositionDelivery(conn, signer, func(_ context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 		return want, module == "console", nil
+	}, func(_ context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
+		return ceilings, nil
 	})
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "console", Alias: "console", Kind: solutionhost.KindModule, Generation: 3,
@@ -161,5 +165,30 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 	}
 	if doc.GetModule() != "console" || doc.GetGeneration() != 3 || doc.GetCoreManifestDigest() != delivery.Digest(document) || !proto.Equal(doc.GetMethods()[0], want[0]) {
 		t.Fatalf("the document names its manifest and carries the methods: %v", &doc)
+	}
+	// And the module's own kinds with their actions, which core's manifest
+	// names without them.
+	if len(doc.GetScopeCeilings()) != 1 || !proto.Equal(doc.GetScopeCeilings()[0], ceilings[0]) {
+		t.Fatalf("the document carries the scope ceilings: %v", doc.GetScopeCeilings())
+	}
+}
+
+// A module's scope ceilings come from the contract it publishes, kind by kind
+// with their actions; a module publishing none declares none.
+func TestScopeCeilingsAreReadFromTheModuleContract(t *testing.T) {
+	dir := t.TempDir()
+	if got, err := ScopeCeilings(dir); err != nil || got != nil {
+		t.Fatalf("no contract: %v %v", got, err)
+	}
+	contract := "schema: codefly/module-contract/v1\nprincipal: runtime\nnamespaces: []\nqueues: []\nscope_ceilings:\n    - resource_kind: runtime.tasks\n      actions: [execute, start]\nbindings: []\ndestinations: []\n"
+	if err := os.WriteFile(filepath.Join(dir, "module.contract.codefly.yaml"), []byte(contract), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ScopeCeilings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].GetResourceKind() != "runtime.tasks" || !slices.Equal(got[0].GetActions(), []string{"execute", "start"}) {
+		t.Fatalf("ceilings: %v", got)
 	}
 }

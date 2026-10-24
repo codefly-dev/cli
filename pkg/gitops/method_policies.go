@@ -3,12 +3,14 @@ package gitops
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/codefly-dev/core/composition"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -88,6 +90,24 @@ func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, erro
 				out = append(out, m)
 			}
 		}
+	}
+	return out, nil
+}
+
+// ScopeCeilings reads the module's own resource kinds with the actions its
+// module contract declares on each, from the module at dir. A module that
+// publishes no contract declares none.
+func ScopeCeilings(dir string) ([]*authorityv1.WorkScopeV1, error) {
+	contract, err := modulecontract.Load(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []*authorityv1.WorkScopeV1
+	for _, ceiling := range contract.ScopeCeilings {
+		out = append(out, &authorityv1.WorkScopeV1{ResourceKind: ceiling.ResourceKind, Actions: append([]string(nil), ceiling.Actions...)})
 	}
 	return out, nil
 }

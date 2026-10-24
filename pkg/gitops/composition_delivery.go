@@ -14,6 +14,7 @@ import (
 
 	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
 
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 )
 
@@ -28,6 +29,9 @@ type CompositionDelivery struct {
 	// methods reads what each method of a module declares, from its package;
 	// ok false means the module declares no method policy.
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error)
+	// ceilings reads the module's own resource kinds with their actions, from
+	// its module contract; none when it publishes no contract.
+	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error)
 
 	mu      sync.Mutex
 	applied map[string]uint64
@@ -35,10 +39,13 @@ type CompositionDelivery struct {
 
 // NewCompositionDelivery speaks the interface over conn. With each manifest it
 // delivers the authority's own document, signed by signer: what each method of
-// the module declares, read by methods from the module's package.
+// the module declares, read by methods from the module's package, and the
+// actions on each of its own resource kinds, read by ceilings from its module
+// contract (core's manifest names the kinds alone).
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
-	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error)) *CompositionDelivery {
-	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, applied: map[string]uint64{}}
+	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
+	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error)) *CompositionDelivery {
+	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, applied: map[string]uint64{}}
 }
 
 // Post is NativeDeliverer.Post over the interface.
@@ -66,19 +73,33 @@ func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *s
 }
 
 // authority signs the authority's document for one delivery: the module's
-// method policies, bound to the core manifest by its module, generation and
-// digest, under the key that signs the manifest. Nil when the module declares
-// no method policy.
+// method policies and scope ceilings, bound to the core manifest by its module,
+// generation and digest, under the key that signs the manifest. Nil when the
+// module declares neither.
 func (c *CompositionDelivery) authority(ctx context.Context, module string, manifest *solutionhost.ModuleManifest, core []byte) (*compositionv1.SignedManifestV1, error) {
-	if c.methods == nil || c.signer == nil {
+	if c.signer == nil {
 		return nil, nil
 	}
-	methods, ok, err := c.methods(ctx, module)
-	if err != nil || !ok {
-		return nil, err
+	var methods []*compositionv1.MethodPolicyV1
+	declared := false
+	if c.methods != nil {
+		var err error
+		if methods, declared, err = c.methods(ctx, module); err != nil {
+			return nil, err
+		}
+	}
+	var ceilings []*authorityv1.WorkScopeV1
+	if c.ceilings != nil {
+		var err error
+		if ceilings, err = c.ceilings(ctx, module); err != nil {
+			return nil, err
+		}
+	}
+	if !declared && len(ceilings) == 0 {
+		return nil, nil
 	}
 	document, err := proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
-		Module: manifest.Alias, Generation: manifest.Generation, CoreManifestDigest: delivery.Digest(core), Methods: methods,
+		Module: manifest.Alias, Generation: manifest.Generation, CoreManifestDigest: delivery.Digest(core), Methods: methods, ScopeCeilings: ceilings,
 	})
 	if err != nil {
 		return nil, err

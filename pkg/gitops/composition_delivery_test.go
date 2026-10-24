@@ -54,7 +54,7 @@ func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	delivery := NewCompositionDelivery(conn, nil, nil)
+	delivery := NewCompositionDelivery(conn, nil, nil, nil)
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: solutionhost.KindModule, Generation: 2,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"},

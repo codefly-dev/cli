@@ -6,6 +6,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"os"
 	"path/filepath"
@@ -555,6 +556,13 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 					return nil, false, err
 				}
 				return gitops.MethodPolicies(m.Dir())
+			},
+			func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
+				m, err := cluster.composed().LoadModuleFromName(ctx, module)
+				if err != nil {
+					return nil, err
+				}
+				return gitops.ScopeCeilings(m.Dir())
 			})
 		return &gitops.NativeDeliverer{
 			Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
