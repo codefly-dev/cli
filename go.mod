@@ -14,7 +14,7 @@ require (
 	github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261024030918-064127bdd860
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261023192826-bc4d12956a06
 	github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261023192826-bc4d12956a06
-	github.com/codefly-dev/core v0.19.7-0.20261024141226-a57ef6ce6952
+	github.com/codefly-dev/core v0.19.7-0.20261024141538-6710b5acf890
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
