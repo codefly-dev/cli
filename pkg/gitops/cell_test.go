@@ -524,10 +524,15 @@ func TestAHostStatingAnEnvelopeCarriesDelivery(t *testing.T) {
 // `@` followed by another algorithm, a short digest or upper-case hex is a
 // digest no running pod reports, and is refused.
 func TestOnlyASha256DigestPinsAnImage(t *testing.T) {
-	repository, digest, err := splitPinnedImage("registry.example.test/acme/api:1.2.0@sha256:" + strings.Repeat("a", 64))
-	require.NoError(t, err)
-	require.Equal(t, "registry.example.test/acme/api", repository)
-	require.Equal(t, "sha256:"+strings.Repeat("a", 64), digest)
+	// The tag is informational: a build pushed under a build-qualified tag (an
+	// agent the workspace overrides) is deployed under the release's tag with
+	// its own digest, and the cell names the repository and that digest alone.
+	for _, tag := range []string{":1.2.0", ":1.2.0-build.0123456789abcdef", ""} {
+		repository, digest, err := splitPinnedImage("registry.example.test/acme/api" + tag + "@sha256:" + strings.Repeat("a", 64))
+		require.NoError(t, err)
+		require.Equal(t, "registry.example.test/acme/api", repository, tag)
+		require.Equal(t, "sha256:"+strings.Repeat("a", 64), digest, tag)
+	}
 	for _, image := range []string{
 		"registry.example.test/acme/api:1.2.0",
 		"registry.example.test/acme/api@latest",

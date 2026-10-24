@@ -88,6 +88,10 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 type imageReuse struct {
 	identity imageIdentity
 	entry    *imageCacheEntry
+	// image, when set, is the reference the recipe is pushed under instead of
+	// the one the agent named: a build-qualified tag for a build whose agent the
+	// workspace overrides (override_build.go).
+	image string
 }
 
 // decideImageReuse takes the reuse decision for a recipe as it will be built
@@ -149,6 +153,25 @@ func (b *Builder) decideImageReuse(
 			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
 	}
 	decision := imageReuse{identity: identity}
+	// A build under a workspace agent override is not the build the release
+	// names, so it is pushed under a tag of its own (override_build.go).
+	if shouldPush && releasedVersionTag(recipe.GetImage()) {
+		pinned, overrideErr := b.overriddenAgent(ctx)
+		if overrideErr != nil {
+			return decision, w.Wrap(overrideErr)
+		}
+		if pinned != "" {
+			if identity.Key == "" {
+				return decision, w.NewError("%s builds with agent %s, which the workspace overrides from the %s its release pins, and an image input cannot be bound to name that build apart from the release: %v",
+					b.instance.Unique(), b.instance.Service.Agent.Identifier(), pinned, identityErr)
+			}
+			recipe = proto.CloneOf(recipe)
+			recipe.Image = overrideBuildImage(recipe.GetImage(), identity.Key)
+			decision.image = recipe.GetImage()
+			w.Info("the agent is overridden, so this is not the release's build; tagging it apart",
+				wool.Field("agent", b.instance.Service.Agent.Identifier()), wool.Field("release_pins", pinned), wool.Field("image", decision.image))
+		}
+	}
 	if b.world.RebuildImages {
 		return decision, nil
 	}
@@ -159,7 +182,7 @@ func (b *Builder) decideImageReuse(
 	// image, whichever environment, machine or checkout pushed it, and nothing is
 	// built. An unversioned service (0.0.0, never published) is not a release and
 	// is built as before.
-	if shouldPush && releasedVersionTag(recipe.GetImage()) {
+	if shouldPush && (releasedVersionTag(recipe.GetImage()) || decision.image != "") {
 		digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
 		if err != nil && !isImageNotFound(err) {
 			// Only the registry saying the tag does not exist means it is not
@@ -172,7 +195,8 @@ func (b *Builder) decideImageReuse(
 			// with its code would hand back another release's image. The published
 			// image records the inputs it was built from, and only those inputs
 			// adopt it.
-			published, _ := resolveImageBuildInputs(ctx, recipe.GetImage(), probeBuilder)
+			labels, _ := resolveImageBuildLabels(ctx, recipe.GetImage(), probeBuilder)
+			published := labels[buildInputsLabel]
 			switch {
 			case identity.Key != "" && published == identity.Key:
 				decision.entry = &imageCacheEntry{
@@ -181,9 +205,7 @@ func (b *Builder) decideImageReuse(
 				}
 				return decision, nil
 			case identity.Key != "" && published != "":
-				return decision, w.NewError(
-					"%s is already published from other inputs: its version was not moved with its code; release a new version (codefly publish) instead of rebuilding a published one",
-					recipe.GetImage())
+				return decision, w.Wrap(publishedFromOtherInputs(recipe.GetImage(), b.instance.Service.Agent, labels[buildAgentLabel]))
 			default:
 				w.Warn("the published image records no build inputs; building it again",
 					wool.Field("image", recipe.GetImage()), wool.Field("recipe", recipe.GetName()))
@@ -326,10 +348,6 @@ func (b *Builder) buildRecipe(
 		return w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
 
-	// A pushed build records the immutable manifest digest a snapshot pins and a
-	// targeted single-service build returns to its caller. A non-pushed build
-	// never lands in a registry, so there is no digest to capture.
-	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
 	// Image evidence is owed by every recipe, not only the one a snapshot pins,
 	// so asking for it needs the digest of each pushed image too.
 	resolveEvidence := b.world.CollectImageSBOM
@@ -343,6 +361,17 @@ func (b *Builder) buildRecipe(
 		}
 		reuse = &decided
 	}
+	if reuse.image != "" {
+		recipe = proto.CloneOf(recipe)
+		recipe.Image = reuse.image
+	}
+	// A pushed build records the immutable manifest digest a snapshot pins and a
+	// targeted single-service build returns to its caller. A non-pushed build
+	// never lands in a registry, so there is no digest to capture. A build pushed
+	// under a qualified tag is deployed by its digest whatever the mode: the
+	// agent names the deployed image by the release's tag, which holds another
+	// build.
+	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest || reuse.image != "")
 	if reuse.entry != nil {
 		w.Info("no image input changed; keeping the built image",
 			wool.Field("image", reuse.entry.Image), wool.Field("digest", reuse.entry.Digest),
@@ -408,7 +437,7 @@ func (b *Builder) buildRecipe(
 
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err == nil {
-		args = withBuildInputsLabel(args, identity.Key)
+		args = withBuildAgentLabel(withBuildInputsLabel(args, identity.Key), b.instance.Service.Agent)
 		if shouldPush {
 			args = withSourceLabel(args, b.world.Env, workspaceSourceRepository(ctx, b.world.Workspace.Dir()), multiArch)
 		}
@@ -1092,10 +1121,10 @@ var workspaceSourceRepository = func(ctx context.Context, dir string) string {
 	return "https://github.com/" + match[1] + "/" + match[2]
 }
 
-// resolveImageBuildInputs reads the build-inputs label every platform of a
-// published image carries, or "" when it carries none or its platforms disagree.
-// A seam so a test needs no registry.
-var resolveImageBuildInputs = func(ctx context.Context, reference, builderName string) (string, error) {
+// resolveImageBuildLabels reads the build labels every platform of a published
+// image agrees on (buildInputsLabel, buildAgentLabel); a label a platform lacks
+// or disagrees on is absent. A seam so a test needs no registry.
+var resolveImageBuildLabels = func(ctx context.Context, reference, builderName string) (map[string]string, error) {
 	probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
 	defer cancel()
 	args := []string{buildxCommand, "imagetools", "inspect"}
@@ -1105,35 +1134,48 @@ var resolveImageBuildInputs = func(ctx context.Context, reference, builderName s
 	args = append(args, "--format", "{{json .Image}}", reference)
 	out, err := exec.CommandContext(probe, "docker", args...).Output()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return buildInputsFromImageConfig(out), nil
+	return buildLabelsFromImageConfig(out), nil
 }
 
-// buildInputsFromImageConfig reads the label out of `imagetools inspect`'s image
-// configuration: one configuration for a single-platform image, one per platform
-// otherwise. Every platform must record the same value.
-func buildInputsFromImageConfig(raw []byte) string {
+// buildLabelsFromImageConfig reads the build labels out of `imagetools
+// inspect`'s image configuration: one configuration for a single-platform image,
+// one per platform otherwise. A label is kept only when every platform records
+// the same value.
+func buildLabelsFromImageConfig(raw []byte) map[string]string {
 	type config struct {
 		Config struct {
 			Labels map[string]string `json:"Labels"`
 		} `json:"config"`
 	}
+	labels := map[string]string{}
 	var single config
 	if err := json.Unmarshal(raw, &single); err == nil && single.Config.Labels != nil {
-		return single.Config.Labels[buildInputsLabel]
+		for _, key := range []string{buildInputsLabel, buildAgentLabel} {
+			if value := single.Config.Labels[key]; value != "" {
+				labels[key] = value
+			}
+		}
+		return labels
 	}
 	var platforms map[string]config
 	if err := json.Unmarshal(raw, &platforms); err != nil || len(platforms) == 0 {
-		return ""
+		return labels
 	}
-	value := ""
-	for _, platform := range platforms {
-		label := platform.Config.Labels[buildInputsLabel]
-		if label == "" || (value != "" && label != value) {
-			return ""
+	for _, key := range []string{buildInputsLabel, buildAgentLabel} {
+		value := ""
+		for _, platform := range platforms {
+			label := platform.Config.Labels[key]
+			if label == "" || (value != "" && label != value) {
+				value = ""
+				break
+			}
+			value = label
 		}
-		value = label
+		if value != "" {
+			labels[key] = value
+		}
 	}
-	return value
+	return labels
 }

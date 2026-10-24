@@ -2058,8 +2058,11 @@ Every composed service whose agent is that publisher and name runs against that
 version — in `codefly run`, `codefly deploy gitops render` and every `codefly
 ci` verb alike, because core applies it at the one place a composed module
 loads a service. Only the version moves; the agent's publisher, name and kind
-never do, and the module's own files are untouched. Each run or render states
-it once per overridden agent:
+never do, and the module's own files are untouched. A release built under an
+override is not the release's build, so its image is tagged apart from the
+release ([Keeping an image whose inputs did not
+change](#keeping-an-image-whose-inputs-did-not-change)). Each run or render
+states it once per overridden agent:
 
 ```text
 agent codefly.dev/go-grpc overridden to 0.1.47 by workspace.codefly.yaml (3 services; module pins: 0.1.46)
@@ -4040,15 +4043,35 @@ two environments, is one image. Before a pushed build of a released version
 for `<image>:<version>`. Every build records its input digest on the image as
 the label `org.codefly.build.inputs`, and the published image is adopted —
 nothing is built — when that label equals this build's inputs. A published
-image recording **other** inputs refuses the build: its version was not moved
-with its code, and the fix is a new release, never a rebuild under the old
-version. One recording none (pushed before builds recorded their inputs) is
-built again. Only the registry answering that the tag does not exist lets a
-released version be built: any other failed read (an authorization refusal, a
-timeout, an unreachable registry) stops the render, because building over it
-would overwrite a released tag on any registry whose tags are mutable. With a
+image recording **other** inputs refuses the build, and the fix is a new
+release, never a rebuild under the old version. Every build also records the
+agent that emitted its recipe as `org.codefly.build.agent`, so the refusal says
+which input differs: another agent built the published image (a tag that holds
+a build the release does not name), or the same agent did and the service's
+code or a base image changed without its version moving. One recording no
+inputs (pushed before builds recorded them) is built again. With a registry
+Only the registry answering that the tag does not exist lets a released version
+be built: any other failed read (an authorization refusal, a timeout, an
+unreachable registry) stops the render, because building over it would
+overwrite a released tag on any registry whose tags are mutable. With a
 registry whose tags are immutable, each version then holds exactly one build
 for good.
+
+**A released version names the build its release pins.** A workspace's
+[`agent-overrides`](#moving-the-agent-version-of-composed-services) moves the
+agent a composed service builds with, and the agent emits the build recipe, so
+the same release built under an override is another build. It is never pushed
+under the release's tag: it is tagged `<version>-build.<identity>` — the first
+16 hex characters of its input digest, e.g. `excel:0.3.2-build.3f9c0a1b2d4e5f60`
+— and the release check does not apply to it. That tag holds one build; another
+checkout composing the same override adopts it from the registry the same way.
+Where the environment pulls through a remote repository, the qualified tag is
+pushed and probed at the push registry like any other (`ghcr.io/…:0.3.2-build.…`).
+The deployment still names the release's tag in the repository the cell pulls
+from, pinned to the qualified build's digest (the digest is always captured for such a build), and the cell file
+records only the repository and that digest, so nothing admits the wrong image.
+An override to the version the module already pins moves nothing and builds
+the release as usual.
 
 A build also reuses the image this workspace already built from the same inputs
 instead of building it again. A configuration-only change — an edit to a value
