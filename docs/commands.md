@@ -4042,14 +4042,28 @@ two environments, is one image. Before a pushed build of a released version
 (an exact `x.y.z`, never the unversioned `0.0.0`), the render asks the registry
 for `<image>:<version>`. Every build records its input digest on the image as
 the label `org.codefly.build.inputs`, and the published image is adopted —
-nothing is built — when that label equals this build's inputs. A published
-image recording **other** inputs refuses the build, and the fix is a new
-release, never a rebuild under the old version. Every build also records the
-agent that emitted its recipe as `org.codefly.build.agent`, so the refusal says
-which input differs: another agent built the published image (a tag that holds
-a build the release does not name), or the same agent did and the service's
-code or a base image changed without its version moving. One recording no
-inputs (pushed before builds recorded them) is built again. With a registry
+nothing is built — when that label equals this build's inputs. Beside it, every
+build records each class of its inputs: `org.codefly.build.inputs.code` (the
+build context and the Go module manifests: the service's code),
+`org.codefly.build.inputs.recipe` (the recipe tree its agent emitted, the
+Dockerfile and the build invocation) and `org.codefly.build.inputs.bases` (the
+resolved base images), plus the agent that emitted the recipe as
+`org.codefly.build.agent`. A published image recording **other** inputs is
+judged by its code, because the refusal exists to catch a version that did not
+move with its code:
+
+| The published image | The render |
+|---|---|
+| records this build's code; its recipe or bases differ (another checkout, another builder, a re-pushed base) | adopts it — it is the release's build — and warns naming the class that differs |
+| records other code | refuses: the code changed without its version moving, and the fix is a new release, never a rebuild under the old version |
+| records another agent than the release pins | refuses: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
+| records only the aggregate (labelled before the classes existed) | adopts it with a warning that its code was not compared; `--rebuild` builds it again instead |
+
+Adopting is the default for an image that cannot be compared because the two
+alternatives are worse: refusing blocks every render of every module on a cell
+that holds one such image (a render needs every workload's digest), and
+rebuilding overwrites a release wherever tags are mutable. One recording no
+inputs at all (pushed before builds recorded them) is built again. With a registry
 Only the registry answering that the tag does not exist lets a released version
 be built: any other failed read (an authorization refusal, a timeout, an
 unreachable registry) stops the render, because building over it would

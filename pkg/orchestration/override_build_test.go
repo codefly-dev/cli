@@ -93,32 +93,95 @@ func TestAnOverrideToTheModulesOwnPinIsTheReleaseBuild(t *testing.T) {
 	require.Contains(t, args[0], "-t example.test/app:1.2.3 ")
 }
 
-// Without an override the release check stands, and the refusal says which
-// class of input differs when the published image records its agent.
-func TestARefusedReleaseNamesWhatDiffers(t *testing.T) {
+// classLabels reads the input labels a build recorded off its argv.
+func classLabels(t *testing.T, args string) map[string]string {
+	t.Helper()
+	labels := map[string]string{}
+	for _, match := range regexp.MustCompile(`--label (org\.codefly\.build\.[a-z.]+)=(\S+)`).FindAllStringSubmatch(args, -1) {
+		labels[match[1]] = match[2]
+	}
+	for _, key := range []string{buildInputsLabel, buildCodeLabel, buildRecipeLabel, buildBasesLabel, buildAgentLabel} {
+		require.NotEmpty(t, labels[key], "every build records %s", key)
+	}
+	return labels
+}
+
+// The 2026-10-24 defect: a release published from another checkout, whose
+// recipe or bases differ from this one's, refused every later render of every
+// module on the cell. The refusal exists for a version not moved with its
+// code, so only a code difference refuses; anything else adopts the release's
+// build. An agent other than the release's pin still refuses (#1146).
+func TestAPublishedReleaseIsJudgedByItsCode(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	stubRegistry(t, nil)
+	harness.build(t)
+	args := harness.docker.buildArgs(t)
+	require.Len(t, args, 1)
+	ours := classLabels(t, args[0])
+	other := "sha256:" + strings.Repeat("e", 64)
+	published := "sha256:" + strings.Repeat("d", 64)
+	with := func(changes map[string]string) map[string]string {
+		labels := map[string]string{}
+		for key, value := range ours {
+			labels[key] = value
+		}
+		for key, value := range changes {
+			if value == "" {
+				delete(labels, key)
+				continue
+			}
+			labels[key] = value
+		}
+		return labels
+	}
 	for name, tc := range map[string]struct {
-		agent, want string
+		labels map[string]string
+		refuse string
 	}{
-		"another agent built it": {agent: "codefly.dev/go:0.0.9", want: "from a build by agent codefly.dev/go:0.0.9, and this build runs codefly.dev/go:0.1.0"},
-		"the same agent":         {agent: "codefly.dev/go:0.1.0", want: "by the same agent codefly.dev/go:0.1.0: the service's code or a base image changed"},
-		"no agent recorded":      {want: "the published image does not record which"},
+		"same code, other recipe and bases": {labels: with(map[string]string{buildInputsLabel: other, buildRecipeLabel: other, buildBasesLabel: other})},
+		"labelled before the classes": {labels: with(map[string]string{
+			buildInputsLabel: other, buildCodeLabel: "", buildRecipeLabel: "", buildBasesLabel: "",
+		})},
+		"other code":  {labels: with(map[string]string{buildInputsLabel: other, buildCodeLabel: other}), refuse: "is already published from other code"},
+		"other agent": {labels: with(map[string]string{buildInputsLabel: other, buildAgentLabel: "codefly.dev/go:0.0.9"}), refuse: "from a build by agent codefly.dev/go:0.0.9"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			harness := newImageCacheHarness(t, true, true)
-			harness.peer.image = "example.test/app:1.2.3"
-			labels := map[string]string{buildInputsLabel: "sha256:" + strings.Repeat("e", 64)}
-			if tc.agent != "" {
-				labels[buildAgentLabel] = tc.agent
+			require.NoError(t, os.RemoveAll(filepath.Join(harness.workspaceDir, filepath.FromSlash(imageCacheDir))))
+			stubRegistry(t, map[string]publishedImage{"example.test/app:1.2.3": {digest: published, labels: tc.labels}})
+			if tc.refuse == "" {
+				require.Equal(t, published, harness.build(t))
+			} else {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				require.ErrorContains(t, harness.tryBuild(ctx, t), tc.refuse)
 			}
-			stubRegistry(t, map[string]publishedImage{"example.test/app:1.2.3": {digest: "sha256:" + strings.Repeat("d", 64), labels: labels}})
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
-			err := harness.tryBuild(ctx, t)
-			require.ErrorContains(t, err, "example.test/app:1.2.3 is already published")
-			require.ErrorContains(t, err, tc.want)
-			require.Equal(t, 0, harness.docker.calls(t, "build"))
+			require.Equal(t, 1, harness.docker.calls(t, "build"), "a published release is never rebuilt")
 		})
 	}
+}
+
+// The warning says which class differs, and the refusal names the code.
+func TestPublishedReleaseVerdictNamesTheClass(t *testing.T) {
+	agent := &resources.Agent{Publisher: "codefly.dev", Name: "go", Version: "0.1.0"}
+	ours := imageIdentity{Key: "sha256:k", Classes: &buildClasses{Code: "sha256:c", Recipe: "sha256:r", Bases: "sha256:b"}}
+	labels := func(code, recipe, bases string) map[string]string {
+		return map[string]string{buildInputsLabel: "sha256:other", buildCodeLabel: code, buildRecipeLabel: recipe, buildBasesLabel: bases}
+	}
+	warning, err := publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:c", "sha256:x", "sha256:b"))
+	require.NoError(t, err)
+	require.Contains(t, warning, "the build recipe its agent emitted")
+	require.NotContains(t, warning, "base images")
+	warning, err = publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:c", "sha256:r", "sha256:x"))
+	require.NoError(t, err)
+	require.Contains(t, warning, "the resolved base images")
+	require.NotContains(t, warning, "recipe")
+	warning, err = publishedReleaseVerdict("app:1.2.3", ours, agent, map[string]string{buildInputsLabel: "sha256:other"})
+	require.NoError(t, err)
+	require.Contains(t, warning, "predates per-class build labels")
+	_, err = publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:x", "sha256:r", "sha256:b"))
+	require.ErrorContains(t, err, "app:1.2.3 is already published from other code")
+	require.ErrorContains(t, err, "release a new version")
 }
 
 func TestOverrideBuildImageIsAValidDockerTag(t *testing.T) {

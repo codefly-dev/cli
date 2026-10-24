@@ -855,17 +855,15 @@ func TestAPublishedVersionFromTheSameInputsIsAdoptedNotRebuilt(t *testing.T) {
 	require.Equal(t, 1, harness.docker.calls(t, "build"), "the published version is adopted, not rebuilt")
 }
 
-// The version alone is not proof: a version that was not moved with its code
-// would hand back another release's image, so a published image recording other
-// inputs refuses the build instead of being adopted or overwritten.
-func TestAPublishedVersionFromOtherInputsRefusesTheBuild(t *testing.T) {
+// An image labelled before builds recorded their input classes carries only the
+// aggregate, which cannot say whether its code is this build's. It is the
+// release's build, so it is adopted, not rebuilt over and not refused.
+func TestAPublishedVersionLabelledBeforeClassesIsAdopted(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
 	harness.peer.image = "example.test/app:1.2.3"
-	stubPublishedImage(t, "sha256:"+strings.Repeat("d", 64), "sha256:"+strings.Repeat("e", 64))
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	err := harness.tryBuild(ctx, t)
-	require.ErrorContains(t, err, "already published from other inputs")
+	published := "sha256:" + strings.Repeat("d", 64)
+	stubPublishedImage(t, published, "sha256:"+strings.Repeat("e", 64))
+	require.Equal(t, published, harness.build(t))
 	require.Equal(t, 0, harness.docker.calls(t, "build"))
 }
 
@@ -888,7 +886,13 @@ func TestBuildInputsAreReadFromEveryPlatform(t *testing.T) {
 	disagree := []byte(`{"linux/amd64":{"config":{"Labels":{"` + buildInputsLabel + `":"` + key + `"}}},"linux/arm64":{"config":{"Labels":{}}}}`)
 	require.Equal(t, "", buildLabelsFromImageConfig(disagree)[buildInputsLabel], "platforms that disagree prove nothing")
 	require.Equal(t, []string{"buildx", "build", "--label", buildInputsLabel + "=" + key, "--push", "."},
-		withBuildInputsLabel([]string{"buildx", "build", "--push", "."}, key))
+		withBuildInputsLabel([]string{"buildx", "build", "--push", "."}, imageIdentity{Key: key}))
+	classes := &buildClasses{Code: "sha256:c", Recipe: "sha256:r", Bases: "sha256:b"}
+	require.Equal(t, []string{"buildx", "build", "--label", buildInputsLabel + "=" + key,
+		"--label", buildCodeLabel + "=sha256:c", "--label", buildRecipeLabel + "=sha256:r", "--label", buildBasesLabel + "=sha256:b", "."},
+		withBuildInputsLabel([]string{"buildx", "build", "."}, imageIdentity{Key: key, Classes: classes}))
+	labelled := []byte(`{"config":{"Labels":{"` + buildCodeLabel + `":"sha256:c","` + buildBasesLabel + `":"sha256:b"}}}`)
+	require.Equal(t, map[string]string{buildCodeLabel: "sha256:c", buildBasesLabel: "sha256:b"}, buildLabelsFromImageConfig(labelled))
 }
 
 // stubPublishedImage makes the registry answer that the reference exists at

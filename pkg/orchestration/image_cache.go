@@ -229,6 +229,54 @@ func (cache *imageBuildCache) store(ctx context.Context, entry *imageCacheEntry)
 type imageIdentity struct {
 	Key         string
 	ContextTree string
+	// Classes digests the same inputs as Key, split by what moves them, so a
+	// published release's build can be compared class by class (buildClasses).
+	Classes *buildClasses
+}
+
+// buildClasses splits an identity's inputs by what moves them: Code is the
+// service's own bytes (its build context and the Go module manifests the
+// prefetch reads), Recipe is what its agent emitted and how it is invoked (the
+// recipe tree, Dockerfile and buildx command), and Bases is the resolved base
+// images. Each is recorded on the image as a label of its own beside the
+// aggregate, never folded into Key: Key is unchanged, so an image labelled
+// before the classes existed still matches its own inputs.
+type buildClasses struct {
+	Code   string
+	Recipe string
+	Bases  string
+}
+
+// classDigest is the digest of one class's inputs, under the cache schema so a
+// schema move separates the classes the same way it separates the aggregate.
+func classDigest(class string, inputs any) (string, error) {
+	payload, err := json.Marshal(struct {
+		Schema int    `json:"schema"`
+		Class  string `json:"class"`
+		Inputs any    `json:"inputs"`
+	}{imageCacheSchema, class, inputs})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// identityClasses digests each class of inputs.
+func identityClasses(inputs *imageInputs) (*buildClasses, error) {
+	code, err := classDigest("code", []any{inputs.Context, inputs.Dockerignore, inputs.ContextTree, inputs.GoModules})
+	if err != nil {
+		return nil, err
+	}
+	recipe, err := classDigest("recipe", []any{inputs.Recipe, inputs.Dockerfile, inputs.RecipeTree, inputs.Command})
+	if err != nil {
+		return nil, err
+	}
+	bases, err := classDigest("bases", inputs.Bases)
+	if err != nil {
+		return nil, err
+	}
+	return &buildClasses{Code: code, Recipe: recipe, Bases: bases}, nil
 }
 
 // imageBuildScope is where one recipe's inputs live. It travels as a unit so the
@@ -289,8 +337,12 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	if err != nil {
 		return imageIdentity{}, err
 	}
+	classes, err := identityClasses(&inputs)
+	if err != nil {
+		return imageIdentity{}, err
+	}
 	sum := sha256.Sum256(payload)
-	return imageIdentity{Key: "sha256:" + hex.EncodeToString(sum[:]), ContextTree: contextTree}, nil
+	return imageIdentity{Key: "sha256:" + hex.EncodeToString(sum[:]), ContextTree: contextTree, Classes: classes}, nil
 }
 
 // proxyPlaceholder is what every fetched Go module proxy path reads as in an
