@@ -17,19 +17,22 @@ package deploysecrets
 // rotated primitive is picked up on the next sync and there is nothing to
 // rewrite. A connection an operator stored instead — the one agents export
 // without a template, which the plan reports as `require` — embeds the old
-// value. Every stored property holding the old value is found by reading the
-// store, and one that is a URL whose userinfo password IS the old value is
-// recomputed by setting that password and nothing else. Any other embedding is
-// refused, naming the property, because codefly cannot recompute it and leaving
-// it on the old value is the failure rotation exists to prevent.
+// value. Every stored property of the store is examined: one that parses as a
+// URL whose DECODED userinfo password is the old value is recomputed by
+// replacing the password in its userinfo and nothing else. Any other value
+// holding the old one, raw or percent-encoded, is refused, naming the property,
+// because codefly cannot recompute it and leaving it on the old value is the
+// failure rotation exists to prevent.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -129,8 +132,11 @@ func planRotations(in *Inputs, states []*remoteState, generators map[string]envi
 		if !declared {
 			return nil, nil, refuseRotation(in.Rendered, key)
 		}
-		if generator.Format == environments.SecretGeneratorFormatEd25519PKCS8 {
+		switch generator.Format {
+		case environments.SecretGeneratorFormatEd25519PKCS8:
 			return nil, nil, fmt.Errorf("--rotate %s: it is an ed25519-pkcs8 signing key, whose public half is registered outside this store; rotating it here would break that registration silently", key)
+		case environments.SecretGeneratorFormatIdentifier:
+			return nil, nil, fmt.Errorf("--rotate %s: it is an identifier (a user or database name, say); a new one in the store renames nothing on the server that owns it", key)
 		}
 		format, size := generatorFormat(&generator)
 		value, err := secretgen.Generate(format, size)
@@ -170,13 +176,16 @@ func planRotations(in *Inputs, states []*remoteState, generators map[string]envi
 				if rewrite, ok := derived[location]; ok {
 					current = rewrite.value
 				}
-				if !present || !strings.Contains(current, old) {
+				if !present {
+					continue
+				}
+				rewritten, matched := rewriteURLPassword(current, old, value)
+				if !matched && !embeds(current, old) {
 					continue
 				}
 				where := fmt.Sprintf("%s#%s (%s)", state.secret.RemoteKey, property.Property, strings.Join(property.Keys, ", "))
-				rewritten, ok := rewriteURLPassword(current, old, value)
-				if !ok {
-					return nil, nil, fmt.Errorf("--rotate %s: %s embeds its value other than as a URL's password, which is the one derivation codefly recomputes; rotating would leave it stale — declare the producer's connection as a template, or rotate both by hand",
+				if rewritten == "" {
+					return nil, nil, fmt.Errorf("--rotate %s: %s embeds its value other than as a URL's password codefly can rewrite in place, the one derivation it recomputes; rotating would leave it stale — declare the producer's connection as a template, or rotate both by hand",
 						key, where)
 				}
 				if !planning(&state.secret, in.Modules) {
@@ -213,54 +222,135 @@ func rotatedProperty(state *remoteState, property gitops.RenderedSecretProperty,
 	return plan, value, nil
 }
 
-// rewriteURLPassword sets the userinfo password of a URL whose password is old,
-// changing nothing else: a value that does not round-trip through the parser
-// byte for byte, or still holds old elsewhere, is not rewritten. Neither the
-// value nor a parse error is ever returned to a caller that prints.
+// embeds reports whether value holds old raw or in any percent-encoding a URL
+// would give it.
+func embeds(value, old string) bool {
+	for _, form := range []string{old, url.QueryEscape(old), url.PathEscape(old), escapedPassword(old)} {
+		if strings.Contains(value, form) {
+			return true
+		}
+	}
+	return false
+}
+
+func escapedPassword(password string) string {
+	return strings.TrimPrefix(url.UserPassword("", password).String(), ":")
+}
+
+// rewriteURLPassword matches a URL whose decoded userinfo password is old and
+// returns it with that password replaced and every other byte as stored: the
+// userinfo is spliced, never re-serialized from the parsed URL. matched with an
+// empty result is a match codefly cannot rewrite safely — the caller refuses
+// it. Neither the value nor a parse error is ever returned to a caller that
+// prints.
 func rewriteURLPassword(value, old, replacement string) (string, bool) {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.User == nil || parsed.String() != value {
+	if err != nil || parsed.User == nil {
 		return "", false
 	}
 	if password, set := parsed.User.Password(); !set || password != old {
 		return "", false
 	}
-	parsed.User = url.UserPassword(parsed.User.Username(), replacement)
-	rewritten := parsed.String()
-	if strings.Contains(rewritten, old) {
-		return "", false
+	scheme := strings.Index(value, "://")
+	if scheme < 0 {
+		return "", true
+	}
+	authority := value[scheme+3:]
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	at := strings.LastIndex(authority, "@")
+	colon := strings.Index(authority[:max(at, 0)], ":")
+	if at < 0 || colon < 0 {
+		return "", true
+	}
+	userinfoStart := scheme + 3
+	rewritten := value[:userinfoStart+colon+1] + escapedPassword(replacement) + value[userinfoStart+at:]
+	check, err := url.Parse(rewritten)
+	if err != nil || check.User == nil || check.User.Username() != parsed.User.Username() || check.Host != parsed.Host ||
+		check.Path != parsed.Path || check.RawQuery != parsed.RawQuery || check.Fragment != parsed.Fragment || embeds(rewritten, old) {
+		return "", true
+	}
+	if password, _ := check.User.Password(); password != replacement {
+		return "", true
 	}
 	return rewritten, true
 }
 
+// restoreTimeout bounds the undo of a failed rotation. It runs on a context of
+// its own: the failure that triggered it is often the caller's context ending,
+// and an undo that inherits that cancellation undoes nothing.
+const restoreTimeout = 2 * time.Minute
+
 // restore returns a rotation that failed part-way to where it started: every
-// key it already wrote gets its previous document back as a new version (a key
-// it created gets an empty one), so no source is left disagreeing with what is
-// derived from it. The store keeps every version, the rotated ones included.
-func (plan *Plan) restore(ctx context.Context, store Store, written []Written, done []pendingWrite, cause error) ([]Written, error) {
+// key it wrote gets its previous document back as a new version (a key it
+// created gets an empty one), so no source is left disagreeing with what is
+// derived from it. failing is the write that errored, which may have landed
+// anyway: it is restored when the store holds exactly the document this
+// rotation sent. A key that moved since this rotation wrote it is someone
+// else's write and is never overwritten. The store keeps every version.
+func restore(ctx context.Context, store Store, written []Written, done []pendingWrite, failing *pendingWrite, cause error) ([]Written, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
+	defer cancel()
+	ours := map[string]string{}
+	for _, write := range written {
+		ours[write.Key] = write.Version
+	}
 	var failed []error
 	var stranded []string
-	for i := len(done) - 1; i >= 0; i-- {
-		write := done[i]
+	restored := 0
+	restoreOne := func(write *pendingWrite, version string, known bool) {
+		strand := func(err error) {
+			failed, stranded = append(failed, fmt.Errorf("restore %s: %w", write.key, err)), append(stranded, write.key)
+		}
+		current, err := store.Describe(ctx, write.key)
+		if err != nil {
+			strand(err)
+			return
+		}
+		switch {
+		case !known && current.Exists == !write.create && current.Version == write.version:
+			return // the failed write did not land
+		case !known:
+			document, readErr := store.Read(ctx, write.key)
+			if readErr != nil {
+				strand(readErr)
+				return
+			}
+			if !maps.Equal(document, write.document) {
+				return // not this rotation's document: someone else's, left alone
+			}
+		case current.Version != version:
+			strand(fmt.Errorf("version %q is no longer the newest (now %q): it was written after this rotation", version, current.Version))
+			return
+		}
 		previous := write.previous
 		if previous == nil {
 			previous = map[string]string{}
 		}
-		version, err := store.Write(ctx, write.key, previous, false)
+		restoredVersion, err := store.Write(ctx, write.key, previous, false)
 		if err != nil {
-			failed, stranded = append(failed, fmt.Errorf("restore %s: %w", write.key, err)), append(stranded, write.key)
-			continue
+			strand(err)
+			return
 		}
-		written = append(written, Written{Key: write.key, Properties: write.changed, Version: version, Restored: true})
+		restored++
+		written = append(written, Written{Key: write.key, Properties: write.changed, Version: restoredVersion, Restored: true})
+	}
+	if failing != nil {
+		restoreOne(failing, "", false)
+	}
+	for i := len(done) - 1; i >= 0; i-- {
+		version, known := ours[done[i].key]
+		restoreOne(&done[i], version, known && version != "")
 	}
 	if len(failed) > 0 {
 		// A re-run would not converge from here: the rotated value is no longer
 		// the old one the derived values embed. The previous versions are kept.
-		return written, fmt.Errorf("%w; %s still hold the rotated documents and could not be restored — re-add each one's previous version as its current version before rotating again: %w",
+		return written, fmt.Errorf("%w; %s may still hold this rotation's documents and could not be restored — re-add each one's previous version as its current version before rotating again: %w",
 			cause, strings.Join(stranded, ", "), errors.Join(failed...))
 	}
-	if len(done) == 0 {
-		return written, fmt.Errorf("%w; nothing had been written", cause)
+	if restored == 0 {
+		return written, fmt.Errorf("%w; nothing this rotation wrote is left in the store", cause)
 	}
-	return written, fmt.Errorf("%w; the %d remote keys already written were restored to their previous documents as new versions, so nothing is half-rotated", cause, len(done))
+	return written, fmt.Errorf("%w; the %d remote keys this rotation wrote were restored to their previous documents as new versions, so the store holds no half-rotated value", cause, restored)
 }

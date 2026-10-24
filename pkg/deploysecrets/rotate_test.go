@@ -18,8 +18,8 @@ import (
 // connection URL an operator stored by hand (no producer template), which the
 // plan alone reports as `require`.
 const (
-	evidencePassword   = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__PASSWORD"
-	evidenceUser       = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__USER"
+	evidencePassword   = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__CLICKHOUSE_PASSWORD"
+	evidenceUser       = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__CLICKHOUSE_USER"
 	evidenceConnection = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__CONNECTION"
 	evidenceKey        = "blue-tracing-evidence"
 	consumerKey        = "blue-tracing-tracing"
@@ -36,7 +36,8 @@ func rotationFixture(consumerServices ...string) (gitops.RenderedEnvironment, []
 		{Store: store, RemoteKey: consumerKey, Services: consumerServices, Properties: filed(evidenceConnection)},
 	}}
 	generators := []environments.EnvironmentSecretGenerator{{Scope: environments.SecretGeneratorScopeService,
-		Configuration: "clickhouse", Services: []string{"tracing/evidence"}, Keys: []string{"PASSWORD", "USER"}}}
+		Configuration: "clickhouse", Services: []string{"tracing/evidence"}, Keys: []string{"CLICKHOUSE_PASSWORD"}}, {Scope: environments.SecretGeneratorScopeService,
+		Configuration: "clickhouse", Services: []string{"tracing/evidence"}, Keys: []string{"CLICKHOUSE_USER"}, Format: environments.SecretGeneratorFormatIdentifier}}
 	return rendered, generators, newFakeStore(map[string]map[string]string{
 		evidenceKey: {evidencePassword: oldPassword, evidenceUser: "evidence"},
 		consumerKey: {evidenceConnection: "clickhouse://evidence:" + oldPassword + "@evidence.tracing.svc:9000/evidence?secure=false"},
@@ -67,8 +68,8 @@ func assertConsistent(t *testing.T, store *fakeStore) {
 
 func TestRotationKeyResolvesTheGeneratorSpelling(t *testing.T) {
 	for selector, want := range map[string]string{
-		"tracing/evidence/clickhouse:PASSWORD":                      evidencePassword,
-		"tracing/evidence/clickhouse:password":                      evidencePassword,
+		"tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD":           evidencePassword,
+		"tracing/evidence/clickhouse:clickhouse-password":           evidencePassword,
 		"internal-auth:codefly-internal-token":                      internalToken,
 		evidencePassword:                                            evidencePassword,
 		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__SECRET": "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__SECRET",
@@ -153,9 +154,12 @@ func TestRotateRefusesAKeyCodeflyDoesNotProduce(t *testing.T) {
 		t.Errorf("rotating a configured key = %v, want a refusal naming the file", err)
 	}
 	signing := []environments.EnvironmentSecretGenerator{{Scope: environments.SecretGeneratorScopeService, Configuration: "clickhouse",
-		Services: []string{"tracing/evidence"}, Keys: []string{"PASSWORD"}, Format: environments.SecretGeneratorFormatEd25519PKCS8}}
+		Services: []string{"tracing/evidence"}, Keys: []string{"CLICKHOUSE_PASSWORD"}, Format: environments.SecretGeneratorFormatEd25519PKCS8}}
 	if _, err := rotationPlan(t, rendered, signing, store, evidencePassword); err == nil || !strings.Contains(err.Error(), "signing key") {
 		t.Errorf("rotating a signing key = %v, want a refusal", err)
+	}
+	if _, err := rotationPlan(t, rendered, generators, store, evidenceUser); err == nil || !strings.Contains(err.Error(), "identifier") {
+		t.Errorf("rotating an identifier = %v, want a refusal: a new user name in the store renames nobody", err)
 	}
 	if len(store.writes) != 0 {
 		t.Errorf("a refused rotation wrote %v", store.writes)
@@ -257,5 +261,78 @@ func TestCheckRotationStoresRefusesAConfigurationSpanningStores(t *testing.T) {
 	}
 	if err := CheckRotationStores([]gitops.RenderedEnvironment{rendered}, evidencePassword); err != nil {
 		t.Errorf("one store: %v", err)
+	}
+}
+
+// A base64 password holds '/' and '+', which a URL's userinfo percent-encodes.
+// The derived connection is found by its DECODED password, rewritten with the
+// new one encoded the same way, and found again by the next rotation.
+func TestRotateFindsAPercentEncodedPassword(t *testing.T) {
+	const encoded = "ab/cd+ef/gh+ij=="
+	for name, stored := range map[string]string{
+		"userinfo escaping": "clickhouse://evidence:" + escapedPassword(encoded) + "@evidence.tracing.svc:9000/evidence?secure=false",
+		"query escaping":    "clickhouse://evidence:" + url.QueryEscape(encoded) + "@evidence.tracing.svc:9000/evidence?secure=false",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			rendered, generators, store := rotationFixture()
+			generators[0].Format = environments.SecretGeneratorFormatBase64
+			store.documents[evidenceKey][evidencePassword] = encoded
+			store.documents[consumerKey][evidenceConnection] = stored
+			for range 2 {
+				plan, err := rotationPlan(t, rendered, generators, store, evidencePassword)
+				if err != nil {
+					t.Fatalf("Build: %v", err)
+				}
+				if got := propertyPlan(t, plan, consumerKey, evidenceConnection); got.Action != ActionRotate {
+					t.Fatalf("the percent-encoded connection = %s, want rotate", got.Action)
+				}
+				if _, err = plan.Apply(ctx, store, false); err != nil {
+					t.Fatal(err)
+				}
+				assertConsistent(t, store)
+			}
+			if store.documents[evidenceKey][evidencePassword] == encoded {
+				t.Error("the password was not rotated")
+			}
+		})
+	}
+}
+
+// A write that reports failure after it landed is restored too, and the error
+// says what the store holds.
+func TestRotateRestoresAFailedWriteThatLanded(t *testing.T) {
+	rendered, generators, store := rotationFixture()
+	before := maps.Clone(store.documents[consumerKey])
+	store.landThenFail = map[string]bool{consumerKey: true}
+	plan, err := rotationPlan(t, rendered, generators, store, evidencePassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = plan.Apply(context.Background(), store, false)
+	if err == nil || !strings.Contains(err.Error(), "the 2 remote keys this rotation wrote were restored") {
+		t.Fatalf("Apply = %v, want both keys reported restored", err)
+	}
+	if !maps.Equal(store.documents[consumerKey], before) || store.documents[evidenceKey][evidencePassword] != oldPassword {
+		t.Error("a landed write was left rotated")
+	}
+	assertConsistent(t, store)
+}
+
+// A key someone wrote after the plan read it is never overwritten: the apply
+// refuses by name, and what the rotation already wrote is restored.
+func TestRotateRefusesAKeyThatMovedSinceThePlan(t *testing.T) {
+	rendered, generators, store := rotationFixture()
+	plan, err := rotationPlan(t, rendered, generators, store, evidencePassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.versions = map[string]int{consumerKey: 5}
+	_, err = plan.Apply(context.Background(), store, false)
+	if err == nil || !strings.Contains(err.Error(), consumerKey+" changed after the plan read it") {
+		t.Fatalf("Apply = %v, want the moved key refused by name", err)
+	}
+	if store.documents[evidenceKey][evidencePassword] != oldPassword || slices.Contains(store.writes[:1], consumerKey) {
+		t.Error("the rotation was left half-applied or overwrote the moved key")
 	}
 }

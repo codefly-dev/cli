@@ -41,6 +41,10 @@ type Description struct {
 	// HasVersion is false for a key created with no enabled version: reading it
 	// fails, so it is planned as an empty document.
 	HasVersion bool
+	// Version identifies the newest enabled version. Apply compares it before
+	// each write, so a key someone changed after the plan read it is refused
+	// rather than overwritten with a document built from what it used to hold.
+	Version string
 }
 
 // Runner executes a command with stdin and returns its standard output. The
@@ -185,11 +189,16 @@ func (store *GoogleSecretManager) Describe(ctx context.Context, key string) (Des
 		return Description{}, err
 	}
 	versions, err := store.Run(ctx, nil, "gcloud", "secrets", "versions", "list", key, "--project", store.Project,
-		"--filter=state:ENABLED", "--limit=1", "--format=value(name)")
+		"--filter=state:ENABLED", "--sort-by=~createTime", "--limit=1", "--format=value(name)")
 	if err != nil {
 		return Description{}, err
 	}
-	return Description{Exists: true, HasVersion: strings.TrimSpace(string(versions)) != ""}, nil
+	newest := strings.TrimSpace(string(versions))
+	description := Description{Exists: true, HasVersion: newest != ""}
+	if description.HasVersion {
+		description.Version = path.Base(newest)
+	}
+	return description, nil
 }
 
 func (store *GoogleSecretManager) Read(ctx context.Context, key string) (map[string]string, error) {

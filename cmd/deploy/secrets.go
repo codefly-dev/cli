@@ -69,9 +69,11 @@ stored value with a new one, in every remote key holding it, and rewrites every
 stored value derived from it in the same apply: a stored URL whose password is
 the old value gets the new one. Any other stored value embedding the old one,
 and any key service-secrets.generate does not declare, is refused by name. Each
-write is a new version; a rotation failing part-way restores what it wrote.
-Afterwards force-sync the ExternalSecrets, restart the server, then its
-consumers — the CLI does neither.`,
+write is a new version, refused if the key moved since the plan read it; a
+rotation failing part-way restores what it wrote. The CLI changes the store
+only: force-sync the ExternalSecrets, make the server accept the new credential
+(a restart only does that for an agent that re-applies it on every start), then
+restart its consumers. An identifier or signing key is never rotated.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()

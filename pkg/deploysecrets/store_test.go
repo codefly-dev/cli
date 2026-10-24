@@ -89,6 +89,21 @@ func TestGoogleSecretManagerDescribesAMissingKey(t *testing.T) {
 	}
 }
 
+func TestGoogleSecretManagerDescribesTheNewestEnabledVersion(t *testing.T) {
+	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
+		"gcloud secrets describe key":  func() ([]byte, error) { return []byte("projects/p/secrets/key\n"), nil },
+		"gcloud secrets versions list": func() ([]byte, error) { return []byte("projects/p/secrets/key/versions/12\n"), nil },
+	}}
+	store := &GoogleSecretManager{Project: "p", Run: runner.run}
+	description, err := store.Describe(context.Background(), "key")
+	if err != nil || !description.HasVersion || description.Version != "12" {
+		t.Fatalf("Describe = %+v, %v, want version 12", description, err)
+	}
+	if !slices.Contains(runner.calls[1].args, "--sort-by=~createTime") {
+		t.Error("the version listing is not newest first")
+	}
+}
+
 func TestGoogleSecretManagerDescribesAKeyWithoutReadingIt(t *testing.T) {
 	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
 		"gcloud secrets describe key":  func() ([]byte, error) { return []byte("projects/p/secrets/key\n"), nil },

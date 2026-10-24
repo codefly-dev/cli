@@ -121,6 +121,9 @@ type pendingWrite struct {
 	// replaces (empty for a key it creates), which a failed rotation restores.
 	changed  []string
 	previous map[string]string
+	// version is the newest version the plan read; the write is refused when
+	// the key no longer has it.
+	version string
 }
 
 // Written is one remote key an apply wrote: the properties it set and the
@@ -292,7 +295,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 			document := maps.Clone(state.document)
 			maps.Copy(document, changes)
 			plan.writes = append(plan.writes, pendingWrite{key: state.secret.RemoteKey, document: document, create: !state.description.Exists,
-				changed: slices.Sorted(maps.Keys(changes)), previous: state.document})
+				changed: slices.Sorted(maps.Keys(changes)), previous: state.document, version: state.description.Version})
 		}
 	}
 	return plan, nil
@@ -706,17 +709,40 @@ func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]
 	}
 	var written []Written
 	for i, write := range plan.writes {
+		if err := unchanged(ctx, store, &write); err != nil {
+			if plan.rotating {
+				return restore(ctx, store, written, plan.writes[:i], nil, err)
+			}
+			return written, err
+		}
 		version, err := store.Write(ctx, write.key, write.document, write.create)
 		if err != nil {
 			err = fmt.Errorf("write %s: %w", write.key, err)
 			if plan.rotating {
-				return plan.restore(ctx, store, written, plan.writes[:i], err)
+				// The failed write may still have landed, so it is restored too.
+				return restore(ctx, store, written, plan.writes[:i], &plan.writes[i], err)
 			}
 			return written, err
 		}
 		written = append(written, Written{Key: write.key, Properties: write.changed, Version: version})
 	}
 	return written, nil
+}
+
+// unchanged refuses a write to a key that is no longer as the plan read it: a
+// document built from what it used to hold would silently undo whatever was
+// written since. The store offers no conditional version add, so this narrows
+// the window to one describe; it does not close it.
+func unchanged(ctx context.Context, store Store, write *pendingWrite) error {
+	current, err := store.Describe(ctx, write.key)
+	if err != nil {
+		return wrapKeyError("describe", write.key, err)
+	}
+	if current.Exists != !write.create || current.Version != write.version {
+		return fmt.Errorf("remote key %s changed after the plan read it (version %q, now %q): re-run to plan against what it holds now",
+			write.key, write.version, current.Version)
+	}
+	return nil
 }
 
 // ValidateApply checks completeness before confirmation, no-op success or writes.
