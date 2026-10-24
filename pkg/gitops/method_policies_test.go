@@ -17,6 +17,7 @@ import (
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/grpc"
+	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
@@ -44,6 +45,12 @@ func policyPackage(t *testing.T, tamper bool) string {
 		if marks[name] != nil {
 			m.Options = &descriptorpb.MethodOptions{}
 			proto.SetExtension(m.Options, hopv1.E_Policy, marks[name])
+		}
+		if name == "WhoAmI" {
+			// Bound to HTTP too: the route rows carry the method's policy.
+			proto.SetExtension(m.Options, annotations.E_Http, &annotations.HttpRule{
+				Pattern:            &annotations.HttpRule_Get{Get: "/v1/console/whoami"},
+				AdditionalBindings: []*annotations.HttpRule{{Pattern: &annotations.HttpRule_Post{Post: "/v1/console/identities/{id=**}:whoami"}}}})
 		}
 		service.Method = append(service.Method, m)
 	}
@@ -96,15 +103,17 @@ contracts:
 
 func TestMethodPoliciesAreReadFromThePublishedContract(t *testing.T) {
 	methods, ok, err := MethodPolicies(policyPackage(t, false))
-	if err != nil || !ok || len(methods) != 3 {
+	if err != nil || !ok || len(methods) != 5 {
 		t.Fatalf("methods: %v %v %v", methods, ok, err)
 	}
 	byName := map[string]*compositionv1.MethodPolicyV1{}
 	for _, m := range methods {
 		byName[m.GetMethod()] = m
 	}
-	if r := byName["/api.ApiService/WhoAmI"].GetRequires(); len(r) != 1 || r[0].GetResourceKind() != "console.identity" || r[0].GetActions()[0] != "read" {
-		t.Fatalf("WhoAmI: %v", byName["/api.ApiService/WhoAmI"])
+	for _, name := range []string{"/api.ApiService/WhoAmI", "GET /v1/console/whoami", "POST /v1/console/identities/{id=**}:whoami"} {
+		if r := byName[name].GetRequires(); len(r) != 1 || r[0].GetResourceKind() != "console.identity" || r[0].GetActions()[0] != "read" {
+			t.Fatalf("%s: %v", name, byName[name])
+		}
 	}
 	if !byName["/api.ApiService/Version"].GetAnyCheckedCaller() {
 		t.Fatal("Version admits any checked caller")

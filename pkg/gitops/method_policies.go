@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
+	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -99,7 +100,10 @@ func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, error) {
 }
 
 // contractMethods reads one published contract, refusing one whose bytes are
-// not the digest the package names.
+// not the digest the package names. A method bound to HTTP routes
+// (google.api.http) is listed under each route too, "<VERB> <template>", with
+// the same policy: the hop's HTTP face decides a REST call by its route, and
+// the proto is the one place the module declares both.
 func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -131,10 +135,47 @@ func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, erro
 					}
 				}
 				out = append(out, m)
+				for _, route := range httpRoutes(method.GetOptions()) {
+					bound := proto.Clone(m).(*compositionv1.MethodPolicyV1)
+					bound.Method = route
+					out = append(out, bound)
+				}
 			}
 		}
 	}
 	return out, nil
+}
+
+// httpRoutes are the routes a method's google.api.http option binds it to,
+// "<VERB> <template>", the first binding and each additional one. A custom
+// verb's binding is listed under the verb it names.
+func httpRoutes(options *descriptorpb.MethodOptions) []string {
+	if options == nil || !proto.HasExtension(options, annotations.E_Http) {
+		return nil
+	}
+	rule, _ := proto.GetExtension(options, annotations.E_Http).(*annotations.HttpRule)
+	var out []string
+	for _, r := range append([]*annotations.HttpRule{rule}, rule.GetAdditionalBindings()...) {
+		var verb, template string
+		switch pattern := r.GetPattern().(type) {
+		case *annotations.HttpRule_Get:
+			verb, template = "GET", pattern.Get
+		case *annotations.HttpRule_Put:
+			verb, template = "PUT", pattern.Put
+		case *annotations.HttpRule_Post:
+			verb, template = "POST", pattern.Post
+		case *annotations.HttpRule_Delete:
+			verb, template = "DELETE", pattern.Delete
+		case *annotations.HttpRule_Patch:
+			verb, template = "PATCH", pattern.Patch
+		case *annotations.HttpRule_Custom:
+			verb, template = strings.ToUpper(pattern.Custom.GetKind()), pattern.Custom.GetPath()
+		}
+		if verb != "" && template != "" {
+			out = append(out, verb+" "+template)
+		}
+	}
+	return out
 }
 
 // PolicyExtension is the OpenAPI operation extension that declares what a call

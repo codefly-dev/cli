@@ -46,6 +46,7 @@ require (
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.46.0
+	google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b
 	// HELD at v1.83.2: v1.84.0 is affected by GO-2026-6443 (server panic via a
 	// missing :authority/Host header) and the advisory's only fix for the 1.84
 	// line is an unreleased v1.85.0-dev pseudo-version, so there is nothing to
@@ -240,7 +241,6 @@ require (
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
