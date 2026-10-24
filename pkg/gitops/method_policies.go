@@ -3,14 +3,17 @@ package gitops
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -36,10 +39,15 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 	seen := map[string]bool{}
 	for _, service := range manifest.Services {
 		for _, contract := range service.APIContracts {
-			if contract.Kind != "protobuf" {
+			read := contractMethods
+			switch contract.Kind {
+			case "protobuf":
+			case composition.APIContractKindOpenAPI:
+				read = routeMethods
+			default:
 				continue
 			}
-			served, err := contractMethods(filepath.Join(dir, contract.Path), contract.Digest)
+			served, err := read(filepath.Join(dir, contract.Path), contract.Digest)
 			if err != nil {
 				return nil, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, err)
 			}
@@ -93,6 +101,62 @@ func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, erro
 	}
 	return out, nil
 }
+
+// PolicyExtension is the OpenAPI operation extension that declares what a call
+// to the route must hold: the authority.hop.v1.Policy a proto method marks
+// itself with, as its JSON.
+const PolicyExtension = "x-codefly-authority-policy"
+
+// routeMethods reads one published OpenAPI contract: each operation is the HTTP
+// route "<VERB> <path>", and what it declares is its PolicyExtension. An
+// operation that declares nothing is listed with neither field set, as an
+// unmarked proto method is, so the authority refuses it by name.
+func routeMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(data)
+	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digest {
+		return nil, fmt.Errorf("contract %s is %s, the package names %s; run codefly generate contracts", path, got, digest)
+	}
+	var document struct {
+		BasePath string                                `json:"basePath"`
+		Paths    map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("contract %s does not decode: %w", path, err)
+	}
+	prefix := strings.TrimSuffix(document.BasePath, "/")
+	var out []*compositionv1.MethodPolicyV1
+	for route, operations := range document.Paths {
+		for verb, raw := range operations {
+			if !httpVerbs[verb] {
+				continue // parameters, summary and the like sit beside the operations
+			}
+			m := &compositionv1.MethodPolicyV1{Method: strings.ToUpper(verb) + " " + prefix + route}
+			var operation map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &operation); err != nil {
+				return nil, fmt.Errorf("contract %s: %s: %w", path, m.Method, err)
+			}
+			if declared, ok := operation[PolicyExtension]; ok {
+				var policy hopv1.Policy
+				if err := protojson.Unmarshal(declared, &policy); err != nil {
+					return nil, fmt.Errorf("contract %s: %s declares %s that is not an authority.hop.v1.Policy: %w", path, m.Method, PolicyExtension, err)
+				}
+				m.AnyCheckedCaller = policy.GetAnyCheckedCaller()
+				for _, r := range policy.GetRequires() {
+					m.Requires = append(m.Requires, &authorityv1.WorkScopeV1{ResourceKind: r.GetResourceKind(), Actions: r.GetActions()})
+				}
+			}
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetMethod() < out[j].GetMethod() })
+	return out, nil
+}
+
+var httpVerbs = map[string]bool{"get": true, "put": true, "post": true, "delete": true, "patch": true, "head": true, "options": true}
 
 // ScopeCeilings reads the module's own resource kinds with the actions its
 // module contract declares on each, from the module at dir. A module that

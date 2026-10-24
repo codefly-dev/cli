@@ -192,3 +192,75 @@ func TestScopeCeilingsAreReadFromTheModuleContract(t *testing.T) {
 		t.Fatalf("ceilings: %v", got)
 	}
 }
+
+// routePackage is a module package whose one service publishes an OpenAPI
+// contract, each operation's policy in its x-codefly-authority-policy.
+func routePackage(t *testing.T, document string) string {
+	t.Helper()
+	dir := t.TempDir()
+	contract := filepath.Join(dir, "contracts", "api", "model", "rest", "openapi.json")
+	for _, root := range []string{filepath.Dir(contract), filepath.Join(dir, "services")} {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(contract, []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(document))
+	pkg := `schema: codefly/module-package/v2
+kind: module-package
+id: obin/model
+version: 0.1.0
+minimum-codefly-version: ">=0.3.32 <1.0.0"
+artifact-roots:
+  - contracts
+  - services
+services:
+  - name: model
+    endpoints: [rest]
+    api-contracts:
+      - endpoint: rest
+        kind: openapi
+        package: ModelService
+        path: contracts/api/model/rest/openapi.json
+        digest: sha256:` + hex.EncodeToString(sum[:]) + `
+contracts:
+  composition: ">=2.0.0 <3.0.0"
+`
+	if err := os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A module serving HTTP declares its routes' policies in its OpenAPI contract:
+// each operation is "<VERB> <path>", read with the policy its extension
+// declares, the same message a proto method marks itself with; an operation
+// declaring nothing is listed with nothing set, and an extension that is not a
+// policy is refused by name.
+func TestRoutePoliciesAreReadFromThePublishedOpenAPIContract(t *testing.T) {
+	methods, ok, err := MethodPolicies(routePackage(t, `{"openapi":"3.1.0","info":{"title":"ModelService"},"paths":{
+		"/v1/model/profiles":{"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"modelservice.profiles","actions":["read"]}]}}},
+		"/v1/model/profiles/{ref}":{"parameters":[],"get":{"x-codefly-authority-policy":{"any_checked_caller":true}},"delete":{}}}}`))
+	if err != nil || !ok || len(methods) != 3 {
+		t.Fatalf("methods: %v %v %v", methods, ok, err)
+	}
+	byName := map[string]*compositionv1.MethodPolicyV1{}
+	for _, m := range methods {
+		byName[m.GetMethod()] = m
+	}
+	if r := byName["GET /v1/model/profiles"].GetRequires(); len(r) != 1 || r[0].GetResourceKind() != "modelservice.profiles" || r[0].GetActions()[0] != "read" {
+		t.Fatalf("GET /v1/model/profiles: %v", byName["GET /v1/model/profiles"])
+	}
+	if !byName["GET /v1/model/profiles/{ref}"].GetAnyCheckedCaller() {
+		t.Fatal("the profile read admits any checked caller")
+	}
+	if p := byName["DELETE /v1/model/profiles/{ref}"]; p == nil || p.GetAnyCheckedCaller() || len(p.GetRequires()) != 0 {
+		t.Fatalf("an unmarked operation is listed with nothing set: %v", p)
+	}
+	_, _, err = MethodPolicies(routePackage(t, `{"paths":{"/v1/x":{"get":{"x-codefly-authority-policy":{"requires":"everything"}}}}}`))
+	if err == nil || !strings.Contains(err.Error(), "authority.hop.v1.Policy") {
+		t.Fatalf("an extension that is not a policy: %v", err)
+	}
+}
