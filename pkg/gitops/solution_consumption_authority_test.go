@@ -274,3 +274,27 @@ func TestANativeRunAndARenderRequestTheSameAuthority(t *testing.T) {
 	require.Equal(t, declared, native.Workloads)
 	require.Equal(t, deployed.Binding, native.Binding)
 }
+
+// A solution's own kinds come from its roles declaration and are named in its
+// manifest's authority block beside what it asks for at other modules — and
+// alone, for a solution that asks for nothing — so the authority's document can
+// ceil them and grant roles within them. A declaration that breaks its rules
+// fails the render, naming the file.
+func TestASolutionsDeclaredKindsAreNamedInItsManifest(t *testing.T) {
+	for name, solution := range map[string]string{"a scoped consumption": consumingSolution, "no consumption": consumptionFixture(t, "agentless.yaml")} {
+		t.Run(name, func(t *testing.T) {
+			workspace, module := writeConsumingSolutionWorkspace(t, solution)
+			require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), SolutionRolesFileName), []byte(wikiRoles), 0o644))
+			env := selectedEnvironment(t, workspace, "staging")
+			authority, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
+			require.NoError(t, err)
+			require.Equal(t, []string{"wiki.page"}, authority.ResourceKinds)
+		})
+	}
+	workspace, module := writeConsumingSolutionWorkspace(t, consumingSolution)
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), SolutionRolesFileName), []byte(strings.Replace(wikiRoles, "name: installer", "name: owner", 1)), 0o644))
+	env := selectedEnvironment(t, workspace, "staging")
+	_, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
+	require.ErrorContains(t, err, `none is "installer"`)
+	require.ErrorContains(t, err, SolutionRolesFileName)
+}

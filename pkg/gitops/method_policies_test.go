@@ -166,10 +166,13 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 	}
 	want := []*compositionv1.MethodPolicyV1{{Method: "/api.ApiService/WhoAmI", Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "console.identity", Actions: []string{"read"}}}}}
 	ceilings := []*authorityv1.WorkScopeV1{{ResourceKind: "console.identity", Actions: []string{"read"}}}
+	roles := []*compositionv1.RoleV1{{Name: InstallerRole, Scopes: ceilings}}
 	d := NewCompositionDelivery(conn, signer, func(_ context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 		return want, module == "console", nil
 	}, func(_ context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
 		return ceilings, nil
+	}, func(_ context.Context, module string) ([]*compositionv1.RoleV1, error) {
+		return roles, nil
 	})
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "console", Alias: "console", Kind: solutionhost.KindModule, Generation: 3,
@@ -198,6 +201,10 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 	// names without them.
 	if len(doc.GetScopeCeilings()) != 1 || !proto.Equal(doc.GetScopeCeilings()[0], ceilings[0]) {
 		t.Fatalf("the document carries the scope ceilings: %v", doc.GetScopeCeilings())
+	}
+	// And a solution's roles, which core's manifest does not carry.
+	if len(doc.GetRoles()) != 1 || !proto.Equal(doc.GetRoles()[0], roles[0]) {
+		t.Fatalf("the document carries the roles: %v", doc.GetRoles())
 	}
 }
 

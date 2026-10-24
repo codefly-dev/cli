@@ -563,6 +563,17 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 					return nil, err
 				}
 				return gitops.ScopeCeilings(m.Dir())
+			},
+			func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error) {
+				m, err := cluster.composed().LoadModuleFromName(ctx, module)
+				if err != nil {
+					return nil, err
+				}
+				declared, err := gitops.SolutionRoles(m.Dir())
+				if err != nil || declared == nil {
+					return nil, err
+				}
+				return declared.Roles, nil
 			})
 		return &gitops.NativeDeliverer{
 			Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,

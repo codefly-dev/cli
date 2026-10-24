@@ -105,6 +105,8 @@ github.com/cloudflare/circl v1.6.5 h1:O64F26HEqNhznd/hrC5KZXVKYuKM2rx4deZDTc4ihQ
 github.com/cloudflare/circl v1.6.5/go.mod h1:h5LNyxAc5nTue9DS5jT+48en2PSDYt3zdGnz5OstK6c=
 github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261024030918-064127bdd860 h1:fDc1Nu+kOYlDIAGx+fXfqkkCqdgAMeL1Wh71D3HJ6DI=
 github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261024030918-064127bdd860/go.mod h1:wxXASIpNKX7bzQzd0ZB17Xj2CFlO1ALRHqDaEoER+is=
+github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261024211423-39f45e9d69af h1:2PWZxCPQLn/dQmcNST993g11nfWNgNc9YOvWIhr5pn0=
+github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261024211423-39f45e9d69af/go.mod h1:wxXASIpNKX7bzQzd0ZB17Xj2CFlO1ALRHqDaEoER+is=
 github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261023192826-bc4d12956a06 h1:7nIq/fdGoHp/70sSialNIrRWCvx6YCvzYPwKjleYefE=
 github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261023192826-bc4d12956a06/go.mod h1:XsOFnO2MQdr37vM3ULa0Uwi8ZWptyVx7hRSUyIdaZ1Q=
 github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261023192826-bc4d12956a06 h1:Gh531vlcnmPL41VurXGoVyn5Oyf5uJWH9j+wuvoPKAg=
