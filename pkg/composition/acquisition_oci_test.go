@@ -186,7 +186,7 @@ func startArtifactRegistry(t *testing.T) (string, *http.Client, *remote.Reposito
 		output, cleanupErr := exec.CommandContext(cleanup, "docker", "rm", "-f", name).CombinedOutput()
 		require.NoError(t, cleanupErr, string(output))
 	})
-	output, err := exec.CommandContext(ctx, "docker", "run", "-d", "--init", "--name", name, "-p", "127.0.0.1::5000", "-v", directory+":/credentials:ro", "-e", "REGISTRY_HTTP_TLS_CERTIFICATE=/credentials/certificate.pem", "-e", "REGISTRY_HTTP_TLS_KEY=/credentials/key.pem", "-e", "REGISTRY_AUTH=htpasswd", "-e", "REGISTRY_AUTH_HTPASSWD_REALM=composition", "-e", "REGISTRY_AUTH_HTPASSWD_PATH=/credentials/htpasswd", "registry:2").CombinedOutput()
+	output, err := exec.CommandContext(ctx, "docker", "run", "-d", "--init", "--name", name, "-p", "127.0.0.1::5000", "-v", directory+":/credentials:ro", "-e", "REGISTRY_HTTP_TLS_CERTIFICATE=/credentials/certificate.pem", "-e", "REGISTRY_HTTP_TLS_KEY=/credentials/key.pem", "-e", "REGISTRY_AUTH=htpasswd", "-e", "REGISTRY_AUTH_HTPASSWD_REALM=composition", "-e", "REGISTRY_AUTH_HTPASSWD_PATH=/credentials/htpasswd", "mirror.gcr.io/library/registry:2").CombinedOutput()
 	require.NoError(t, err, string(output))
 	output, err = exec.CommandContext(ctx, "docker", "port", name, "5000/tcp").Output()
 	require.NoError(t, err)
