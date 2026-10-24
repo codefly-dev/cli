@@ -2318,10 +2318,11 @@ former spelling of `--coordinate-contract` for one release.
 Declared fields replace their exact named values. Maps merge by explicit key;
 omitted fields and unrelated entries remain intact. Explicit empty maps, empty
 sequences and nulls clear the corresponding field where its schema permits.
-One key is the contract's alone and its absence is a statement: `registry.mirrors`.
-A contract that declares `registry` without `mirrors` withdraws any mirror an earlier
-import wrote, so the builder stops mapping to a repository the environment no longer
-holds.
+Three keys are the contract's alone and their absence is a statement:
+`registry.mirrors`, `registry.artifacts` and `registry.auth`. A contract that declares
+`registry` without one of them withdraws the value an earlier import wrote, so the
+render stops pulling from, publishing bundles to or logging in to a registry the
+environment no longer holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
