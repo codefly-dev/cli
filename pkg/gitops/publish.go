@@ -203,7 +203,7 @@ func preparePublish(
 	if err != nil {
 		return nil, err
 	}
-	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, source, baseBranch, promotionBranch, selfPromotes, bound)
+	repo, cleanup, baseRevision, branchRevision, replacesRevision, err := clonePromotionRepository(ctx, source, baseBranch, promotionBranch, selfPromotes, bound)
 	if err != nil {
 		return nil, err
 	}
@@ -216,10 +216,10 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
-	if branchRevision != "" {
-		if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, branchRevision, promotionBranch, targetPath); err != nil {
-			return fail(err)
-		}
+	// A stale branch about to be replaced is held to the module path too: one
+	// carrying someone else's change is refused, never overwritten.
+	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, targetPath, branchRevision, replacesRevision); err != nil {
+		return fail(err)
 	}
 	startRevision := baseRevision
 	if branchRevision != "" {
@@ -268,8 +268,8 @@ func preparePublish(
 		Repository: config.RepoURL, RepositorySlug: repositorySlug,
 		Path: targetPath, BaseBranch: baseBranch, BaseRevision: baseRevision,
 		PromotionBranch: promotionBranch, BranchRevision: branchRevision,
-		ExistingCommit: branchRevision,
-		Module:         request.Module, Environment: request.Environment,
+		ExistingCommit: branchRevision, ReplacesBranchRevision: replacesRevision,
+		Module: request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
 		Delivery:        inventory.Delivery,
@@ -527,17 +527,23 @@ func refuseSharedDeliveryPath(workspace *resources.Workspace, environment string
 	return nil
 }
 
-// refuseUnrelatedPromotionChanges holds an existing promotion branch to the
-// module's own path and its cell: anything else on it is someone else's work,
-// which this publish must neither carry nor overwrite.
-func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, branchRevision, promotionBranch, targetPath string) error {
-	existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
-	if err != nil {
-		return err
-	}
-	for _, changed := range existing {
-		if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") {
-			return fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed)
+// refuseUnrelatedPromotionChanges holds an existing promotion branch — the
+// tip a publish continues, or the stale tip it replaces — to the module's own
+// path and its cell: anything else on it is someone else's work, which this
+// publish must neither carry nor overwrite. An empty revision is no branch.
+func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, promotionBranch, targetPath string, branchRevisions ...string) error {
+	for _, branchRevision := range branchRevisions {
+		if branchRevision == "" {
+			continue
+		}
+		existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
+		if err != nil {
+			return err
+		}
+		for _, changed := range existing {
+			if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") {
+				return fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed)
+			}
 		}
 	}
 	return nil
@@ -648,7 +654,8 @@ func stageRollbackPublication(
 // the base branch (refs/remotes/origin/baseBranch) rather than repo's checked-
 // out working tree. The working tree is the promotion branch, which is
 // long-lived and reused across every publish for the module owning it
-// (clonePromotionRepository checks it out as-is when it already exists); only
+// (clonePromotionRepository checks it out as-is when it already exists and
+// contains the base); only
 // the one module path actively being republished ever gets refreshed from
 // history, so any *other* module's working-tree copy can be arbitrarily stale
 // relative to main. Reading the git blob directly from the base branch is the
@@ -1878,8 +1885,18 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 			return PublishResult{}, err
 		}
 	} else if len(prepared.plan.Changed) > 0 {
-		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
-		if _, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
+		branchRef := "refs/heads/" + prepared.plan.PromotionBranch
+		refspec := branchRef + ":" + branchRef
+		push := []string{"push", "--porcelain", "--set-upstream"}
+		if replaces := prepared.plan.ReplacesBranchRevision; replaces != "" {
+			// The reviewed plan replaces a stale branch: only the exact tip it
+			// reviewed is overwritten, and a branch that moved since refuses.
+			push = append(push, "--force-with-lease="+branchRef+":"+replaces)
+		}
+		if _, err = gitCommand(ctx, prepared.dir, append(push, "--", "origin", refspec)...); err != nil {
+			if prepared.plan.ReplacesBranchRevision != "" {
+				return PublishResult{}, fmt.Errorf("replace stale promotion branch %s (leased at %s): %w", prepared.plan.PromotionBranch, prepared.plan.ReplacesBranchRevision, err)
+			}
 			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
 		}
 	}
@@ -1916,10 +1933,15 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	return result, nil
 }
 
-func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool, bound *LocalRepositoryIdentity) (string, func(), string, string, error) {
+// clonePromotionRepository checks the promotion branch out of a fresh clone of
+// the delivery repository. It returns the clone, its cleanup, the base
+// revision, the revision of the promotion branch the publish continues (""
+// when it starts from the base), and the tip of a stale promotion branch the
+// publish replaces ("" when none).
+func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool, bound *LocalRepositoryIdentity) (string, func(), string, string, string, error) {
 	temp, err := os.MkdirTemp("", "codefly-gitops-publish-")
 	if err != nil {
-		return "", nil, "", "", fmt.Errorf("create publication checkout: %w", err)
+		return "", nil, "", "", "", fmt.Errorf("create publication checkout: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(temp) }
 	repo := filepath.Join(temp, "repo")
@@ -1930,25 +1952,26 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	}
 	if err != nil {
 		cleanup()
-		return "", nil, "", "", err
+		return "", nil, "", "", "", err
 	}
 	if _, err = gitCommand(ctx, repo, "check-ref-format", "--branch", baseBranch); err != nil {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("invalid configured GitOps branch %q: %w", baseBranch, err)
+		return "", nil, "", "", "", fmt.Errorf("invalid configured GitOps branch %q: %w", baseBranch, err)
 	}
 	baseRef := "refs/remotes/origin/" + baseBranch
 	baseRevision, err := gitCommand(ctx, repo, "rev-parse", baseRef+"^{commit}")
 	if err != nil {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("resolve configured GitOps branch %q: %w", baseBranch, err)
+		return "", nil, "", "", "", fmt.Errorf("resolve configured GitOps branch %q: %w", baseBranch, err)
 	}
 	if _, err = gitCommand(ctx, repo, "check-ref-format", "--branch", promotionBranch); err != nil {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("invalid promotion branch %q: %w", promotionBranch, err)
+		return "", nil, "", "", "", fmt.Errorf("invalid promotion branch %q: %w", promotionBranch, err)
 	}
 	remoteRef := "refs/remotes/origin/" + promotionBranch
 	branchRevision, branchErr := gitCommand(ctx, repo, "rev-parse", "--verify", remoteRef+"^{commit}")
-	if branchErr == nil && selfPromotes {
+	continues := branchErr == nil
+	if continues && selfPromotes {
 		// A local promotion continues from the last one: a promotion branch
 		// the base already contains (this module's, or one another module's
 		// promotion since moved past) starts again from the base, so the
@@ -1960,19 +1983,32 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 			remoteRef, branchRevision = baseRef, baseRevision
 		} else if !gitIsAncestor(ctx, repo, baseRevision, branchRevision) {
 			cleanup()
-			return "", nil, "", "", fmt.Errorf("local promotion branch %s carries commits the base branch %s does not, and %s has moved past it; a local promotion fast-forwards %s and never forces, so delete the stale branch in the local delivery repository and publish again", promotionBranch, baseBranch, baseBranch, baseBranch)
+			return "", nil, "", "", "", fmt.Errorf("local promotion branch %s carries commits the base branch %s does not, and %s has moved past it; a local promotion fast-forwards %s and never forces, so delete the stale branch in the local delivery repository and publish again", promotionBranch, baseBranch, baseBranch, baseBranch)
 		}
 	}
-	if branchErr == nil {
+	var replacesRevision string
+	if continues && !selfPromotes && !gitIsAncestor(ctx, repo, baseRevision, branchRevision) {
+		// A reviewed promotion continues its branch only while the branch
+		// contains the base. One that does not is stale — its pull request
+		// was squash-merged and the branch kept, or the base moved past it —
+		// and a commit on it would fork from an old base, so every file it
+		// shares with the base conflicts. The publish starts from the base
+		// and replaces the branch, leased on the tip it found
+		// (ReplacesBranchRevision); the caller still holds that tip to the
+		// module path, so someone else's change on it is refused, never
+		// overwritten.
+		replacesRevision, continues = branchRevision, false
+	}
+	if continues {
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
 			cleanup()
-			return "", nil, "", "", err
+			return "", nil, "", "", "", err
 		}
 	} else {
 		branchRevision = ""
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
 			cleanup()
-			return "", nil, "", "", err
+			return "", nil, "", "", "", err
 		}
 		// A local promotion with no branch yet starts from the last
 		// promotion, which is the base: nothing new is then "already
@@ -1984,13 +2020,13 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	status, err := gitCommand(ctx, repo, "status", "--porcelain=v1")
 	if err != nil {
 		cleanup()
-		return "", nil, "", "", err
+		return "", nil, "", "", "", err
 	}
 	if status != "" {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("publication checkout is unexpectedly dirty")
+		return "", nil, "", "", "", fmt.Errorf("publication checkout is unexpectedly dirty")
 	}
-	return repo, cleanup, baseRevision, branchRevision, nil
+	return repo, cleanup, baseRevision, branchRevision, replacesRevision, nil
 }
 
 // restoreDeliveredOverlays puts the delivery directories of a module path back

@@ -567,6 +567,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	cli.Info("Repository %s", plan.Repository)
 	cli.Info("Base %s@%s", plan.BaseBranch, plan.BaseRevision)
 	cli.Info("Promotion branch %s", plan.PromotionBranch)
+	if plan.ReplacesBranchRevision != "" {
+		cli.Warning("Promotion branch %s at %s does not contain %s (its pull request was squash-merged, or the base moved past it); this publish starts again from %s and replaces the branch, leased on %s", plan.PromotionBranch, plan.ReplacesBranchRevision, plan.BaseBranch, plan.BaseBranch, plan.ReplacesBranchRevision)
+	}
 	cli.Info("Render digest %s", plan.RenderDigest)
 	cli.Info("Service snapshot %s", plan.SnapshotRevision)
 	cli.Info("Changed files:")
