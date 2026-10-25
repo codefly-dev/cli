@@ -406,7 +406,7 @@ func TestMethodPoliciesListOnlyTheServedMethods(t *testing.T) {
 }
 
 func TestMultiPackagePoliciesRequireCatalog(t *testing.T) {
-	_, err := endpointServes(nil, "accounts", composition.ProvidedAPIContract{Endpoint: "connect"})
+	_, err := endpointServes(nil, "accounts", &composition.ProvidedAPIContract{Endpoint: "connect"})
 	if err == nil || !strings.Contains(err.Error(), "endpoint accounts/connect has no single protobuf package") || !strings.Contains(err.Error(), composition.APIContractCatalogFileName) {
 		t.Fatalf("missing listener inventory: %v", err)
 	}

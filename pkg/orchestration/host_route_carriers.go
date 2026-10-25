@@ -95,9 +95,9 @@ func (world *World) hostRouteCarrier(
 	}
 	if len(consumed) == 0 {
 		if !world.deploys() {
-			declared, err := declaresEndpoint(ctx, producer, route.endpoint)
-			if err != nil {
-				return "", "", fmt.Errorf("read %s's endpoints: %w", route.producer(), err)
+			declared, declarationErr := declaresEndpoint(ctx, producer, route.endpoint)
+			if declarationErr != nil {
+				return "", "", fmt.Errorf("read %s's endpoints: %w", route.producer(), declarationErr)
 			}
 			if declared {
 				// A local producer has an address only once this run allocated

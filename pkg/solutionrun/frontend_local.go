@@ -29,13 +29,13 @@ func localFrontendBuildContext(ctx context.Context, module *resources.Module, sc
 	var names []string
 	if repository {
 		command := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-		output, err := command.Output()
-		if err != nil {
-			return "", "", fmt.Errorf("select local frontend sources for %s: %w", module.Name, err)
+		output, outputErr := command.Output()
+		if outputErr != nil {
+			return "", "", fmt.Errorf("select local frontend sources for %s: %w", module.Name, outputErr)
 		}
 		names = strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
 	} else {
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -68,6 +68,11 @@ func localFrontendBuildContext(ctx context.Context, module *resources.Module, sc
 	if err = os.MkdirAll(destination, 0o700); err != nil {
 		return "", "", err
 	}
+	targetRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return "", "", err
+	}
+	defer targetRoot.Close()
 	for _, name := range names {
 		if err = ctx.Err(); err != nil {
 			return "", "", err
@@ -89,11 +94,10 @@ func localFrontendBuildContext(ctx context.Context, module *resources.Module, sc
 		if err != nil {
 			return "", "", err
 		}
-		target := filepath.Join(destination, name)
-		if err = os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err = targetRoot.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 			return "", "", err
 		}
-		if err = os.WriteFile(target, data, info.Mode().Perm()); err != nil {
+		if err = targetRoot.WriteFile(name, data, info.Mode().Perm()); err != nil {
 			return "", "", err
 		}
 	}

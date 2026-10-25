@@ -1063,7 +1063,11 @@ run, the CLI is:
   (the service), and nothing else: no build. It is written under
   `.codefly/run/<environment>/identities/` and handed to the
   process as `CODEFLY__WORKLOAD_TOKEN_FILE` (a pod reads the mounted path),
-  reissued at 80 % of its lifetime as a kubelet rotates a projected token.
+  reissued when at most 120 seconds of its 600-second lifetime remain. The
+  run polls the actual wall clock every five seconds, including time spent
+  asleep, so expired projections are renewed on the first poll after wake.
+  A failed refresh logs the workload name and reason, leaves that projection
+  due for retry on the next poll, and does not prevent other renewals.
   Nothing is withheld: until the host has applied the module's manifest a
   mint answers "not established yet", which the workload retries.
 - **not the mesh** — every hop is plain HTTP on loopback, and only the host's

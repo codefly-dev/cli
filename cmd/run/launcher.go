@@ -167,7 +167,7 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	world.RenderOwnedGroups = cluster.renderOwnedGroups
 	world.RuntimeOverrides = cluster.runtimeOverrides
 	cluster.registerRunningHook(ctx, flow.WithRunningHook)
-	go cluster.refreshTokens()
+	go cluster.refreshTokens(ctx)
 	w.Info("native run: the run vouches for the composition's workloads", wool.Field("anchor", launcherIdentity.AnchorFingerprint()[:16]))
 	launcherActive = cluster
 	return nil
@@ -485,19 +485,21 @@ func (cluster *launcher) project(unique string, identity gitops.NativeIdentity) 
 	return cluster.vouch.Project(unique, identity.Workload(cluster.env.Host.TrustDomain))
 }
 
-// refreshTokens re-issues every projected token at 80% of its lifetime, as
-// the kubelet rotates a projected token: a mint client that re-reads the
-// projection before every mint always presents a token the host has not
-// recorded yet.
-func (cluster *launcher) refreshTokens() {
-	ticker := time.NewTicker(identity.RefreshInterval)
+// refreshTokens checks wall-clock expiry on a short poll, so waking from
+// suspend does not leave expired credentials waiting for a lifetime timer.
+func (cluster *launcher) refreshTokens(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-cluster.stop:
 			return
 		case <-ticker.C:
-			cluster.vouch.Refresh()
+			if err := cluster.vouch.Refresh(time.Now()); err != nil {
+				wool.Get(ctx).In("launcher.refreshTokens").Error("cannot refresh workload credentials; retrying on next poll", wool.ErrField(err))
+			}
 		}
 	}
 }

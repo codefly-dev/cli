@@ -42,7 +42,7 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 
 // All is the whole module's table: every service's served methods, each
 // once, and the foreign methods, sorted by method.
-func (served ServedMethodPolicies) All() []*compositionv1.MethodPolicyV1 {
+func (served *ServedMethodPolicies) All() []*compositionv1.MethodPolicyV1 {
 	methods := append([]*compositionv1.MethodPolicyV1(nil), served.Foreign...)
 	seen := map[string]bool{}
 	for _, service := range served.Services {
@@ -111,7 +111,7 @@ func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, er
 			var methods []*compositionv1.MethodPolicyV1
 			switch contract.Kind {
 			case composition.APIContractKindProtobuf:
-				serves, servesErr := endpointServes(catalog, service.Name, contract)
+				serves, servesErr := endpointServes(catalog, service.Name, &contract)
 				if servesErr != nil {
 					return served, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, servesErr)
 				}
@@ -179,14 +179,15 @@ func loadServedCatalog(dir string) (*composition.APIContractCatalog, error) {
 // the procedures the catalog records for the endpoint, or with no catalog every
 // service of the contract's package, the catalog's own default. A catalog that
 // records the endpoint under another digest, or not at all, is stale.
-func endpointServes(catalog *composition.APIContractCatalog, service string, contract composition.ProvidedAPIContract) (func(pkg, procedure string) bool, error) {
+func endpointServes(catalog *composition.APIContractCatalog, service string, contract *composition.ProvidedAPIContract) (func(pkg, procedure string) bool, error) {
 	if catalog == nil {
 		if contract.Package == "" {
 			return nil, fmt.Errorf("endpoint %s/%s has no single protobuf package and requires %s to identify its served procedures; run codefly generate contracts", service, contract.Endpoint, composition.APIContractCatalogFileName)
 		}
 		return func(pkg, _ string) bool { return pkg == contract.Package }, nil
 	}
-	for _, endpoint := range catalog.Endpoints {
+	for index := range catalog.Endpoints {
+		endpoint := &catalog.Endpoints[index]
 		if endpoint.Service != service || endpoint.Endpoint != contract.Endpoint {
 			continue
 		}
