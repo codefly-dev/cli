@@ -56,31 +56,22 @@ func declaredReferenceFlow(t *testing.T, workspace *resources.Workspace, options
 	return flow
 }
 
-// (a) A run of fewer services than the composition is not refused over a
-// declared group's reference to a service the workspace composes but this run
-// does not contain.
-//
-// A module-closure run's graph holds the seeds' modules and the modules their
-// service dependencies reach; a configuration reference reaches none, so a
-// producer only a value names is outside it. The plan gate judged declared
-// groups against that graph alone and reported the producer as "not a service
-// of this workspace" — a real service, with the wrong fault and no way out short
-// of running more than was asked. Rolling declaredProducerLookup back to the
-// graph alone fails this test.
-func TestAModuleClosureRunDoesNotRefuseADeclaredReferenceToAComposedServiceOutsideIt(t *testing.T) {
+// A declared configuration reference participates in Core's module closure,
+// just as a declared run dependency does. Root-only groups still do not grow it.
+func TestAModuleClosureRunIncludesDeclaredReferenceProducers(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	flow := declaredReferenceFlow(t,
 		declaredReferenceWorkspace(t, "platform/authority/admin", "public"), WithRunModuleClosure("payments"))
-
-	// The trap is set: without this the test would assert the absence of a
-	// refusal nothing could have produced.
 	_, err := flow.world.Dependencies.ServiceFromUnique("platform/authority")
-	require.Error(t, err, "the closure must not contain the producer")
-
-	err = flow.InitManagers(context.Background())
-	var unresolved *configurations.UnresolvedReferencesError
-	require.False(t, errors.As(err, &unresolved),
-		"a composed producer outside this run must not refuse it: %v", err)
+	require.NoError(t, err, "declared reference producer must be in the closure")
+	deps, err := flow.managerDependencies(context.Background())
+	require.NoError(t, err)
+	var uniques []string
+	for _, dep := range deps {
+		uniques = append(uniques, dep.Unique)
+	}
+	require.Contains(t, uniques, "platform/authority")
+	require.NoError(t, flow.checkConfigurationReferences(context.Background(), nil))
 }
 
 // (a), the other half: the resolution drops that value with a WARN naming the

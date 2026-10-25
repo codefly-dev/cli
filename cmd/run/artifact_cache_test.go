@@ -267,7 +267,7 @@ func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.
 	require.NoError(t, err)
 	require.Empty(t, groups, "a host that does not declare federation is handed none of it")
 
-	_, err = federationGroup(&environments.EnvironmentHost{Coordinate: "obin/local/dev"})
+	_, err = environments.NativeHostFederation(&environments.EnvironmentHost{Coordinate: "obin/local/dev", Delivery: "saas/accounts/rest"}, accounts)
 	require.ErrorContains(t, err, "host.domain")
 }
 

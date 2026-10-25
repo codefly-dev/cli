@@ -159,7 +159,7 @@ func TestNativeDeliveryCancelsInFlightOperations(t *testing.T) {
 	}
 }
 
-// Capture the hook through the same registration used by attachLauncher. The
+// Drive the completed-attempt delivery through its run cancellation. The
 // probe waits for cancellation, while service teardown has not even begun.
 type cancelableReadinessFlow struct {
 	*fakeLauncherFlow

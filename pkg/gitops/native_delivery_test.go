@@ -119,7 +119,7 @@ func TestANativeManifestRoutesOnlyToTheModulesWorkloads(t *testing.T) {
 	require.ErrorContains(t, err, "does not declare module-identity")
 
 	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services})
-	require.ErrorContains(t, err, "no started identity workload")
+	require.ErrorContains(t, err, "no admitted identity workload")
 }
 
 // A native run delivers the bundle it built: the payload names it, a page

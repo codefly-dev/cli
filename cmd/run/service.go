@@ -902,6 +902,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode,
 		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...),
+		NativeAuthorityPrerequisites(env, runtimeContext),
 		orchestration.WithCompositionCheck(gitops.PermissionPreflight(false)))
 	if err != nil {
 		return nil, w.Wrap(err)

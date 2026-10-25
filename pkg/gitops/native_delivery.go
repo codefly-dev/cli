@@ -78,13 +78,15 @@ func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace
 }
 
 // NativeWorkload is one module a native run delivers a manifest for: the
-// module, its services, its started identity workloads, and their routed
-// endpoints.
+// module, its services, admitted identity workloads, and ready routed endpoints.
 type NativeWorkload struct {
 	Module   *resources.Module
 	Services []*resources.Service
-	// Started are the identity workloads whose processes run: the ones the
-	// manifest lists.
+	// Declared are the identity workloads admitted to this run's closure.
+	// Nil retains the existing started-only delivery behavior. A non-nil set
+	// permits authority admission before any workload starts.
+	Declared []NativeIdentity
+	// Started is the subset whose processes are ready to receive traffic.
 	Started []NativeIdentity
 	// Carriers are the addresses of the module's routed endpoints, keyed as
 	// the gateway reads them.
@@ -94,6 +96,10 @@ type NativeWorkload struct {
 	// manifest's frontend payload names, since what runs is what is
 	// delivered. Nil when the component declares no page.
 	FrontendBundle *solutionhost.FrontendPayload
+	// DeferFrontend deliberately omits current frontend publication while
+	// admitting workload authority. It removes any previous current page on
+	// a replacing generation; it never means "keep the previous frontend".
+	DeferFrontend bool
 }
 
 // NativeDeliverer renders, signs and delivers a native run's manifests.
@@ -133,12 +139,16 @@ type PreparedDelivery struct {
 	Post    DeliveryPost
 }
 
-// Render builds the manifest of a module's started identity workloads,
+// Render builds the manifest of a module's admitted identity workloads,
 // by the rules a cell's render follows (moduleInstanceOf,
 // ModuleManifestOf), at generation 1.
 func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) (*solutionhost.ModuleManifest, error) {
-	if len(workload.Started) == 0 {
-		return nil, fmt.Errorf("module %s has no started identity workload to deliver", workload.Module.Name)
+	declared := workload.Declared
+	if declared == nil {
+		declared = workload.Started
+	}
+	if len(declared) == 0 {
+		return nil, fmt.Errorf("module %s has no admitted identity workload to deliver", workload.Module.Name)
 	}
 	manifest, err := composition.LoadPackageManifest(workload.Module.Dir())
 	if err != nil {
@@ -157,6 +167,10 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	// cache by the digest named here. A declared page without it is refused:
 	// a host admits no frontend without its signed payload.
 	switch {
+	case workload.DeferFrontend && workload.FrontendBundle != nil:
+		return nil, fmt.Errorf("module %s cannot both defer and publish a frontend bundle", workload.Module.Name)
+	case workload.DeferFrontend:
+		instance.Frontend = nil
 	case workload.FrontendBundle != nil && instance.Frontend == nil:
 		return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
 	case workload.FrontendBundle != nil:
@@ -169,23 +183,30 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	for _, identity := range instance.Identities {
 		identities[identity.Service] = true
 	}
-	started := map[string]bool{}
-	workloads := make([]solutionhost.Workload, 0, len(workload.Started))
-	for _, identity := range workload.Started {
+	declaredServices := map[string]bool{}
+	workloads := make([]solutionhost.Workload, 0, len(declared))
+	for _, identity := range declared {
 		if identity.Module != workload.Module.Name || !identities[identity.Service] {
 			return nil, fmt.Errorf("module %s workload %s/%s does not declare module-identity in this module", workload.Module.Name, identity.Module, identity.Service)
 		}
-		if started[identity.Service] {
-			return nil, fmt.Errorf("module %s lists workload %s more than once", workload.Module.Name, identity.Service)
+		if declaredServices[identity.Service] {
+			return nil, fmt.Errorf("module %s declares workload %s more than once", workload.Module.Name, identity.Service)
 		}
-		started[identity.Service] = true
+		declaredServices[identity.Service] = true
 		// A native workload declares no cell: the run vouches for (module,
 		// service) directly, and a manifest names only what the module is.
 		workloads = append(workloads, solutionhost.Workload{Service: identity.Service, Container: identity.Service})
 	}
 	sort.Slice(workloads, func(i, j int) bool { return workloads[i].Service < workloads[j].Service })
+	started := map[string]bool{}
+	for _, identity := range workload.Started {
+		if identity.Module != workload.Module.Name || !declaredServices[identity.Service] {
+			return nil, fmt.Errorf("module %s routes ready workload %s/%s outside its declared membership", workload.Module.Name, identity.Module, identity.Service)
+		}
+		started[identity.Service] = true
+	}
 	// An identity workload this run has not started yet routes nothing yet:
-	// its endpoints join a later generation once the workload is started.
+	// its endpoints join a later generation once the workload is ready.
 	if instance.Endpoints, err = routedEndpoints(workload.Module.Name, workload.Services, workload.Carriers, identities, started); err != nil {
 		return nil, err
 	}

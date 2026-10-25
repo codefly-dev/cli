@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -35,11 +36,15 @@ import (
 )
 
 type Flow struct {
+	runtimeParticipants atomic.Pointer[[]string]
+
 	compositionCheck CompositionCheck
 	// configurationReferences orders a consumer after the producers its
 	// workspace configurations reference (configurationReferenceOption); every
 	// rebuild of the graph carries it.
 	configurationReferences architecture.DependencyOption
+	runtimePrerequisites    RuntimePrerequisiteProvider
+	retainedModules         []string
 
 	// providedWorkspaceConfigurations is the configurations this invocation will
 	// RESOLVE — overrides included — read once at NewFlow and used for three
@@ -228,7 +233,25 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 	return values
 }
 
+// RuntimeStartAttempt separates setup/cleanup from admission. Complete receives
+// false on every failure, including request preparation and cancellation.
+type RuntimeStartAttempt struct {
+	Admit    func(context.Context) error
+	Complete func(started bool)
+}
+
 type World struct {
+	// beforeSourceRestart validates the accepted route inventory before stopping a service.
+	beforeSourceRestart func(context.Context) error
+
+	// BeforeRuntimeStop ends run-owned admission and credential refresh even
+	// when manager initialization failed before a runtime was created.
+	BeforeRuntimeStop func()
+
+	// BeginRuntimeStart owns a local attempt from before stop/preparation through
+	// its outcome. Admission remains immediately before the Start RPC.
+	BeginRuntimeStart func(context.Context, *resources.Service) (*RuntimeStartAttempt, error)
+
 	// RenderOwnedGroups supplies the render-owned workspace configuration
 	// group (module-authority) to one service of a NATIVE run. A render
 	// projects it per workload; a laptop run has no render, so the CLI hands
@@ -461,16 +484,6 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if service != nil && module != nil && env.Excludes(module.Name, service.Name) {
 		return nil, w.NewError("environment %q excludes %s (exclude-services), so it has nothing to run, build or deploy there", env.Name, resources.ServiceUnique(module.Name, service.Name))
 	}
-	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-
-	if options.compositionCheck != nil {
-		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
-			return nil, w.Wrap(err)
-		}
-	}
 
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
@@ -499,8 +512,26 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		w.Debug("ordering the run with no workspace configuration reference edges: the configurations this invocation resolves could not be read",
 			wool.ErrField(providedErr))
 	}
+	graphWorkspace, err := runModuleClosure(ctx, workspace, retainedSeeds(options.moduleClosureSeeds, options.retainedModules), providedWorkspaceConfigurations)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	if options.compositionCheck != nil {
+		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
+			return nil, w.Wrap(err)
+		}
+	}
+
 	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
 	var graphOptions []architecture.DependencyOption
+	if options.runtimePrerequisites != nil {
+		prerequisites, prerequisiteErr := options.runtimePrerequisites(ctx, graphWorkspace)
+		if prerequisiteErr != nil {
+			return nil, prerequisiteErr
+		}
+		graphOptions = append(graphOptions, architecture.WithRuntimePrerequisites(prerequisites))
+	}
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
 	}
@@ -530,9 +561,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
-	localReader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	localReader, err := NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+	if providedErr == nil && providedWorkspaceConfigurations != nil {
+		localReader.snapshot = hopRoutingSnapshotOf(providedWorkspaceConfigurations.Infos)
+		localReader.frozen = true
 	}
 	configurationManager.WithLoader(localReader)
 	// Bound here, with the loader: the resolution plans producer discovery
@@ -587,12 +622,14 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	flow := &Flow{
-		workspace:        workspace,
-		graphWorkspace:   graphWorkspace,
-		compositionCheck: options.compositionCheck,
-		moduleSeeds:      options.moduleClosureSeeds,
-		originService:    service,
-		originModule:     module,
+		workspace:            workspace,
+		graphWorkspace:       graphWorkspace,
+		compositionCheck:     options.compositionCheck,
+		moduleSeeds:          options.moduleClosureSeeds,
+		runtimePrerequisites: options.runtimePrerequisites,
+		retainedModules:      options.retainedModules,
+		originService:        service,
+		originModule:         module,
 
 		world: world,
 
@@ -610,6 +647,9 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		excludedByEnvironment:      excludedByEnvironment,
 		excludedDependencyServices: excludedByEnvironment,
+	}
+	world.beforeSourceRestart = func(ctx context.Context) error {
+		return flow.CheckRoutingSnapshot(ctx, flow.workspace)
 	}
 	world.runtimeContextFor = flow.runtimeContextFor
 	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
@@ -1648,6 +1688,9 @@ func (flow *Flow) newTeardownContext() (context.Context, func()) {
 }
 
 func (flow *Flow) Stop() error {
+	if flow != nil && flow.world != nil && flow.world.BeforeRuntimeStop != nil {
+		flow.world.BeforeRuntimeStop()
+	}
 	if flow == nil || flow.hub == nil || flow.validationSkipped {
 		return nil
 	}
@@ -1924,11 +1967,14 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if _, err := flow.projectContainerRecovery(); err != nil {
 		w.Warn("cannot project container recovery ownership; operations requiring recovery will be refused", wool.Field("error", err.Error()))
 	}
-	remotes, dependencyOptions := flow.dependencyGraphOptions()
-	if err := flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
+	remotes, dependencyOptions, err := flow.dependencyGraphOptions(ctx)
+	if err != nil {
+		return err
+	}
+	if err = flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
 		return w.Wrap(err)
 	}
-	if err := flow.selectDependencyStage(); err != nil {
+	if err = flow.selectDependencyStage(); err != nil {
 		return w.Wrap(err)
 	}
 
@@ -2038,6 +2084,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.resolveDockerFallback(ctx); err != nil {
 		return w.Wrap(err)
 	}
+	flow.publishRuntimeServices()
 	return nil
 }
 
@@ -2045,9 +2092,16 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 // with, and the remote services keyed by unique for the callers that need them:
 // the reference-ordering option, the cutoffs for remote-bound services, and the
 // caller's exclusions.
-func (flow *Flow) dependencyGraphOptions() (map[string]*Remote, []architecture.DependencyOption) {
+func (flow *Flow) dependencyGraphOptions(ctx context.Context) (map[string]*Remote, []architecture.DependencyOption, error) {
 	remotes := make(map[string]*Remote)
 	var options []architecture.DependencyOption
+	if flow.runtimePrerequisites != nil {
+		prerequisites, err := flow.runtimePrerequisites(ctx, flow.dependencyWorkspace())
+		if err != nil {
+			return nil, nil, err
+		}
+		options = append(options, architecture.WithRuntimePrerequisites(prerequisites))
+	}
 	if flow.configurationReferences != nil {
 		options = append(options, flow.configurationReferences)
 	}
@@ -2062,7 +2116,7 @@ func (flow *Flow) dependencyGraphOptions() (map[string]*Remote, []architecture.D
 	if len(flow.excludedDependencyServices) > 0 {
 		options = append(options, architecture.ExcludeServices(flow.excludedDependencyServices...))
 	}
-	return remotes, options
+	return remotes, options, nil
 }
 
 // rebuildDependencyGraph rebuilds the graph when this run narrows it, and keeps
