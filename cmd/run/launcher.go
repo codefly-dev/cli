@@ -549,14 +549,15 @@ func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 // state, and the delivery account's credential. It also answers the gateway's
 // current address, which the envelope follows.
 func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
-	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, strings.Split(cluster.env.Host.Delivery, "/")[2])
+	deliveryEndpoint := strings.Split(cluster.env.Host.Delivery, "/")[2]
+	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, deliveryEndpoint)
 	if err != nil {
 		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
 	}
 	// A host that implements codefly.dev/composition receives manifests through
 	// ApplyManifest and holds the manifest as the ceiling: no envelope, no
 	// gateway, nothing of the host known here but the interface it declares.
-	if gitops.HostImplements(ctx, cluster.composed(), cluster.hostModule, cluster.hostService, gitops.CompositionInterface) {
+	if gitops.HostImplements(ctx, cluster.composed(), cluster.hostModule, cluster.hostService, deliveryEndpoint, gitops.CompositionInterface) {
 		conn, dialErr := grpc.NewClient(strings.TrimPrefix(strings.TrimPrefix(deliveryURL, "http://"), "grpc://"), grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if dialErr != nil {
 			return nil, "", fmt.Errorf("dial the host's composition interface: %w", dialErr)

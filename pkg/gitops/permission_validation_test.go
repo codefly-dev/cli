@@ -72,6 +72,9 @@ func composeCompositionHost(t *testing.T, workspace *resources.Workspace) *resou
 	require.NoError(t, err)
 	composed := strings.Replace(string(data), "  - name: billing\n", "  - name: billing\n  - name: platform\n", 1)
 	require.NotEqual(t, string(data), composed)
+	// Manifests go to the endpoint that implements the interface.
+	composed = strings.Replace(composed, "      delivery: platform/accounts/rest\n", "      delivery: platform/accounts/http\n", 1)
+	require.Contains(t, composed, "      delivery: platform/accounts/http\n")
 	require.NoError(t, os.WriteFile(config, []byte(composed), 0o644))
 	files := map[string]string{
 		filepath.Join("modules", "platform", resources.ModuleConfigurationName):                          "kind: module\nname: platform\nservices:\n  - name: accounts\ninterface:\n  endpoints:\n    - service: accounts\n      endpoint: http\n      implements: [" + CompositionInterface + "@1.0.0]\n",
@@ -126,6 +129,25 @@ func TestACompositionHostRefusesAnUnmarkedMethodByName(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
+// The policies go where the manifests go: the endpoint host.delivery names. A
+// host service implementing codefly.dev/composition on another endpoint still
+// receives manifests on its delivery endpoint, which consumes no policy, so an
+// unmarked method passes (saas: composition on connect, delivery on rest).
+func TestCompositionOnAnotherEndpointThanDeliveryConsumesNoPolicy(t *testing.T) {
+	workspace, module := unmarkedPolicyWorkspace(t)
+	workspace = composeCompositionHost(t, workspace)
+	config := filepath.Join(workspace.Dir(), "modules", "platform", resources.ModuleConfigurationName)
+	data, err := os.ReadFile(config)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(config, []byte(strings.Replace(string(data), "endpoint: http", "endpoint: grpc", 1)), 0o644))
+	workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+	require.NoError(t, err)
+	module, err = workspace.LoadModuleFromName(t.Context(), module.Name)
+	require.NoError(t, err)
+	env := selectedEnvironment(t, workspace, "staging")
+	require.NoError(t, ValidateModulePermissions(t.Context(), workspace, module, env))
+}
+
 // A module may hold every method it publishes to a policy wherever it is
 // delivered: its contract's require_method_policies refuses an unmarked
 // method toward a host that would have passed it.
@@ -152,9 +174,9 @@ func composeSaasHost(t *testing.T, workspace *resources.Workspace, component str
 	require.NoError(t, err)
 	composed := strings.Replace(string(data), "  - name: billing\n", "  - name: billing\n  - name: saas\n", 1)
 	composed = strings.Replace(composed, "      component: platform-host\n", "      component: "+component+"\n", 1)
-	composed = strings.Replace(composed, "      delivery: platform/accounts/rest\n", "      delivery: saas/accounts/connect\n", 1)
+	composed = strings.Replace(composed, "      delivery: platform/accounts/rest\n", "      delivery: saas/accounts/grpc\n", 1)
 	require.Contains(t, composed, "      component: "+component+"\n")
-	require.Contains(t, composed, "      delivery: saas/accounts/connect\n")
+	require.Contains(t, composed, "      delivery: saas/accounts/grpc\n")
 	require.NoError(t, os.WriteFile(config, []byte(composed), 0o644))
 
 	service := &descriptorpb.ServiceDescriptorProto{Name: proto.String("AccountsService")}
@@ -205,7 +227,7 @@ contracts:
 }
 
 // The host's own module is not behind the hop: the module of the
-// host.delivery service (saas, from saas/accounts/connect) implements
+// host.delivery service (saas, from saas/accounts/grpc) implements
 // codefly.dev/composition, so its own unmarked methods are the host's and
 // pass, while every module the hop fronts is still held to a policy on every
 // method and refused by name. host.component is the host's instance name, not

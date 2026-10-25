@@ -43,16 +43,20 @@ func ValidateMethodPolicies(methods []*compositionv1.MethodPolicyV1, requireDecl
 // receives manifests through ApplyManifest, method policies with them.
 const CompositionInterface = "codefly.dev/composition"
 
-// HostImplements reports whether the host service declares, in its module's
-// interface endpoints, that it implements the named Codefly interface at any
-// version. A host module the workspace does not compose declares nothing here.
-func HostImplements(ctx context.Context, workspace *resources.Workspace, hostModule, hostService, name string) bool {
+// HostImplements reports whether the host's delivery endpoint — the endpoint
+// host.delivery names — declares, in its module's interface endpoints, that it
+// implements the named Codefly interface at any version. The endpoint is the
+// one manifests are sent to, so another endpoint of the same service that
+// implements the interface does not change how they are delivered: a host
+// whose delivery is its signed REST route keeps receiving them there. A host
+// module the workspace does not compose declares nothing here.
+func HostImplements(ctx context.Context, workspace *resources.Workspace, hostModule, hostService, hostEndpoint, name string) bool {
 	module, err := workspace.LoadModuleFromName(ctx, hostModule)
 	if err != nil || module.Interface == nil {
 		return false
 	}
 	for _, endpoint := range module.Interface.Endpoints {
-		if endpoint.Service != hostService {
+		if endpoint.Service != hostService || endpoint.Endpoint != hostEndpoint {
 			continue
 		}
 		for _, implemented := range endpoint.Implements {
@@ -82,8 +86,8 @@ func methodPoliciesRequired(ctx context.Context, workspace *resources.Workspace,
 		return "its " + modulecontract.FileName + " sets require_method_policies", true
 	}
 	if env != nil && env.Host != nil {
-		hostModule, hostService, _ := env.Host.DeliveryEndpoint()
-		if hostModule != moduleName && HostImplements(ctx, workspace, hostModule, hostService, CompositionInterface) {
+		hostModule, hostService, hostEndpoint := env.Host.DeliveryEndpoint()
+		if hostModule != moduleName && HostImplements(ctx, workspace, hostModule, hostService, hostEndpoint, CompositionInterface) {
 			return fmt.Sprintf("its policies are delivered to host %s/%s, which implements %s", hostModule, hostService, CompositionInterface), true
 		}
 	}
