@@ -171,7 +171,30 @@ func (world *World) workspaceConfigurationsFor(
 	manager := world.ConfigurationManager.ForConsumer(mappings, access).
 		ForConsumerModule(consumerModule, declaredEndpoints).
 		WithRunProducers(world.producerInRun())
-	resolved, err := manager.GetWorkspaceDependenciesConfigurations(ctx, declared...)
+	// Project before asking for authored dependencies: the native delivery host
+	// can receive federation entirely from its host block. An authored or
+	// ambiguous federation group still goes through normal resolution, including
+	// secret and endpoint validation. No other required group becomes optional.
+	var owned []*basev0.Configuration
+	if world.RenderOwnedGroups != nil {
+		owned, err = world.RenderOwnedGroups(ctx, world.withoutExcludedGroups(service))
+		if err != nil {
+			return nil, err
+		}
+	}
+	authored := declared
+	if world.unprovidedWorkspaceGroup(environments.FederationConfiguration) {
+		for _, conf := range owned {
+			for _, info := range conf.GetInfos() {
+				if info.GetName() == environments.FederationConfiguration {
+					authored = slices.DeleteFunc(slices.Clone(declared), func(name string) bool {
+						return name == environments.FederationConfiguration
+					})
+				}
+			}
+		}
+	}
+	resolved, err := manager.GetWorkspaceDependenciesConfigurations(ctx, authored...)
 	if err != nil {
 		return nil, err
 	}
@@ -209,13 +232,7 @@ func (world *World) workspaceConfigurationsFor(
 	// A native run's render-owned groups, last and only to a service that
 	// declares them: the resolver above skipped those names on purpose, since a
 	// render projects them, and this is the run standing in for that render.
-	if world.RenderOwnedGroups != nil {
-		owned, ownedErr := world.RenderOwnedGroups(ctx, world.withoutExcludedGroups(service))
-		if ownedErr != nil {
-			return nil, ownedErr
-		}
-		out = append(out, owned...)
-	}
+	out = append(out, owned...)
 	// The service's declared egress, generated from the environment on every
 	// path — run and render alike — so the service reads the same hosts the
 	// cell file allows it, never a copy of its own.
@@ -675,7 +692,13 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 // group is not asked of core, which would refuse it as missing. A World that
 // cannot say what its loader read asks core, as for any other group.
 func (world *World) unprovidedOptionalGroup(group string) bool {
-	if world == nil || world.providedWorkspaceConfigurationInfos == nil || !environments.OptionalWorkspaceConfiguration(group) {
+	return environments.OptionalWorkspaceConfiguration(group) && world.unprovidedWorkspaceGroup(group)
+}
+
+// unprovidedWorkspaceGroup requires loader evidence of absence; unknown and
+// ambiguous groups must still be judged by Core's configuration resolver.
+func (world *World) unprovidedWorkspaceGroup(group string) bool {
+	if world == nil || world.providedWorkspaceConfigurationInfos == nil {
 		return false
 	}
 	if world.ambiguousWorkspaceConfigurations != nil {

@@ -361,12 +361,11 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 	// a cell's composition declares for the environment and this run derives
 	// from the host block: handed last, so they settle over what the host's
 	// own authored group leaves empty.
-	if unique := resources.WithUnique(service).Unique(); unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) &&
-		slices.Contains(service.WorkspaceConfigurationDependencies, environments.FederationConfiguration) {
-		group, err := federationGroup(cluster.env.Host)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", unique, err)
-		}
+	group, err := environments.NativeHostFederation(cluster.env.Host, service)
+	if err != nil {
+		return nil, err
+	}
+	if group != nil {
 		out = append(out, group)
 	}
 	if slices.Contains(service.WorkspaceConfigurationDependencies, environments.ArtifactCacheConfiguration) {
@@ -394,27 +393,6 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 		{Key: "INTERNAL_TOKEN", Value: token, Secret: true},
 	}}
 	return append(out, &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{authority}}), nil
-}
-
-// federationGroup is the federation surface a native run hands the delivery
-// host: the coordinate it answers for, the ownership domain it accepts a
-// binding under (the one the run's own policy admits the run's signer for)
-// and the trust policy, pinned keys — the three values a cell's composition
-// declares in the host's federation group, derived here from the host block
-// the manifests this run delivers are stamped with, so the host accepts what
-// the run signs and nothing else. The host's registration secrets stay in its
-// authored group, untouched.
-func federationGroup(host *environments.EnvironmentHost) (*basev0.Configuration, error) {
-	if host == nil || host.Coordinate == "" || host.Domain == "" {
-		return nil, fmt.Errorf("the delivery host answers for the environment's host.coordinate under host.domain, and the environment declares no host with both")
-	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: environments.FederationConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
-			{Key: environments.FederationHostCoordinateKey, Value: host.Coordinate},
-			{Key: environments.FederationHostOwnershipDomainsKey, Value: host.Domain},
-			{Key: environments.FederationHostTrustPolicyKey, Value: environments.FederationHostTrustPolicyKeys},
-		},
-	}}}, nil
 }
 
 // artifactCacheGroup is the artifact-cache group a native run hands a service

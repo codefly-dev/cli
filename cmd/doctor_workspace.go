@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1090,6 +1091,14 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	if provided != nil {
 		declared := ownConfigurationNames(wsCfgDir)
 		byName, own, composed := classifyProvidedConfigurations(provided, declared)
+		// Doctor has no selected runtime. Report native-only supply as a warning,
+		// and exempt no other service that also requires the authored group.
+		if byName[environments.FederationConfiguration] == nil && provided.Ambiguous[environments.FederationConfiguration] == nil &&
+			nativeFederationCoversScope(env, scope) {
+			required = slices.DeleteFunc(required, func(name string) bool { return name == environments.FederationConfiguration })
+			report.add("", "workspace configuration federation", "warn",
+				"derived from host for the native delivery service; container runs and deployments still require authored federation values", "")
+		}
 		reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir, required, byName, own, report)
 		if len(composed) > 0 {
 			report.add("", "composed module configurations", "ok",
@@ -1115,6 +1124,26 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	}
 
 	return append(toResolve, checkServiceConfigurationSources(ctx, env, profiles, profile, scope, report)...), provided
+}
+
+// nativeFederationCoversScope requires every declaring consumer to be the
+// delivery host. A generated host group never satisfies a sibling's requirement.
+func nativeFederationCoversScope(env *environments.Environment, scope []*resources.Service) bool {
+	if env == nil || env.DeclaresLocalK3d() {
+		return false
+	}
+	found := false
+	for _, service := range scope {
+		if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.FederationConfiguration) {
+			continue
+		}
+		group, err := environments.NativeHostFederation(env.Host, service)
+		if err != nil || group == nil {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // reportWorkspaceConfigurationDirectory reports the workspace's own

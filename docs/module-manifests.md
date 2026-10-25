@@ -1188,6 +1188,12 @@ The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 delivery host turns its surface on from the `federation` keys
 `SOLUTION_HOST_COORDINATE`, `SOLUTION_HOST_OWNERSHIP_DOMAINS` and
 `SOLUTION_HOST_TRUST_POLICY`, which a native run derives from the host block.
+The delivery service needs no authored `federation` file when these are its only
+values. Authored registration secrets remain supported and pass the usual secret
+and endpoint checks; ambiguous groups still fail. The generated fields reach only
+the declaring delivery host. Other services, container runs and deployments retain
+their authored requirements. `doctor workspace` reports this native-only supply as
+a warning because it does not select the runtime.
 
 **Growing and shrinking the run.** Every `codefly run` admits the components a
 reloaded composition adds when it receives `SIGUSR1`: their identities are
