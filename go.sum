@@ -117,6 +117,8 @@ github.com/codefly-dev/core v0.19.7-0.20261025060515-4ab16f55c491 h1:BzL5s/GoKpV
 github.com/codefly-dev/core v0.19.7-0.20261025060515-4ab16f55c491/go.mod h1:1ina3kP+YSAL4tlZvnEYd4P8bFGnJECfkP86ojeeF1A=
 github.com/codefly-dev/core v0.19.7-0.20261025070021-a3bf508a5e55 h1:U9rzO6zSCigIUHuiiUTKMEtNzyYZ3e6il3A+sEv8jJk=
 github.com/codefly-dev/core v0.19.7-0.20261025070021-a3bf508a5e55/go.mod h1:1ina3kP+YSAL4tlZvnEYd4P8bFGnJECfkP86ojeeF1A=
+github.com/codefly-dev/core v0.19.7-0.20261025092913-045b6cc951c4 h1:WuucT8X054ZDIeYDAaVYhPi02OoQnpP+RyqqQtDHeVo=
+github.com/codefly-dev/core v0.19.7-0.20261025092913-045b6cc951c4/go.mod h1:1ina3kP+YSAL4tlZvnEYd4P8bFGnJECfkP86ojeeF1A=
 github.com/codefly-dev/golor v0.1.3 h1:xmo+ceyJFRYZdvpWE2fNd0jeaadp/Ibm1BnganiGKOc=
 github.com/codefly-dev/golor v0.1.3/go.mod h1:sl/u/K1l7J0Pr3xyVZp8fOJYQItKKst1No9JqgzLLoY=
 github.com/codefly-dev/gortk v0.2.0 h1:7bOlS5valYz2zil+fZctQNcPCYBcPj86abcw9N8h1hQ=
