@@ -24,8 +24,8 @@ concurrency:
 
 env:
   # The CLI requires codefly-dev/authority's interface client, hop and delivery
-  # libraries, and that repository is private: fetched from GitHub with the CI
-  # reader app's token (.github/actions/read-authority, handed to git by
+  # libraries, and that repository is private: fetched from GitHub with the
+  # existing organization GH_PAT (handed to git by
   # .github/scripts/download-go-modules.sh for the download step alone), never
   # via the module proxy or the checksum database. GOPRIVATE is the default of
   # both GONOPROXY and GONOSUMDB. Every other codefly-dev module is public and
@@ -101,13 +101,6 @@ jobs:
       # Every gate resolves the CLI's modules, codefly-dev/authority's among
       # them. The token is handed to the install action and the download step
       # only; nothing writes it into git's configuration.
-      - name: Read the authority's libraries
-        id: authority
-        uses: ./.github/actions/read-authority
-        with:
-          app-id: ${{ secrets.CI_READER_GITHUB_APP_ID }}
-          private-key: ${{ secrets.CI_READER_GITHUB_APP_PRIVATE_KEY }}
-
       # This is both the canonical bootstrap and the cross-repository action
       # contract consumed by Codefly products. Dogfood the local action so a
       # release cannot publish an installer that CI never exercised.
@@ -115,11 +108,11 @@ jobs:
         if: matrix.gate == 'bootstrap-audit' || matrix.gate == 'control-integration'
         uses: ./.github/actions/install
         with:
-          authority-token: ${{ steps.authority.outputs.token }}
+          authority-token: ${{ secrets.GH_PAT }}
 
       - name: Install Dependencies
         env:
-          AUTHORITY_TOKEN: ${{ steps.authority.outputs.token }}
+          AUTHORITY_TOKEN: ${{ secrets.GH_PAT }}
         run: .github/scripts/download-go-modules.sh
 
       # govulncheck gate via the CLI (replaces scripts/govulncheck.sh):
@@ -313,16 +306,9 @@ jobs:
       # The linter loads every package, so the modules must be in the cache
       # before it runs, codefly-dev/authority's among them; the linter itself
       # never sees the token.
-      - name: Read the authority's libraries
-        id: authority
-        uses: ./.github/actions/read-authority
-        with:
-          app-id: ${{ secrets.CI_READER_GITHUB_APP_ID }}
-          private-key: ${{ secrets.CI_READER_GITHUB_APP_PRIVATE_KEY }}
-
       - name: Download the CLI's modules
         env:
-          AUTHORITY_TOKEN: ${{ steps.authority.outputs.token }}
+          AUTHORITY_TOKEN: ${{ secrets.GH_PAT }}
         run: .github/scripts/download-go-modules.sh
 
       - name: golangci-lint

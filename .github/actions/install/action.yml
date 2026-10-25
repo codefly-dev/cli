@@ -4,9 +4,9 @@ description: Install the Codefly CLI version pinned by this action reference
 inputs:
   authority-token:
     description: >-
-      A read-only token for codefly-dev/authority, which is private and whose
-      interface client, hop and delivery libraries the CLI requires (mint it
-      with this repository's .github/actions/read-authority). It reaches git
+      A token with contents read access to codefly-dev/authority, which is private and whose
+      interface client, hop and delivery libraries the CLI requires. The CLI
+      workflows use the existing organization GH_PAT secret. It reaches git
       for the build step alone. Without it the build resolves from the module
       cache only, so a workflow that has not downloaded the CLI's modules
       already cannot install it.

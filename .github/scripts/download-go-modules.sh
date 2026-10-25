@@ -9,12 +9,12 @@
 # no later step of the job, nor any other github.com fetch, can see it. Every
 # step after this one builds from the module cache this fills.
 #
-# AUTHORITY_TOKEN is the read-only token .github/actions/read-authority mints.
+# AUTHORITY_TOKEN is supplied by the caller (CI uses the organization GH_PAT).
 # The repository's path must be private to go (GOPRIVATE), so the module proxy
 # and the checksum database are never asked about it.
 set -euo pipefail
 
-: "${AUTHORITY_TOKEN:?AUTHORITY_TOKEN is required: mint it with .github/actions/read-authority}"
+: "${AUTHORITY_TOKEN:?AUTHORITY_TOKEN is required: supply a token with contents read access to codefly-dev/authority}"
 
 authority=github.com/codefly-dev/authority
 for setting in GONOPROXY GONOSUMDB; do

@@ -132,6 +132,15 @@ GOPRIVATE=github.com/codefly-dev/authority \
 For a self-updating direct installation, use a signed release archive as
 described in [CLI releases and updates](cli-updates.md).
 
+CI downloads these private libraries with the existing organization `GH_PAT`
+secret, also used by companion checkout and release publication. The token is
+passed only to the module download/bootstrap step; the download helper scopes
+Git authentication to `codefly-dev/authority` without persisting Git settings.
+Build, lint and test steps consume the populated module cache. Missing access
+fails the download; no gate is skipped. The CI reader-app action remains
+available to callers that configure its app credentials, but CLI workflows do
+not depend on unconfigured reader-app secrets.
+
 ### 5. Run tests
 
 ```bash
