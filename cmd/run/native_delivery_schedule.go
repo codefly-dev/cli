@@ -59,7 +59,7 @@ var (
 )
 
 func deliveryAbandoned(err error) bool {
-	return errors.Is(err, errRunStopped) || errors.Is(err, errWorkloadGone) || errors.Is(err, errSuperseded)
+	return errors.Is(err, context.Canceled) || errors.Is(err, errRunStopped) || errors.Is(err, errWorkloadGone) || errors.Is(err, errSuperseded)
 }
 
 // transientDeliveryRefusal reports whether a failed delivery attempt says the
@@ -111,18 +111,66 @@ type hostDelivery struct {
 // are logged at info, each retry at debug. A non-transient refusal is
 // returned at once; at the deadline, the reason the host is still not
 // serving and the last refusal it answered.
-func (d hostDelivery) run(ctx context.Context) error {
-	deadline := time.Now().Add(d.schedule.Deadline)
+func (d hostDelivery) run(parent context.Context) (result error) {
+	bounded, timeout := context.WithTimeout(parent, d.schedule.Deadline)
+	defer timeout()
+	ctx, cancel := context.WithCancelCause(bounded)
+	defer cancel(nil)
+	// Stop and supersession must reach a readiness probe or delivery RPC already
+	// in flight, not just the wait between attempts. The owned calls honor ctx.
+	go func() {
+		select {
+		case <-d.stop:
+			cancel(errRunStopped)
+		case <-d.superseded:
+			cancel(errSuperseded)
+		case <-ctx.Done():
+		}
+	}()
+	cancellation := func() error {
+		// Check the lifecycle channels synchronously too: a preclosed channel
+		// must prevent the first call without waiting for the watcher to run.
+		select {
+		case <-d.stop:
+			cancel(errRunStopped)
+		case <-d.superseded:
+			cancel(errSuperseded)
+		default:
+		}
+		return context.Cause(ctx)
+	}
+	deadline, _ := ctx.Deadline()
 	backoff := d.schedule.FirstBackoff
 	var reason string
 	var lastRefusal error
+	phase := "checking host readiness"
+	defer func() {
+		if errors.Is(result, context.DeadlineExceeded) {
+			result = fmt.Errorf("delivery completion was not confirmed before its deadline (configured bound %s; %s; last wait reason: %q): %w", d.schedule.Deadline, phase, reason, result)
+			if lastRefusal != nil {
+				result = fmt.Errorf("%w (its last refusal: %w)", result, lastRefusal)
+			}
+		}
+	}()
 	for attempt := 1; ; attempt++ {
+		if err := cancellation(); err != nil {
+			return err
+		}
+		phase = "checking host readiness"
 		err := d.ready(ctx)
+		if cause := cancellation(); cause != nil {
+			return cause
+		}
 		if errors.Is(err, errWorkloadGone) {
 			return err
 		}
 		if err == nil {
-			if err = d.deliver(ctx); err == nil {
+			phase = "delivering the manifest"
+			err = d.deliver(ctx)
+			if cause := cancellation(); cause != nil {
+				return cause
+			}
+			if err == nil {
 				if attempt > 1 {
 					d.log.Info("delivered once the host was serving", wool.Field("attempts", attempt))
 				}
@@ -134,10 +182,7 @@ func (d hostDelivery) run(ctx context.Context) error {
 			lastRefusal = err
 		}
 		if !time.Now().Add(backoff).Before(deadline) {
-			if lastRefusal != nil && lastRefusal != err {
-				return fmt.Errorf("the host did not accept the delivery within %s: %w (its last refusal: %w)", d.schedule.Deadline, err, lastRefusal)
-			}
-			return fmt.Errorf("the host did not accept the delivery within %s: %w", d.schedule.Deadline, err)
+			return errors.Join(context.DeadlineExceeded, err)
 		}
 		if err.Error() != reason {
 			reason = err.Error()
@@ -145,6 +190,8 @@ func (d hostDelivery) run(ctx context.Context) error {
 		}
 		d.log.Debug("retrying the delivery", wool.Field("attempt", attempt), wool.Field("in", backoff.String()), wool.ErrField(err))
 		select {
+		case <-ctx.Done():
+			return cancellation()
 		case <-d.stop:
 			return errRunStopped
 		case <-d.superseded:

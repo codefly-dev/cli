@@ -219,13 +219,13 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// every exit path — including failures — so a partially-started flow
 	// never orphans agents or containers.
 	stopFresh := func() error {
+		stopLauncher() // Cancel delivery before waiting for service teardown.
 		if run.flowManager != nil {
 			run.flowManager.Release(serviceName, run.flow)
 		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		err := stopService(shutdownCtx, run.flow)
 		shutdownCancel()
-		stopLauncher()
 		return err
 	}
 	defer func() { returnErr = errors.Join(returnErr, stopFresh()) }()

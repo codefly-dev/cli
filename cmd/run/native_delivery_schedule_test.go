@@ -170,7 +170,7 @@ func TestANativeDeliveryAtTheDeadlineNamesTheReasonAndTheLastRefusal(t *testing.
 	}, refusing)
 	delivery.schedule.Deadline = 30 * time.Millisecond
 	err := delivery.run(context.Background())
-	require.ErrorContains(t, err, "did not accept the delivery within 30ms")
+	require.ErrorContains(t, err, "configured bound 30ms")
 	require.ErrorContains(t, err, "saas/auth-gateway: lifecycle: runtime start has not completed")
 	require.ErrorContains(t, err, "HTTP 503: JWT validation not configured")
 }

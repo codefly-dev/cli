@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -86,8 +87,12 @@ type launcher struct {
 	// running are the identity workloads that reached Running: the ones a
 	// module's manifest lists.
 	running map[string]bool
+	// delivery serializes manifest generations and network calls without
+	// holding mu. A canceled waiter must not wait for another host call.
+	deliveryOnce sync.Once
+	delivery     *semaphore.Weighted
 	// delivered is the last manifest delivered per module, a withdrawal
-	// included.
+	// included; protected by delivery rather than the short-lived state lock.
 	delivered map[string]*solutionhost.ModuleManifest
 	// pendingWithdrawals are modules whose withdrawal the host has not applied
 	// yet: retried on the next composition refresh, even with no gone roots.
@@ -161,13 +166,18 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	world := flow.World()
 	world.RenderOwnedGroups = cluster.renderOwnedGroups
 	world.RuntimeOverrides = cluster.runtimeOverrides
-	flow.WithRunningHook(func(service string, _ int) {
-		go cluster.onRunning(context.WithoutCancel(ctx), service)
-	})
+	cluster.registerRunningHook(ctx, flow.WithRunningHook)
 	go cluster.refreshTokens()
 	w.Info("native run: the run vouches for the composition's workloads", wool.Field("anchor", launcherIdentity.AnchorFingerprint()[:16]))
 	launcherActive = cluster
 	return nil
+}
+
+// registerRunningHook binds delivery to the lifetime of this native run.
+func (cluster *launcher) registerRunningHook(ctx context.Context, register func(func(string, int))) {
+	register(func(service string, _ int) {
+		go cluster.onRunning(ctx, service)
+	})
 }
 
 func stopLauncher() {
@@ -530,7 +540,7 @@ func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 		return
 	}
 	if err != nil {
-		w.Error(fmt.Sprintf("delivery to the host failed: module %s's manifest does not list %s, so every gateway route to module %s answers 404 until it is delivered (a restart of the workload delivers again)", identity.Module, unique, identity.Module), wool.ErrField(err))
+		w.Error(fmt.Sprintf("delivery completion was not confirmed for module %s, workload %s; routes to module %s may be unavailable (the host may already have applied the manifest)", identity.Module, unique, identity.Module), wool.ErrField(err))
 	}
 }
 
@@ -656,14 +666,19 @@ func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]stri
 // settles to the same generation, which the host replays. A module this run
 // never delivered has nothing to withdraw.
 func (cluster *launcher) withdrawModule(ctx context.Context, module string) (bool, error) {
-	cluster.mu.Lock()
-	defer cluster.mu.Unlock()
+	if err := cluster.acquireDelivery(ctx); err != nil {
+		return false, err
+	}
+	defer cluster.delivery.Release(1)
 	delivered := cluster.delivered[module]
+	cluster.mu.Lock()
 	if delivered == nil {
 		delete(cluster.pendingWithdrawals, module)
+		cluster.mu.Unlock()
 		return false, nil
 	}
 	cluster.pendingWithdrawals[module] = true
+	cluster.mu.Unlock()
 	withdrawal, err := gitops.WithdrawalOf(delivered)
 	if err != nil {
 		return false, err
@@ -682,7 +697,9 @@ func (cluster *launcher) withdrawModule(ctx context.Context, module string) (boo
 	if err := deliverer.WaitForWithdrawal(ctx, withdrawal); err != nil {
 		return false, err
 	}
+	cluster.mu.Lock()
 	delete(cluster.pendingWithdrawals, module)
+	cluster.mu.Unlock()
 	return true, nil
 }
 
@@ -734,9 +751,11 @@ func (cluster *launcher) startedIdentities(module string) []gitops.NativeIdentit
 // that runs now, with the addresses this run allocated for its routed
 // endpoints, after making sure the host holds the composition's envelope.
 func (cluster *launcher) deliver(ctx context.Context, module string) error {
+	if err := cluster.acquireDelivery(ctx); err != nil {
+		return err
+	}
+	defer cluster.delivery.Release(1)
 	started := cluster.startedIdentities(module)
-	cluster.mu.Lock()
-	defer cluster.mu.Unlock()
 	if len(started) == 0 {
 		return nil
 	}
@@ -788,6 +807,11 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 	}
 	wool.Get(ctx).In("launcher.deliver").Info("applied", wool.Field("module", module), wool.Field("generation", manifest.Generation))
 	return nil
+}
+
+func (cluster *launcher) acquireDelivery(ctx context.Context) error {
+	cluster.deliveryOnce.Do(func() { cluster.delivery = semaphore.NewWeighted(1) })
+	return cluster.delivery.Acquire(ctx, 1)
 }
 
 // ensureEnvelope writes the composition's envelope — each module principal's

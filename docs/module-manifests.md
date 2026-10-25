@@ -1039,10 +1039,20 @@ that is not a URL, a manifest the host received and withheld with a reason. The 
 wait and every change of its reason are logged at info with the service, its
 module and the reason. A workload not delivered by the deadline is reported as
 an error naming it, why the host is still not serving, the last refusal it
-answered, and the consequence: every gateway route to its module answers 404
-until it is delivered, which a restart of the workload attempts again. A
-workload has one delivery in flight: a restart replaces the waiting one, and a
+answered, and that delivery completion was not confirmed. Routes may remain
+unavailable, but a lost response does not establish that the host refused or
+failed to apply the manifest. A restart of the workload attempts delivery again.
+A workload has one delivery in flight: a restart replaces the waiting one, and a
 workload the composition withdraws while it waits is not delivered.
+
+The delivery deadline bounds active readiness and manifest calls as well as
+backoff and waiting behind another delivery. Stopping the run or superseding a
+workload's delivery cancels its active calls before service teardown waits; an
+already-canceled delivery does not begin another attempt. Deadline errors retain the current phase, the last
+wait reason and any last host refusal. Cancellation cannot undo a manifest the
+host already applied, and a canceled call does not establish whether it applied.
+Delivery still begins after Running; these bounds do not make authority available
+to a service during its own startup.
 
 The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both under
