@@ -278,7 +278,7 @@ func TestTypeScriptLibraryDeclaresAnEntryPointItProduces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("src/index.ts, the file tsconfig compiles into the declared entry point, was not written: %v", err)
 	}
-	for _, want := range []string{`export * from "./gen/api_pb.js";`, `export * from "./pdf_facade.js";`} {
+	for _, want := range []string{`export * as module_gen$2f$api_pb from "./gen/api_pb.js";`, `export * as module_pdf_facade from "./pdf_facade.js";`} {
 		if !strings.Contains(string(index), want) {
 			t.Errorf("src/index.ts does not re-export %s\ngot:\n%s", want, index)
 		}
@@ -302,10 +302,71 @@ func TestTypeScriptLibraryDeclaresAnEntryPointItProduces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("src/index.ts was not rewritten after a wipe: %v", err)
 	}
-	if !strings.Contains(string(index), `export * from "./gen/other_pb.js";`) {
+	if !strings.Contains(string(index), `export * as module_gen$2f$other_pb from "./gen/other_pb.js";`) {
 		t.Errorf("the regenerated barrel missed the new module:\n%s", index)
 	}
 	if strings.Contains(string(index), "api_pb") {
 		t.Errorf("the regenerated barrel still re-exports a module the wipe removed:\n%s", index)
+	}
+}
+
+// Equal message/service names in distinct proto packages must remain reachable
+// without introducing ambiguous exports into the package entry point.
+func TestTypeScriptIndexNamespacesEveryModule(t *testing.T) {
+	langDir := t.TempDir()
+	modules := []string{
+		"gen/codefly/base/v0/work_context_pb",
+		"gen/host/authority/v1/work_context_pb",
+		"gen/host/installation/v1/installation_pb",
+		"gen/saas/accounts/v1/installations_pb",
+		"gen/saas/composed/org_settings/v1/settings_pb",
+		"gen/saas/composed/settings/v1/settings_pb",
+		"gen/a-b", "gen/a_b", "gen/a/b", "gen/a$2f$b",
+		"default", "1_facade", "é_facade",
+	}
+	for _, module := range modules {
+		path := filepath.Join(langDir, "src", module+".ts")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("export type Settings = { value: string };\nexport const SettingsSchema = {};\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeTypeScriptIndex(langDir); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(langDir, "src", "index.ts")
+	first, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(first), "\n") {
+		if !strings.HasPrefix(line, "export ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 6 || fields[2] != "as" || fields[4] != "from" {
+			t.Fatalf("export leaks unqualified symbols: %s", line)
+		}
+		name := fields[3]
+		if seen[name] {
+			t.Fatalf("duplicate namespace %q", name)
+		}
+		seen[name] = true
+	}
+	if len(seen) != len(modules) {
+		t.Fatalf("got %d namespaces for %d modules", len(seen), len(modules))
+	}
+	if err := writeTypeScriptIndex(langDir); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("regeneration changed the barrel")
 	}
 }

@@ -3434,6 +3434,15 @@ limitation in the facade plugin currently means `--services` filtering does not
 work over a multi-file descriptor set from these two sources; use the local
 source, or omit `--services` to generate the full contract's facade.
 
+TypeScript's generated entry point exports each binding and facade as a module
+namespace, so equal message names in different proto packages remain distinct.
+Names start with `module_` followed by the relative source path without its
+extension; non-ASCII-identifier characters are escaped as `$<hex code point>$`
+(including `$`). For example, import `{ module_gen$2f$api_pb }` to access
+`module_gen$2f$api_pb.Settings`, or `{ module_accounts_facade }` for
+`module_accounts_facade.accounts`. Regenerate consumers together with this
+entry-point change; direct imports from generated files retain their shape.
+
 ##### Library layout
 
 ```
