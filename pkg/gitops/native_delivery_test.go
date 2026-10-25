@@ -3,10 +3,6 @@ package gitops
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +14,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 )
 
 // nativeModule lays down what a native delivery of a module reads: its
@@ -122,7 +119,7 @@ func TestANativeManifestRoutesOnlyToTheModulesWorkloads(t *testing.T) {
 	require.ErrorContains(t, err, "does not declare module-identity")
 
 	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services})
-	require.ErrorContains(t, err, "no admitted identity workload")
+	require.ErrorContains(t, err, "no started identity workload")
 }
 
 // A native run delivers the bundle it built: the payload names it, a page
@@ -144,52 +141,43 @@ func TestANativeManifestNamesTheBundleTheRunBuilt(t *testing.T) {
 	require.ErrorContains(t, err, "declares no frontend")
 }
 
-// deliveryHost stands in for the host's delivery listener: it records every
-// carrier, the credential it came with, and answers with the status queued.
+// deliveryHost stands in for the host's composition interface: it records
+// every carrier, the credential it came with, and answers with the refusal
+// queued, if any.
 type deliveryHost struct {
-	*httptest.Server
 	mu        sync.Mutex
-	paths     []string
 	bearers   []string
 	manifests []*solutionhost.ModuleManifest
 	bodies    [][]byte
-	status    []int
+	refusals  []error
 }
 
-func newDeliveryHost(t *testing.T) *deliveryHost {
-	t.Helper()
-	host := &deliveryHost{}
-	host.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		signed, err := solutionhost.ParseSigned(body)
-		if err != nil {
-			http.Error(w, `{"error":"not a carrier"}`, http.StatusBadRequest)
-			return
-		}
-		manifest, err := solutionhost.ManifestFromVerified(signed.Document)
-		if err != nil {
-			http.Error(w, `{"error":"not a manifest"}`, http.StatusBadRequest)
-			return
-		}
-		host.mu.Lock()
-		defer host.mu.Unlock()
-		host.paths = append(host.paths, r.URL.Path)
-		host.bearers = append(host.bearers, r.Header.Get("Authorization"))
-		host.manifests = append(host.manifests, manifest)
-		host.bodies = append(host.bodies, body)
-		code := http.StatusOK
-		if len(host.status) > 0 {
-			code, host.status = host.status[0], host.status[1:]
-		}
-		w.WriteHeader(code)
-		if code == http.StatusOK {
-			_ = json.NewEncoder(w).Encode(map[string]any{"disposition": "accepted", "generation": manifest.Generation})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "module manifest generation is older than the applied generation"})
-	}))
-	t.Cleanup(host.Close)
-	return host
+func newDeliveryHost(*testing.T) *deliveryHost { return &deliveryHost{} }
+
+func (h *deliveryHost) prepare(context.Context, string, bool) (*PreparedDelivery, error) {
+	return &PreparedDelivery{Content: []byte{0}, Post: h.post}, nil
+}
+
+func (h *deliveryHost) post(_ context.Context, _ string, signed *solutionhost.Signed, token string) (Receipt, error) {
+	body, err := solutionhost.MarshalSigned(signed)
+	if err != nil {
+		return Receipt{}, err
+	}
+	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
+	if err != nil {
+		return Receipt{}, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.bearers = append(h.bearers, token)
+	h.manifests = append(h.manifests, manifest)
+	h.bodies = append(h.bodies, body)
+	if len(h.refusals) > 0 {
+		refusal := h.refusals[0]
+		h.refusals = h.refusals[1:]
+		return Receipt{}, refusal
+	}
+	return Receipt{Disposition: "accepted", Generation: manifest.Generation}, nil
 }
 
 // deliverer is a native deliverer to the host, its carrier credentials issued
@@ -197,7 +185,7 @@ func newDeliveryHost(t *testing.T) *deliveryHost {
 func (h *deliveryHost) deliverer(t *testing.T, state string, modules *[]string) *NativeDeliverer {
 	return &NativeDeliverer{
 		Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment(), Signer: nativeSigner(t),
-		DeliveryURL: h.URL, StateDir: state,
+		StateDir: state, Prepare: h.prepare,
 		Token: func(module string) (string, error) {
 			*modules = append(*modules, module)
 			return "delivery-" + module, nil
@@ -206,8 +194,7 @@ func (h *deliveryHost) deliverer(t *testing.T, state string, modules *[]string) 
 }
 
 // TestANativeGenerationMovesOnlyWhenTheContentDoes: one carrier per delivery,
-// to the manifest route, with the delivery credential of the workloads'
-// namespace. The same content replays its generation, byte for byte; changed
+// with the delivery credential of the workloads' namespace. The same content replays its generation, byte for byte; changed
 // content — a second workload started — is the next one; and the record
 // outlives the deliverer, so a restarted run replays rather than restarting
 // at 1.
@@ -220,7 +207,7 @@ func TestANativeGenerationMovesOnlyWhenTheContentDoes(t *testing.T) {
 
 	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
-	require.Equal(t, Receipt{Status: http.StatusOK, Disposition: "accepted", Generation: 1}, receipt)
+	require.Equal(t, Receipt{Disposition: "accepted", Generation: 1}, receipt)
 	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
 	both := renderNative(t, module, services, "api", "worker")
@@ -232,9 +219,8 @@ func TestANativeGenerationMovesOnlyWhenTheContentDoes(t *testing.T) {
 	_, err = restarted.Deliver(t.Context(), renderNative(t, module, services, "api", "worker"))
 	require.NoError(t, err)
 
-	require.Equal(t, []string{manifestDeliveryPath, manifestDeliveryPath, manifestDeliveryPath, manifestDeliveryPath}, host.paths)
 	require.Equal(t, []string{"crm", "crm", "crm", "crm"}, modules)
-	require.Equal(t, "Bearer delivery-crm", host.bearers[0])
+	require.Equal(t, "delivery-crm", host.bearers[0])
 	generations := []uint64{}
 	for _, manifest := range host.manifests {
 		generations = append(generations, manifest.Generation)
@@ -244,18 +230,17 @@ func TestANativeGenerationMovesOnlyWhenTheContentDoes(t *testing.T) {
 	require.FileExists(t, filepath.Join(state, "generations.json"))
 }
 
-// A host's refusal (409: a stale or rewritten generation, a withdrawn
-// binding) is an error with its reason, and retains the reservation: delivering the
-// same content again settles to the same generation.
+// A host's refusal (a stale or rewritten generation, a withdrawn binding) is
+// an error with its reason, and retains the reservation: delivering the same
+// content again settles to the same generation.
 func TestANativeDeliveryTheHostRefusesRetainsItsReservation(t *testing.T) {
 	module, services := nativeModule(t, "crm", false)
 	host := newDeliveryHost(t)
-	host.status = []int{http.StatusConflict}
+	host.refusals = []error{&HostStatusError{Code: codes.FailedPrecondition, Message: "module manifest generation is older than the applied generation"}}
 	var modules []string
 	deliverer := host.deliverer(t, t.TempDir(), &modules)
-	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
+	_, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.ErrorContains(t, err, "older than the applied generation")
-	require.Equal(t, http.StatusConflict, receipt.Status)
 	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), host.manifests[1].Generation, "the refused delivery retained its reserved generation")
@@ -294,162 +279,4 @@ func TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration(t *testing.T) {
 	require.Equal(t, []string{"crm", "crm", "crm"}, modules, "a withdrawal is delivered by the module's carrier")
 	require.Equal(t, string(host.bodies[1]), string(host.bodies[2]), "a withdrawal is replayed byte for byte")
 	require.False(t, live.Removed, "the delivered manifest is untouched")
-}
-
-// envelopeHost stands in for the host's administrator API: fixture sign-in,
-// the envelope in force, and conditional writes.
-type envelopeHost struct {
-	*httptest.Server
-	mu       sync.Mutex
-	revision uint64
-	document string
-	writes   []map[string]any
-	signIns  int
-	refusal  int
-}
-
-func newEnvelopeHost(t *testing.T) *envelopeHost {
-	t.Helper()
-	host := &envelopeHost{}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/auth/authenticate", func(w http.ResponseWriter, r *http.Request) {
-		host.mu.Lock()
-		host.signIns++
-		host.mu.Unlock()
-		var body struct {
-			Provider string            `json:"provider"`
-			Fixture  map[string]string `json:"fixture"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.Provider != "email" || body.Fixture["token"] != "dev-admin" {
-			http.Error(w, "unknown fixture", http.StatusBadRequest)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"accessToken": "session"})
-	})
-	authorised := func(w http.ResponseWriter, r *http.Request) bool {
-		host.mu.Lock()
-		refusal := host.refusal
-		host.mu.Unlock()
-		if refusal != 0 {
-			http.Error(w, "refused", refusal)
-			return false
-		}
-		if r.Header.Get("Authorization") != "Bearer session" {
-			http.Error(w, "unauthenticated", http.StatusUnauthorized)
-			return false
-		}
-		return true
-	}
-	mux.HandleFunc("GET /v1/platform/module-envelope", func(w http.ResponseWriter, r *http.Request) {
-		if !authorised(w, r) {
-			return
-		}
-		host.mu.Lock()
-		defer host.mu.Unlock()
-		if host.revision == 0 {
-			http.Error(w, "none", http.StatusNotFound)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"envelope": map[string]any{"revision": host.revision, "document": host.document}})
-	})
-	mux.HandleFunc("PUT /v1/platform/module-envelope", func(w http.ResponseWriter, r *http.Request) {
-		if !authorised(w, r) {
-			return
-		}
-		raw, _ := io.ReadAll(r.Body)
-		var body map[string]any
-		_ = json.Unmarshal(raw, &body)
-		host.mu.Lock()
-		defer host.mu.Unlock()
-		if uint64(body["expectedRevision"].(float64)) != host.revision {
-			http.Error(w, "conflict", http.StatusConflict)
-			return
-		}
-		host.writes = append(host.writes, body)
-		host.revision++
-		host.document = body["document"].(string)
-		_ = json.NewEncoder(w).Encode(map[string]any{})
-	})
-	host.Server = httptest.NewServer(mux)
-	t.Cleanup(host.Close)
-	return host
-}
-
-func (h *envelopeHost) writer() *EnvelopeWriter {
-	return &EnvelopeWriter{GatewayURL: h.URL, FixtureProvider: "email", FixtureToken: "dev-admin"}
-}
-
-func grantsOf(principals ...string) map[string]EnvelopeGrant {
-	grants := map[string]EnvelopeGrant{}
-	for _, principal := range principals {
-		grants[principal] = EnvelopeGrant(`{"queues":["` + principal + `.jobs"],"cross_tenant":false,"tenant":""}`)
-	}
-	return grants
-}
-
-// The envelope a run writes is grants only: each module principal's grant, as
-// the composition states it, under the revision — no approved builds, no
-// workload identities, no bindings.
-func TestTheEnvelopeIsEachPrincipalsGrant(t *testing.T) {
-	document, err := BuildEnvelope(3, grantsOf("wiki", "proposals"))
-	require.NoError(t, err)
-	require.JSONEq(t, `{"revision":3,"principals":{
-		"wiki":{"grant":{"queues":["wiki.jobs"],"cross_tenant":false,"tenant":""}},
-		"proposals":{"grant":{"queues":["proposals.jobs"],"cross_tenant":false,"tenant":""}}}}`, string(document))
-}
-
-// Ensure writes the next revision, expecting the one it read, only when the
-// envelope in force does not already say what the run would write.
-func TestEnsureWritesTheEnvelopeOnlyWhenItChanges(t *testing.T) {
-	host := newEnvelopeHost(t)
-	writer := host.writer()
-	build := func(principals ...string) func(uint64) ([]byte, error) {
-		return func(revision uint64) ([]byte, error) { return BuildEnvelope(revision, grantsOf(principals...)) }
-	}
-	revision, err := writer.Ensure(context.Background(), build("wiki"))
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), revision, "a host with no envelope is written its first")
-	require.Len(t, host.writes, 1)
-	require.Equal(t, float64(0), host.writes[0]["expectedRevision"])
-
-	revision, err = writer.Ensure(context.Background(), build("wiki"))
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), revision, "the same content is the revision in force")
-	require.Len(t, host.writes, 1, "an unchanged envelope is not rewritten")
-
-	revision, err = writer.Ensure(context.Background(), build("wiki", "proposals"))
-	require.NoError(t, err)
-	require.Equal(t, uint64(2), revision)
-	require.Len(t, host.writes, 2)
-	require.Equal(t, float64(1), host.writes[1]["expectedRevision"])
-	require.Equal(t, 1, host.signIns, "one session serves the run")
-}
-
-func TestEnvelopeWriterReauthenticatesOnlyAnUnauthorizedRequest(t *testing.T) {
-	t.Run("expired session", func(t *testing.T) {
-		host := newEnvelopeHost(t)
-		writer := host.writer()
-		writer.accessToken = "expired"
-		_, err := writer.Ensure(t.Context(), func(revision uint64) ([]byte, error) { return BuildEnvelope(revision, grantsOf("example")) })
-		require.NoError(t, err)
-		require.Equal(t, 1, host.signIns)
-		require.Len(t, host.writes, 1)
-		require.Equal(t, float64(0), host.writes[0]["expectedRevision"], "retry preserves the optimistic concurrency precondition")
-	})
-	for _, refusal := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		t.Run(http.StatusText(refusal), func(t *testing.T) {
-			host := newEnvelopeHost(t)
-			host.refusal = refusal
-			writer := host.writer()
-			_, _, err := writer.Current(t.Context())
-			require.Error(t, err)
-			wantSignIns := 1
-			if refusal == http.StatusUnauthorized {
-				wantSignIns = 2
-			}
-			require.Equal(t, wantSignIns, host.signIns, "retry once only for an unauthenticated request")
-			require.Empty(t, host.writes)
-		})
-	}
 }

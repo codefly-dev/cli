@@ -184,7 +184,7 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Post(context.Background(), "console", &solutionhost.Signed{Document: document, Envelope: []byte(`{}`)}, "delivery-credential"); err != nil {
+	if _, err := send(context.Background(), d, "console", &solutionhost.Signed{Document: document, Envelope: []byte(`{}`)}, "delivery-credential"); err != nil {
 		t.Fatal(err)
 	}
 	authority := stub.seen[0].GetAuthority()

@@ -102,23 +102,28 @@ collection and read back), and stamps that artifact as the payload. The same
 render hands every service declaring the `artifact-cache` workspace
 configuration `REPOSITORY`, that repository, which a host reads bundles from by
 the digest it admits. A local render and a local k3d cluster's publish and
-project nothing. Before native delivery, Codefly builds every declared page
-through this same frontend builder and the owner's `package.json` build script
-(`npm ci && npm run build`); no manual bundle build is required. Native builds
-snapshot the current repository files selected by Git, including uncommitted
-edits and nonignored new files, so sibling package dependencies remain available.
-Without a repository, the component directory is the build context. `.git`,
-`.codefly`, `node_modules` and this frontend's `dist` are excluded from local
-snapshots, even if tracked. Shipped sibling package artifacts remain inputs. The
-source tree is never modified and an old local dist is never used as proof of a
-successful build.
-
-Docker BuildKit's existing content cache reuses the build layer for unchanged
-source, recipe and pinned builder image. Changed selected input (including a
-lockfile or sibling package) invalidates it; clearing the builder cache also
-requires a build. Each delivery exports the resulting bundle to a fresh temporary
-directory, verifies a regular `mf-manifest.json`, archives it in Core's canonical
-form and retains it in `.codefly/selection-artifacts` under its digest. The
+project nothing. Before native delivery, Codefly builds every declared page;
+no manual bundle build is required. The build is keyed by the frontend's own
+inputs: the files of its npm project (`services/fe-remote`, or the module root
+when only that holds a `package.json`) that its repository tracks, lockfile
+included, with their working-tree content, and how it is built. Unchanged
+inputs whose bundle is still retained build nothing, so a Go edit that restarts
+a service, or an edit anywhere else in the repository, never rebuilds the
+page; the record is kept under `.codefly/run/<environment>/frontend/`. The
+build runs before the run-wide delivery lock is taken, so it delays no other
+module's delivery. It runs the frontend's own npm build natively in its project
+(`npm ci` first when its dependencies were not installed from this lockfile,
+then `npm run build`), with no variable of the shell but what finds npm and
+its registry; a leftover `dist` with no record of the inputs it was built
+from is never a serving claim. When the service that owns the page runs in a
+container, the page builds in the pinned builder image as deployment does,
+from the repository's tracked files with their working-tree content, so a
+sibling package resolves. As in the deployed build, untracked files never
+reach a build, ignored or not. A symlink or special file in the frontend's
+own project is refused by name, since the deployed build refuses it too; one
+elsewhere in the repository is not this frontend's input and is left out of the
+containerized build's context. The bundle is archived in Core's canonical form
+and retained in `.codefly/selection-artifacts` under its digest, and the
 manifest names those exact bytes. A build failure refuses delivery with the
 component name, build command and final 40 lines of build output; it never
 falls back to a previous bundle. Headless components perform no frontend build.
@@ -1101,11 +1106,18 @@ run, the CLI is:
   once the host is ready to take it (below), the run builds its module's manifest (the same `moduleInstanceOf` and
   `ModuleManifestOf` a cell's render uses), listing **every** identity
   workload of the module that runs now, with the addresses this run allocated
-  for its routed endpoints, signs it with the developer key and POSTs it to
-  `/platform/_delivery/manifest` with a native credential for account
-  `delivery` in the module's namespace. When the set of running identity
-  workloads changes, the manifest is delivered again; its generation is
-  settled from its content. For a composition-interface host, that includes
+  for its routed endpoints, signs it with the developer key and carries it,
+  with a native credential for account `delivery` in the module's namespace,
+  to `ApplyManifest` of the `codefly.dev/composition` interface the
+  `host.delivery` endpoint declares in its module's interface endpoints. A
+  host whose delivery endpoint does not declare it, or whose module does not
+  load, receives nothing from a native run, by name. The run opens one
+  connection to that endpoint — at the address its recorded instance answers,
+  with TLS when the endpoint declares itself `secured`, exactly as readiness
+  dials it — reuses it for every delivery, retry and withdrawal, dials again
+  only when the host answers at another address, and closes it when the run
+  stops. When the set of running identity workloads changes, the manifest is
+  delivered again; its generation is settled from its content, which includes
   the captured method policies, scope ceilings and solution roles, including
   whether a policy document is present. The same captured declaration is
   signed and sent: a policy-only change advances the generation once.
@@ -1116,29 +1128,17 @@ run, the CLI is:
   after restart unchanged content replays it; changed content advances it.
   Entering paired settlement from an old live Core-only record advances once,
   because the old record cannot establish policy equality. Withdrawals keep their
-  Core-only identity and read no policy source, so an old terminal withdrawal
-  still replays its exact generation. A reserved withdrawal is terminal locally:
-  only its exact content may replay, including when its response was lost or signing
-  failed before sending; a later live attempt cannot displace that reservation. An old record learns terminality
-  when its exact withdrawal is replayed. Older records alone cannot reconstruct
-  host tombstones they never recorded. Legacy HTTP delivery retains Core-only
-  settlement and also reserves before sending. Deleting the record is not a
-  recovery procedure; it loses the evidence needed to avoid rewriting a generation.
-  These rules do not establish policy-file watch/reload behavior or power-loss
-  durability beyond Core's atomic writer.
-- **the administrator** — before delivering, it makes sure the host holds the
-  composition's envelope: `{"revision": N, "principals": {"<module>":
-  {"grant": <grant>}}}`, each grant read from the `principals` of
-  `configurations/<profile>/module-envelope.json`, resolved through the
-  profile's derivation as above (already in the host's
-  grant shape) — every composed workspace's file first, then the consuming
-  workspace's own, which decides a principal it states: a platform base
-  states its modules' grants, and a solution composed on it states only its
-  own principal's. Two composed workspaces that grant one principal
-  differently, which the consuming workspace does not decide, are refused by
-  name. It is written through `PlatformAdminService/PutModuleEnvelope` as
-  the fixture's `super_admin`, at the next revision and only when it changed.
-  A composition stating no grant writes none.
+  Core-only identity and read no policy source, so a withdrawal replays its
+  exact generation. The record never refuses a delivery: a module re-added after
+  its withdrawal is the next generation, and whether the withdrawal is terminal
+  is the host's to say. Core's admission keeps it terminal for as long as the
+  host holds it; the local authority holds applied deliveries in memory only, so
+  its refusal says to stop the run and start it again, after which the host
+  accepts the module at that generation. A withdrawal the host refuses because
+  it already holds one for the binding is complete. Deleting the record is not
+  a recovery procedure; it loses the evidence needed to avoid rewriting a
+  generation. These rules do not establish policy-file watch/reload behavior or
+  power-loss durability beyond Core's atomic writer.
 
 **A delivery waits for the host, within a deadline.** A workload reports
 Running on its own schedule: a module the gateway does not depend on can be
@@ -1148,12 +1148,12 @@ starts only once the gateway and the `host.delivery` service are ready by the
 readiness the run gates on (`Flow.ServiceReadiness`: Start completed, consumed
 endpoints answering), and a refusal that only says the host is not serving
 yet is asked again with a backoff from 0.5 s doubling to 10 s, for at most
-**10 minutes** from Running: a 5xx; a 404 from the gateway (sign-in or
-envelope) before it exposes the route; a 409 on the envelope (a lost revision
-race); no answer at all (refused, reset, timed out). A refusal that says no
-fails at once with its reason: any other 4xx, including a 404 from the host's
-own delivery endpoint (a wrong `host.delivery`), a policy refusal, an address
-that is not a URL, a manifest the host received and withheld with a reason. The first
+**10 minutes** from Running: `Unavailable` (no answer at all among them),
+`DeadlineExceeded` or `ResourceExhausted`. Every other refusal is the host's
+answer and fails at once with its reason: `Unimplemented` (an endpoint that
+serves no composition interface), `Internal`, `InvalidArgument`,
+`PermissionDenied`, `FailedPrecondition` (a stale or rewritten generation, a
+held withdrawal), and any code the run does not classify. The first
 wait and every change of its reason are logged at info with the service, its
 module and the reason. A workload not delivered by the deadline is reported as
 an error naming it, why the host is still not serving, the last refusal it
@@ -1172,16 +1172,6 @@ host already applied, and a canceled call does not establish whether it applied.
 Delivery still begins after Running; these bounds do not make authority available
 to a service during its own startup.
 
-The native renderer also accepts an explicit admitted workload set independently
-of the ready subset used for endpoint publication. Ready workloads must belong
-to that admitted set. Its explicit frontend-deferral input permits authority-only
-declarations before a bundle exists; ordinary frontend publication still requires
-the complete built payload. Deferral omits the frontend in a full replacement
-manifest, deliberately removing any previous current page. It does not preserve
-an old page implicitly. A caller retaining a valid ready page must supply its
-verified payload instead. The launcher does not yet use these inputs: graph
-ordering, pre-start delivery and lifecycle integration remain separate work.
-
 The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both under
 `.codefly/run/<environment>/host/`; it refuses both in a pod. The
@@ -1197,10 +1187,9 @@ the reloaded composition no longer names is stopped, and each stopped identity
 workload is taken out of its module's manifest: a module that still runs an
 identity workload is delivered again listing what remains, and one that runs
 none is **withdrawn** — its manifest at the next generation with
-`removed: true`, terminal for the binding — and the run waits, up to a minute,
-until the host's read-only applied record
-(`GET /platform/_delivery/applied/<binding>`, read as the endpoint-publisher)
-holds that exact withdrawal. A withdrawal not yet applied stays pending and is
+`removed: true`, which the host keeps terminal for the binding while it holds
+it — and the run waits, up to a minute, until the applied record
+`ApplyManifest` acknowledged holds that exact withdrawal. A withdrawal not yet applied stays pending and is
 redelivered unchanged (the host replays it) on the next signal.
 
 ## Dev deployments
@@ -1220,8 +1209,8 @@ in-process executor.
 
 No cell has received a delivered module envelope yet; the envelope route is the
 host's parallel change, verified against core's verifier only. A native run
-still writes the envelope as the fixture's administrator; converging it onto
-the delivered path is named and not built.
+writes no envelope: it delivers through the composition interface, where the
+manifest is the ceiling.
 
 Named and not built: a **withdrawal path for a whole module** — a module
 removed from the composition has no render and so no publish, and its manifest

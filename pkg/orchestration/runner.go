@@ -1000,17 +1000,6 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot validate start request")
 	}
 
-	if err = ctx.Err(); err != nil {
-		return nil, err
-	}
-	if before := runner.world.BeforeRuntimeStart; before != nil {
-		if err = before(ctx, runner.instance.Service); err != nil {
-			return nil, w.Wrapf(err, "cannot admit service before runtime start")
-		}
-	}
-	if err = ctx.Err(); err != nil {
-		return nil, err
-	}
 	resp, err := runner.instance.Runtime.Start(ctx, req)
 
 	if err != nil {

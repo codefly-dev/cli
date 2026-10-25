@@ -64,11 +64,6 @@ export OPENAI_API_KEY=...
 codefly explain build service
 ```
 
-The `go install` needs read access to `codefly-dev/authority` and
-`GOPRIVATE=github.com/codefly-dev/authority`: the CLI's module requires that
-private repository's libraries, so it is not supported from outside the
-codefly-dev organization while the repository stays private.
-
 The reference `codefly-help` provider is built and installed separately from
 the main CLI. It calls the OpenAI Responses API without an SDK, defaults to
 `gpt-5.6-luna`, and accepts `CLI_HELP_MODEL` and `CLI_HELP_API_URL` overrides.
@@ -201,14 +196,15 @@ offered for installation in the host's own registry. See
 [module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
 
 A component declaring `solution.frontend.codefly.yaml` has its remote built
-before native delivery. Codefly reuses the deployed frontend builder to run
-`npm ci && npm run build` from the remote's own npm project (or the module root),
-with the pinned Node image. Local edits and nonignored new files are included;
-the frontend's `dist` and `node_modules` are excluded. BuildKit caches by input
-content, so an unchanged build is reused. Failure names the component and includes the build's
-output; an old dist is never delivered instead. The complete generated bundle
-is retained by digest in the existing artifact cache. See
-[module manifests](module-manifests.md) for source and cache semantics.
+before native delivery, only when its own inputs changed: the files of its npm
+project the repository tracks, lockfile included. It runs the remote's own
+`npm ci` (when the lockfile changed) and `npm run build` natively, or in the
+pinned Node image when the service owning the page runs in a container, and
+before the run-wide delivery lock. Untracked files never reach the build.
+Failure names the component and includes the build's output; an old dist is
+never delivered instead. The complete generated bundle is retained by digest
+in the existing artifact cache. See [module manifests](module-manifests.md)
+for source and cache semantics.
 
 ### `codefly run service [name...]`
 

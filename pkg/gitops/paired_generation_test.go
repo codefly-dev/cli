@@ -246,8 +246,7 @@ func TestPairedMigrationPreservesTerminalGeneration(t *testing.T) {
 			content, err := solutionhost.SignedPayload(manifest)
 			require.NoError(t, err)
 			record := &nativeGenerations{Entries: map[string]nativeGeneration{}}
-			_, err = settle(record, manifest.Binding, content, false)
-			require.NoError(t, err)
+			settle(record, manifest.Binding, content, false)
 			entry := record.Entries[manifest.Binding]
 			entry.Generation = 7
 			record.Entries[manifest.Binding] = entry
@@ -280,15 +279,18 @@ func TestNativeReservationSerializesConcurrentDeliverers(t *testing.T) {
 			done := make(chan error, 2)
 			for i := range 2 {
 				go func() {
+					post := func(_ context.Context, _ string, signed *solutionhost.Signed, _ string) (Receipt, error) {
+						m, err := solutionhost.ManifestFromVerified(signed.Document)
+						if err != nil {
+							return Receipt{}, err
+						}
+						ready <- m.Generation
+						<-release
+						return Receipt{}, nil
+					}
 					d := &NativeDeliverer{Signer: signer, StateDir: dir, Token: func(string) (string, error) { return "credential", nil },
-						Post: func(_ context.Context, _ string, signed *solutionhost.Signed, _ string) (Receipt, error) {
-							m, err := solutionhost.ManifestFromVerified(signed.Document)
-							if err != nil {
-								return Receipt{}, err
-							}
-							ready <- m.Generation
-							<-release
-							return Receipt{}, nil
+						Prepare: func(context.Context, string, bool) (*PreparedDelivery, error) {
+							return &PreparedDelivery{Content: []byte{0}, Post: post}, nil
 						}}
 					m := pairedManifest()
 					m.Release.Version = fmt.Sprintf("0.1.%d", i)
@@ -369,7 +371,11 @@ func TestNativePreparationFailureDoesNotReserve(t *testing.T) {
 }
 
 func TestNativeFailedSigningRetainsReservation(t *testing.T) {
-	d := &NativeDeliverer{StateDir: t.TempDir()}
+	d := &NativeDeliverer{StateDir: t.TempDir(), Prepare: func(context.Context, string, bool) (*PreparedDelivery, error) {
+		return &PreparedDelivery{Content: []byte{0}, Post: func(context.Context, string, *solutionhost.Signed, string) (Receipt, error) {
+			return Receipt{}, errors.New("sent without a signature")
+		}}, nil
+	}}
 	_, err := d.Deliver(t.Context(), pairedManifest())
 	require.Error(t, err)
 	data, err := os.ReadFile(filepath.Join(d.StateDir, "generations.json"))
@@ -379,7 +385,12 @@ func TestNativeFailedSigningRetainsReservation(t *testing.T) {
 	require.Equal(t, uint64(1), record.Entries["probe"].Generation)
 }
 
-func TestNativeRejectedRevivalCannotDisplaceTerminalReservation(t *testing.T) {
+// A module re-added after its withdrawal is delivered at the next generation
+// whatever happened to the withdrawal: the local record never refuses, and
+// whether the withdrawal is terminal is the host's to say. A host that still
+// holds it refuses by naming what to do; a host that never received it (the
+// signing failed) or that started again with nothing held accepts the module.
+func TestNativeRevivalAfterAWithdrawalIsTheHostsToRefuse(t *testing.T) {
 	for _, outcome := range []string{"acknowledged", "lost-response", "failed-sign"} {
 		t.Run(outcome, func(t *testing.T) {
 			conn, peer := pairedConnection(t)
@@ -404,21 +415,30 @@ func TestNativeRejectedRevivalCannotDisplaceTerminalReservation(t *testing.T) {
 			} else {
 				require.Error(t, err)
 			}
+			require.Equal(t, uint64(2), withdrawal.Generation)
 			peer.mu.Lock()
 			peer.loseReply = false
 			peer.mu.Unlock()
-			// A fresh attempt reads the terminal reservation even without a receipt.
+
 			d = &NativeDeliverer{Signer: signer, StateDir: d.StateDir, Prepare: c.Prepare, Token: d.Token}
-			_, err = d.Deliver(t.Context(), pairedManifest())
-			require.ErrorIs(t, err, solutionhost.ErrWithdrawn)
-			_, err = d.Deliver(t.Context(), withdrawal)
-			require.NoError(t, err, "a rejected revival must not strand terminal replay")
-			require.Equal(t, uint64(2), withdrawal.Generation)
-			sent := 3
+			revived := pairedManifest()
+			_, err = d.Deliver(t.Context(), revived)
+			require.Equal(t, uint64(3), revived.Generation, "a delivery after a withdrawal is the next generation")
 			if outcome == "failed-sign" {
-				sent = 2
+				require.NoError(t, err, "a host that never received the withdrawal accepts the module")
+				return
 			}
-			require.Len(t, peer.requests(), sent, "known terminal reservation refuses revival without RPC")
+			require.ErrorIs(t, err, solutionhost.ErrWithdrawn)
+			require.ErrorContains(t, err, "stop the run and start it again")
+			var refusal *HostStatusError
+			require.ErrorAs(t, err, &refusal)
+			require.False(t, refusal.Transient())
+
+			restarted, _ := pairedConnection(t)
+			fresh := NewCompositionDelivery(restarted, signer, nil, nil, nil)
+			d = &NativeDeliverer{Signer: signer, StateDir: d.StateDir, Prepare: fresh.Prepare, Token: d.Token}
+			_, err = d.Deliver(t.Context(), pairedManifest())
+			require.NoError(t, err, "a host started again accepts the module at the reserved generation")
 		})
 	}
 }

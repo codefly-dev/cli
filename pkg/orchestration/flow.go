@@ -229,11 +229,6 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
-	// BeforeRuntimeStart completes run-owned admission immediately before the
-	// agent starts a local process. It runs on every start, including restarts;
-	// returning an error prevents the Start RPC. Nil when no admission is needed.
-	BeforeRuntimeStart func(context.Context, *resources.Service) error
-
 	// RenderOwnedGroups supplies the render-owned workspace configuration
 	// group (module-authority) to one service of a NATIVE run. A render
 	// projects it per workload; a laptop run has no render, so the CLI hands
@@ -677,6 +672,24 @@ func (flow *Flow) runtimeContextFor(svc *resources.Service) string {
 		serviceName = svc.Name
 	}
 	return flow.preferences.RuntimeContextFor(serviceName, agentName, flow.runtimeContext)
+}
+
+// ServiceRuntimeContext is the runtime context a service runs in, as this run
+// resolved it — a "free" agent's chosen backend included — or, for a service
+// the run holds no runner for, the context its preferences select.
+func (flow *Flow) ServiceRuntimeContext(unique string) string {
+	if flow.hub != nil {
+		for _, m := range flow.hub.all() {
+			if manager, ok := m.(*Manager); ok && manager.Runner != nil && manager.Runner.Unique() == unique {
+				return manager.Runner.runtimeContext
+			}
+		}
+	}
+	service, err := flow.ServiceFromUnique(unique)
+	if err != nil {
+		service = nil
+	}
+	return flow.runtimeContextFor(service)
 }
 
 // DockerStatus captures whether the Docker engine is reachable and, for

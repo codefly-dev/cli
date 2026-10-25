@@ -45,10 +45,10 @@ type blockedDeliveryFlow struct {
 	once    sync.Once
 }
 
-func (f *blockedDeliveryFlow) GetAddressForEndpoint(ctx context.Context, _, _, _ string) (string, error) {
+func (f *blockedDeliveryFlow) GRPCEndpointTarget(ctx context.Context, _, _, _ string) (orchestration.GRPCTarget, error) {
 	f.once.Do(func() { close(f.entered) })
 	<-ctx.Done()
-	return "", ctx.Err()
+	return orchestration.GRPCTarget{}, ctx.Err()
 }
 
 func TestNativeDeliveryCanCancelWhileAnotherDeliveryHoldsTheSerializer(t *testing.T) {

@@ -867,14 +867,6 @@ At each transition, the policy checks the dependency graph: if service B depends
 
 If an action fails (executor returns `Wait`), the action is marked as `Failing` and the PauseManager handles retry.
 
-`World.BeforeRuntimeStart`, when supplied by the run's composition owner, runs
-synchronously after request validation and immediately before each local agent
-`Runtime.Start` RPC, including restarts. Refusal or cancellation prevents that RPC.
-Remote services and actions that only initialize or validate never invoke it.
-The callback is an admission boundary; it neither schedules prerequisites nor
-establishes host readiness by itself. Native manifest delivery is not yet wired
-to this callback and still follows the Running hook.
-
 ### RuntimeTestPolicy
 
 The agent's test dependency mode selects what starts before the target's test:

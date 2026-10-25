@@ -167,7 +167,7 @@ func TestContractRolesReachTheAuthorityDocument(t *testing.T) {
 	}
 	document, err := solutionhost.SignedPayload(manifest)
 	require.NoError(t, err)
-	_, err = d.Post(t.Context(), "shop", &solutionhost.Signed{Document: document, Envelope: []byte(`{}`)}, "delivery-credential")
+	_, err = send(t.Context(), d, "shop", &solutionhost.Signed{Document: document, Envelope: []byte(`{}`)}, "delivery-credential")
 	require.NoError(t, err)
 	var doc compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(stub.seen[0].GetAuthority().GetDocument(), &doc))

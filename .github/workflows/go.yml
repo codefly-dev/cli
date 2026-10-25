@@ -22,16 +22,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # The CLI requires codefly-dev/authority's interface client, hop and delivery
-  # libraries, and that repository is private: fetched from GitHub with the
-  # existing organization GH_PAT (handed to git by
-  # .github/scripts/download-go-modules.sh for the download step alone), never
-  # via the module proxy or the checksum database. GOPRIVATE is the default of
-  # both GONOPROXY and GONOSUMDB. Every other codefly-dev module is public and
-  # stays on the proxy and the checksum database.
-  GOPRIVATE: github.com/codefly-dev/authority
-
 jobs:
   quality:
     name: ${{ matrix.gate }}
@@ -98,22 +88,15 @@ jobs:
           restore-keys: |
             cli-go-build-v3-${{ matrix.gate }}-${{ runner.os }}-
 
-      # Every gate resolves the CLI's modules, codefly-dev/authority's among
-      # them. The token is handed to the install action and the download step
-      # only; nothing writes it into git's configuration.
       # This is both the canonical bootstrap and the cross-repository action
       # contract consumed by Codefly products. Dogfood the local action so a
       # release cannot publish an installer that CI never exercised.
       - name: install Codefly
         if: matrix.gate == 'bootstrap-audit' || matrix.gate == 'control-integration'
         uses: ./.github/actions/install
-        with:
-          authority-token: ${{ secrets.GH_PAT }}
 
       - name: Install Dependencies
-        env:
-          AUTHORITY_TOKEN: ${{ secrets.GH_PAT }}
-        run: .github/scripts/download-go-modules.sh
+        run: go mod download
 
       # govulncheck gate via the CLI (replaces scripts/govulncheck.sh):
       # suppressions + staleness from .govulncheck.yaml, fails only on
@@ -302,14 +285,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-
-      # The linter loads every package, so the modules must be in the cache
-      # before it runs, codefly-dev/authority's among them; the linter itself
-      # never sees the token.
-      - name: Download the CLI's modules
-        env:
-          AUTHORITY_TOKEN: ${{ secrets.GH_PAT }}
-        run: .github/scripts/download-go-modules.sh
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0

@@ -5,15 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -22,6 +20,9 @@ import (
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var testDeliverySchedule = deliverySchedule{Deadline: 2 * time.Second, FirstBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond}
@@ -32,45 +33,59 @@ func testDelivery(ready, deliver func(context.Context) error) hostDelivery {
 
 func hostAlwaysReady(context.Context) error { return nil }
 
-// answering is a host answering status on every request.
-func answering(t *testing.T, status int, body string) string {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/v1/auth/authenticate" && status != http.StatusNotFound {
-			_, _ = response.Write([]byte(`{"accessToken":"admin"}`))
-			return
-		}
-		response.WriteHeader(status)
-		_, _ = response.Write([]byte(body))
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+// refusingComposition is a composition host that refuses the first refusals
+// ApplyManifest calls with their codes, then accepts.
+type refusingComposition struct {
+	compositionv1.UnimplementedCompositionServiceServer
+	mu       sync.Mutex
+	refusals []codes.Code
+	calls    int
 }
 
-func envelopeWriter(gatewayURL string) *gitops.EnvelopeWriter {
-	return &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: "fixture", FixtureToken: "admin"}
-}
-
-// readEnvelope is the first host call a delivery makes, wrapped as deliver
-// wraps it.
-func readEnvelope(gatewayURL string) func(context.Context) error {
-	return func(ctx context.Context) error {
-		if _, _, err := envelopeWriter(gatewayURL).Current(ctx); err != nil {
-			return fmt.Errorf("plan the module envelope: %w", err)
-		}
-		return nil
+func (h *refusingComposition) ApplyManifest(_ context.Context, req *compositionv1.ApplyManifestRequest) (*compositionv1.ApplyManifestResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls++
+	if len(h.refusals) > 0 {
+		code := h.refusals[0]
+		h.refusals = h.refusals[1:]
+		return nil, status.Errorf(code, "refused with %s", code)
 	}
+	manifest, err := solutionhost.ManifestFromVerified(req.GetCarrier().GetDocument())
+	if err != nil {
+		return nil, err
+	}
+	return &compositionv1.ApplyManifestResponse{Principal: manifest.Alias, Generation: manifest.Generation}, nil
 }
 
-// postManifest posts a module manifest straight to the host's delivery
-// endpoint, as a delivery does after the envelope.
-func postManifest(t *testing.T, deliveryURL string) func(context.Context) error {
+// serveComposition serves host — nil serves no composition interface at all —
+// on a loopback port, and answers how the run reaches it.
+func serveComposition(t *testing.T, host compositionv1.CompositionServiceServer) orchestration.GRPCTarget {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	if host != nil {
+		compositionv1.RegisterCompositionServiceServer(server, host)
+	}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	return orchestration.GRPCTarget{Address: listener.Addr().String()}
+}
+
+// deliverTo delivers a module manifest through the composition interface at
+// target, as a delivery attempt does.
+func deliverTo(t *testing.T, target orchestration.GRPCTarget) func(context.Context) error {
 	return func(ctx context.Context) error {
 		_, private, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 		signer, err := solutionhost.NewInMemorySigner("dev-test", private)
 		require.NoError(t, err)
-		deliverer := &gitops.NativeDeliverer{Signer: signer, DeliveryURL: deliveryURL, StateDir: t.TempDir(), Token: func(string) (string, error) { return "token", nil }}
+		conn, err := target.Dial()
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		composition := gitops.NewCompositionDelivery(conn, signer, nil, nil, nil)
+		deliverer := &gitops.NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { return "token", nil }}
 		_, err = deliverer.Deliver(ctx, &solutionhost.ModuleManifest{
 			Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.model", Alias: "model", Kind: solutionhost.KindModule,
 			Host:      solutionhost.HostTarget{Coordinate: "example/local/dev", Domain: "acme"},
@@ -88,8 +103,11 @@ func postManifest(t *testing.T, deliveryURL string) func(context.Context) error 
 func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testing.T) {
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	refusedURL := "http://" + closed.Addr().String()
+	refused := orchestration.GRPCTarget{Address: closed.Addr().String()}
 	require.NoError(t, closed.Close())
+	refusing := func(code codes.Code) func(context.Context) error {
+		return deliverTo(t, serveComposition(t, &refusingComposition{refusals: []codes.Code{code}}))
+	}
 
 	for _, class := range []struct {
 		name    string
@@ -97,18 +115,15 @@ func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testin
 		says    string // the refusal really is the class it names
 		retried bool
 	}{
-		{"a 503 from the gateway's envelope read", readEnvelope(answering(t, http.StatusServiceUnavailable, "JWT validation not configured")), "HTTP 503", true},
-		{"a 404 from the gateway before it exposes the route", readEnvelope(answering(t, http.StatusNotFound, "endpoint not exposed")), "404 Not Found", true},
-		{"a 409 on the envelope write", func(ctx context.Context) error {
-			_, err := envelopeWriter(answering(t, http.StatusConflict, "revision moved")).Ensure(ctx, func(uint64) ([]byte, error) { return []byte(`{}`), nil })
-			return err
-		}, "HTTP 409", true},
-		{"no answer: connection refused", readEnvelope(refusedURL), "connection refused", true},
-		{"a 500 from the host's delivery endpoint", postManifest(t, answering(t, http.StatusInternalServerError, `{"error":"boom"}`)), "(500 Internal Server Error): boom", true},
-		{"a 404 from the host's delivery endpoint: a wrong endpoint", postManifest(t, answering(t, http.StatusNotFound, `{"error":"no such inbox"}`)), "(404 Not Found): no such inbox", false},
-		{"a 409 from the host's delivery endpoint: a different document", postManifest(t, answering(t, http.StatusConflict, `{"error":"different document"}`)), "(409 Conflict): different document", false},
-		{"a 403 from the gateway", readEnvelope(answering(t, http.StatusForbidden, "not a platform administrator")), "HTTP 403", false},
-		{"a gateway address that is not a URL", readEnvelope("http://[::1"), "missing ']'", false},
+		{"the host is unavailable", refusing(codes.Unavailable), "code = Unavailable", true},
+		{"the host is out of time", refusing(codes.DeadlineExceeded), "code = DeadlineExceeded", true},
+		{"the host is out of capacity", refusing(codes.ResourceExhausted), "code = ResourceExhausted", true},
+		{"no answer: connection refused", deliverTo(t, refused), "code = Unavailable", true},
+		{"the endpoint serves no composition interface", deliverTo(t, serveComposition(t, nil)), "code = Unimplemented", false},
+		{"an internal failure", refusing(codes.Internal), "code = Internal", false},
+		{"a manifest the host cannot read", refusing(codes.InvalidArgument), "code = InvalidArgument", false},
+		{"a carrier the host denies", refusing(codes.PermissionDenied), "code = PermissionDenied", false},
+		{"a stale generation", refusing(codes.FailedPrecondition), "code = FailedPrecondition", false},
 		{"a manifest the host has not applied for a reason it names", func(context.Context) error {
 			return errors.New("module model is delivered and not served: the host rejected generation 1: binding withdrawn")
 		}, "not served", false},
@@ -135,31 +150,17 @@ func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testin
 	}
 }
 
-// The shape of the platform-core run end to end through the real envelope
-// client: two 503s, then the answer that lets the delivery proceed.
-func TestANativeDeliveryRefusedWith503IsRetriedUntilAccepted(t *testing.T) {
-	var reads atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/v1/auth/authenticate" {
-			_, _ = response.Write([]byte(`{"accessToken":"admin"}`))
-			return
-		}
-		if reads.Add(1) <= 2 {
-			response.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = response.Write([]byte("JWT validation not configured"))
-			return
-		}
-		response.WriteHeader(http.StatusNotFound) // no envelope written yet
-	}))
-	t.Cleanup(server.Close)
-	require.NoError(t, testDelivery(hostAlwaysReady, readEnvelope(server.URL)).run(context.Background()))
-	require.Equal(t, int64(3), reads.Load())
+// A host that is unavailable twice, then accepts, through the real client.
+func TestANativeDeliveryRefusedAsUnavailableIsRetriedUntilAccepted(t *testing.T) {
+	host := &refusingComposition{refusals: []codes.Code{codes.Unavailable, codes.Unavailable}}
+	require.NoError(t, testDelivery(hostAlwaysReady, deliverTo(t, serveComposition(t, host))).run(context.Background()))
+	require.Equal(t, 3, host.calls)
 }
 
 // At the deadline the error carries why the host is still not serving and the
-// last refusal it answered, status and body.
+// last refusal it answered.
 func TestANativeDeliveryAtTheDeadlineNamesTheReasonAndTheLastRefusal(t *testing.T) {
-	refusing := readEnvelope(answering(t, http.StatusServiceUnavailable, "JWT validation not configured"))
+	refusing := deliverTo(t, serveComposition(t, &refusingComposition{refusals: []codes.Code{codes.Unavailable, codes.Unavailable, codes.Unavailable, codes.Unavailable}}))
 	ready := true
 	delivery := testDelivery(func(context.Context) error {
 		if ready {
@@ -172,14 +173,15 @@ func TestANativeDeliveryAtTheDeadlineNamesTheReasonAndTheLastRefusal(t *testing.
 	err := delivery.run(context.Background())
 	require.ErrorContains(t, err, "configured bound 30ms")
 	require.ErrorContains(t, err, "saas/auth-gateway: lifecycle: runtime start has not completed")
-	require.ErrorContains(t, err, "HTTP 503: JWT validation not configured")
+	require.ErrorContains(t, err, "refused with Unavailable")
 }
 
 // fakeLauncherFlow answers readiness per service from ready, and counts the
 // deliveries that reached the host's address — the first flow read of a
 // delivery attempt, after its preconditions.
 type fakeLauncherFlow struct {
-	ready func(service string) bool
+	ready   func(service string) bool
+	runtime string
 
 	mu                       sync.Mutex
 	attempts                 int
@@ -190,12 +192,18 @@ func (f *fakeLauncherFlow) World() *orchestration.World { return nil }
 func (f *fakeLauncherFlow) ServiceFromUnique(string) (*resources.Service, error) {
 	return nil, errors.New("no service in this test")
 }
-func (f *fakeLauncherFlow) GetAddressForEndpoint(context.Context, string, string, string) (string, error) {
+func (f *fakeLauncherFlow) GRPCEndpointTarget(context.Context, string, string, string) (orchestration.GRPCTarget, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++
 	f.attemptedBeforeHostReady = f.attemptedBeforeHostReady || !f.ready("saas/auth-gateway") || !f.ready("saas/accounts")
-	return "", errors.New("no address in this test") // refused at once: the delivery ends after this one attempt
+	return orchestration.GRPCTarget{}, errors.New("no address in this test") // refused at once: the delivery ends after this one attempt
+}
+func (f *fakeLauncherFlow) ServiceRuntimeContext(string) string {
+	if f.runtime != "" {
+		return f.runtime
+	}
+	return resources.RuntimeContextNative
 }
 func (f *fakeLauncherFlow) EndpointCarriers(context.Context, string, *basev0.NetworkAccess) (map[string]string, error) {
 	return nil, errors.New("no endpoints in this test")

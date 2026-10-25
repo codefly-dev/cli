@@ -4,11 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"syscall"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -31,7 +26,8 @@ import (
 type launcherFlow interface {
 	World() *orchestration.World
 	ServiceFromUnique(unique string) (*resources.Service, error)
-	GetAddressForEndpoint(ctx context.Context, module, service, endpoint string) (string, error)
+	GRPCEndpointTarget(ctx context.Context, module, service, endpoint string) (orchestration.GRPCTarget, error)
+	ServiceRuntimeContext(unique string) string
 	EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error)
 	ServiceReadiness(ctx context.Context, service string) *orchestration.ReadinessFailure
 }
@@ -63,33 +59,14 @@ func deliveryAbandoned(err error) bool {
 }
 
 // transientDeliveryRefusal reports whether a failed delivery attempt says the
-// host is not serving yet rather than that it refuses: a 5xx (the envelope
-// read's 503 among them); a 404 from the gateway, before it exposes the route
-// (a 404 from the host's own delivery endpoint is a wrong endpoint, not a
-// wait); a 409 on the envelope (a lost revision race); or no answer at all —
-// refused, reset or timed out, never a request that could not be formed.
-// Anything else — another 4xx, a policy refusal, a manifest the host refuses —
-// is not, and fails at once.
+// host is not serving yet rather than that it refuses: the host was
+// unreachable, out of time or out of capacity (HostStatusError.Transient).
+// Anything else — an interface the host does not serve, a policy refusal, a
+// manifest the host refuses, a refusal it could not classify — is its answer,
+// and fails at once with its reason.
 func transientDeliveryRefusal(err error) bool {
 	var refusal *gitops.HostStatusError
-	if errors.As(err, &refusal) {
-		switch {
-		case refusal.Status >= http.StatusInternalServerError:
-			return true
-		case refusal.Status == http.StatusNotFound:
-			return refusal.Gateway
-		case refusal.Status == http.StatusConflict:
-			return refusal.Envelope
-		}
-		return false
-	}
-	var transport *url.Error
-	if !errors.As(err, &transport) {
-		return false
-	}
-	var dial *net.OpError
-	return transport.Timeout() || errors.As(transport.Err, &dial) ||
-		errors.Is(transport.Err, syscall.ECONNRESET) || errors.Is(transport.Err, io.EOF) || errors.Is(transport.Err, io.ErrUnexpectedEOF)
+	return errors.As(err, &refusal) && refusal.Transient()
 }
 
 // hostDelivery is one workload's delivery as the run attempts it: its

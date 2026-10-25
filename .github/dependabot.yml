@@ -56,7 +56,6 @@ updates:
     directories:
       - /
       - /.github/actions/install
-      - /.github/actions/read-authority
     schedule:
       interval: weekly
     open-pull-requests-limit: 1

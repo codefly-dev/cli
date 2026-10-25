@@ -6,7 +6,7 @@ import (
 	"fmt"
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	"net"
-	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/solutionhost"
@@ -74,8 +74,8 @@ func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *test
 	}
 	signed := &solutionhost.Signed{Document: document, Envelope: []byte(`{"envelope":"the test host does not verify"}`)}
 	ctx := context.Background()
-	receipt, err := delivery.Post(ctx, "probe", signed, "delivery-credential")
-	if err != nil || receipt.Status != http.StatusOK || receipt.Generation != 2 || receipt.Disposition != "accepted" {
+	receipt, err := send(ctx, delivery, "probe", signed, "delivery-credential")
+	if err != nil || receipt.Generation != 2 || receipt.Disposition != "accepted" {
 		t.Fatalf("post: %+v %v", receipt, err)
 	}
 	if stub.seen[0].GetCredential() != "delivery-credential" || string(stub.seen[0].GetCarrier().GetDocument()) != string(document) {
@@ -93,14 +93,61 @@ func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *test
 	}
 	manifest.Generation = 1
 	document, _ = solutionhost.SignedPayload(manifest)
-	_, err = delivery.Post(ctx, "probe", &solutionhost.Signed{Document: document, Envelope: signed.Envelope}, "delivery-credential")
+	_, err = send(ctx, delivery, "probe", &solutionhost.Signed{Document: document, Envelope: signed.Envelope}, "delivery-credential")
 	var refusal *HostStatusError
-	if !asHostStatus(err, &refusal) || refusal.Status != http.StatusConflict {
-		t.Fatalf("a lower generation is a final refusal (409): %v", err)
+	if !asHostStatus(err, &refusal) || refusal.Code != codes.FailedPrecondition || refusal.Transient() {
+		t.Fatalf("a lower generation is a final refusal: %v", err)
 	}
-	_, err = delivery.Post(ctx, "probe", signed, "")
-	if !asHostStatus(err, &refusal) || refusal.Status != http.StatusForbidden {
-		t.Fatalf("no credential is forbidden (403): %v", err)
+	_, err = send(ctx, delivery, "probe", signed, "")
+	if !asHostStatus(err, &refusal) || refusal.Code != codes.PermissionDenied || refusal.Transient() {
+		t.Fatalf("no credential is a final refusal: %v", err)
+	}
+}
+
+// send prepares the module's declaration and sends signed with it, as
+// NativeDeliverer.Deliver does once the generation is settled.
+func send(ctx context.Context, c *CompositionDelivery, module string, signed *solutionhost.Signed, token string) (Receipt, error) {
+	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
+	if err != nil {
+		return Receipt{}, err
+	}
+	prepared, err := c.Prepare(ctx, module, manifest.Removed)
+	if err != nil {
+		return Receipt{}, err
+	}
+	return prepared.Post(ctx, module, signed, token)
+}
+
+// TestOnlyAHostThatIsNotServingIsRetried: a refusal is the host's answer and
+// fails at once, whatever its code — an interface it does not serve, an
+// internal failure, a bad request, a denial, a precondition — and only
+// unavailability, a deadline or exhausted capacity says to ask again.
+func TestOnlyAHostThatIsNotServingIsRetried(t *testing.T) {
+	for code, transient := range map[codes.Code]bool{
+		codes.Unavailable: true, codes.DeadlineExceeded: true, codes.ResourceExhausted: true,
+		codes.Unimplemented: false, codes.Internal: false, codes.InvalidArgument: false, codes.PermissionDenied: false,
+		codes.FailedPrecondition: false, codes.NotFound: false, codes.Unknown: false, codes.Aborted: false,
+	} {
+		refusal, ok := refusal("probe", &solutionhost.ModuleManifest{Binding: "b", Generation: 2}, status.Error(code, "no")).(*HostStatusError)
+		if !ok || refusal.Code != code || refusal.Transient() != transient {
+			t.Fatalf("%s: transient %v, want %v", code, refusal.Transient(), transient)
+		}
+	}
+}
+
+// TestAHostHoldingAWithdrawalSaysWhatToDo: the binding is derived, so the
+// refusal of a re-added module names the one thing the person can do.
+func TestAHostHoldingAWithdrawalSaysWhatToDo(t *testing.T) {
+	err := refusal("crm", &solutionhost.ModuleManifest{Binding: "b-crm", Generation: 3},
+		status.Errorf(codes.FailedPrecondition, "stale: %v: binding \"b-crm\" was withdrawn at generation 2", solutionhost.ErrWithdrawn))
+	var held *HostStatusError
+	if !asHostStatus(err, &held) || held.Transient() {
+		t.Fatalf("a held withdrawal is a final refusal: %v", err)
+	}
+	for _, want := range []string{"binding b-crm", "generation 3", "stop the run and start it again"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
 	}
 }
 
@@ -156,7 +203,7 @@ func TestCompositionWithdrawalDoesNotReadOrDeliverLivePolicies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipt, err := delivery.Post(context.Background(), "probe", signed, "delivery-credential")
+			receipt, err := send(context.Background(), delivery, "probe", signed, "delivery-credential")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -191,7 +238,7 @@ func TestCompositionDeliveryRefusesAMismatchedAcknowledgement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = delivery.Post(t.Context(), "probe", &solutionhost.Signed{Document: document, Envelope: []byte(`{"test":true}`)}, "credential")
+			_, err = send(t.Context(), delivery, "probe", &solutionhost.Signed{Document: document, Envelope: []byte(`{"test":true}`)}, "credential")
 			if err == nil {
 				t.Fatal("wrong generation was treated as applied")
 			}
