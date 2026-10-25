@@ -3,6 +3,7 @@ package generate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"io"
@@ -265,6 +266,70 @@ func TestGenerateContractsSkipsConnectWithoutProto(t *testing.T) {
 	}
 	if len(catalog.Endpoints) != 0 {
 		t.Fatalf("catalog.Endpoints = %+v, want none", catalog.Endpoints)
+	}
+}
+
+// A package manifest without the contracts artifact root cannot carry what
+// generate contracts writes. The refusal is returned, not logged, and names
+// the manifest and the root to add; the manifest is left as it was.
+func TestGenerateContractsNamesTheMissingArtifactRoot(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveFixtureWorkspace(t, ctx, "billing",
+		&resources.ModuleInterface{
+			Endpoints: []*resources.InterfaceEndpoint{
+				{Service: "api", Endpoint: "http", Visibility: resources.VisibilityPublic},
+			},
+		},
+		&resources.Service{
+			Name:    "api",
+			Version: "0.0.1",
+			Endpoints: []*resources.Endpoint{
+				{Name: "http", API: "http", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
+			},
+		},
+	)
+	serviceDir := filepath.Join(moduleDir, "services", "api")
+	if err := os.MkdirAll(filepath.Join(serviceDir, filepath.Dir(standards.OpenAPIPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"swagger":"2.0","info":{"title":"billing backend","version":"0.0.1"},"paths":{"/v1/billing/pages":{"get":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
+	if err := os.WriteFile(filepath.Join(serviceDir, standards.OpenAPIPath), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schema: codefly/module-package/v2
+kind: module-package
+id: codefly/billing
+version: 0.1.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - services
+contracts:
+  composition: ">=2.0.0 <3.0.0"
+services:
+  - name: api
+    endpoints: [http]
+`
+	manifestPath := filepath.Join(moduleDir, composition.PackageManifestFileName)
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(root)
+	resetContractsFlags(t)
+	_, err := captureStdout(t, func() error { return ContractsCmd.RunE(ContractsCmd, []string{"billing"}) })
+	if err == nil {
+		t.Fatal("expected a refusal for a manifest without the contracts artifact root")
+	}
+	if !errors.Is(err, composition.ErrContract) {
+		t.Fatalf("error %v does not wrap composition.ErrContract", err)
+	}
+	for _, want := range []string{manifestPath, `artifact root "contracts"`, "contracts/api/api/http/openapi.json"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+	if got, readErr := os.ReadFile(manifestPath); readErr != nil || string(got) != manifest {
+		t.Errorf("manifest changed by a refused run (err=%v):\n%s", readErr, got)
 	}
 }
 

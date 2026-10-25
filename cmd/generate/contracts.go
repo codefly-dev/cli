@@ -319,6 +319,11 @@ func writeContractCatalog(ctx context.Context, module *resources.Module, contrac
 	if err = catalog.Validate(); err != nil {
 		return nil, fmt.Errorf("generated catalog is invalid: %w", err)
 	}
+	if opts.updateManifest && manifest != nil {
+		if err = requireContractArtifactRoots(module, manifest, contractEndpoints); err != nil {
+			return nil, err
+		}
+	}
 
 	catalogBytes, err := catalog.CanonicalBytes()
 	if err != nil {
@@ -338,6 +343,31 @@ func writeContractCatalog(ctx context.Context, module *resources.Module, contrac
 	}
 
 	return catalog, nil
+}
+
+// requireContractArtifactRoots refuses, before the catalog or the package
+// manifest is written, a manifest whose artifact-roots do not cover the
+// contract files this run records in it: the package would not carry them,
+// and composition.ValidatePackageAPIContracts would refuse the manifest only
+// after it had been rewritten. The refusal names the manifest and the root to
+// add — the top directory of the first uncovered contract path.
+func requireContractArtifactRoots(module *resources.Module, manifest *composition.PackageManifest, contractEndpoints []composition.APIContractEndpoint) error {
+	for i := range contractEndpoints {
+		endpoint := &contractEndpoints[i]
+		covered := false
+		for _, root := range manifest.ArtifactRoots {
+			if endpoint.Path == root || strings.HasPrefix(endpoint.Path, root+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			root, _, _ := strings.Cut(endpoint.Path, "/")
+			return fmt.Errorf("%w: package manifest %s does not declare the artifact root %q, so the package cannot carry the %s/%s contract at %s; add %q under artifact-roots",
+				composition.ErrContract, filepath.Join(module.Dir(), composition.PackageManifestFileName), root, endpoint.Service, endpoint.Endpoint, endpoint.Path, root)
+		}
+	}
+	return nil
 }
 
 // resolvePackageIdentity returns the catalog's Package/Version and, when the
