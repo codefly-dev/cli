@@ -386,7 +386,9 @@ pairs those policies with its carrier. Transport regressions cover both module
 and solution withdrawals through the generated composition client. Successful `ApplyManifest` responses must acknowledge the sent generation.
 The adapter retains the acknowledged request's digest, release and removal flag
 for the run's connection to the host. Native withdrawal completion uses the
-`Applied` callback and requires that exact identity; nothing contacts a
-private HTTP route or mints an observer credential. This is synchronous
-response evidence, not a remote-state query after a host restart. Live launcher
+`Applied` callback and requires that exact identity; it does not contact a
+private HTTP route or mint an observer credential for an interface host. A
+host without the interface retains the legacy HTTP observer until that path
+is deleted. This is synchronous response evidence, not a remote-state query
+after a host restart. Live launcher
 shutdown/restart remains unqualified by these transport tests.

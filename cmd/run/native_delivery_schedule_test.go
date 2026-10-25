@@ -5,7 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,6 +38,56 @@ func testDelivery(ready, deliver func(context.Context) error) hostDelivery {
 }
 
 func hostAlwaysReady(context.Context) error { return nil }
+
+// answering is a host answering status on every request.
+func answering(t *testing.T, status int, body string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/auth/authenticate" && status != http.StatusNotFound {
+			_, _ = response.Write([]byte(`{"accessToken":"admin"}`))
+			return
+		}
+		response.WriteHeader(status)
+		_, _ = response.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func envelopeWriter(gatewayURL string) *gitops.EnvelopeWriter {
+	return &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: "fixture", FixtureToken: "admin"}
+}
+
+// readEnvelope is the first host call a delivery makes, wrapped as deliver
+// wraps it.
+func readEnvelope(gatewayURL string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if _, _, err := envelopeWriter(gatewayURL).Current(ctx); err != nil {
+			return fmt.Errorf("plan the module envelope: %w", err)
+		}
+		return nil
+	}
+}
+
+// postManifestHTTP posts a module manifest straight to the host's delivery
+// endpoint, as a delivery does after the envelope.
+func postManifestHTTP(t *testing.T, deliveryURL string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		_, private, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		signer, err := solutionhost.NewInMemorySigner("dev-test", private)
+		require.NoError(t, err)
+		deliverer := &gitops.NativeDeliverer{Signer: signer, DeliveryURL: deliveryURL, StateDir: t.TempDir(), Token: func(string) (string, error) { return "token", nil }}
+		_, err = deliverer.Deliver(ctx, &solutionhost.ModuleManifest{
+			Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.model", Alias: "model", Kind: solutionhost.KindModule,
+			Host:      solutionhost.HostTarget{Coordinate: "example/local/dev", Domain: "acme"},
+			Release:   solutionhost.Release{Publisher: "acme", Name: "model", Version: "0.1.0"},
+			Workloads: []solutionhost.Workload{{Service: "model", Container: "model"}},
+			Authority: &solutionhost.Authority{Principal: "model"},
+		})
+		return err
+	}
+}
 
 // refusingComposition is a composition host that refuses the first refusals
 // ApplyManifest calls with their codes, then accepts.
@@ -104,6 +160,7 @@ func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testin
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	refused := orchestration.GRPCTarget{Address: closed.Addr().String()}
+	refusedURL := "http://" + closed.Addr().String()
 	require.NoError(t, closed.Close())
 	refusing := func(code codes.Code) func(context.Context) error {
 		return deliverTo(t, serveComposition(t, &refusingComposition{refusals: []codes.Code{code}}))
@@ -124,6 +181,18 @@ func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testin
 		{"a manifest the host cannot read", refusing(codes.InvalidArgument), "code = InvalidArgument", false},
 		{"a carrier the host denies", refusing(codes.PermissionDenied), "code = PermissionDenied", false},
 		{"a stale generation", refusing(codes.FailedPrecondition), "code = FailedPrecondition", false},
+		{"legacy HTTP: a 503 from the gateway's envelope read", readEnvelope(answering(t, http.StatusServiceUnavailable, "JWT validation not configured")), "HTTP 503", true},
+		{"legacy HTTP: a 404 from the gateway before it exposes the route", readEnvelope(answering(t, http.StatusNotFound, "endpoint not exposed")), "404 Not Found", true},
+		{"legacy HTTP: a 409 on the envelope write", func(ctx context.Context) error {
+			_, err := envelopeWriter(answering(t, http.StatusConflict, "revision moved")).Ensure(ctx, func(uint64) ([]byte, error) { return []byte(`{}`), nil })
+			return err
+		}, "HTTP 409", true},
+		{"legacy HTTP: no answer: connection refused", readEnvelope(refusedURL), "connection refused", true},
+		{"legacy HTTP: a 500 from the host's delivery endpoint", postManifestHTTP(t, answering(t, http.StatusInternalServerError, `{"error":"boom"}`)), "(500 Internal Server Error): boom", true},
+		{"legacy HTTP: a 404 from the host's delivery endpoint: a wrong endpoint", postManifestHTTP(t, answering(t, http.StatusNotFound, `{"error":"no such inbox"}`)), "(404 Not Found): no such inbox", false},
+		{"legacy HTTP: a 409 from the host's delivery endpoint: a different document", postManifestHTTP(t, answering(t, http.StatusConflict, `{"error":"different document"}`)), "(409 Conflict): different document", false},
+		{"legacy HTTP: a 403 from the gateway", readEnvelope(answering(t, http.StatusForbidden, "not a platform administrator")), "HTTP 403", false},
+		{"legacy HTTP: a gateway address that is not a URL", readEnvelope("http://[::1"), "missing ']'", false},
 		{"a manifest the host has not applied for a reason it names", func(context.Context) error {
 			return errors.New("module model is delivered and not served: the host rejected generation 1: binding withdrawn")
 		}, "not served", false},
@@ -155,6 +224,27 @@ func TestANativeDeliveryRefusedAsUnavailableIsRetriedUntilAccepted(t *testing.T)
 	host := &refusingComposition{refusals: []codes.Code{codes.Unavailable, codes.Unavailable}}
 	require.NoError(t, testDelivery(hostAlwaysReady, deliverTo(t, serveComposition(t, host))).run(context.Background()))
 	require.Equal(t, 3, host.calls)
+}
+
+// The shape of the platform-core run end to end through the real envelope
+// client: two 503s, then the answer that lets the delivery proceed.
+func TestALegacyHTTPDeliveryRefusedWith503IsRetriedUntilAccepted(t *testing.T) {
+	var reads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/auth/authenticate" {
+			_, _ = response.Write([]byte(`{"accessToken":"admin"}`))
+			return
+		}
+		if reads.Add(1) <= 2 {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = response.Write([]byte("JWT validation not configured"))
+			return
+		}
+		response.WriteHeader(http.StatusNotFound) // no envelope written yet
+	}))
+	t.Cleanup(server.Close)
+	require.NoError(t, testDelivery(hostAlwaysReady, readEnvelope(server.URL)).run(context.Background()))
+	require.Equal(t, int64(3), reads.Load())
 }
 
 // At the deadline the error carries why the host is still not serving and the
@@ -192,12 +282,19 @@ func (f *fakeLauncherFlow) World() *orchestration.World { return nil }
 func (f *fakeLauncherFlow) ServiceFromUnique(string) (*resources.Service, error) {
 	return nil, errors.New("no service in this test")
 }
-func (f *fakeLauncherFlow) GRPCEndpointTarget(context.Context, string, string, string) (orchestration.GRPCTarget, error) {
+func (f *fakeLauncherFlow) attempt() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++
 	f.attemptedBeforeHostReady = f.attemptedBeforeHostReady || !f.ready("saas/auth-gateway") || !f.ready("saas/accounts")
-	return orchestration.GRPCTarget{}, errors.New("no address in this test") // refused at once: the delivery ends after this one attempt
+}
+func (f *fakeLauncherFlow) GetAddressForEndpoint(context.Context, string, string, string) (string, error) {
+	f.attempt()
+	return "", errors.New("no address in this test") // refused at once: the delivery ends after this one attempt
+}
+func (f *fakeLauncherFlow) GRPCEndpointTarget(context.Context, string, string, string) (orchestration.GRPCTarget, error) {
+	f.attempt()
+	return orchestration.GRPCTarget{}, errors.New("no address in this test")
 }
 func (f *fakeLauncherFlow) ServiceRuntimeContext(string) string {
 	if f.runtime != "" {
@@ -217,19 +314,60 @@ func (f *fakeLauncherFlow) ServiceReadiness(_ context.Context, service string) *
 
 // launcherWithFakeFlow composes module "model" for a host whose gateway is
 // saas/auth-gateway and whose delivery service is saas/accounts.
+// The host, saas, is composed and declares no codefly.dev/composition: the
+// legacy HTTP delivery is the one the run takes.
 func launcherWithFakeFlow(t *testing.T, ready func(string) bool) (*launcher, *fakeLauncherFlow, string) {
-	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), writeNonGoWorkloadDir(t, "model"))
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), writeLegacyHostedDir(t, "model"))
 	require.NoError(t, err)
 	unique := "model/api"
 	flow := &fakeLauncherFlow{ready: ready}
 	return &launcher{
-		workspace: workspace, flow: flow, hostModule: "saas", hostService: "accounts",
+		workspace: workspace, flow: flow, hostModule: "saas", hostService: "accounts", hostEndpoint: "rest",
 		env:        &environments.Environment{Host: &environments.EnvironmentHost{Gateway: "saas/auth-gateway", Delivery: "saas/accounts/rest"}},
 		identities: map[string]gitops.NativeIdentity{unique: {Module: "model", Service: "api"}},
 		running:    map[string]bool{},
 		delivered:  map[string]*solutionhost.ModuleManifest{},
 		schedule:   testDeliverySchedule,
 	}, flow, unique
+}
+
+// writeLegacyHostedDir is writeNonGoWorkloadDir with the saas host composed:
+// its accounts service's rest endpoint implements no Codefly interface.
+func writeLegacyHostedDir(t *testing.T, name string) string {
+	t.Helper()
+	root := writeNonGoWorkloadDir(t, name)
+	config := filepath.Join(root, resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(config)
+	require.NoError(t, err)
+	composed := strings.Replace(string(data), "  - name: "+name+"\n", "  - name: "+name+"\n  - name: saas\n", 1)
+	require.NotEqual(t, string(data), composed)
+	require.NoError(t, os.WriteFile(config, []byte(composed), 0o644))
+	for relative, content := range map[string]string{
+		filepath.Join("modules", "saas", resources.ModuleConfigurationName):                          "kind: module\nname: saas\nservices:\n  - name: accounts\n",
+		filepath.Join("modules", "saas", "services", "accounts", resources.ServiceConfigurationName): "kind: service\nname: accounts\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\nendpoints:\n  - name: rest\n    api: rest\n    visibility: internal\n",
+	} {
+		full := filepath.Join(root, relative)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	return root
+}
+
+// The transport is the host's declaration, never a fallback: a host whose
+// delivery endpoint declares no codefly.dev/composition takes the legacy HTTP
+// delivery, its envelope written through the gateway; a host whose module does
+// not load is a refusal naming why, with nothing delivered.
+func TestTheDeliveryTransportIsTheHostsDeclaration(t *testing.T) {
+	cluster, flow, _ := launcherWithFakeFlow(t, func(string) bool { return true })
+	_, _, err := cluster.newDeliverer(context.Background())
+	require.ErrorContains(t, err, "the host's delivery endpoint is unresolved")
+	require.Equal(t, 1, flow.attempts, "the legacy HTTP route was resolved, not the composition interface")
+
+	module := filepath.Join(cluster.workspace.Dir(), "modules", "saas", resources.ModuleConfigurationName)
+	require.NoError(t, os.WriteFile(module, []byte("kind: module\nname: saas\nservices: {not: a list}\n"), 0o644))
+	_, _, err = cluster.newDeliverer(context.Background())
+	require.ErrorContains(t, err, "cannot tell whether host saas/accounts implements codefly.dev/composition")
+	require.Equal(t, 1, flow.attempts, "an unreadable host is resolved over no transport")
 }
 
 // A module Running before the gateway is delivered once the gateway is ready,

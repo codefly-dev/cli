@@ -103,27 +103,29 @@ render hands every service declaring the `artifact-cache` workspace
 configuration `REPOSITORY`, that repository, which a host reads bundles from by
 the digest it admits. A local render and a local k3d cluster's publish and
 project nothing. Before native delivery, Codefly builds every declared page;
-no manual bundle build is required. The build is keyed by the frontend's own
-inputs: the files of its npm project (`services/fe-remote`, or the module root
-when only that holds a `package.json`) that its repository tracks, lockfile
-included, with their working-tree content, and how it is built. Unchanged
-inputs whose bundle is still retained build nothing, so a Go edit that restarts
-a service, or an edit anywhere else in the repository, never rebuilds the
-page; the record is kept under `.codefly/run/<environment>/frontend/`. The
-build runs before the run-wide delivery lock is taken, so it delays no other
-module's delivery. It runs the frontend's own npm build natively in its project
-(`npm ci` first when its dependencies were not installed from this lockfile,
-then `npm run build`), with no variable of the shell but what finds npm and
-its registry; a leftover `dist` with no record of the inputs it was built
-from is never a serving claim. When the service that owns the page runs in a
-container, the page builds in the pinned builder image as deployment does,
-from the repository's tracked files with their working-tree content, so a
-sibling package resolves. As in the deployed build, untracked files never
-reach a build, ignored or not. A symlink or special file in the frontend's
-own project is refused by name, since the deployed build refuses it too; one
-elsewhere in the repository is not this frontend's input and is left out of the
-containerized build's context. The bundle is archived in Core's canonical form
-and retained in `.codefly/selection-artifacts` under its digest, and the
+no manual bundle build is required. The build is keyed by exactly what it
+reads, and reads a staged copy of exactly that: the files of its npm project
+(`services/fe-remote`, or the module root when only that holds a
+`package.json`, then without the services' code and every Go source) that its
+repository tracks or does not ignore — but never an untracked dotenv file
+(`.env`, `.env.*`), which the deployed build, reading the committed tree,
+never sees — the same of every local package it depends on (a `file:` or
+`link:` dependency, transitively), and the top-level regular files of each
+directory above the project (a tsconfig base, an `.npmrc`). Unchanged sources
+whose bundle is still retained build nothing, so a Go edit that restarts a
+service never rebuilds the page, while a new file in the project or an edit
+to a sibling package does; the record and the staged copy are kept under
+`.codefly/run/<environment>/frontend/`. The build runs before the run-wide
+delivery lock is taken, so it delays no other module's delivery. It runs the
+frontend's own npm build natively in the staged copy (`npm ci` first when the
+copy's dependencies were not installed from this lockfile, then `npm run
+build`), with no variable of the shell but what finds npm and its registry, so
+the component's own `node_modules` and files are never touched; a leftover
+`dist` is never a serving claim. When the service that owns the page runs in a
+container, the same copy builds in the pinned builder image as deployment
+does. A symlink or special file among the sources is refused by name, since
+the deployed build refuses it too. The bundle is archived in Core's canonical
+form and retained in `.codefly/selection-artifacts` under its digest, and the
 manifest names those exact bytes. A build failure refuses delivery with the
 component name, build command and final 40 lines of build output; it never
 falls back to a previous bundle. Headless components perform no frontend build.
@@ -1110,9 +1112,14 @@ run, the CLI is:
   with a native credential for account `delivery` in the module's namespace,
   to `ApplyManifest` of the `codefly.dev/composition` interface the
   `host.delivery` endpoint declares in its module's interface endpoints. A
-  host whose delivery endpoint does not declare it, or whose module does not
-  load, receives nothing from a native run, by name. The run opens one
-  connection to that endpoint — at the address its recorded instance answers,
+  host whose delivery endpoint declares no such interface — the saas host on
+  main — receives it through the legacy HTTP route instead, POSTed to
+  `/platform/_delivery/manifest`, with the envelope written through its
+  gateway (below); the run logs that reason on every delivery that takes it.
+  A host whose module does not load receives nothing, with the reason; the
+  run never guesses a transport. The legacy route is deleted once no
+  composition delivers to a host without the interface. The run opens one
+  connection to a composition endpoint — at the address its recorded instance answers,
   with TLS when the endpoint declares itself `secured`, exactly as readiness
   dials it — reuses it for every delivery, retry and withdrawal, dials again
   only when the host answers at another address, and closes it when the run
@@ -1140,6 +1147,21 @@ run, the CLI is:
   generation. These rules do not establish policy-file watch/reload behavior or
   power-loss durability beyond Core's atomic writer.
 
+- **the administrator** — over the legacy HTTP delivery, before delivering, it
+  makes sure the host holds the
+  composition's envelope: `{"revision": N, "principals": {"<module>":
+  {"grant": <grant>}}}`, each grant read from the `principals` of
+  `configurations/<profile>/module-envelope.json`, resolved through the
+  profile's derivation as above (already in the host's
+  grant shape) — every composed workspace's file first, then the consuming
+  workspace's own, which decides a principal it states: a platform base
+  states its modules' grants, and a solution composed on it states only its
+  own principal's. Two composed workspaces that grant one principal
+  differently, which the consuming workspace does not decide, are refused by
+  name. It is written through `PlatformAdminService/PutModuleEnvelope` as
+  the fixture's `super_admin`, at the next revision and only when it changed.
+  A composition stating no grant writes none.
+
 **A delivery waits for the host, within a deadline.** A workload reports
 Running on its own schedule: a module the gateway does not depend on can be
 Running before `host.gateway` has started, and a gateway that listens can
@@ -1153,7 +1175,12 @@ yet is asked again with a backoff from 0.5 s doubling to 10 s, for at most
 answer and fails at once with its reason: `Unimplemented` (an endpoint that
 serves no composition interface), `Internal`, `InvalidArgument`,
 `PermissionDenied`, `FailedPrecondition` (a stale or rewritten generation, a
-held withdrawal), and any code the run does not classify. The first
+held withdrawal), and any code the run does not classify. Over the legacy
+HTTP delivery the same split holds by status: a 5xx, a 404 from the gateway
+(sign-in or envelope) before it exposes the route, a 409 on the envelope (a
+lost revision race) and no answer at all are asked again; any other 4xx,
+including a 404 from the host's own delivery endpoint (a wrong
+`host.delivery`), fails at once. The first
 wait and every change of its reason are logged at info with the service, its
 module and the reason. A workload not delivered by the deadline is reported as
 an error naming it, why the host is still not serving, the last refusal it
@@ -1189,7 +1216,9 @@ identity workload is delivered again listing what remains, and one that runs
 none is **withdrawn** — its manifest at the next generation with
 `removed: true`, which the host keeps terminal for the binding while it holds
 it — and the run waits, up to a minute, until the applied record
-`ApplyManifest` acknowledged holds that exact withdrawal. A withdrawal not yet applied stays pending and is
+`ApplyManifest` acknowledged (over the legacy HTTP delivery, the host's
+read-only `GET /platform/_delivery/applied/<binding>`, read as the
+endpoint-publisher) holds that exact withdrawal. A withdrawal not yet applied stays pending and is
 redelivered unchanged (the host replays it) on the next signal.
 
 ## Dev deployments
@@ -1209,8 +1238,9 @@ in-process executor.
 
 No cell has received a delivered module envelope yet; the envelope route is the
 host's parallel change, verified against core's verifier only. A native run
-writes no envelope: it delivers through the composition interface, where the
-manifest is the ceiling.
+delivering through the composition interface writes no envelope, the manifest
+being the ceiling; over the legacy HTTP delivery it still writes the envelope
+as the fixture's administrator.
 
 Named and not built: a **withdrawal path for a whole module** — a module
 removed from the composition has no render and so no publish, and its manifest

@@ -196,15 +196,16 @@ offered for installation in the host's own registry. See
 [module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
 
 A component declaring `solution.frontend.codefly.yaml` has its remote built
-before native delivery, only when its own inputs changed: the files of its npm
-project the repository tracks, lockfile included. It runs the remote's own
-`npm ci` (when the lockfile changed) and `npm run build` natively, or in the
-pinned Node image when the service owning the page runs in a container, and
-before the run-wide delivery lock. Untracked files never reach the build.
-Failure names the component and includes the build's output; an old dist is
-never delivered instead. The complete generated bundle is retained by digest
-in the existing artifact cache. See [module manifests](module-manifests.md)
-for source and cache semantics.
+before native delivery, only when what the build reads changed: its npm
+project's files, tracked or new (never an untracked `.env`), the local
+packages it depends on, and its lockfile. It builds a staged copy of exactly
+those files with the remote's own `npm ci` (when the lockfile changed) and
+`npm run build`, natively, or in the pinned Node image when the service owning
+the page runs in a container, and before the run-wide delivery lock. Failure
+names the component and includes the build's output; an old dist is never
+delivered instead. The complete generated bundle is retained by digest in the
+existing artifact cache. See [module manifests](module-manifests.md) for
+source and cache semantics.
 
 ### `codefly run service [name...]`
 

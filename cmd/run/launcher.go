@@ -25,6 +25,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/localcluster"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	runfixture "github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -68,6 +69,7 @@ type launcher struct {
 	workspace  *resources.Workspace
 	env        *environments.Environment
 	flow       launcherFlow
+	fixture    string
 	stateDir   string
 	identities map[string]gitops.NativeIdentity
 	signer     solutionhost.Signer
@@ -95,7 +97,10 @@ type launcher struct {
 	// pendingWithdrawals are modules whose withdrawal the host has not applied
 	// yet: retried on the next composition refresh, even with no gone roots.
 	pendingWithdrawals map[string]bool
-	stop               chan struct{}
+	// envelope writes the module envelope through the host's gateway, for a
+	// host reached through the legacy HTTP delivery.
+	envelope *gitops.EnvelopeWriter
+	stop     chan struct{}
 
 	// host is the run's one connection to the host's composition interface,
 	// reused by every delivery and withdrawal, and closed with the run.
@@ -115,7 +120,7 @@ var (
 
 // attachLauncher wires the run as the composition's cluster when its
 // environment declares a host and the run is native. It is a no-op otherwise.
-func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment) error {
+func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
 	if env == nil || env.Host == nil || runtimeContext == resources.RuntimeContextContainer {
 		return nil
 	}
@@ -143,7 +148,7 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 		return err
 	}
 	cluster := &launcher{
-		vouch: launcherIdentity, workspace: workspace, env: env, flow: flow,
+		vouch: launcherIdentity, workspace: workspace, env: env, flow: flow, fixture: fixture,
 		stateDir:           stateDir,
 		identities:         identities,
 		signer:             signer,
@@ -154,8 +159,8 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 		schedule:           nativeDeliverySchedule,
 	}
 	cluster.hostModule, cluster.hostService, cluster.hostEndpoint = env.Host.DeliveryEndpoint()
-	// The run vouches for exactly what it composes: each identity workload and
-	// each module's delivery carrier.
+	// The run vouches for exactly what it composes: each identity workload,
+	// each module's delivery carrier, and the applied observer it acts as.
 	cluster.declare(identities)
 	if err := cluster.projectHost(); err != nil {
 		return err
@@ -196,11 +201,12 @@ func (cluster *launcher) close() {
 }
 
 // declare records identity workloads the run vouches for, with their delivery
-// carriers.
+// carriers and the observer the legacy HTTP delivery reads applied state as.
 func (cluster *launcher) declare(identities map[string]gitops.NativeIdentity) {
 	if cluster.vouch == nil {
 		return
 	}
+	cluster.vouch.Declare(cluster.vouch.Observer())
 	for _, identity := range identities {
 		cluster.vouch.DeclareModule(identity.Module, identity.Service)
 	}
@@ -242,6 +248,23 @@ func (cluster *launcher) identity(unique string) (gitops.NativeIdentity, bool) {
 	defer cluster.composition.RUnlock()
 	identity, ok := cluster.identities[unique]
 	return identity, ok
+}
+
+// envelopeFor is the run's envelope writer, pointed at the gateway as it
+// answers now: the gateway can be restarted on another port during the run,
+// and a writer kept on its first address would fail every envelope write
+// after that, before the endpoint projection the delivery ends with.
+func (cluster *launcher) envelopeFor(ctx context.Context, gatewayURL string) (*gitops.EnvelopeWriter, error) {
+	if cluster.envelope != nil {
+		cluster.envelope.GatewayURL = gatewayURL
+		return cluster.envelope, nil
+	}
+	administrator, err := cluster.fixtureAdministrator(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cluster.envelope = &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: administrator.Provider, FixtureToken: administrator.Token}
+	return cluster.envelope, nil
 }
 
 func (cluster *launcher) identityOf(service *resources.Service) (string, gitops.NativeIdentity, bool) {
@@ -529,36 +552,54 @@ func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 	}
 }
 
-// newDeliverer is the deliverer of this run's manifests to the host: through
-// the codefly.dev/composition interface the host's delivery endpoint declares,
-// over the run's one connection to it, with this run's signer and state and
-// the delivery account's credential. A host whose delivery endpoint does not
-// declare the interface receives nothing from a native run, by name.
-func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, error) {
-	target, err := cluster.flow.GRPCEndpointTarget(ctx, cluster.hostModule, cluster.hostService, cluster.hostEndpoint)
-	if err != nil {
-		return nil, fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
-	}
+// newDeliverer is the deliverer of this run's manifests to the host, with
+// this run's signer and state and the delivery account's credential. A host
+// whose delivery endpoint declares codefly.dev/composition receives them
+// through it, over the run's one connection to it; the gateway address is then
+// empty, since such a host takes no envelope. A host whose endpoint declares
+// no such interface receives them through the legacy HTTP delivery route, with
+// the envelope written through its gateway, whose address is answered: the
+// reason is logged on every delivery that takes it. A host whose module cannot
+// be read is neither: the delivery fails with the reason.
+func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
 	implements, err := gitops.HostImplements(ctx, cluster.composed(), cluster.hostModule, cluster.hostService, cluster.hostEndpoint, gitops.CompositionInterface)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if !implements {
-		return nil, fmt.Errorf("a native run delivers manifests through %s, and the host's delivery endpoint %s/%s/%s does not declare it in its module's interface endpoints",
-			gitops.CompositionInterface, cluster.hostModule, cluster.hostService, cluster.hostEndpoint)
-	}
-	composition, err := cluster.host.delivery(target, cluster.newCompositionDelivery)
-	if err != nil {
-		return nil, err
-	}
-	return &gitops.NativeDeliverer{
+	deliverer := &gitops.NativeDeliverer{
 		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
 		StateDir: filepath.Join(cluster.stateDir, "delivery"),
 		Token: func(module string) (string, error) {
 			return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
 		},
-		Prepare: composition.Prepare, Applied: composition.Applied,
-	}, nil
+	}
+	if implements {
+		target, resolveErr := cluster.flow.GRPCEndpointTarget(ctx, cluster.hostModule, cluster.hostService, cluster.hostEndpoint)
+		if resolveErr != nil {
+			return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", resolveErr)
+		}
+		composition, dialErr := cluster.host.delivery(target, cluster.newCompositionDelivery)
+		if dialErr != nil {
+			return nil, "", dialErr
+		}
+		deliverer.Prepare, deliverer.Applied = composition.Prepare, composition.Applied
+		return deliverer, "", nil
+	}
+	wool.Get(ctx).In("launcher.deliver").Info(fmt.Sprintf("the host's delivery endpoint %s/%s/%s declares no %s, so manifests go to its legacy HTTP delivery route and the module envelope is written through host.gateway",
+		cluster.hostModule, cluster.hostService, cluster.hostEndpoint, gitops.CompositionInterface))
+	if deliverer.DeliveryURL, err = cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, cluster.hostEndpoint); err != nil {
+		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
+	}
+	gatewayModule, gatewayService, ok := strings.Cut(cluster.env.Host.Gateway, "/")
+	if !ok {
+		return nil, "", fmt.Errorf("the legacy HTTP delivery writes the envelope through the host gateway, and host.gateway %q names no <module>/<service>", cluster.env.Host.Gateway)
+	}
+	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, gatewayModule, gatewayService, "rest")
+	if err != nil {
+		return nil, "", fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
+	}
+	deliverer.ObserverToken = func() (string, error) { return cluster.vouch.Issue(cluster.vouch.Observer()) }
+	return deliverer, gatewayURL, nil
 }
 
 // newCompositionDelivery speaks the composition interface over conn, reading
@@ -706,7 +747,7 @@ func (cluster *launcher) withdrawModule(ctx context.Context, module string) (boo
 	if err != nil {
 		return false, err
 	}
-	deliverer, err := cluster.newDeliverer(ctx)
+	deliverer, _, err := cluster.newDeliverer(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -807,9 +848,16 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 		}
 		services = append(services, service)
 	}
-	deliverer, err := cluster.newDeliverer(ctx)
+	deliverer, gatewayURL, err := cluster.newDeliverer(ctx)
 	if err != nil {
 		return err
+	}
+	// A host reached through the composition interface holds the manifest as
+	// the ceiling and takes no envelope.
+	if gatewayURL != "" {
+		if err = cluster.ensureEnvelope(ctx, gatewayURL); err != nil {
+			return err
+		}
 	}
 	carriers, err := cluster.flow.EndpointCarriers(ctx, module, resources.NewNativeNetworkAccess())
 	if err != nil {
@@ -837,4 +885,62 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 func (cluster *launcher) acquireDelivery(ctx context.Context) error {
 	cluster.deliveryOnce.Do(func() { cluster.delivery = semaphore.NewWeighted(1) })
 	return cluster.delivery.Acquire(ctx, 1)
+}
+
+// ensureEnvelope writes the composition's envelope — each module principal's
+// grant, as configurations/<environment>/module-envelope.json states it — as
+// the fixture's platform administrator, unless the host holds it already. A
+// composition that states no grant writes none.
+func (cluster *launcher) ensureEnvelope(ctx context.Context, gatewayURL string) error {
+	grants, err := cluster.grants(ctx)
+	if err != nil || len(grants) == 0 {
+		return err
+	}
+	writer, err := cluster.envelopeFor(ctx, gatewayURL)
+	if err != nil {
+		return err
+	}
+	if _, err = writer.Ensure(ctx, func(revision uint64) ([]byte, error) { return gitops.BuildEnvelope(revision, grants) }); err != nil {
+		return fmt.Errorf("write the module envelope: %w", err)
+	}
+	return nil
+}
+
+// fixtureAdministrator is the platform administrator the selected fixture
+// seeds: the one who writes the envelope, as a cell's administrator would.
+// Read from the host module's fixture file, the host's own declaration of it.
+
+func (cluster *launcher) fixtureAdministrator(ctx context.Context) (runfixture.Administrator, error) {
+	module, err := cluster.composed().LoadModuleFromName(ctx, cluster.hostModule)
+	if err != nil {
+		return runfixture.Administrator{}, err
+	}
+	return runfixture.ReadAdministrator(module.Dir(), cluster.fixture)
+}
+
+// grants reads the composition's envelope policy: every composed workspace's
+// configurations/<env>/module-envelope.json, then the consuming workspace's
+// own, {"principals": {"<module>": <grant>}} — what the platform administrator
+// grants each module principal, in the host's own grant shape. A platform base
+// states its modules' grants and a solution composed on it states its own
+// principal's; the consuming workspace decides a principal it states
+// (runfixture.ReadCompositionGrants), with an entry for each prepared binding
+// a module installs (gitops.WithPreparedBindingGrants).
+func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.EnvelopeGrant, error) {
+	envelopeProfile, err := cluster.env.ConfigurationProfileName()
+	if err != nil {
+		return nil, err
+	}
+	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), envelopeProfile)
+	if err != nil {
+		return nil, err
+	}
+	if principals, err = gitops.WithPreparedBindingGrants(ctx, cluster.composed(), cluster.env, principals); err != nil {
+		return nil, err
+	}
+	out := map[string]gitops.EnvelopeGrant{}
+	for prefix, grant := range principals {
+		out[prefix] = gitops.EnvelopeGrant(grant)
+	}
+	return out, nil
 }

@@ -64,7 +64,7 @@ func (l *Launcher) Workload(module, service string) workloadidentity.Workload {
 }
 
 // Declare records workloads this run vouches for: an identity workload it
-// starts and that module's delivery carrier. The
+// starts, that module's delivery carrier, and the applied observer. The
 // anchor written afterwards carries them; the host refuses anything else
 // under this run's key.
 func (l *Launcher) Declare(workloads ...workloadidentity.Workload) {
@@ -74,6 +74,11 @@ func (l *Launcher) Declare(workloads ...workloadidentity.Workload) {
 // DeclareModule declares a module's identity service and its delivery carrier.
 func (l *Launcher) DeclareModule(module, service string) {
 	l.Declare(l.Workload(module, service), l.Workload(module, workloadidentity.DeliveryService))
+}
+
+// Observer is the applied-state observer's workload under this run.
+func (l *Launcher) Observer() workloadidentity.Workload {
+	return l.Workload(workloadidentity.AppliedObserver.Module, workloadidentity.AppliedObserver.Service)
 }
 
 // Anchor is what the host verifies this run's credentials under.
@@ -160,7 +165,7 @@ func (l *Launcher) Projected(unique string) (Credential, bool) {
 }
 
 // Issue is a one-off credential for a workload the run itself acts as: a
-// module's delivery carrier. It names no container.
+// module's delivery carrier, the applied observer. It names no container.
 func (l *Launcher) Issue(workload workloadidentity.Workload) (string, error) {
 	workload.Instance = "run-" + l.runID
 	return l.issuer.Issue(native.Subject{Workload: workload}, l.audience)

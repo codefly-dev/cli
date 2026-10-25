@@ -961,7 +961,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
-	if attachErr := attachLauncher(ctx, flow, workspace, env); attachErr != nil {
+	if attachErr := attachLauncher(ctx, flow, workspace, env, selectedFixture); attachErr != nil {
 		return nil, w.Wrap(attachErr)
 	}
 	flow.WithRemotes(remoteServices)

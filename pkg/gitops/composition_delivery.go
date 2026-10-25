@@ -178,6 +178,12 @@ func (c *CompositionDelivery) Applied(_ context.Context, binding string) (*Appli
 // (core's admission, solutionhost.ErrWithdrawn): the refusal then says what
 // the person can do, since the binding is derived from the workspace, the
 // environment and the module and is not theirs to choose.
+//
+// STOPGAP: codefly.dev/composition carries no typed refusal detail, so the
+// withdrawal is recognized by core's ErrWithdrawn text inside the
+// FailedPrecondition message, which the authority host passes through
+// verbatim. Rewording on either side drops back to the generic refusal. The
+// interface gap is codefly-dev/authority#2; match on its detail once released.
 func refusal(module string, manifest *solutionhost.ModuleManifest, err error) error {
 	code := status.Code(err)
 	if code == codes.FailedPrecondition && strings.Contains(status.Convert(err).Message(), solutionhost.ErrWithdrawn.Error()) {

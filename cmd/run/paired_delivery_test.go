@@ -82,8 +82,9 @@ func TestLauncherReservesGenerationFromChangedSolutionRoles(t *testing.T) {
 		require.NoError(t, os.WriteFile(contractPath, []byte(contract), 0600))
 		// The production retry path constructs a new deliverer each attempt,
 		// over the run's one connection to the host.
-		d, err := cluster.newDeliverer(t.Context())
+		d, gateway, err := cluster.newDeliverer(t.Context())
 		require.NoError(t, err)
+		require.Empty(t, gateway, "a composition host takes no envelope")
 		require.NotNil(t, d.Prepare)
 		if conns = append(conns, cluster.host.conn); len(conns) > 1 {
 			require.Same(t, conns[0], cluster.host.conn, "every attempt reuses the run's connection to the host")
@@ -109,13 +110,13 @@ func TestLauncherReservesGenerationFromChangedSolutionRoles(t *testing.T) {
 	flow.mu.Lock()
 	flow.address = moved.Addr().String()
 	flow.mu.Unlock()
-	_, err = cluster.newDeliverer(t.Context())
+	_, _, err = cluster.newDeliverer(t.Context())
 	require.NoError(t, err)
 	require.NotSame(t, conns[0], cluster.host.conn)
 	require.Equal(t, connectivity.Shutdown, conns[0].GetState())
 	last := cluster.host.conn
 	cluster.close()
 	require.Equal(t, connectivity.Shutdown, last.GetState())
-	_, err = cluster.newDeliverer(t.Context())
+	_, _, err = cluster.newDeliverer(t.Context())
 	require.ErrorIs(t, err, errRunStopped, "a stopped run dials nothing")
 }

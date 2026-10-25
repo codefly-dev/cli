@@ -50,15 +50,15 @@ func TestEveryIdentityWorkloadIsIssuedItsCredentialAtProjection(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, credential, again, "a workload is projected once")
 	}
-	t.Run("the run vouches for its carriers, and nothing else", func(t *testing.T) {
-		token, err := vouch.Issue(vouch.Workload("model", workloadidentity.DeliveryService))
-		require.NoError(t, err)
-		_, err = attester.Attest(ctx, token, env.Host.Audience)
-		require.NoError(t, err)
-		_, err = vouch.Issue(vouch.Workload("elsewhere", "api"))
+	t.Run("the run vouches for its carriers and the observer, and nothing else", func(t *testing.T) {
+		for _, workload := range []workloadidentity.Workload{vouch.Workload("model", workloadidentity.DeliveryService), vouch.Observer()} {
+			token, err := vouch.Issue(workload)
+			require.NoError(t, err)
+			_, err = attester.Attest(ctx, token, env.Host.Audience)
+			require.NoError(t, err)
+		}
+		_, err := vouch.Issue(vouch.Workload("elsewhere", "api"))
 		require.ErrorContains(t, err, "did not declare elsewhere/api")
-		_, err = vouch.Issue(vouch.Workload(workloadidentity.AppliedObserver.Module, workloadidentity.AppliedObserver.Service))
-		require.Error(t, err, "nothing observes applied state over a route any more")
 	})
 }
 
