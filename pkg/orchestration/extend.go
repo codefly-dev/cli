@@ -53,6 +53,9 @@ func (flow *Flow) Extend(ctx context.Context, workspace *resources.Workspace, ro
 	}
 	flow.extendMu.Lock()
 	defer flow.extendMu.Unlock()
+	if err := flow.CheckRoutingSnapshot(ctx, workspace); err != nil {
+		return nil, err
+	}
 	added, err := flow.admitRoots(ctx, workspace, roots)
 	if err != nil || len(added) == 0 {
 		return nil, err
@@ -97,6 +100,9 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	}
 	flow.extendMu.Lock()
 	defer flow.extendMu.Unlock()
+	if err := flow.CheckRoutingSnapshot(ctx, workspace); err != nil {
+		return nil, err
+	}
 	// Keep the admission visible until every requested stop succeeds. A stop
 	// RPC can fail after other dependents were already stopped; retaining the
 	// original composition lets the next SIGUSR1 rediscover the failed root
@@ -139,7 +145,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	}
 	*flow.workspace = *workspace
 	if flow.graphWorkspace != nil {
-		closure, closureErr := runModuleClosure(ctx, flow.workspace, retainedSeeds(seeds, flow.retainedModules))
+		closure, closureErr := runModuleClosure(ctx, flow.workspace, retainedSeeds(seeds, flow.retainedModules), flow.providedWorkspaceConfigurations)
 		if closureErr != nil {
 			return nil, closureErr
 		}
@@ -232,7 +238,7 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 	// the same corrected workspace look already admitted on the next signal.
 	candidate := *workspace
 	if flow.graphWorkspace != nil {
-		closure, err := runModuleClosure(ctx, &candidate, retainedSeeds(seeds, flow.retainedModules))
+		closure, err := runModuleClosure(ctx, &candidate, retainedSeeds(seeds, flow.retainedModules), flow.providedWorkspaceConfigurations)
 		if err != nil {
 			return nil, err
 		}

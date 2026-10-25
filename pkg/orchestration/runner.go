@@ -349,13 +349,12 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
 	}
-	runner.networkMappings = accepted
-	runner.pinAcceptedPorts(accepted)
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = accepted
+	runner.pinAcceptedPorts(accepted)
 
 	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Identity, resp.RuntimeConfigurations...)
 	if err != nil {
@@ -888,12 +887,11 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
-	runner.networkMappings = networkMappings
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = networkMappings
 	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
@@ -1490,6 +1488,13 @@ func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev0.De
 	if runner.callback == nil {
 		runner.cancelRestarts()
 		return errors.New("restart requested before the orchestration callback was initialized")
+	}
+
+	if runner.world != nil && runner.world.beforeSourceRestart != nil {
+		if err := runner.world.beforeSourceRestart(ctx); err != nil {
+			runner.cancelRestarts()
+			return err
+		}
 	}
 
 	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)

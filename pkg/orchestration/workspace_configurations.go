@@ -256,6 +256,10 @@ func (world *World) workspaceConfigurationsFor(
 	if err = world.refuseDroppedWorkspaceConfigurationValues(ctx, service, effective, out, withheld.values); err != nil {
 		return nil, err
 	}
+	if err = world.freezeDeliveredHopAddresses(out, mappings); err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }
 

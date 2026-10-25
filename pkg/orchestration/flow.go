@@ -241,6 +241,9 @@ type RuntimeStartAttempt struct {
 }
 
 type World struct {
+	// beforeSourceRestart validates the accepted route inventory before stopping a service.
+	beforeSourceRestart func(context.Context) error
+
 	// BeforeRuntimeStop ends run-owned admission and credential refresh even
 	// when manager initialization failed before a runtime was created.
 	BeforeRuntimeStop func()
@@ -481,16 +484,6 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if service != nil && module != nil && env.Excludes(module.Name, service.Name) {
 		return nil, w.NewError("environment %q excludes %s (exclude-services), so it has nothing to run, build or deploy there", env.Name, resources.ServiceUnique(module.Name, service.Name))
 	}
-	graphWorkspace, err := runModuleClosure(ctx, workspace, retainedSeeds(options.moduleClosureSeeds, options.retainedModules))
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-
-	if options.compositionCheck != nil {
-		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
-			return nil, w.Wrap(err)
-		}
-	}
 
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
@@ -519,6 +512,17 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		w.Debug("ordering the run with no workspace configuration reference edges: the configurations this invocation resolves could not be read",
 			wool.ErrField(providedErr))
 	}
+	graphWorkspace, err := runModuleClosure(ctx, workspace, retainedSeeds(options.moduleClosureSeeds, options.retainedModules), providedWorkspaceConfigurations)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	if options.compositionCheck != nil {
+		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
+			return nil, w.Wrap(err)
+		}
+	}
+
 	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
 	var graphOptions []architecture.DependencyOption
 	if options.runtimePrerequisites != nil {
@@ -557,9 +561,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
-	localReader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	localReader, err := NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+	if providedErr == nil && providedWorkspaceConfigurations != nil {
+		localReader.snapshot = hopRoutingSnapshotOf(providedWorkspaceConfigurations.Infos)
+		localReader.frozen = true
 	}
 	configurationManager.WithLoader(localReader)
 	// Bound here, with the loader: the resolution plans producer discovery
@@ -639,6 +647,9 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		excludedByEnvironment:      excludedByEnvironment,
 		excludedDependencyServices: excludedByEnvironment,
+	}
+	world.beforeSourceRestart = func(ctx context.Context) error {
+		return flow.CheckRoutingSnapshot(ctx, flow.workspace)
 	}
 	world.runtimeContextFor = flow.runtimeContextFor
 	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
