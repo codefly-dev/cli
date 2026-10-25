@@ -2865,9 +2865,23 @@ here, by name, rather than at a call.
 An operation published directly on a Connect endpoint uses that endpoint.
 
 The address is resolved, never configured: it is the one a run or a render of
-the same environment gives the owner. A service that installs derived
+the same environment gives the owner. Locally that is the address of the run's
+naming scope: the environment's declared naming-scope, or --naming-scope, which
+like `codefly run` overrides it for this invocation (an explicit empty value
+clears it). A live run of that scope answers with its concrete allocation; with
+no run the address is the one the run will bind. A service that installs derived
 operations declares runnable-bindings as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
+
+--call-endpoint <module>/<service>/<endpoint> sends every call this invocation
+prepares to that declared endpoint instead of the owner's listener: the
+composition's hop in front of its modules, for example. It must be an HTTP-based
+endpoint of a workspace module, and it is resolved like an owner's (same
+environment, same naming scope). Only the address moves: the owner is still
+loaded and held to its served surface and published contract, and the
+operation, the Connect procedure or REST verb and path, the contract, its
+digest and the policy stay the owner's. The endpoint forwards the call; the
+owner must still serve it.
 
 In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
 binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
@@ -2898,6 +2912,7 @@ Examples:
   codefly generate runnable-bindings
   codefly generate runnable-bindings --env staging
   codefly generate runnable-bindings --env staging --check
+  codefly generate runnable-bindings --env local --naming-scope demo --call-endpoint authority/hop/http
 ```
 
 ```
@@ -2907,8 +2922,10 @@ codefly generate runnable-bindings [flags]
 Flags:
 
 ```
-      --check        do not write; exit 1 if the on-disk file differs from what would be generated
-      --env string   environment supplying resolved addresses and runnable-scope-selections (default "local")
+      --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener (the owner's operation, route, contract and policy are kept)
+      --check                                   do not write; exit 1 if the on-disk file differs from what would be generated
+      --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
+      --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
 ```
 
 ## `codefly generate runnables`

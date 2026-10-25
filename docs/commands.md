@@ -3382,8 +3382,15 @@ and the MCP `list_runnables` tool, with facility `service` and a `source` of
 
 #### generate runnable-bindings
 
-`codefly generate runnable-bindings [--env <env>] [--check]` prepares every
+`codefly generate runnable-bindings [--env <env>] [--naming-scope <scope>]
+[--call-endpoint <module>/<service>/<endpoint>] [--check]` prepares every
 operation the workspace's modules derived (`contracts/runnables/index.json`).
+Addresses resolve in the run's naming scope (`--naming-scope` as `codefly run`
+reads it: omitted keeps the environment's, empty clears it), and
+`--call-endpoint` sends every prepared call to a declared HTTP-based endpoint —
+a composition's hop — while the operation, route, contract, digest and policy
+stay the owner's. See [naming scope and a declared call
+endpoint](runnable.md#naming-scope-and-a-declared-call-endpoint).
 The existing environment declaration in `workspace.codefly.yaml` supplies both
 endpoint facts and `runnable-scope-selections`: a map from output binding key to
 a list of Core `ScopeSelection` messages. See [the selection YAML and refusal
