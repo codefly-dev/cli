@@ -460,25 +460,37 @@ type PublishRequest struct {
 	// release policy no longer admits — after a signing identity rotated.
 	// Deliberate: without it such a carrier refuses the publish by name.
 	Resign bool `json:"resign,omitempty"`
+	// AllowCellRemovals names the modules whose removal from the hosted
+	// environment's cell file this publish intends: a namespace, workload,
+	// endpoint or consumer the delivery base branch's cell file carries and
+	// the workspace's does not. Any other removal refuses the publish.
+	AllowCellRemovals []string `json:"allowCellRemovals,omitempty"`
 }
 
 type PublishPlan struct {
-	ID               string          `json:"id"`
-	Repository       string          `json:"repository"`
-	RepositorySlug   string          `json:"repositorySlug,omitempty"`
-	Path             string          `json:"path"`
-	BaseBranch       string          `json:"baseBranch"`
-	BaseRevision     string          `json:"baseRevision"`
-	PromotionBranch  string          `json:"promotionBranch"`
-	BranchRevision   string          `json:"branchRevision,omitempty"`
-	ExistingCommit   string          `json:"existingCommit,omitempty"`
-	Module           string          `json:"module"`
-	Environment      string          `json:"environment"`
-	RenderDigest     string          `json:"renderDigest"`
-	SnapshotRevision string          `json:"snapshotRevision"`
-	Changed          []string        `json:"changed"`
-	Diff             string          `json:"diff"`
-	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
+	ID              string `json:"id"`
+	Repository      string `json:"repository"`
+	RepositorySlug  string `json:"repositorySlug,omitempty"`
+	Path            string `json:"path"`
+	BaseBranch      string `json:"baseBranch"`
+	BaseRevision    string `json:"baseRevision"`
+	PromotionBranch string `json:"promotionBranch"`
+	BranchRevision  string `json:"branchRevision,omitempty"`
+	ExistingCommit  string `json:"existingCommit,omitempty"`
+	// ReplacesBranchRevision is the tip of a stale promotion branch this
+	// publish replaces: a branch that does not contain the base branch (its
+	// pull request was squash-merged and the branch kept, or the base moved
+	// past it), which the publish restarts from the base and pushes over with
+	// a lease on exactly this revision. Part of the plan's identity, so a
+	// branch that moves after review refuses the publish.
+	ReplacesBranchRevision string          `json:"replacesBranchRevision,omitempty"`
+	Module                 string          `json:"module"`
+	Environment            string          `json:"environment"`
+	RenderDigest           string          `json:"renderDigest"`
+	SnapshotRevision       string          `json:"snapshotRevision"`
+	Changed                []string        `json:"changed"`
+	Diff                   string          `json:"diff"`
+	ContractChecks         []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
 	// reader and the result.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 	// StaleConsumers names the modules the delivery base branch holds at
@@ -487,6 +499,9 @@ type PublishPlan struct {
 	// Reported rather than refused: refusing would hold every consumer's
 	// publish on every other's.
 	StaleConsumers []string `json:"staleConsumers,omitempty"`
+	// CellRemovals are the removals from the base branch's cell file the
+	// request named (AllowCellRemovals), for the reviewer to see.
+	CellRemovals []string `json:"cellRemovals,omitempty"`
 	// Carriers are the carriers this plan signed, keyed by kind, ID and
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.

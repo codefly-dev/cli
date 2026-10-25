@@ -55,13 +55,18 @@ import (
 // rather than discovered when a solution never appears.
 
 const (
-	// deliveryImage is the image the delivery Jobs run: a digest-pinned curl.
-	// It is the second third-party image the render itself pins (remoteImage
-	// is the first), and it is pinned the same way, by digest, so that what a
-	// Job runs is what was reviewed. A codefly-owned delivery image would
-	// replace it; until one is published, the pinned digest is the honest
-	// record of what delivers.
-	deliveryImage = "docker.io/curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"
+	// deliveryImage is the image the delivery Jobs run: codefly's own base
+	// companion, published by codefly on ghcr.io and pinned by digest (the
+	// multi-arch index of tag 0.0.4), so that what a Job runs is what was
+	// reviewed. It carries everything deliveryScript calls — /bin/sh, curl,
+	// date, basename, cat, tail, sed, printf, sleep — and runs as the
+	// non-root user on a read-only root filesystem. A delivery Job never
+	// pulls from Docker Hub: a cell's nodes are not promised a route to it,
+	// and its anonymous pulls are rate-limited. The cell file declares this
+	// same image (cellDelivery), so moving the digest changes every cell file
+	// and the cell must be re-rendered and published with, or before, the
+	// first Job that runs the new one.
+	deliveryImage = "ghcr.io/codefly-dev/codefly@sha256:8fcaaea34622eb1743a5b755c7c6540a0be245cb37c8b2188732f45c8207a833"
 
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"

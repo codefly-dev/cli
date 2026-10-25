@@ -229,6 +229,54 @@ func (cache *imageBuildCache) store(ctx context.Context, entry *imageCacheEntry)
 type imageIdentity struct {
 	Key         string
 	ContextTree string
+	// Classes digests the same inputs as Key, split by what moves them, so a
+	// published release's build can be compared class by class (buildClasses).
+	Classes *buildClasses
+}
+
+// buildClasses splits an identity's inputs by what moves them: Code is the
+// service's own bytes (its build context and the Go module manifests the
+// prefetch reads), Recipe is what its agent emitted and how it is invoked (the
+// recipe tree, Dockerfile and buildx command), and Bases is the resolved base
+// images. Each is recorded on the image as a label of its own beside the
+// aggregate, never folded into Key: Key is unchanged, so an image labelled
+// before the classes existed still matches its own inputs.
+type buildClasses struct {
+	Code   string
+	Recipe string
+	Bases  string
+}
+
+// classDigest is the digest of one class's inputs, under the cache schema so a
+// schema move separates the classes the same way it separates the aggregate.
+func classDigest(class string, inputs any) (string, error) {
+	payload, err := json.Marshal(struct {
+		Schema int    `json:"schema"`
+		Class  string `json:"class"`
+		Inputs any    `json:"inputs"`
+	}{imageCacheSchema, class, inputs})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// identityClasses digests each class of inputs.
+func identityClasses(inputs *imageInputs) (*buildClasses, error) {
+	code, err := classDigest("code", []any{inputs.Context, inputs.Dockerignore, inputs.ContextTree, inputs.GoModules})
+	if err != nil {
+		return nil, err
+	}
+	recipe, err := classDigest("recipe", []any{inputs.Recipe, inputs.Dockerfile, inputs.RecipeTree, inputs.Command})
+	if err != nil {
+		return nil, err
+	}
+	bases, err := classDigest("bases", inputs.Bases)
+	if err != nil {
+		return nil, err
+	}
+	return &buildClasses{Code: code, Recipe: recipe, Bases: bases}, nil
 }
 
 // imageBuildScope is where one recipe's inputs live. It travels as a unit so the
@@ -289,8 +337,12 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	if err != nil {
 		return imageIdentity{}, err
 	}
+	classes, err := identityClasses(&inputs)
+	if err != nil {
+		return imageIdentity{}, err
+	}
 	sum := sha256.Sum256(payload)
-	return imageIdentity{Key: "sha256:" + hex.EncodeToString(sum[:]), ContextTree: contextTree}, nil
+	return imageIdentity{Key: "sha256:" + hex.EncodeToString(sum[:]), ContextTree: contextTree, Classes: classes}, nil
 }
 
 // proxyPlaceholder is what every fetched Go module proxy path reads as in an
@@ -488,7 +540,7 @@ var resolveImageManifestDigest = func(ctx context.Context, reference, builderNam
 	args = append(args, "--raw", reference)
 	manifest, err := exec.CommandContext(probe, "docker", args...).Output()
 	if err != nil {
-		return "", err
+		return "", classifyImageProbeError(err)
 	}
 	if len(bytes.TrimSpace(manifest)) == 0 {
 		return "", fmt.Errorf("registry served no manifest for %s", reference)
@@ -496,6 +548,34 @@ var resolveImageManifestDigest = func(ctx context.Context, reference, builderNam
 	sum := sha256.Sum256(manifest)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
+
+// errImageNotFound is a registry's answer that a reference names nothing.
+var errImageNotFound = errors.New("image not found")
+
+// imageNotFoundAnswers are how a registry, through buildx, says a reference
+// does not exist: the distribution spec's error codes and buildx's own
+// rendering of a 404.
+var imageNotFoundAnswers = []string{"not found", "manifest unknown", "name unknown"}
+
+// classifyImageProbeError marks a probe the registry answered with "no such
+// image" as errImageNotFound, keeping every other failure (an auth refusal, a
+// timeout, an unreachable registry) what it was.
+func classifyImageProbeError(err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		answer := strings.ToLower(string(exit.Stderr))
+		for _, notFound := range imageNotFoundAnswers {
+			if strings.Contains(answer, notFound) {
+				return fmt.Errorf("%w: %s", errImageNotFound, strings.TrimSpace(string(exit.Stderr)))
+			}
+		}
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
+	}
+	return err
+}
+
+// isImageNotFound reports whether a probe found the reference absent.
+func isImageNotFound(err error) bool { return errors.Is(err, errImageNotFound) }
 
 // imageRegistryProbeTimeout bounds every registry read the reuse decision makes.
 // A registry that accepts a connection and then stalls would otherwise hang a

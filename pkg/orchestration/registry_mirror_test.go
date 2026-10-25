@@ -121,7 +121,7 @@ func TestNoBaseImageReadReachesTheMirroredRegistry(t *testing.T) {
 		asked = append(asked, reference)
 		// The blocked host: Docker Hub answers nothing at all here, so a read
 		// that reached it would fail the recipe rather than pass unnoticed.
-		if host, _, _ := referenceRegistry(reference); host == environments.DockerHubRegistry {
+		if host, _, _ := environments.ReferenceRegistry(reference); host == environments.DockerHubRegistry {
 			return "", fmt.Errorf("dial registry-1.docker.io: blocked")
 		}
 		return "sha256:" + strings.Repeat("a", 64), nil

@@ -486,6 +486,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
 		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
 		Resign:                   gitOpsResign,
+		AllowCellRemovals:        gitOpsAllowCellRemovals,
 	}
 }
 
@@ -567,6 +568,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	cli.Info("Repository %s", plan.Repository)
 	cli.Info("Base %s@%s", plan.BaseBranch, plan.BaseRevision)
 	cli.Info("Promotion branch %s", plan.PromotionBranch)
+	if plan.ReplacesBranchRevision != "" {
+		cli.Warning("Promotion branch %s at %s does not contain %s (its pull request was squash-merged, or the base moved past it); this publish starts again from %s and replaces the branch, leased on %s", plan.PromotionBranch, plan.ReplacesBranchRevision, plan.BaseBranch, plan.BaseBranch, plan.ReplacesBranchRevision)
+	}
 	cli.Info("Render digest %s", plan.RenderDigest)
 	cli.Info("Service snapshot %s", plan.SnapshotRevision)
 	cli.Info("Changed files:")
@@ -576,6 +580,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	if len(plan.ContractChecks) > 0 {
 		cli.Info("Contract checks:")
 		cli.Info("%s", formatContractChecks(plan.ContractChecks))
+	}
+	for _, removal := range plan.CellRemovals {
+		cli.Warning("The cell file removes %s, as --allow-cell-removal names", removal)
 	}
 	for _, stale := range plan.StaleConsumers {
 		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
@@ -600,6 +607,7 @@ var (
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
 	gitOpsResign                   bool
+	gitOpsAllowCellRemovals        []string
 	gitOpsValidateCluster          bool
 	gitOpsRebuild                  bool
 )
@@ -636,6 +644,10 @@ func init() {
 			"Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering")
 		command.Flags().BoolVar(&gitOpsResign, "resign", false,
 			"Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied")
+	}
+	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
+		command.Flags().StringSliceVar(&gitOpsAllowCellRemovals, "allow-cell-removal", nil,
+			"Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")

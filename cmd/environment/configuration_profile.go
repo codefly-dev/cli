@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/run/fixture"
+
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/shared"
@@ -76,7 +78,7 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 }
 
 // validateConfigurationSourceLayer refuses a source layer that is not an ordinary
-// directory of flat .env inputs: a symlink, a derivation from the destination, an
+// directory of flat .env inputs (and at most the module envelope): a symlink, a derivation from the destination, an
 // environment-specific runnable binding, or a secret file holding a value rather
 // than an empty placeholder.
 func validateConfigurationSourceLayer(layer, destination string) error {
@@ -92,8 +94,11 @@ func validateConfigurationSourceLayer(layer, destination string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".env") && entry.Name() != configurations.ProfileDerivationFile {
-			return fmt.Errorf("configuration-source supports only flat .env inputs and profile derivation metadata: %s", entry.Name())
+		// The module envelope is the one single-file declaration a source profile
+		// may carry: a cell deriving from it is delivered that ceiling (fixture.EnvelopeFile).
+		if !strings.HasSuffix(entry.Name(), ".env") && entry.Name() != configurations.ProfileDerivationFile &&
+			entry.Name() != fixture.EnvelopeFile {
+			return fmt.Errorf("configuration-source supports only flat .env inputs, the module envelope and profile derivation metadata: %s", entry.Name())
 		}
 		info, infoErr := entry.Info()
 		if infoErr != nil || !info.Mode().IsRegular() {

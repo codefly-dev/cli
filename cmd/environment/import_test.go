@@ -838,6 +838,24 @@ func TestImportRefusesANullRunnableScopeSelectionWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestReimportWithdrawsArtifactsAndAuthTheContractNoLongerCarries(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	declared := strings.Replace(fixtureContract, `"registry": {"url": "x.azurecr.io"}`,
+		`"registry": {"url": "x.azurecr.io", "auth": "acr", "artifacts": "x.azurecr.io/bundles"}`, 1)
+	doImport(t, dir, importOptions{contractData: []byte(declared)})
+	if got := loadWorkspace(t, dir).FindEnvironment("azure").Registry; got.Auth != "acr" || got.Artifacts != "x.azurecr.io/bundles" {
+		t.Fatalf("auth and artifacts not imported: %+v", got)
+	}
+	doImport(t, dir, importOptions{contractData: []byte(fixtureContract)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if env.Registry.Auth != "" || env.Registry.Artifacts != "" || env.Registry.URL != "x.azurecr.io" {
+		t.Fatalf("a value the contract withdrew survived re-import: %+v", env.Registry)
+	}
+	if strings.Contains(readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)), "bundles") {
+		t.Fatal("the withdrawn artifacts registry is still written in the workspace")
+	}
+}
+
 func TestReimportWithdrawsAMirrorTheContractNoLongerCarries(t *testing.T) {
 	dir := writeWorkspace(t, existingAzureWorkspace)
 	mirrored := strings.Replace(fixtureContract, `"registry": {"url": "x.azurecr.io"}`,

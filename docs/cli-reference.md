@@ -2098,6 +2098,7 @@ codefly deploy gitops plan [module]
 Flags:
 
 ```
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote for k3d qualification
@@ -2117,6 +2118,7 @@ codefly deploy gitops publish [module]
 Flags:
 
 ```
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                                                                       Promotion pull request body
       --env string                                                                        Environment to promote (default "local")
@@ -2303,9 +2305,9 @@ operator, and named). The store is the backend behind the SecretStore the render
 names, read from the environment's cluster; a render reading through several
 stores is planned and written store by store.
 
-A stored value is never rotated: a property the store already holds is kept even
-when a configuration file holds one too, and the two disagreeing is refused
-rather than resolved. A configured key with an empty value supplies nothing, so
+A stored value is never rotated unless --rotate names it: a property the store
+already holds is kept even when a configuration file holds one too, and the two
+disagreeing is refused rather than resolved. A configured key with an empty value supplies nothing, so
 a tracked placeholder file still leaves its properties to be supplied.
 
 Each property is resolved by the secret key the render reads out of it, not by
@@ -2321,6 +2323,18 @@ reads a stored value: it knows which remote keys exist, not what they hold.
 --module limits the plan to the remote keys the named modules' services read.
 Every other remote key is still read, so a scoped key keeps agreeing with what
 the store already holds, but nothing outside the scope is planned or written.
+
+--rotate <module>/<service>/<configuration>:<KEY> (or <configuration>:<KEY> for a
+workspace configuration, or the CODEFLY__… secret key) replaces a GENERATED key's
+stored value with a new one, in every remote key holding it, and rewrites every
+stored value derived from it in the same apply: a stored URL whose password is
+the old value gets the new one. Any other stored value embedding the old one,
+and any key service-secrets.generate does not declare, is refused by name. Each
+write is a new version, refused if the key moved since the plan read it; a
+rotation failing part-way restores what it wrote. The CLI changes the store
+only: force-sync the ExternalSecrets, make the server accept the new credential
+(a restart only does that for an agent that re-applies it on every start), then
+restart its consumers. An identifier or signing key is never rotated.
 ```
 
 ```
@@ -2335,6 +2349,7 @@ Flags:
       --env string       Environment whose rendered ExternalSecrets to seed (default "local")
       --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
       --module strings   Plan only these modules' remote keys (comma-separated or repeated)
+      --rotate strings   Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
   -y, --yes              Write without an interactive confirmation
 ```
 
@@ -2527,9 +2542,25 @@ Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
 --coordinate-contract -.
 
---product-intent <file> additionally imports environment-specific composition
-exclusions from an authored product file. It accepts only environments and
-exclude-services; it does not interpret the legacy full delivery.intent.yaml.
+--product-intent <file> additionally imports what the product, not the cell,
+decides per environment, from an authored product file:
+
+  environments:
+    <env>:
+      exclude-services: []          # required; [] clears
+      service-secrets:              # optional
+        generate:                   # keys minted at random by deploy secrets
+          - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [tracing/evidence]}
+        may-be-empty: [<stored key>] # keys whose correct value here is empty
+
+The intent owns exclude-services, service-secrets.generate and
+service-secrets.may-be-empty: a contract declaring one of them too is refused,
+and an entry the intent no longer carries is withdrawn on re-import. The
+contract keeps the rest of service-secrets (secret-store, defaults, services),
+which names the cell's store. Each entry is checked against the secret
+configurations the environment's profile declares; an unknown service,
+configuration or key is refused by name. Any other field is refused; the legacy
+full delivery.intent.yaml is not interpreted.
 ```
 
 ```
@@ -2542,7 +2573,7 @@ Flags:
       --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
       --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
       --namespace string             Assert the namespace declared by the producer
-      --product-intent string        Authored environment exclusions; accepts environments.<env>.exclude-services only
+      --product-intent string        Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
 ```
 
 ## `codefly environment show`

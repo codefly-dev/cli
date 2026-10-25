@@ -1122,6 +1122,110 @@ func TestPublishPreservesSnapshotLineageAfterSquashAndBranchDeletion(t *testing.
 	}
 }
 
+// A promotion whose pull request was squash-merged while its branch was kept
+// leaves a branch that does not contain the base. The next publish starts
+// again from the base and replaces that branch under a lease on its old tip,
+// rather than stacking a commit that forks from the old base and conflicts
+// add/add on every file the squash already delivered.
+func TestPublishRestartsAPromotionBranchItsSquashMergeLeftBehind(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureSSHSigning(t)
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	firstPlan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: firstPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "merge", "--squash", "origin/"+request.PromotionBranch)
+	gitRun(t, work, "commit", "-m", "squash promotion")
+	gitRun(t, work, "push", "origin", "main")
+
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "worker")
+	secondPlan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondPlan.ReplacesBranchRevision != first.Commit || secondPlan.BranchRevision != "" || secondPlan.ExistingCommit != "" {
+		t.Fatalf("plan replaces %q (branch %q, existing %q), want it to replace the squash-merged tip %s",
+			secondPlan.ReplacesBranchRevision, secondPlan.BranchRevision, secondPlan.ExistingCommit, first.Commit)
+	}
+	second, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: secondPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "refs/heads/" + request.PromotionBranch
+	if tip := gitOutput(t, "", "--git-dir", remote, "rev-parse", branch); tip != second.Commit {
+		t.Fatalf("promotion branch is at %s, want the new commit %s", tip, second.Commit)
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", "main", branch)
+	for _, changed := range strings.Split(gitOutput(t, "", "--git-dir", remote, "diff", "--name-only", "main", branch), "\n") {
+		if changed != secondPlan.Path && !strings.HasPrefix(changed, secondPlan.Path+"/") {
+			t.Fatalf("the replaced branch changes %q outside the module path %s", changed, secondPlan.Path)
+		}
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-tree", "--write-tree", "main", branch)
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", first.SnapshotRevision, second.SnapshotRevision)
+	if first.SnapshotRevision == second.SnapshotRevision {
+		t.Fatal("changed service tree reused the previous snapshot")
+	}
+}
+
+// A stale promotion branch is replaced only when it carries nothing but the
+// module's own path: one holding someone else's change is refused even after
+// the base moved past it, never overwritten.
+func TestPublishRefusesToReplaceAStaleBranchCarryingUnrelatedChanges(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "checkout", "-b", "codefly/promote-payments-production")
+	if err := os.WriteFile(filepath.Join(work, "unrelated.txt"), []byte("outside promotion\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", "unrelated.txt")
+	gitRun(t, work, "commit", "-m", "unrelated")
+	gitRun(t, work, "push", "origin", "codefly/promote-payments-production")
+	stale := gitOutput(t, work, "rev-parse", "HEAD")
+	gitRun(t, work, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(work, "elsewhere.txt"), []byte("the base moves on\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", "elsewhere.txt")
+	gitRun(t, work, "commit", "-m", "base moves")
+	gitRun(t, work, "push", "origin", "main")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unrelated change") {
+		t.Fatalf("plan error = %v", err)
+	}
+	if tip := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/codefly/promote-payments-production"); tip != stale {
+		t.Fatalf("the stale branch moved to %s, want it left at %s", tip, stale)
+	}
+}
+
 func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
@@ -1288,27 +1392,34 @@ func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
 	}}
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
-	_, err := RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
-		Units:       graph,
-		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
-	}, func(_ context.Context, stage string) error {
-		return writePublishServiceFixture(stage, "production", "api")
-	})
-	if err != nil {
-		t.Fatal(err)
+	// Each promotion is reviewed and merged; the rollback then targets the
+	// first while the base delivers the second, so it has a tree to re-promote.
+	promote := func(service string) PublishResult {
+		t.Helper()
+		_, err := RenderOwnedTree(ctx, &RenderOptions{
+			Destination: destination, Module: "payments", UnitNames: []string{"api"},
+			OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
+			Units:       graph,
+			Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+		}, func(_ context.Context, stage string) error {
+			return writePublishServiceFixture(stage, "production", service)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := PlanPublish(ctx, workspace, &request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		published, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mergePromotionToMain(t, remote, request.PromotionBranch)
+		return published
 	}
-
-	plan, err := PlanPublish(ctx, workspace, &request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	published, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mergePromotionToMain(t, remote, request.PromotionBranch)
+	published := promote("api")
+	promote("worker")
 	if err := writeReceipt(workspace.Dir(), "evidence", "first.json", Evidence{
 		SchemaVersion: EvidenceSchemaVersion, Module: "payments", Environment: "production",
 		RenderDigest: published.RenderDigest, SignedCommit: published.Commit, Tree: published.Tree,

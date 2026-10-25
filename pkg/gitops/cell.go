@@ -34,7 +34,10 @@ import (
 // environment, in the shape the consumer reads (pkg/gitops/cellfile).
 //
 // It is regenerated whole after every module render, so absence is correct: a
-// workload not in the file is not delivered. It cannot live in a module's owned
+// workload not in the file is not delivered. That is why it is never written
+// while a module the workspace composes has no render for the environment
+// (refuseUnrenderedModules), and why a publication holds it to the delivery
+// base branch's file (holdCellToBase). It cannot live in a module's owned
 // tree, where the promotable ruleset admits only Kubernetes manifests and
 // Kustomizations; it lives beside the module trees, under
 // <gitops path>/cells/<environment>/cell.yaml, and is committed with them.
@@ -159,6 +162,9 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if len(file.Namespaces) == 0 {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
 	}
+	if err = refuseUnrenderedModules(workspace, env, result.Modules); err != nil {
+		return cellfile.File{}, CellResult{}, err
+	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
@@ -166,6 +172,40 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		return cellfile.File{}, CellResult{}, err
 	}
 	return file, result, nil
+}
+
+// refuseUnrenderedModules refuses a cell file that would leave out a module
+// the workspace composes because no render of it for this environment is in
+// the checkout: the record is missing (never rendered, or cleaned away with
+// the rest of the uncommitted render outputs) or describes another
+// environment. The file is regenerated whole and absence is removal, so such
+// a file would withdraw every workload that module delivers from the cell's
+// admission set, and nothing would say so.
+//
+// It refuses rather than keeping the module's entries from the cell file
+// already on disk: an entry is derived from the composition as a whole — its
+// consumers are other modules' declared dependencies, its bindings and egress
+// the environment's — so an entry carried over from an earlier render is a
+// claim about a composition that may no longer exist, and the file it was
+// read from is as likely to have been cleaned as the records were. No digest
+// is invented either: the render of the module is what knows it.
+func refuseUnrenderedModules(workspace *resources.Workspace, env *environments.Environment, rendered []string) error {
+	var missing []string
+	for _, reference := range workspace.Modules {
+		if reference != nil && !slices.Contains(rendered, reference.Name) {
+			missing = append(missing, reference.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	commands := make([]string, 0, len(missing))
+	for _, module := range missing {
+		commands = append(commands, fmt.Sprintf("codefly deploy gitops render %s --env %s", module, env.Name))
+	}
+	return fmt.Errorf("environment %s's cell file is not written: this checkout holds no render for %s of the composed module(s) %s, and a cell file without them would withdraw every workload they deliver from the cell; render them (%s), or every module at once with `codefly deploy gitops render --all --env %s`",
+		env.Name, env.Name, strings.Join(missing, ", "), strings.Join(commands, "; "), env.Name)
 }
 
 // writeCell encodes the cell file and writes it at path.
@@ -488,7 +528,11 @@ func carriesDelivery(workspace *resources.Workspace, env *environments.Environme
 	if !inventory.HostsDelivery || env.Host == nil || workspace == nil {
 		return false, nil
 	}
-	return fixture.StatesGrants(workspace, env.Name)
+	profile, err := env.ConfigurationProfileName()
+	if err != nil {
+		return false, err
+	}
+	return fixture.StatesGrants(workspace, profile)
 }
 
 // cellDelivery is the presence carrier of a module that carries delivery for a

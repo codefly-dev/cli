@@ -29,6 +29,11 @@ type fakeStore struct {
 	mutex  sync.Mutex
 	reads  []string
 	writes []string
+	// versions counts each key's versions; failWrite fails the write of a key,
+	// and landThenFail stores it and then reports a failure.
+	versions     map[string]int
+	failWrite    map[string]bool
+	landThenFail map[string]bool
 }
 
 func newFakeStore(documents map[string]map[string]string) *fakeStore {
@@ -44,7 +49,11 @@ func (store *fakeStore) Describe(_ context.Context, key string) (Description, er
 		return Description{Exists: true}, nil
 	}
 	_, exists := store.documents[key]
-	return Description{Exists: exists, HasVersion: exists}, nil
+	description := Description{Exists: exists, HasVersion: exists}
+	if exists {
+		description.Version = fmt.Sprint(store.versions[key])
+	}
+	return description, nil
 }
 
 func (store *fakeStore) Read(_ context.Context, key string) (map[string]string, error) {
@@ -58,15 +67,34 @@ func (store *fakeStore) Read(_ context.Context, key string) (map[string]string, 
 	return maps.Clone(document), nil
 }
 
-func (store *fakeStore) Write(_ context.Context, key string, document map[string]string, create bool) error {
+func (store *fakeStore) Write(_ context.Context, key string, document map[string]string, create bool) (string, error) {
 	_, exists := store.documents[key]
 	if create == exists && !store.empty[key] {
-		return fmt.Errorf("write %s with create=%v on a key that exists=%v", key, create, exists)
+		return "", fmt.Errorf("write %s with create=%v on a key that exists=%v", key, create, exists)
+	}
+	if store.failWrite[key] {
+		return "", fmt.Errorf("write %s refused", key)
 	}
 	store.writes = append(store.writes, key)
 	store.documents[key] = maps.Clone(document)
 	delete(store.empty, key)
-	return nil
+	if store.versions == nil {
+		store.versions = map[string]int{}
+	}
+	store.versions[key]++
+	if store.landThenFail[key] {
+		delete(store.landThenFail, key)
+		return "", fmt.Errorf("write %s timed out", key)
+	}
+	return fmt.Sprint(store.versions[key]), nil
+}
+
+func writtenKeys(written []Written) []string {
+	keys := make([]string, 0, len(written))
+	for _, write := range written {
+		keys = append(keys, write.Key)
+	}
+	return keys
 }
 
 const (
@@ -187,7 +215,7 @@ func TestPlanSeedsANewModuleConsistentlyWithTheSeededCell(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	// Writes follow the render's order, and only keys with something to write.
-	if !slices.Equal(written, []string{"notes-backend", "tasks-store"}) {
+	if !slices.Equal(writtenKeys(written), []string{"notes-backend", "tasks-store"}) {
 		t.Errorf("written %v, want notes-backend then tasks-store", written)
 	}
 	if store.documents["notes-backend"][internalToken] != "shared-internal-token" {
@@ -552,6 +580,61 @@ func TestBuildAcceptsAnEmptyPropertyTheEnvironmentDeclares(t *testing.T) {
 		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
 		Store: store, ReadPayloads: true, MayBeEmpty: []string{clientSecret}}); err != nil {
 		t.Fatalf("Build = %v, want the declared key accepted", err)
+	}
+}
+
+// A key the environment declares empty and nothing holds is written empty, not
+// required: the declaration says what the value is, and leaving the property
+// absent keeps the ExternalSecret reading it from ever materializing.
+func TestBuildWritesADeclaredEmptyPropertyNothingHolds(t *testing.T) {
+	rendered := fixture()
+	documents := seeded()
+	delete(documents["host-accounts"], clientSecret)
+	store := newFakeStore(documents)
+	ctx := context.Background()
+	plan, err := Build(ctx, &Inputs{Rendered: rendered,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, MayBeEmpty: []string{clientSecret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range plan.Required() {
+		if strings.Contains(required, clientSecret) {
+			t.Fatalf("Required() names %s, want it planned empty: the environment declares it", clientSecret)
+		}
+	}
+	if _, err = plan.Apply(ctx, store, true); err != nil {
+		t.Fatal(err)
+	}
+	value, present := store.documents["host-accounts"][clientSecret]
+	if !present || value != "" {
+		t.Errorf("apply stored (%q, present=%v), want the property present and empty", value, present)
+	}
+	// A second plan keeps it: the stored empty is the declared one.
+	again, err := Build(ctx, &Inputs{Rendered: rendered,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, MayBeEmpty: []string{clientSecret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(again.Changes(), "host-accounts") {
+		t.Errorf("a re-plan rewrites host-accounts, want the stored empty kept")
+	}
+}
+
+// Without the declaration the same absent property is still the operator's.
+func TestBuildRequiresAnAbsentPropertyNotDeclaredEmpty(t *testing.T) {
+	rendered := fixture()
+	documents := seeded()
+	delete(documents["host-accounts"], clientSecret)
+	plan, err := Build(context.Background(), &Inputs{Rendered: rendered,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: newFakeStore(documents), ReadPayloads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Required(), func(required string) bool { return strings.Contains(required, clientSecret) }) {
+		t.Errorf("Required() = %v, want the undeclared %s required", plan.Required(), clientSecret)
 	}
 }
 

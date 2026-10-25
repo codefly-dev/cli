@@ -945,6 +945,34 @@ and verifier allows from, instead of transcribing them. The consumer validates
 it as another repository's output; this side writes it deterministically and
 reads it back through its own reader.
 
+Because absence is removal, **the cell file is never written without a module
+the workspace composes.** The per-module render records
+(`deployments/modules/<module>/.codefly-render.json`) are the file's only
+source, and they are uncommitted render outputs: a `git clean` of
+`deployments/` removes them. A render that finds a composed module with no
+record for the environment — none at all, or one rendered for another
+environment — writes no cell file, leaves the one on disk as it was, and names
+each such module with the command that renders it (`codefly deploy gitops
+render <module> --env <env>`, or `render --all`). It does not keep that
+module's entries from the file already on disk: an entry is derived from the
+whole composition (its consumers are other modules' dependencies, its bindings
+and egress the environment's), so an entry carried over is a claim about a
+composition that may no longer exist, and no digest is invented for a module
+that was not rendered.
+
+**A publish holds the cell file to the base branch's.** The cell file is
+committed with the rendered trees, and a cell admits only what it names, so
+`plan` and `publish` read the workspace's cell file for a hosted environment
+and the one the delivery base branch carries at
+`<gitops path>/cells/<environment>/cell.yaml`, and refuse when the workspace's
+removes a namespace, a workload, an endpoint or a consumer of an endpoint the
+base admits — naming each removal and the modules it concerns. A removal that
+is intended (a module the workspace no longer composes, a dependency dropped)
+is named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
+covered by naming either the endpoint's module or the consumer's, and the plan
+lists every removal it lets through. A base with no cell file has nothing to
+hold the workspace's to.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
@@ -969,7 +997,9 @@ one command renders one composition and a stale sibling tree is never a reason
 to run the render again. A single-module `render` re-derives the cell file
 from its own tree and the sibling trees already rendered; a sibling the cell
 file cannot read, or one left at another inventory schema, is reported as
-stale by name rather than failing the render. An image whose inputs did not
+stale by name rather than failing the render, and so is a composed module with
+no render at all: the module's tree is written, the cell file is not, and the
+warning names the renders still owed. An image whose inputs did not
 change is kept rather than rebuilt, and that decision is taken before any Go
 module graph is fetched, so a render of an up-to-date composition fetches
 nothing; `--rebuild` builds every image regardless. A service that declares
@@ -1112,8 +1142,8 @@ it** — a mirror serves the same content, so the resolved digest is the same an
 it is the digest, never the registry it came from, that the reuse key binds.
 
 A mirror is **not** authenticated by `registry.auth`, which is the push side and
-covers `registry.url` alone (and today is wired for `ecr` and `acr` only — `gar`
-and `ghcr` are stubs). Both halves of a mirrored read use the host's Docker
+covers `registry.url` alone (wired for `ecr`, `acr` and `ghcr`; `gar` is a
+stub). Both halves of a mirrored read use the host's Docker
 credential store instead: `docker buildx imagetools inspect` for the resolution,
 and the container-driver builder for the pull. So log in to the mirror's
 registry on the machine that renders before it renders — for an Artifact
@@ -1146,6 +1176,49 @@ indistinguishable — the digest is the same either way, which is the whole
 premise — but it also means neither the build output nor the reuse key records
 *which* registry answered, so a mirror serving something else would be
 bound as if it were upstream.
+
+**A cell pulls the environment's own images through a mirror too.** A mirror
+declared for the host of `registry.url` itself makes the push and the pull two
+registries: the build pushes to `registry.url`, and the rendered manifests (and
+so the cell file) name the image under the mirror, with the pushed digest. This
+is how one canonical private registry serves every cell: each cell reads it
+through a same-cloud pull-through repository with its own workload identity,
+and no registry credential is ever placed in a cell.
+
+```yaml
+environments:
+  - name: staging
+    registry:
+      url: ghcr.io/example            # pushed to, once, by whoever renders
+      auth: ghcr                      # requires a ghcr.io url
+      mirrors:
+        ghcr.io: us-east1-docker.pkg.dev/example/ghcr    # a remote repository of ghcr.io
+      artifacts: us-east1-docker.pkg.dev/example/bundles # frontend bundles
+```
+
+Here `ghcr.io/example/<module>/<service>:<version>` is pushed and
+`us-east1-docker.pkg.dev/example/ghcr/example/<module>/<service>@sha256:…` is
+deployed — the mirror's repository path is the upstream path, with the same
+normalization a base image is mirrored with. Every registry read the build makes
+(the released-version check, the reuse cache, the check that a kept image still
+exists) uses the pushed reference. An image the recipe names under any other
+repository is untouched. With no mirror for the `registry.url` host, nothing
+changes: the image is pushed and pulled where `registry.url` names it.
+
+`auth: ghcr` logs Docker in to `ghcr.io` with a token from `GITHUB_TOKEN`, else
+`GH_TOKEN`, else `gh auth token`, as `GITHUB_ACTOR`, else the `gh` login; the
+token reaches `docker login` on stdin and is never logged. An image pushed to
+`ghcr.io` is labelled (and, multi-platform, its index annotated)
+`org.opencontainers.image.source` with the workspace's GitHub repository, which
+is what links a private package to the repository whose access it inherits. The
+label is added after the image's identity is computed, so it never causes a
+rebuild.
+
+`registry.artifacts` is where frontend bundles are published and read instead
+of `registry.url`. Bundles are OCI artifacts rather than images, and a
+pull-through repository is not proven to serve them, so an environment whose
+`registry.url` is mirrored names a registry its hosts read bundles from
+directly. Absent, bundles go to `registry.url` as before.
 
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
@@ -1188,6 +1261,12 @@ Publish clones the selected GitOps repository, commits and advertises the
 immutable service/module snapshot, derives exact AppProject authority from that
 snapshot, and adds CLI-owned Applications pinned to its commit and paths. It
 then creates the signed publication commit and opens or updates a pull request.
+An existing promotion branch is continued only when it contains the base
+branch; one the base does not contain (its pull request squash-merged and the
+branch kept) is restarted from the base and replaced with a push leased on the
+tip the plan reviewed, which the plan prints as the revision it replaces. A
+stale branch carrying a change outside the module's path is refused, never
+overwritten.
 Planning does not advertise the snapshot or mutate the remote. Observe requires an
 approved, merged pull request and verifies the publication digest, the
 snapshot revision bound into every Application, exact service paths, project
@@ -1265,6 +1344,7 @@ codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exi
 codefly deploy secrets --env staging --dry-run                  # full plan; reads the store in memory
 codefly deploy secrets --env staging                            # write it (confirms; --yes to skip)
 codefly deploy secrets --env staging --module runtime --dry-run  # one module's keys only
+codefly deploy secrets --env staging --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD  # rotate a generated key
 ```
 
 It reads every `ExternalSecret` the render projected for `--env` under
@@ -1275,11 +1355,12 @@ resolves every remote property to a source, never printing a value:
 
 | action | source |
 | --- | --- |
-| `keep` | the store already holds it; nothing stored is ever rotated |
+| `keep` | the store already holds it; nothing stored is rotated unless `--rotate` names it |
 | `propagate` | a configuration value (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`, `CODEFLY__SERVICE_SECRET_CONFIGURATION__…`) is one value however many services read it, so it is copied from the remote key that holds it |
 | `configured` | the environment's own `configurations/<profile>/<group>.secret.env` holds the value — the file `codefly config set` writes — and the plan seeds the store from it, naming the file as its source |
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
+| `rotate` | `--rotate` names its generated key, or its stored value is derived from one that is ([below](#rotating-a-generated-key)) |
 
 **`configured`: the environment's own files are a source.** `codefly config set
 <group> KEY=VALUE --env <env>` writes
@@ -1302,8 +1383,9 @@ key reaches its value whichever way the group or key was spelled.
 
 Four rules bound it:
 
-- **A stored value still wins and is never rotated.** A property the store
-  already holds is `keep`, file or no file.
+- **A stored value still wins and is never rotated** (bar an explicit
+  `--rotate`, which refuses a configured key). A property the store already
+  holds is `keep`, file or no file.
 - **A stored value that differs from the configured one is refused**, like two
   remote keys disagreeing: keeping it would leave the deployed workload on one
   value and every local run on the other, reported as `keep`. Change the
@@ -1406,6 +1488,83 @@ generated value it is written only where no remote key holds it, so a key a
 service already signs with is never replaced by a second run. It is one
 workload's key: a plan in which more than one service reads it is refused, and
 the remedy is to remove the extra reader, never to re-mint the key.
+
+#### Rotating a generated key
+
+`--rotate` replaces a stored value. It is explicit and narrow:
+
+```bash
+codefly deploy secrets --env blue --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD --dry-run
+codefly deploy secrets --env blue --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD
+```
+
+The selector is spelled like the `service-secrets.generate` entry that declares
+the key — `<module>/<service>/<configuration>:<KEY>`, `<configuration>:<KEY>`
+for a workspace configuration — or is the `CODEFLY__…_SECRET_CONFIGURATION__…`
+key itself; it is repeatable. Only a key `service-secrets.generate` declares is
+rotated. Each of these is refused with its reason: a supplied key (`require`); a
+configured one (change the file instead); an `ed25519-pkcs8` signing key (its
+public half is registered elsewhere); an `identifier` key (a new user or
+database name in the store renames nothing on the server); and a key no rendered
+ExternalSecret reads.
+
+The new value is minted as the generator would mint it and written to **every**
+remote key holding the old one; a holder outside `--module` is refused rather
+than left behind. Then every **derived** value moves in the same apply. What is
+derived is read from the store, not guessed from a name: every stored property
+of the store is examined, and one that parses as a URL whose **decoded** userinfo
+password is the old value — the connection an agent exports without a template,
+stored by hand because the plan reported it `require` — has that password
+replaced in its userinfo and every other byte kept. Any other stored value
+holding the old one, raw or percent-encoded, is refused, naming
+`remote-key#property`, because codefly cannot recompute it and a stale derived
+value is the failure rotation must not leave. A connection its producer declares
+as a template (below) is not stored at all: External Secrets re-assembles it from
+the rotated primitive on its next sync. A configuration read through more than
+one store is refused: a plan sees one store. **What is not seen:** a copy of the
+value in another store, or one that no rendered ExternalSecret reads (a value
+outside codefly's render), is not examined; find those before rotating.
+
+`--dry-run` shows `rotate` rows by property name, no value; with
+`--metadata-only` it shows the rotated key's rows only, since derived values are
+found by reading the store. Each write adds a **new version** (nothing is
+destroyed) and the result lists each remote key, the properties it set and the
+version the store assigned. Before each write the key's newest version is
+compared with the one the plan read, and a key that moved is refused by name
+(the store has no conditional write, so this narrows the race; it does not close
+it). A rotation failing part-way writes the previous document of every key it
+wrote back as a new version — including the failing key when its write landed
+anyway, and never a key someone else wrote since — on a context of its own, so
+the source and its derived values still agree and the same command can be run
+again. If a restore fails too, the error names the keys that may still hold the
+rotated document. After success a plain `deploy secrets` re-run writes nothing;
+running `--rotate` again rotates again.
+
+**The CLI changes the store only — not the server's credential.** Whether a new
+value in the store changes the credential the server accepts is the producing
+agent's behaviour, and the CLI cannot tell which an agent does:
+
+- An agent that **re-applies the credential from its environment on every
+  start** follows a restart. The ClickHouse agent is one: its entrypoint
+  rewrites `users.d` from `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD` on every start
+  (service-clickhouse `main.go`).
+- An agent whose image applies it **only when the data directory is first
+  created** (the official Postgres image, for one) does not: after a restart the
+  store and every consumer URL carry the new password while the database user
+  keeps the old one. Change the credential on the server yourself (for Postgres,
+  `ALTER ROLE … PASSWORD …` with the new value) before restarting consumers, or
+  do not rotate that key here.
+
+Then, in order:
+
+1. force-sync the affected ExternalSecrets (`kubectl annotate externalsecret <name> force-sync=$(date +%s) --overwrite`, or wait for their refresh interval);
+2. restart (or re-credential, above) the server that reads the rotated value;
+3. restart its consumers, which read the derived connection.
+
+**Undo.** Every earlier version is kept. To go back, make each written key's
+previous version current again by adding it as a new version, without printing
+it — `gcloud secrets versions access <previous> --secret <key> --project <project> | gcloud secrets versions add <key> --project <project> --data-file=-`
+for each key the result listed — then repeat the three steps above.
 
 A key its producer declares as a template (core's `ConfigurationValue.template`
 — a Postgres agent's `READ_WRITE_CONNECTION`, say: role, address and database
@@ -1986,8 +2145,11 @@ Every composed service whose agent is that publisher and name runs against that
 version — in `codefly run`, `codefly deploy gitops render` and every `codefly
 ci` verb alike, because core applies it at the one place a composed module
 loads a service. Only the version moves; the agent's publisher, name and kind
-never do, and the module's own files are untouched. Each run or render states
-it once per overridden agent:
+never do, and the module's own files are untouched. A release built under an
+override is not the release's build, so its image is tagged apart from the
+release ([Keeping an image whose inputs did not
+change](#keeping-an-image-whose-inputs-did-not-change)). Each run or render
+states it once per overridden agent:
 
 ```text
 agent codefly.dev/go-grpc overridden to 0.1.47 by workspace.codefly.yaml (3 services; module pins: 0.1.46)
@@ -2326,10 +2488,11 @@ former spelling of `--coordinate-contract` for one release.
 Declared fields replace their exact named values. Maps merge by explicit key;
 omitted fields and unrelated entries remain intact. Explicit empty maps, empty
 sequences and nulls clear the corresponding field where its schema permits.
-One key is the contract's alone and its absence is a statement: `registry.mirrors`.
-A contract that declares `registry` without `mirrors` withdraws any mirror an earlier
-import wrote, so the builder stops mapping to a repository the environment no longer
-holds.
+Three keys are the contract's alone and their absence is a statement:
+`registry.mirrors`, `registry.artifacts` and `registry.auth`. A contract that declares
+`registry` without one of them withdraws the value an earlier import wrote, so the
+render stops pulling from, publishing bundles to or logging in to a registry the
+environment no longer holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
@@ -2340,12 +2503,20 @@ readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
 
-`--product-intent delivery.environments.yaml` also reads product-owned composition
-exclusions from `environments.<selected-name>.exclude-services`. This narrow authored
-input cannot override placement or runtime bindings and does not interpret the full
-legacy `delivery.intent.yaml` launch format. Unknown keys, missing environments and
-invalid withdrawals are refused before writing. `exclude-services: []` clears the
-selection; without the flag, existing merge behavior is unchanged. See
+`--product-intent delivery.environments.yaml` also reads what the product decides
+for `environments.<selected-name>`: its composition exclusions (`exclude-services`)
+and the product-owned part of its secret policy (`service-secrets.generate`, the
+keys `codefly deploy secrets` mints and `--rotate` may rotate, and
+`service-secrets.may-be-empty`). This narrow authored input cannot override
+placement, runtime bindings or the cell's secret store — `secret-store`,
+`defaults` and per-service `services` stay the contract's — and does not interpret
+the full legacy `delivery.intent.yaml` launch format. Unknown keys, missing
+environments, invalid withdrawals, and a generator or may-be-empty key naming a
+service, configuration or key the environment's profile does not declare as
+secret are refused before writing, by name. A product-owned field the contract
+declares too is refused. With the flag, the intent is the only source of those
+fields: an entry it no longer carries is withdrawn, and `exclude-services: []`
+clears the selection; without the flag, existing merge behavior is unchanged. See
 [the configuration contract](configuration-contract.md) for the blue/green example.
 
 An imported environment may declare `configuration-source: hosted` and select
@@ -2353,7 +2524,8 @@ An imported environment may declare `configuration-source: hosted` and select
 in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
 The profile chain selects the first directory at each location; inheritance adds
 shared groups and per-profile values. Import validates every inherited source:
-only flat `.env` inputs and profile derivation metadata are accepted; secret
+only flat `.env` inputs, the module envelope (`module-envelope.json`, which every
+environment deriving from the profile inherits) and profile derivation metadata are accepted; secret
 files contain empty placeholders, symlinks are refused, and sources may
 not contain environment-specific runnable bindings. Dry-run writes nothing.
 Import refuses authored destination files and retires only its own earlier copied
@@ -4051,12 +4223,50 @@ two environments, is one image. Before a pushed build of a released version
 (an exact `x.y.z`, never the unversioned `0.0.0`), the render asks the registry
 for `<image>:<version>`. Every build records its input digest on the image as
 the label `org.codefly.build.inputs`, and the published image is adopted —
-nothing is built — when that label equals this build's inputs. A published
-image recording **other** inputs refuses the build: its version was not moved
-with its code, and the fix is a new release, never a rebuild under the old
-version. One recording none (pushed before builds recorded their inputs) is
-built again. With a registry whose tags are immutable, each version then holds
-exactly one build for good.
+nothing is built — when that label equals this build's inputs. Beside it, every
+build records each class of its inputs: `org.codefly.build.inputs.code` (the
+build context and the Go module manifests: the service's code),
+`org.codefly.build.inputs.recipe` (the recipe tree its agent emitted, the
+Dockerfile and the build invocation) and `org.codefly.build.inputs.bases` (the
+resolved base images), plus the agent that emitted the recipe as
+`org.codefly.build.agent`. A published image recording **other** inputs is
+judged by its code, because the refusal exists to catch a version that did not
+move with its code:
+
+| The published image | The render |
+|---|---|
+| records this build's code; its recipe or bases differ (another checkout, another builder, a re-pushed base) | adopts it — it is the release's build — and warns naming the class that differs |
+| records other code | refuses: the code changed without its version moving, and the fix is a new release, never a rebuild under the old version |
+| records another agent than the release pins | refuses: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
+| records only the aggregate (labelled before the classes existed) | adopts it, with a warning, only when the service builds from a pinned release the CLI materialized (its code is the release's by construction); from a checkout or an override it refuses, since nothing can compare the code — build from the pinned release, or release a new version |
+
+Adopting is the default for an image that cannot be compared because the two
+alternatives are worse: refusing blocks every render of every module on a cell
+that holds one such image (a render needs every workload's digest), and
+rebuilding overwrites a release wherever tags are mutable. One recording no
+inputs at all (pushed before builds recorded them) is built again. With a registry
+Only the registry answering that the tag does not exist lets a released version
+be built: any other failed read (an authorization refusal, a timeout, an
+unreachable registry) stops the render, because building over it would
+overwrite a released tag on any registry whose tags are mutable. With a
+registry whose tags are immutable, each version then holds exactly one build
+for good.
+
+**A released version names the build its release pins.** A workspace's
+[`agent-overrides`](#moving-the-agent-version-of-composed-services) moves the
+agent a composed service builds with, and the agent emits the build recipe, so
+the same release built under an override is another build. It is never pushed
+under the release's tag: it is tagged `<version>-build.<identity>` — the first
+16 hex characters of its input digest, e.g. `excel:0.3.2-build.3f9c0a1b2d4e5f60`
+— and the release check does not apply to it. That tag holds one build; another
+checkout composing the same override adopts it from the registry the same way.
+Where the environment pulls through a remote repository, the qualified tag is
+pushed and probed at the push registry like any other (`ghcr.io/…:0.3.2-build.…`).
+The deployment still names the release's tag in the repository the cell pulls
+from, pinned to the qualified build's digest (the digest is always captured for such a build), and the cell file
+records only the repository and that digest, so nothing admits the wrong image.
+An override to the version the module already pins moves nothing and builds
+the release as usual.
 
 A build also reuses the image this workspace already built from the same inputs
 instead of building it again. A configuration-only change — an edit to a value

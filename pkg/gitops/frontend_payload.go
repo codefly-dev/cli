@@ -73,7 +73,13 @@ func frontendBundleRepositoryOf(env *environments.Environment, workspace string)
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return "", fmt.Errorf("environment %s declares no registry.url, so a frontend bundle has nowhere to be published", env.Name)
 	}
-	return strings.TrimSuffix(env.Registry.URL, "/") + "/" + workspace + "/" + FrontendBundleRepository, nil
+	// A bundle is not an image a mirror is proven to serve, so registry.artifacts,
+	// when declared, is where it is both published and read.
+	base := env.Registry.URL
+	if env.Registry.Artifacts != "" {
+		base = env.Registry.Artifacts
+	}
+	return strings.TrimSuffix(base, "/") + "/" + workspace + "/" + FrontendBundleRepository, nil
 }
 
 // artifactCacheInjection projects the artifact-cache group for a service that
