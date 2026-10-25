@@ -159,6 +159,19 @@ elsewhere: "supplied only by a local k3d or cell render; absent here". See
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
 
+The `egress` group is generated too, from the environment's `egress:` block:
+a service that declares it in `workspace-configuration-dependencies` receives
+`HOSTS`, its own declared external hosts as comma-separated `host:port`
+(sorted, every port explicit, 443 where the declaration names none) — the same
+list the cell file carries for it, so the cell's allowance and the service's own
+check never disagree — and `HOSTS` empty when the environment declares no egress
+for it. Every path delivers it the same way, from the shared resolution: a
+native or container `codefly run` and a render alike (the process reads
+`CODEFLY__WORKSPACE_CONFIGURATION__EGRESS__HOSTS`). Like `module-authority` it
+is never a manager dependency, a render refuses an authored file for it, a run
+profile can exclude it, and `doctor workspace` reports it as generated on every
+environment.
+
 An optional group — `runnable-bindings`, which `codefly generate
 runnable-bindings` writes nothing for when the environment prepares no binding
 (`environments.OptionalWorkspaceConfiguration`) — that the workspace does not

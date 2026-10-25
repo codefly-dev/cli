@@ -1052,7 +1052,10 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	sort.Strings(renderOwned)
 	for _, name := range renderOwned {
 		status, message := "warn", "supplied only by a local k3d or cell render; absent here"
-		if env.DeclaresLocalK3d() {
+		switch {
+		case name == environments.EgressConfiguration:
+			status, message = "ok", "generated from the environment's egress declaration on every run and render"
+		case env.DeclaresLocalK3d():
 			status, message = "ok", "supplied per workload by the render"
 		}
 		report.add("", "workspace configurations", status,

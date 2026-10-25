@@ -892,6 +892,16 @@ environments:
       shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
 ```
 
+**A service reads its own egress from the same declaration.** A service that
+declares the `egress` workspace configuration group receives, on every run and
+render for the environment, `egress/HOSTS`: its `egress:` hosts as
+comma-separated `host:port`, sorted and with every port explicit
+(`api.github.com:8443,identity.example.test:443` for `shop/api` above), or empty
+when the environment declares none for it. It is generated, never authored — a
+render refuses an `egress.env` — so a service that admits only its declared
+hosts never keeps a second copy of the list the cell allows
+([workspace configuration groups](orchestration.md#workspace-configuration-groups)).
+
 **Where a service's telemetry goes.** An environment's `telemetry:` block names
 the OTLP intake its services export operational traces to: `otlp-endpoint` as
 `host:port` (TLS; `insecure: true` for plaintext) or as an `http://`/`https://`

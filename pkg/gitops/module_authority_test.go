@@ -199,46 +199,50 @@ func TestModuleAuthorityRequiresAnExplicitConsumerAndRefusesOverlayOverrides(t *
 }
 
 func TestRenderRefusesAuthoredCompositionGroups(t *testing.T) {
-	for _, location := range []string{"configurations/prod", "modules/app/configurations/prod", "ambiguous", "empty"} {
-		for _, extension := range []string{".env", ".secret.env"} {
-			t.Run(location+extension, func(t *testing.T) {
-				workspace, env := hostComposition(t)
-				// A composed module's own workspace is its configuration boundary.
-				for name, service := range map[string]string{"app": "api", "edge": "gateway"} {
-					path := filepath.Join(workspace.Dir(), "modules", name, resources.WorkspaceConfigurationName)
-					require.NoError(t, os.WriteFile(path, []byte("name: "+name+"\nlayout: flat\n"), 0o600))
-					// Even an unconsumed file is refused, before any build starts.
-					path = filepath.Join(workspace.Dir(), "modules", name, "services", service, resources.ServiceConfigurationName)
-					require.NoError(t, os.WriteFile(path, []byte(hostedServiceYAML(service)), 0o600))
-				}
-				var err error
-				workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
-				require.NoError(t, err)
-				locations := []string{location}
-				if location == "ambiguous" {
-					locations = []string{"modules/app/configurations/prod", "modules/edge/configurations/prod"}
-				} else if location == "empty" {
-					locations = []string{"configurations/prod"}
-				}
-				for _, directory := range locations {
-					path := filepath.Join(workspace.Dir(), directory, "module-authority"+extension)
-					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-					body := "PRINCIPAL=" + directory + "\n"
-					if location == "empty" {
-						body = ""
+	// egress is generated from the environment's egress declaration: an
+	// authored copy of it is the hand-kept list it replaces.
+	for _, group := range []string{"module-authority", environments.EgressConfiguration} {
+		for _, location := range []string{"configurations/prod", "modules/app/configurations/prod", "ambiguous", "empty"} {
+			for _, extension := range []string{".env", ".secret.env"} {
+				t.Run(group+"/"+location+extension, func(t *testing.T) {
+					workspace, env := hostComposition(t)
+					// A composed module's own workspace is its configuration boundary.
+					for name, service := range map[string]string{"app": "api", "edge": "gateway"} {
+						path := filepath.Join(workspace.Dir(), "modules", name, resources.WorkspaceConfigurationName)
+						require.NoError(t, os.WriteFile(path, []byte("name: "+name+"\nlayout: flat\n"), 0o600))
+						// Even an unconsumed file is refused, before any build starts.
+						path = filepath.Join(workspace.Dir(), "modules", name, "services", service, resources.ServiceConfigurationName)
+						require.NoError(t, os.WriteFile(path, []byte(hostedServiceYAML(service)), 0o600))
 					}
-					require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
-				}
-				module, err := workspace.LoadModuleFromName(t.Context(), "app")
-				require.NoError(t, err)
-				_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
-				require.ErrorContains(t, err, "owned by the render")
-				require.False(t, strings.Contains(err.Error(), "registry"), "refuse before builds")
-				service, err := module.LoadServiceFromName(t.Context(), "api")
-				require.NoError(t, err)
-				_, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
-				require.ErrorContains(t, err, "owned by the render")
-			})
+					var err error
+					workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+					require.NoError(t, err)
+					locations := []string{location}
+					if location == "ambiguous" {
+						locations = []string{"modules/app/configurations/prod", "modules/edge/configurations/prod"}
+					} else if location == "empty" {
+						locations = []string{"configurations/prod"}
+					}
+					for _, directory := range locations {
+						path := filepath.Join(workspace.Dir(), directory, group+extension)
+						require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+						body := "PRINCIPAL=" + directory + "\n"
+						if location == "empty" {
+							body = ""
+						}
+						require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+					}
+					module, err := workspace.LoadModuleFromName(t.Context(), "app")
+					require.NoError(t, err)
+					_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
+					require.ErrorContains(t, err, "owned by the render")
+					require.False(t, strings.Contains(err.Error(), "registry"), "refuse before builds")
+					service, err := module.LoadServiceFromName(t.Context(), "api")
+					require.NoError(t, err)
+					_, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
+					require.ErrorContains(t, err, "owned by the render")
+				})
+			}
 		}
 	}
 }

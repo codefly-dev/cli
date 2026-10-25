@@ -1656,6 +1656,35 @@ func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressH
 	return hosts
 }
 
+// EgressConfiguration is the workspace configuration group that hands a
+// service its own declared egress: the hosts the environment's `egress:`
+// block names for it — the list the cell file carries so the cell allows
+// exactly those — so the service never keeps a copy of its own. The CLI
+// generates it from that declaration, for a service that declares the group,
+// on every path that delivers workspace configurations (a native or container
+// run and a render alike); an authored file for it is refused.
+const EgressConfiguration = "egress"
+
+// EgressHostsKey is the one value of EgressConfiguration: the service's
+// declared hosts as comma-separated `host:port`, sorted, every port explicit;
+// empty when the environment declares no egress for the service.
+const EgressHostsKey = "HOSTS"
+
+// EgressGroup is the EgressConfiguration group one service receives. It is
+// always the group, HOSTS empty when nothing is declared, so a service reads
+// "this environment declares no egress for me" rather than an absent group.
+func (env *Environment) EgressGroup(module, service string) *basev0.Configuration {
+	hosts := env.EgressHosts(module, service)
+	entries := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		entries = append(entries, fmt.Sprintf("%s:%d", host.Name, host.Port))
+	}
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+		Name:                EgressConfiguration,
+		ConfigurationValues: []*basev0.ConfigurationValue{{Key: EgressHostsKey, Value: strings.Join(entries, ",")}},
+	}}}
+}
+
 // EnvironmentCellWorkload is what the composition declares about one service
 // for the cell: the platform bindings it holds, cloud identity, and the
 // endpoints whose listener accepts only a protected waypoint's assertion of

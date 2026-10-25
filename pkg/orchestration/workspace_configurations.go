@@ -25,6 +25,9 @@ import (
 // Every path leaves render-owned groups to the per-workload projections, so
 // those declarations never become manager dependencies here. Outside a render
 // they supply no values; the service decides whether it can run without them.
+// The one exception is egress, which this resolution generates itself from
+// the environment's egress declaration (egressGroup), so a run and a render
+// hand a service the same hosts the cell file allows it.
 // An optional group the workspace does not provide (runnable-bindings for an
 // environment that prepares no binding) is left out the same way, on every
 // path, by unprovidedOptionalGroup.
@@ -212,6 +215,16 @@ func (world *World) workspaceConfigurationsFor(
 			return nil, ownedErr
 		}
 		out = append(out, owned...)
+	}
+	// The service's declared egress, generated from the environment on every
+	// path — run and render alike — so the service reads the same hosts the
+	// cell file allows it, never a copy of its own.
+	egress, err := world.egressGroup(world.withoutExcludedGroups(service))
+	if err != nil {
+		return nil, err
+	}
+	if egress != nil {
+		out = append(out, egress)
 	}
 	// Last, because it reads the OUTCOME: every value that carried a reference
 	// must still be here. Core resolves the root's groups leniently and drops
@@ -1115,6 +1128,22 @@ func (b *Builder) workspaceConfigurations(
 ) ([]*basev0.Configuration, error) {
 	return b.world.workspaceConfigurationsFor(ctx, b.instance.Service,
 		dependencyMappings, resources.NewContainerNetworkAccess())
+}
+
+// egressGroup is the egress group a service that declares it receives: its
+// declared hosts from the environment's egress block, HOSTS empty when the
+// environment declares none for it. Nil for a service that does not declare
+// the group.
+func (world *World) egressGroup(service *resources.Service) (*basev0.Configuration, error) {
+	if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.EgressConfiguration) {
+		return nil, nil
+	}
+	identity, err := service.Identity()
+	if err != nil {
+		return nil, fmt.Errorf("%s declares the %s workspace configuration, but its module is unknown, so its egress declaration cannot be read: %w",
+			service.Name, environments.EgressConfiguration, err)
+	}
+	return world.Env.EgressGroup(identity.Module, identity.Name), nil
 }
 
 // withoutExcludedGroups is service as the run sees it: its declared workspace
