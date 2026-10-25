@@ -39,3 +39,21 @@ func keysOf(carriers map[string]string) []string {
 	}
 	return keys
 }
+
+// A route a solution consumes through the host that has no answer — here an
+// endpoint the module does not declare — leaves a run's delivery of that
+// module standing, as the gateway's own startup carriers do: the host still
+// learns the module and only the route is unserved. A render refuses it.
+func TestARouteWithNoAnswerLeavesARunsModuleDelivery(t *testing.T) {
+	ctx := context.Background()
+	consumes := "    - id: docs\n      protocol: connect\n      module: docs\n      service: documents\n      endpoint: connect\n      as: docs\n"
+
+	world, _ := hostRoutesWorld(t, RunMode, func(dir string) { writeWikiConsumes(t, dir, consumes) })
+	carriers, err := (&Flow{world: world}).EndpointCarriers(ctx, "docs", resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	require.Empty(t, carriers)
+
+	world, _ = hostRoutesWorld(t, SnapshotMode, func(dir string) { writeWikiConsumes(t, dir, consumes) })
+	_, err = (&Flow{world: world}).EndpointCarriers(ctx, "docs", resources.NewContainerNetworkAccess())
+	require.ErrorContains(t, err, "wiki consumes docs/documents/connect through the host")
+}

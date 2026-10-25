@@ -7,6 +7,7 @@ import (
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 )
 
 // EndpointCarriers resolves the carriers of every endpoint of one component
@@ -39,6 +40,14 @@ func (flow *Flow) EndpointCarriers(ctx context.Context, module string, access *b
 			continue
 		}
 		key, value, err := world.hostRouteCarrier(ctx, gateway, hostModule, route, access)
+		if err != nil && !world.deploys() {
+			// A run follows the gateway's own startup rule (hostRouteCarriers):
+			// a route with no answer is reported and never takes the module's
+			// delivery with it, so the host still learns the module and only
+			// that route is unserved. A render refuses it below.
+			wool.Get(ctx).In("Flow.EndpointCarriers").Warn(fmt.Sprintf("the host cannot route %s; module %s is delivered without that route", route.describe(), module), wool.ErrField(err))
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("resolve %s: %w", route.describe(), err)
 		}
