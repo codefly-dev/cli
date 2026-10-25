@@ -64,6 +64,10 @@ const (
 	// ActionRequire: the property is absent and nothing can produce it; the
 	// operator supplies it.
 	ActionRequire Action = "require"
+	// ActionEmpty: the property is absent, nothing supplies it, and the
+	// environment declares in service-secrets.may-be-empty that its correct value
+	// here is empty; it is stored empty so the workload's secret materializes.
+	ActionEmpty Action = "empty"
 	// ActionUnverified: the remote key exists but was not read, so whether it
 	// holds the property is unknown. Source says what would happen if it does not.
 	ActionUnverified Action = "unverified"
@@ -273,7 +277,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		for _, property := range state.secret.Properties {
 			location := propertyLocation{state.secret.RemoteKey, property.Property}
 			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, in.Configured,
-				aliases[location], rotating)
+				aliases[location], rotating, in.MayBeEmpty)
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +286,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 					Source: "derived: the stored URL's password follows rotated " + strings.Join(rewrite.from, ", ")}
 				value = rewrite.value
 			}
-			if value != "" {
+			if value != "" || propertyPlan.Action == ActionEmpty {
 				changes[property.Property] = value
 			}
 			secretPlan.Properties = append(secretPlan.Properties, propertyPlan)
@@ -531,7 +535,7 @@ func refuseSharedSigningKey(state *remoteState, property gitops.RenderedSecretPr
 // only consulted for a property nothing holds.
 func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
 	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string,
-	configured map[string]ConfiguredValue, keys []string, rotating map[string]bool) (PropertyPlan, string, error) {
+	configured map[string]ConfiguredValue, keys []string, rotating map[string]bool, mayBeEmpty []string) (PropertyPlan, string, error) {
 	lookup := property
 	lookup.Keys = keys
 	declaredKey, generator, err := declaredGenerator(lookup, generators)
@@ -596,7 +600,7 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
 		}
 	}
-	fallback, value, err := fallbackSource(lookup, generators, generated, configuredValue, hasConfigured)
+	fallback, value, err := fallbackSource(lookup, generators, generated, configuredValue, hasConfigured, mayBeEmpty)
 	if err != nil {
 		return PropertyPlan{}, "", err
 	}
@@ -636,7 +640,7 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 // A property read as two keys covered by two different generators has no answer:
 // whichever won would be an accident of ordering, so it is refused.
 func fallbackSource(property gitops.RenderedSecretProperty, generators map[string]environments.EnvironmentSecretGenerator,
-	generated map[string]string, configured ConfiguredValue, hasConfigured bool) (PropertyPlan, string, error) {
+	generated map[string]string, configured ConfiguredValue, hasConfigured bool, mayBeEmpty []string) (PropertyPlan, string, error) {
 	if hasConfigured {
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionConfigured,
 			Source: "configured in " + configured.File}, configured.value, nil
@@ -644,6 +648,14 @@ func fallbackSource(property gitops.RenderedSecretProperty, generators map[strin
 	declaredKey, generator, err := declaredGenerator(property, generators)
 	if err != nil {
 		return PropertyPlan{}, "", err
+	}
+	if declaredKey == "" && declaredEmpty(property, mayBeEmpty) {
+		// The declaration is the value: an environment that says a key is
+		// legitimately empty here has said what to store. Requiring it instead
+		// leaves the property absent, and the ExternalSecret reading it never
+		// materializes its Secret.
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionEmpty,
+			Source: "service-secrets.may-be-empty declares " + strings.Join(property.Keys, ", ") + " empty here"}, "", nil
 	}
 	if declaredKey == "" {
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
