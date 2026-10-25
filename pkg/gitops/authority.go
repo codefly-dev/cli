@@ -123,7 +123,8 @@ func moduleAuthority(
 	// audience, each its own binding (core's AudienceBindingID) with the
 	// ceiling that audience's own declarations give it; the render says which,
 	// since the delivered ids are not the ones the contract spells.
-	for _, declared := range request.contract.Bindings {
+	for i := range request.contract.Bindings {
+		declared := &request.contract.Bindings[i]
 		if declared.Audiences == nil {
 			continue
 		}
