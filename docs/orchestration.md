@@ -159,6 +159,19 @@ elsewhere: "supplied only by a local k3d or cell render; absent here". See
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
 
+The `egress` group is generated too, from the environment's `egress:` block:
+a service that declares it in `workspace-configuration-dependencies` receives
+`HOSTS`, its own declared external hosts as comma-separated `host:port`
+(sorted, every port explicit, 443 where the declaration names none) — the same
+list the cell file carries for it, so the cell's allowance and the service's own
+check never disagree — and `HOSTS` empty when the environment declares no egress
+for it. Every path delivers it the same way, from the shared resolution: a
+native or container `codefly run` and a render alike (the process reads
+`CODEFLY__WORKSPACE_CONFIGURATION__EGRESS__HOSTS`). Like `module-authority` it
+is never a manager dependency, a render refuses an authored file for it, a run
+profile can exclude it, and `doctor workspace` reports it as generated on every
+environment.
+
 An optional group — `runnable-bindings`, which `codefly generate
 runnable-bindings` writes nothing for when the environment prepares no binding
 (`environments.OptionalWorkspaceConfiguration`) — that the workspace does not
@@ -383,6 +396,20 @@ root group reaches every service of every run, including a module-closure run
 whose graph is a slice of the workspace, and judging it against that slice would
 report a real producer as "not a service of this workspace" and refuse the run.
 Whether a producer is in *this* run is not a plan-time question.
+
+A group a consumer **declares** is judged against the plan's graph and, beyond
+it, every other service of the workspace except one this run excludes. A
+module-closure run's graph holds the seeds' modules and the modules their
+service dependencies reach — never a module only a configuration value names —
+so `codefly run service authority/hop` alone does not contain the producers its
+own group references. Such a producer is not a plan-time fault: the resolution
+drops the value at WARN, naming the consumer, the value, which reference of it
+and the producer, exactly as for a root group. Only membership is relaxed: the
+endpoint must still exist and be visible to the consumer, a producer the
+workspace does not have is still "not a service of this workspace", and a
+producer the run **excludes** (`--exclude-dependency`, a run profile) still
+refuses the run naming the exclusion — the exclusion and the group that
+references it are coupled, and a value is never dropped because of one.
 
 ##### What this refuses that used to be tolerated
 
@@ -836,13 +863,32 @@ RuntimeInit  → RuntimeStart (once init completes)
 RuntimeStart → done (service is running)
 ```
 
-At each transition, the policy checks the dependency graph: if service B depends on service A, then B's `RuntimeLoad` won't fire until A's `RuntimeLoad` completes. Services at the same DAG level transition in parallel.
+At each transition, the policy checks the dependency graph: if service B depends on service A, then B's `RuntimeLoad` won't fire until A's `RuntimeLoad` completes. The playbook executes queued actions synchronously; a callback cannot wait for another action later in that queue to start its prerequisite. Required ordering belongs in the dependency graph.
 
 If an action fails (executor returns `Wait`), the action is marked as `Failing` and the PauseManager handles retry.
 
+`World.BeforeRuntimeStart`, when supplied by the run's composition owner, runs
+synchronously after request validation and immediately before each local agent
+`Runtime.Start` RPC, including restarts. Refusal or cancellation prevents that RPC.
+Remote services and actions that only initialize or validate never invoke it.
+The callback is an admission boundary; it neither schedules prerequisites nor
+establishes host readiness by itself. Native manifest delivery is not yet wired
+to this callback and still follows the Running hook.
+
 ### RuntimeTestPolicy
 
-Same as RuntimeStartPolicy, but adds `RuntimeTest` after `RuntimeStart` for the target service. The playbook stops after the test action completes.
+The agent's test dependency mode selects what starts before the target's test:
+
+- `NONE` initializes only the target and starts no process.
+- `START_DEPENDENCIES` starts the dependencies, then passes a sequencing barrier
+  for the target without starting it.
+- `START_STACK` starts dependencies and target.
+
+Successful real starts emit Running through the same lifecycle hook as an
+ordinary run, making them visible to readiness and delivery. The target barrier
+emits no Running event and calls no pre-start admission hook. Failed, waiting,
+or canceled starts do not become Running. The playbook stops after the target's
+test action completes.
 
 ### BuilderBuildPolicy (BuildPolicy)
 

@@ -235,6 +235,11 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 		if err != nil {
 			return nil, err
 		}
+		if flow.compositionCheck != nil {
+			if err := flow.compositionCheck(ctx, closure, flow.Environment()); err != nil {
+				return nil, err
+			}
+		}
 		flow.graphWorkspace = closure
 	}
 	*flow.workspace = candidate

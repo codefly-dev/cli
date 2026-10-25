@@ -35,6 +35,7 @@ import (
 )
 
 type Flow struct {
+	compositionCheck CompositionCheck
 	// configurationReferences orders a consumer after the producers its
 	// workspace configurations reference (configurationReferenceOption); every
 	// rebuild of the graph carries it.
@@ -228,6 +229,11 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
+	// BeforeRuntimeStart completes run-owned admission immediately before the
+	// agent starts a local process. It runs on every start, including restarts;
+	// returning an error prevents the Start RPC. Nil when no admission is needed.
+	BeforeRuntimeStart func(context.Context, *resources.Service) error
+
 	// RenderOwnedGroups supplies the render-owned workspace configuration
 	// group (module-authority) to one service of a NATIVE run. A render
 	// projects it per workload; a laptop run has no render, so the CLI hands
@@ -465,6 +471,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
+	if options.compositionCheck != nil {
+		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
+			return nil, w.Wrap(err)
+		}
+	}
+
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
 	// after it, as for a declared dependency.
@@ -580,11 +592,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	flow := &Flow{
-		workspace:      workspace,
-		graphWorkspace: graphWorkspace,
-		moduleSeeds:    options.moduleClosureSeeds,
-		originService:  service,
-		originModule:   module,
+		workspace:        workspace,
+		graphWorkspace:   graphWorkspace,
+		compositionCheck: options.compositionCheck,
+		moduleSeeds:      options.moduleClosureSeeds,
+		originService:    service,
+		originModule:     module,
 
 		world: world,
 

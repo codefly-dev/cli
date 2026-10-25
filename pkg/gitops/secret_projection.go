@@ -149,6 +149,9 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	if mapping.SecretStore != nil {
 		store = *mapping.SecretStore
 	}
+	if store == (environments.EnvironmentSecretStoreReference{}) {
+		return nil, fmt.Errorf("service %q reads %s, which a render carries only as references into a secret store, and its environment's service-secrets names none (generators alone are a local run's)", service, strings.Join(keys, ", "))
+	}
 	remotes := make(map[string]environments.EnvironmentSecretRemoteRef, len(keys))
 	read := func(key string, remote environments.EnvironmentSecretRemoteRef) error {
 		if prior, seen := remotes[key]; seen && !prior.Equal(remote) {

@@ -194,6 +194,9 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if err != nil {
 		return DevResult{}, err
 	}
+	if err = validateModulePermissions(ctx, request.Workspace, request.Module, request.Environment, service); err != nil {
+		return DevResult{}, err
+	}
 	// A configuration error refuses the deploy before the image is built.
 	if err = orchestration.PlanConfigurationReferences(ctx, request.Workspace, request.Environment, []*resources.Service{service}, true); err != nil {
 		return DevResult{}, err

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/codefly-dev/cli/pkg/generators"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -603,7 +604,7 @@ func mustRead(t *testing.T, path string) []byte {
 func snapshotTree(t *testing.T, moduleDir string) map[string][]byte {
 	t.Helper()
 	root := filepath.Join(moduleDir, filepath.FromSlash(runnablespkg.DerivedDir))
-	files, err := listRelativeFiles(root)
+	files, err := generators.ReadTree(root)
 	if err != nil {
 		t.Fatal(err)
 	}

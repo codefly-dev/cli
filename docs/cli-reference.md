@@ -1661,6 +1661,14 @@ deploy time: <scope>/configurations/<profile>/<name>[.secret].env.
 Configuration is Codefly's, so provisioning it is a Codefly operation — not a
 shell script in your repository. Values are written but never printed.
 
+A workspace may add to an imported group with configuration-extensions in
+workspace.codefly.yaml. Env keys must be disjoint unless append explicitly
+names the key and its delimiter (for example edge: {append: {MODULES: ","}}).
+YAML mappings combine recursively and sequences append; duplicate scalar keys
+are refused by name. Both an own and an imported group must exist. Without
+this declaration, an own group replaces the imported group whole.
+See docs/commands.md#extending-imported-workspace-configuration.
+
 Secrets are refused when git would track the destination file, are stored 0600
 inside a 0700 directory, and are never overwritten without --force so re-running
 setup cannot rotate a credential another service already holds.
@@ -2717,6 +2725,7 @@ Subcommands:
 
 - [`codefly generate client`](#codefly-generate-client)
 - [`codefly generate contracts`](#codefly-generate-contracts)
+- [`codefly generate permissions`](#codefly-generate-permissions)
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
 - [`codefly generate runnables`](#codefly-generate-runnables)
@@ -2767,14 +2776,21 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
-contract and are skipped, as is a connect endpoint whose service has no proto.
+document (openapi.json). An HTTP endpoint gets the OpenAPI document its service
+carries (openapi/api.swagger.json), when it carries one: a solution backend
+publishes its routes there, each with its x-codefly-authority-policy. TCP and
+MCP endpoints have no machine-readable contract and are skipped, as are an HTTP
+endpoint whose service carries no document and a connect endpoint whose
+service has no proto.
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
 configuration, separate from the agent's spec. Multiple exported protobuf
 endpoints require an inventory; a full descriptor alone does not establish what
-each listener serves. See docs/commands.md#generate-contracts.
+each listener serves. An inventory may include implemented interfaces from other
+protobuf packages; every named procedure must exist in the descriptor. For such
+multi-package endpoints, package is empty and services[].fullName identifies
+each package. See docs/commands.md#generate-contracts.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -2791,6 +2807,46 @@ Flags:
       --check           do not write; exit 1 if the on-disk catalog differs from what would be generated
       --format string   output format: text|json (default "text")
       --output string   output directory for generated contracts (default: <module dir>/contracts/api)
+      --permissions     also generate typed permission constants; with --check, verify their freshness
+```
+
+## `codefly generate permissions`
+
+Generate typed Go and TypeScript permissions from published contracts
+
+```
+Read the same digest-checked published method policies used by authority delivery.
+Generate typed permission constants and a method requirement table in Go and
+TypeScript. Run codefly generate contracts first after editing an API.
+
+By default each Go service gets its own table in its own Go module:
+<service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
+generates its bindings into (source-dir is the Go agent's setting, "code"
+unless the service declares another). A service's table holds the methods its
+published contracts serve plus the module contract's foreign methods, which
+name no service. What an endpoint serves is what the contract catalog records
+for it (the declared surface, or every service of its package); a method a
+published descriptor declares that no endpoint serves, such as a protocol other
+modules serve, is left out with a note and needs no policy. The TypeScript file
+sits beside the Go file. A Python service
+gets no table: nothing in it reads one, since the authority's hop in front of it
+decides every call, so it is skipped with a note. Any other service that
+publishes a contract but has no go.mod at its Go source root fails by name.
+--output writes the whole module's table to one directory instead.
+--check compares every generated file without writing. A served method with no
+policy, contradictory policies and colliding identifiers fail by name. This validates vocabulary,
+not a person's resource access, installation or consent.
+```
+
+```
+codefly generate permissions [module]
+```
+
+Flags:
+
+```
+      --check           fail on missing or stale output without writing
+      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions)
 ```
 
 ## `codefly generate proto`
@@ -2870,9 +2926,26 @@ here, by name, rather than at a call.
 An operation published directly on a Connect endpoint uses that endpoint.
 
 The address is resolved, never configured: it is the one a run or a render of
-the same environment gives the owner. A service that installs derived
+the same environment gives the owner. Locally that is the address of the run's
+naming scope: the environment's declared naming-scope, or --naming-scope, which
+like `codefly run` overrides it for this invocation (an explicit empty value
+clears it). A live run of that scope answers with its concrete allocation; with
+no run the address is the one the run will bind. A service that installs derived
 operations declares runnable-bindings as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
+
+An environment's runnable-call-endpoint: <module>/<service>/<endpoint> in
+workspace.codefly.yaml sends every call prepared for it to that declared
+endpoint instead of the owner's listener: the composition's hop in front of its
+modules, for example. Declared there, the file and its --check depend on the
+workspace alone. --call-endpoint overrides the declaration for one invocation,
+and an explicitly empty value sends each call to its owner. It must be an HTTP-based
+endpoint of a workspace module, and it is resolved like an owner's (same
+environment, same naming scope). Only the address moves: the owner is still
+loaded and held to its served surface and published contract, and the
+operation, the Connect procedure or REST verb and path, the contract, its
+digest and the policy stay the owner's. The endpoint forwards the call; the
+owner must still serve it.
 
 In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
 binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
@@ -2903,6 +2976,8 @@ Examples:
   codefly generate runnable-bindings
   codefly generate runnable-bindings --env staging
   codefly generate runnable-bindings --env staging --check
+  codefly generate runnable-bindings --env local --naming-scope demo --call-endpoint authority/hop/http
+  codefly generate runnable-bindings --env local --call-endpoint ""   # owners, despite a declared runnable-call-endpoint
 ```
 
 ```
@@ -2912,8 +2987,10 @@ codefly generate runnable-bindings [flags]
 Flags:
 
 ```
-      --check        do not write; exit 1 if the on-disk file differs from what would be generated
-      --env string   environment supplying resolved addresses and runnable-scope-selections (default "local")
+      --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)
+      --check                                   do not write; exit 1 if the on-disk file differs from what would be generated
+      --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
+      --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
 ```
 
 ## `codefly generate runnables`
@@ -3256,10 +3333,17 @@ codefly login [flags]
 Read or follow logs from the current Codefly session
 
 ```
-Show codefly's detailed session logs (~/.codefly/logs/<date>.log).
+Show codefly's detailed session logs (under the Codefly home logs directory).
 
-By default prints the last 100 lines of today's log, pretty-printed. This is the
-log the failure hint points at, so the usual flow after a command fails is:
+By default prints the last 100 lines from the latest-started invocation,
+pretty-printed. Each invocation owns a separate directory; late shutdown records
+from an older process stay in its files. The failure hint names the exact file.
+CODEFLY_HOME (or --plugin-path) controls the log root. Old daily logs remain
+readable, and are the default fallback when no invocation logs exist.
+
+Follow stays on the selected file, including across later runs; it does not
+switch files on rotation. Use --file to select a known invocation segment.
+The usual flow after a command fails is:
 
   codefly logs            # what just happened
   codefly logs -f         # follow live (e.g. in a second terminal during a run)
@@ -3275,7 +3359,7 @@ codefly logs [flags]
 Flags:
 
 ```
-      --file string   Read a specific log file instead of today's
+      --file string   Read a specific log file instead of the latest invocation segment
   -f, --follow        Follow the log live
       --path          Print only the log file path
       --raw           Print raw JSON lines (for jq/grep)

@@ -105,3 +105,14 @@ func (env *Environment) validateRunnableScopeSelections() error {
 	}
 	return nil
 }
+
+// validateRunnableCallEndpoint refuses a runnable-call-endpoint that is not a
+// composition identity. Whether it names a declared HTTP-based endpoint is
+// answered by generate runnable-bindings, which resolves it against the
+// workspace.
+func (env *Environment) validateRunnableCallEndpoint() error {
+	if env.RunnableCallEndpoint != "" && !deliveryPattern.MatchString(env.RunnableCallEndpoint) {
+		return fmt.Errorf("runnable-call-endpoint %q is not the composition identity <module>/<service>/<endpoint> of a declared HTTP-based endpoint", env.RunnableCallEndpoint)
+	}
+	return nil
+}

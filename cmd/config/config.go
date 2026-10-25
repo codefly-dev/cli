@@ -44,6 +44,14 @@ deploy time: <scope>/configurations/<profile>/<name>[.secret].env.
 Configuration is Codefly's, so provisioning it is a Codefly operation — not a
 shell script in your repository. Values are written but never printed.
 
+A workspace may add to an imported group with configuration-extensions in
+workspace.codefly.yaml. Env keys must be disjoint unless append explicitly
+names the key and its delimiter (for example edge: {append: {MODULES: ","}}).
+YAML mappings combine recursively and sequences append; duplicate scalar keys
+are refused by name. Both an own and an imported group must exist. Without
+this declaration, an own group replaces the imported group whole.
+See docs/commands.md#extending-imported-workspace-configuration.
+
 Secrets are refused when git would track the destination file, are stored 0600
 inside a 0700 directory, and are never overwritten without --force so re-running
 setup cannot rotate a credential another service already holds.`,

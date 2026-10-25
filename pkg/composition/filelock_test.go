@@ -1,6 +1,8 @@
 package composition
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -53,5 +55,34 @@ func TestWithFileLockSerializesConcurrentCallers(t *testing.T) {
 	}
 	if second.start.Before(first.end) {
 		t.Fatalf("critical sections overlapped: first ran %v-%v, second started at %v", first.start, first.end, second.start)
+	}
+}
+
+func TestWithFileLockContextDistinguishesCallerAndAcquisitionTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "held.lock")
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- WithFileLock(path, time.Second, func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	defer func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	unexpected := func() error { t.Error("entered held critical section"); return nil }
+	if err := WithFileLockContext(t.Context(), path, 10*time.Millisecond, unexpected); !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("acquisition timeout: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	if err := WithFileLockContext(ctx, path, time.Second, unexpected); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("caller deadline: %v", err)
+	}
+	canceled, stop := context.WithCancel(t.Context())
+	stop()
+	if err := WithFileLockContext(canceled, path, time.Second, unexpected); !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller cancellation: %v", err)
 	}
 }

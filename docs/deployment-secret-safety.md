@@ -43,3 +43,6 @@ permits contradictory sources.
 
 These checks validate the render and store relationship. They do not verify live
 service authentication, cluster health, durable storage, or historical disclosure.
+
+Secret rotation resolves the generator’s format and size through the same
+environment declaration as initial generation, including its defaults.

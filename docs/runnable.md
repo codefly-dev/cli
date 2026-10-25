@@ -20,7 +20,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
-| `codefly generate runnable-bindings [--env=<env>] [--check]` | Resolve the environment's scope selections and owner endpoints into prepared bindings |
+| `codefly generate runnable-bindings [--env=<env>] [--naming-scope=<scope>] [--call-endpoint=<module>/<service>/<endpoint>] [--check]` | Resolve the environment's scope selections, owner endpoints and declared `runnable-call-endpoint` into prepared bindings |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -147,7 +147,8 @@ published served set contains both the operation and its Lookup; no match or
 multiple matches are refused. A directly published Connect operation uses that
 endpoint with the same membership checks. Legacy gRPC-only catalogs must publish
 the called Connect surface before binding. Endpoint addresses still come from
-the existing network resolver.
+the existing network resolver, in the run's naming scope; see [naming scope and
+a declared call endpoint](#naming-scope-and-a-declared-call-endpoint).
 
 An environment that prepares no binding has no file when no module derives an
 operation. That absence is an answer, not a missing file: a service that
@@ -226,6 +227,54 @@ are installation input and are not sent to agents as runtime configuration.
 There is no additional selection file, CLI policy vocabulary or CLI scope
 resolver. Tests verify the prepared binding and the identical policy as a Core
 resolved-policy receipt; this command emits the binding configuration only.
+
+### Naming scope and a declared call endpoint
+
+A local binding is read by a run, so its address is the one that run binds.
+`--naming-scope` follows `codefly run`: omitted, the environment's declared
+`naming-scope` applies; passed, it replaces it for this invocation; passed
+empty, it clears it. A live run of that scope answers with its concrete
+allocation, and with no run the address is the one a run of the scope will
+bind (the resolver `codefly endpoint` uses). Generate with the scope you run
+with:
+
+```sh
+codefly generate runnable-bindings --env local --naming-scope demo
+codefly run service ... --env local --naming-scope demo
+```
+
+An environment declares the endpoint every call prepared for it is sent to
+instead of the owner's listener — the composition's hop in front of its
+modules, for example:
+
+```yaml
+environments:
+  - name: local
+    runnable-call-endpoint: authority/hop/http
+```
+
+Declared there, a plain `codefly generate runnable-bindings` and its `--check`
+prepare through it, so the committed file depends on the workspace and not on a
+flag retyped per invocation. `--call-endpoint <module>/<service>/<endpoint>`
+overrides the declaration for one invocation (`--call-endpoint ""` sends each
+call to its owner), and an environment that declares nothing keeps working with
+the flag alone; `--check` names the flag in its regeneration command only when
+the file was prepared for an endpoint other than the declared one. The
+declaration is installation input: it is never sent to an agent. The coordinate
+is parsed as an endpoint
+reference, must name a declared endpoint of a workspace module, and must be
+HTTP-based (`http`, `connect`, `rest` or `mcp`), because a prepared call carries an
+HTTP base URL; it resolves in the same environment and scope as the owners.
+Nothing infers such an endpoint: the composition that runs the hop names it.
+
+Only the address moves. Each owner is still loaded and held to its served
+Connect surface (operation and Lookup) and its published contract before the
+address is replaced, so a hop never makes an unserved or stale operation look
+callable. The operation, the Connect procedure or REST verb and path, the
+contract, its digest and the policy stay the owner's. One generation names at
+most one call endpoint, and the output file is the profile's: two generations
+for different scopes into one profile overwrite each other, so parallel runs
+use separate workspaces or profiles.
 
 ### Identity and coexistence
 

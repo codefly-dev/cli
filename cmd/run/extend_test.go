@@ -1,10 +1,14 @@
 package run
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/cli/pkg/environments"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -128,4 +132,45 @@ func TestWithdrawalRetriesAfterTheRootHasLeftTheFlow(t *testing.T) {
 	delete(cluster.delivered, "gone")
 	require.NoError(t, withdrawDroppedRoots(ctx, flow, pinnedRoots(flow)))
 	require.Empty(t, cluster.pendingWithdrawals)
+}
+
+func TestRefreshPreflightKeepsBaselineRootsOutAndPrecedesAdmission(t *testing.T) {
+	ctx := t.Context()
+	workspace, env := writeHostedNativeWorkspace(t)
+	module, err := workspace.LoadModuleFromName(ctx, "model")
+	require.NoError(t, err)
+	service, err := module.LoadServiceFromName(ctx, "model")
+	require.NoError(t, err)
+	refusal := errors.New("invalid refreshed permissions")
+	reject := false
+	checks := 0
+	check := func(_ context.Context, selected *resources.Workspace, _ *environments.Environment) error {
+		checks++
+		for _, ref := range selected.Modules {
+			require.NotEqual(t, "ledger", ref.Name, "baseline-only roots must stay outside this run")
+		}
+		if reject {
+			return refusal
+		}
+		return nil
+	}
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode, orchestration.WithRunModuleClosure("model"), orchestration.WithCompositionCheck(check))
+	require.NoError(t, err)
+	baseline := extensionBaseline(ctx, workspace)
+	cluster := &launcher{workspace: workspace, env: env}
+	launcherMu.Lock()
+	previous := launcherActive
+	launcherActive = cluster
+	launcherMu.Unlock()
+	t.Cleanup(func() { launcherMu.Lock(); launcherActive = previous; launcherMu.Unlock() })
+	t.Chdir(workspace.Dir())
+	reject = true
+	require.ErrorIs(t, extendRunningWorkspace(ctx, flow, baseline), refusal, "even a no-new-root refresh is checked")
+	require.Equal(t, 2, checks)
+	require.Same(t, workspace, cluster.workspace, "admission did not change the launcher snapshot")
+	composeModule(t, workspace, "newcomer")
+	require.ErrorIs(t, extendRunningWorkspace(ctx, flow, baseline), refusal)
+	require.Equal(t, 3, checks)
+	require.Same(t, workspace, cluster.workspace)
+	require.Equal(t, []string{"model/model"}, flow.Roots())
 }

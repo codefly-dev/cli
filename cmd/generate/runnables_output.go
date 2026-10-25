@@ -12,6 +12,7 @@ import (
 	"sort"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/generators"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	corerunnable "github.com/codefly-dev/core/runnable"
@@ -161,7 +162,7 @@ func clearGeneratedFiles(output string) error {
 // whose methods changed without the derived packages being regenerated is a
 // module publishing operations it no longer implements.
 func runRunnablesCheck(derived *derivation, output string) error {
-	existing, err := listRelativeFiles(output)
+	existing, err := generators.ReadTree(output)
 	if err != nil {
 		return err
 	}

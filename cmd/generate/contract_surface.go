@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -116,39 +115,9 @@ func loadContractSurfaces(service *resources.Service, endpoints []*basev0.Endpoi
 // descriptor. A descriptor supplies schemas and options, including transitive
 // imports; the catalog says which of those methods this listener serves.
 func endpointProcedures(set *descriptorpb.FileDescriptorSet, endpoint *composition.APIContractEndpoint) ([]string, error) {
-	available := map[string]map[string]bool{}
-	names := map[string]string{}
-	for _, service := range composition.ProtobufServices(set, endpoint.Package) {
-		methods := map[string]bool{}
-		for _, method := range service.Procedures {
-			methods[method] = true
-		}
-		available[service.FullName] = methods
-		names[service.FullName] = service.Name
+	methods, err := composition.ProtobufProcedures(set, endpoint.Services)
+	if err != nil {
+		return nil, fmt.Errorf("endpoint %s/%s: %w", endpoint.Service, endpoint.Endpoint, err)
 	}
-	seen := map[string]bool{}
-	seenServices := map[string]bool{}
-	var methods []string
-	for _, service := range endpoint.Services {
-		declared, exists := available[service.FullName]
-		if !exists {
-			return nil, fmt.Errorf("endpoint %s/%s: service %s is absent from its descriptor package %s", endpoint.Service, endpoint.Endpoint, service.FullName, endpoint.Package)
-		}
-		if service.Name != names[service.FullName] || seenServices[service.FullName] {
-			return nil, fmt.Errorf("endpoint %s/%s: service %s must use descriptor name %s and appear exactly once", endpoint.Service, endpoint.Endpoint, service.FullName, names[service.FullName])
-		}
-		seenServices[service.FullName] = true
-		for _, method := range service.Procedures {
-			if !declared[method] {
-				return nil, fmt.Errorf("endpoint %s/%s: procedure %s is absent from its descriptor service %s", endpoint.Service, endpoint.Endpoint, method, service.FullName)
-			}
-			if seen[method] {
-				return nil, fmt.Errorf("endpoint %s/%s declares procedure twice: %s", endpoint.Service, endpoint.Endpoint, method)
-			}
-			seen[method] = true
-			methods = append(methods, method)
-		}
-	}
-	sort.Strings(methods)
 	return methods, nil
 }

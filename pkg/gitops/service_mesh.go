@@ -90,7 +90,7 @@ func (projection serviceLabels) patch() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{keyPatchTarget: map[string]any{"version": "v1", keyKind: kindService, keyName: projection.name}, "patch": string(encoded)}, nil
+	return map[string]any{keyPatchTarget: map[string]any{"version": "v1", keyKind: kindService, keyName: projection.name}, keyPatch: string(encoded)}, nil
 }
 
 func (projection serviceLabels) applyTo(document map[string]any) bool {

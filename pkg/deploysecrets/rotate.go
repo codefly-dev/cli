@@ -138,7 +138,7 @@ func planRotations(in *Inputs, states []*remoteState, generators map[string]envi
 		case environments.SecretGeneratorFormatIdentifier:
 			return nil, nil, fmt.Errorf("--rotate %s: it is an identifier (a user or database name, say); a new one in the store renames nothing on the server that owns it", key)
 		}
-		format, size := generatorFormat(&generator)
+		format, size := generator.Encoding()
 		value, err := secretgen.Generate(format, size)
 		if err != nil {
 			return nil, nil, err

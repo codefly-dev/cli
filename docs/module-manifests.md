@@ -102,11 +102,26 @@ collection and read back), and stamps that artifact as the payload. The same
 render hands every service declaring the `artifact-cache` workspace
 configuration `REPOSITORY`, that repository, which a host reads bundles from by
 the digest it admits. A local render and a local k3d cluster's publish and
-project nothing. A native run delivers what runs: the bundle its frontend
-build wrote (`services/fe-remote/dist`, with `mf-manifest.json` at its root),
-archived in core's canonical form, retained in the workspace's artifact cache
-under its digest, and named as the payload; a declared page without a built
-bundle is refused by name.
+project nothing. Before native delivery, Codefly builds every declared page
+through this same frontend builder and the owner's `package.json` build script
+(`npm ci && npm run build`); no manual bundle build is required. Native builds
+snapshot the current repository files selected by Git, including uncommitted
+edits and nonignored new files, so sibling package dependencies remain available.
+Without a repository, the component directory is the build context. `.git`,
+`.codefly`, `node_modules` and this frontend's `dist` are excluded from local
+snapshots, even if tracked. Shipped sibling package artifacts remain inputs. The
+source tree is never modified and an old local dist is never used as proof of a
+successful build.
+
+Docker BuildKit's existing content cache reuses the build layer for unchanged
+source, recipe and pinned builder image. Changed selected input (including a
+lockfile or sibling package) invalidates it; clearing the builder cache also
+requires a build. Each delivery exports the resulting bundle to a fresh temporary
+directory, verifies a regular `mf-manifest.json`, archives it in Core's canonical
+form and retains it in `.codefly/selection-artifacts` under its digest. The
+manifest names those exact bytes. A build failure refuses delivery with the
+component name, build command and final 40 lines of build output; it never
+falls back to a previous bundle. Headless components perform no frontend build.
 
 ## Declaring the host
 
@@ -274,6 +289,22 @@ that is not a prepared binding fails the render by key. A module that asks for
 nothing — no contract, no scoped consumption — gains nothing: the host grants
 it its envelope whole, and a request would change that.
 
+**A solution's roles are part of its contract.** A unit a person uses declares
+the roles a person may hold on an installation of it in the same
+`module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under
+core's rules (an `installer` among them; each scope within the unit's own kinds,
+or a permission at another module one of its bindings spells out for `invoke`
+or `lookup`) — see core's `docs/module-contract.md`. The core manifest names the
+kinds alone; for a composition-interface host the delivery carries each own
+kind with its actions (`AuthorityManifestV1.scope_ceilings`, read once from the
+contract's `scope_ceilings`) and the roles as declared
+(`AuthorityManifestV1.roles`). A solution asking for scopes on `api.consumes`
+declares roles by moving that consumption into the contract's bindings, since a
+module asks for authority from one declaration. The CLI defines no roles schema
+of its own: a unit still shipping the retired `roles.codefly.yaml`
+(`codefly/solution-roles/v1`) fails the render and the delivery, naming the file
+and the contract its kinds and roles now belong in.
+
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the
 module's queues and namespaces, its own scope ceilings and the destinations it
@@ -301,7 +332,8 @@ refuses far from the contract that caused it. The reader holds the convention
 the modules publish against — `audience` from a `*-audience` key (or a
 `*-prefix` one: a module's prefix is the audience a capability for it is
 addressed to), `resource_kind` from a `*-resource-kind` key, `binding_key` from
-a `*-binding` key — in either key spelling core accepts, and refuses a slot
+a `*-binding` key, `audiences` from a `*-audiences` key and `resource_kinds`
+from a `*-resource-kinds` key — in either key spelling core accepts, and refuses a slot
 whose key is named otherwise.
 
 A binding's **scope ceiling** is written per operation in one of two spellings,
@@ -323,6 +355,61 @@ scope_ceiling:
 naming the other module's permission namespace literally — a namespace is fixed
 by the module that contributes it, exactly as its proto package is, while a
 service the composition chooses stays a slot.
+
+A binding is **mandatory** unless its contract marks it `optional: true`: every
+composition fills a mandatory binding's slots or the render refuses. An optional
+binding is for a capability the module degrades without, and core's resolution
+decides it on the slots alone. A composition that fills **none** of them — each
+key absent from its group, or supplied empty, as a module's declared
+configuration supplies a key nobody set — renders the module without it: the
+delivered manifest carries no such binding, so no credential can be issued
+through it, its calls are never read (the audience need not be composed), and
+the render logs it, `module <m>: optional binding <id> is omitted from the
+delivered manifest:` followed by every unfilled slot. Filled, it renders exactly
+as a mandatory binding. Filled **in part**, it is resolved whole and each
+unfilled slot is refused by name, the refusal saying the binding is optional and
+was filled in part, because a misspelt key must never silently drop a binding
+(`TestAnOptionalBindingFilledInPartIsRefusedByName`). A secret-classified record
+fills its slot, and is refused as a secret rather than omitted around.
+
+A binding may be addressed to a **list of audiences** the composition writes —
+for a generic module that reaches whichever modules a composition wires to it,
+such as a store of comments reaching the owner of each kind of thing commented
+on. It declares `audiences: {from: <group>/<key>-audiences}` in place of
+`audience`, the value comma-separated with no space (`robin,documents`), and,
+for a bare-action ceiling, `resource_kinds: {from: <group>/<key>-resource-kinds}`
+whose value is `<audience>=<kind>` pairs. The render delivers it **once per
+listed audience**, in core's resolution: binding `<binding>:<audience>`
+addressed to that audience, its `calls` read from that audience's own published
+contracts (so two owners declaring one protocol's methods differently get two
+ceilings), its bare actions qualified by that audience's kind. A call one listed
+audience does not serve is refused naming the binding, the call and the
+audience; the audience that serves it is not blamed. The render logs
+`module <m>: binding <id> is delivered once per listed audience, as` followed by
+the delivered ids, since they are not the ones the contract spells. The issuer
+holds each delivered binding to its one audience, exactly as a single-audience
+binding, so a module is issued a context toward one owner by naming
+`<binding>:<owner>`. An optional list composes with the rule above: the list
+absent or empty omits the binding, and filled with its kinds missing is filled in
+part, refused by name (`audience_list_binding_test.go`). A binding with
+`audience` renders exactly as before, under its own id.
+
+A binding may be addressed to **the module itself** — a module admitting work
+into itself on someone's behalf, such as a scheduler issued the capability an
+occurrence is admitted under. It writes `audience: {self: true}`, and core's
+resolution delivers it with the contract's principal as its audience. The
+render holds that principal to the module's name **before** anything resolves
+(the same check that refuses a module claiming another's principal), so the
+self binding is addressed to exactly the principal the manifest's `authority`
+block names, read from no workspace configuration value: a configured value
+carrying the module's own name would restate an identity the render already
+resolves, and could drift from it. Core holds what such a binding may ask for —
+no `resource_kind` slot, every scope spelled out within the module's own
+`scope_ceilings`, `self` on an audience only — see core's
+`docs/module-contract.md`. It composes with the rules above: an optional self
+binding is omitted by its other slots alone (its `binding_key`, say), and an
+audience-list binding beside it is delivered once per owner as before
+(`self_audience_binding_test.go`).
 
 
 ## What publish settles
@@ -1001,7 +1088,11 @@ run, the CLI is:
   (the service), and nothing else: no build. It is written under
   `.codefly/run/<environment>/identities/` and handed to the
   process as `CODEFLY__WORKLOAD_TOKEN_FILE` (a pod reads the mounted path),
-  reissued at 80 % of its lifetime as a kubelet rotates a projected token.
+  reissued when at most 120 seconds of its 600-second lifetime remain. The
+  run polls the actual wall clock every five seconds, including time spent
+  asleep, so expired projections are renewed on the first poll after wake.
+  A failed refresh logs the workload name and reason, leaves that projection
+  due for retry on the next poll, and does not prevent other renewals.
   Nothing is withheld: until the host has applied the module's manifest a
   mint answers "not established yet", which the workload retries.
 - **not the mesh** — every hop is plain HTTP on loopback, and only the host's
@@ -1014,10 +1105,27 @@ run, the CLI is:
   `/platform/_delivery/manifest` with a native credential for account
   `delivery` in the module's namespace. When the set of running identity
   workloads changes, the manifest is delivered again; its generation is
-  settled from its content — unchanged content replays its generation,
-  changed content is the next one — and recorded under
-  `.codefly/run/<environment>/delivery/generations.json`, so a
-  restart replays rather than rewrites.
+  settled from its content. For a composition-interface host, that includes
+  the captured method policies, scope ceilings and solution roles, including
+  whether a policy document is present. The same captured declaration is
+  signed and sent: a policy-only change advances the generation once.
+  The run reserves that content and generation under
+  `.codefly/run/<environment>/delivery/generations.json` before sending,
+  using a cancellable shared file lock and Core's atomic writer. Neither signing
+  nor network I/O holds the lock. A lost response or refusal keeps the reservation:
+  after restart unchanged content replays it; changed content advances it.
+  Entering paired settlement from an old live Core-only record advances once,
+  because the old record cannot establish policy equality. Withdrawals keep their
+  Core-only identity and read no policy source, so an old terminal withdrawal
+  still replays its exact generation. A reserved withdrawal is terminal locally:
+  only its exact content may replay, including when its response was lost or signing
+  failed before sending; a later live attempt cannot displace that reservation. An old record learns terminality
+  when its exact withdrawal is replayed. Older records alone cannot reconstruct
+  host tombstones they never recorded. Legacy HTTP delivery retains Core-only
+  settlement and also reserves before sending. Deleting the record is not a
+  recovery procedure; it loses the evidence needed to avoid rewriting a generation.
+  These rules do not establish policy-file watch/reload behavior or power-loss
+  durability beyond Core's atomic writer.
 - **the administrator** — before delivering, it makes sure the host holds the
   composition's envelope: `{"revision": N, "principals": {"<module>":
   {"grant": <grant>}}}`, each grant read from the `principals` of
@@ -1049,10 +1157,30 @@ that is not a URL, a manifest the host received and withheld with a reason. The 
 wait and every change of its reason are logged at info with the service, its
 module and the reason. A workload not delivered by the deadline is reported as
 an error naming it, why the host is still not serving, the last refusal it
-answered, and the consequence: every gateway route to its module answers 404
-until it is delivered, which a restart of the workload attempts again. A
-workload has one delivery in flight: a restart replaces the waiting one, and a
+answered, and that delivery completion was not confirmed. Routes may remain
+unavailable, but a lost response does not establish that the host refused or
+failed to apply the manifest. A restart of the workload attempts delivery again.
+A workload has one delivery in flight: a restart replaces the waiting one, and a
 workload the composition withdraws while it waits is not delivered.
+
+The delivery deadline bounds active readiness and manifest calls as well as
+backoff and waiting behind another delivery. Stopping the run or superseding a
+workload's delivery cancels its active calls before service teardown waits; an
+already-canceled delivery does not begin another attempt. Deadline errors retain the current phase, the last
+wait reason and any last host refusal. Cancellation cannot undo a manifest the
+host already applied, and a canceled call does not establish whether it applied.
+Delivery still begins after Running; these bounds do not make authority available
+to a service during its own startup.
+
+The native renderer also accepts an explicit admitted workload set independently
+of the ready subset used for endpoint publication. Ready workloads must belong
+to that admitted set. Its explicit frontend-deferral input permits authority-only
+declarations before a bundle exists; ordinary frontend publication still requires
+the complete built payload. Deferral omits the frontend in a full replacement
+manifest, deliberately removing any previous current page. It does not preserve
+an old page implicitly. A caller retaining a valid ready page must supply its
+verified payload instead. The launcher does not yet use these inputs: graph
+ordering, pre-start delivery and lifecycle integration remain separate work.
 
 The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both under
@@ -1099,3 +1227,83 @@ Named and not built: a **withdrawal path for a whole module** — a module
 removed from the composition has no render and so no publish, and its manifest
 stays applied on the host until a publish of that module's path with no
 instance writes its withdrawal.
+
+## Permission preflight
+
+Before native CLI/control-plane runs construct their dependency graph, a preflight
+reads policies from the selected module closure, checks declaration validity and
+resolves authority bindings through the existing contract resolver. Local runs
+log findings as warnings during adoption; fixture roles are diagnosed again by
+the development authority when their modules are delivered. Refreshing a running
+composition rechecks declarations even if no new root was added.
+
+Render, direct deploy, development image deployment and source-module publication
+reject invalid declarations before their build/apply effects. Hop warning mode
+cannot bypass these checks. Unknown or contradictory method requirements are
+invalid; an intentionally restricted business role is valid. Identical policies
+published on multiple endpoints are accepted; conflicting policies for the same
+method are refused rather than silently taking the first.
+
+**A method that declares no policy is refused only where policies are
+consumed.** The structural checks above hold everywhere: both `requires` and
+`any_checked_caller` on one method, a requirement with no action, a kind or
+action outside the vocabulary, colliding identifiers. A published method that
+declares nothing at all is refused, by name and with the reason, in two cases:
+
+- the environment's host (the service `host.delivery` names) declares that it
+  implements `codefly.dev/composition`, so every method's policy travels with
+  the manifest to the host's authority; or
+- the module's `module.contract.codefly.yaml` sets
+  `require_method_policies: true`, which holds it to a policy on every method
+  wherever it is delivered.
+
+The host's own module — the module of the `host.delivery` service, `saas` for
+`delivery: saas/accounts/connect` whatever `host.component` says (`saas` on a
+local environment, `platform-obin` on a cell) — is not behind the hop: its
+methods are the host's, never fronted by the policies the host receives, so the
+first case does not hold it. Only that one module is set aside; every other module in the
+composition is still refused by name, and the host module's own
+`require_method_policies: true` still holds it.
+
+Toward any other host — the saas host every released composition delivers to —
+an unmarked method passes, listed with neither field set exactly as
+`MethodPolicies` reads it, and the hop in front of the module refuses it per
+call. `codefly generate permissions` always requires a declaration: a table
+names every method.
+
+*Migrating a module to the hop vocabulary.* Mark each RPC with
+`option (authority.hop.v1.policy)` (`requires` or `any_checked_caller: true`)
+and each OpenAPI operation with `x-codefly-authority-policy`, then run
+`codefly generate contracts --permissions`. Until every method is marked the
+module still renders toward a host that does not consume policies; before it is
+composed under a host implementing `codefly.dev/composition`, or once it sets
+`require_method_policies: true`, every unmarked method is refused by name.
+
+The checker validates published bytes and their package digests. For each
+published protobuf endpoint resolved from local source (including service
+overrides and materialized git clones), it also compares the service's `proto/`
+tree with the snapshot recorded by `generate contracts`. Edits, added/deleted
+files, and missing source or snapshots warn during local adoption and refuse
+strict delivery. Module/service render checks the selected dependency closure
+before effects, including producers reached through declared configuration groups
+using the invocation-aware configuration reader; whole-composition render checks all modules before its first
+build. Development image deployment validates the service selected by `--path`
+even when replacing a packaged service. The existing ban on invocation configuration
+overrides in delivery still applies. The diagnostic names the module, service, endpoint and changed
+files, and directs the author to `codefly generate contracts <module>`.
+Even comment-only changes require re-export before strict delivery.
+
+Verified materialized packages retain artifact checks without requiring source;
+the materializer's receipts distinguish them from checkouts. Unresolved or stale
+materialization is reported, not silently treated as an artifact exemption.
+
+This early guard covers existing published protobuf exports, not a newly added
+endpoint with no export, OpenAPI source changes, external imports, descriptor
+derivation or generated clients/permission constants. Modules with no package
+manifest have no recorded source snapshot to compare. Run
+`codefly generate contracts --permissions --check` in CI for full contract
+regeneration and permission-output freshness. Static checks cannot prove resource visibility, active
+installation, consent, provider availability or a successful runtime call.
+Packaged solution publications without a source module and rollback of old
+rendered artifacts still need artifact-level permission qualification; source
+preflight alone does not validate those paths.

@@ -106,6 +106,7 @@ const (
 	keyAutomountToken = "automountServiceAccountToken"
 	// keyPatchTarget names the object a kustomize patch applies to.
 	keyPatchTarget         = "target"
+	keyPatch               = "patch"
 	LocalTrustAnchorVolume = "codefly-delivery-trust"
 )
 
@@ -453,7 +454,7 @@ func (projection *podProjection) patch() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{keyPatchTarget: map[string]any{keyKind: projection.kind, keyName: projection.name}, "patch": string(encoded)}, nil
+	return map[string]any{keyPatchTarget: map[string]any{keyKind: projection.kind, keyName: projection.name}, keyPatch: string(encoded)}, nil
 }
 
 // applyTo adds the projection to a decoded manifest of its workload.

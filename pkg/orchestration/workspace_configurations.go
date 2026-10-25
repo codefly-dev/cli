@@ -25,6 +25,9 @@ import (
 // Every path leaves render-owned groups to the per-workload projections, so
 // those declarations never become manager dependencies here. Outside a render
 // they supply no values; the service decides whether it can run without them.
+// The one exception is egress, which this resolution generates itself from
+// the environment's egress declaration (egressGroup), so a run and a render
+// hand a service the same hosts the cell file allows it.
 // An optional group the workspace does not provide (runnable-bindings for an
 // environment that prepares no binding) is left out the same way, on every
 // path, by unprovidedOptionalGroup.
@@ -207,11 +210,21 @@ func (world *World) workspaceConfigurationsFor(
 	// declares them: the resolver above skipped those names on purpose, since a
 	// render projects them, and this is the run standing in for that render.
 	if world.RenderOwnedGroups != nil {
-		owned, ownedErr := world.RenderOwnedGroups(ctx, service)
+		owned, ownedErr := world.RenderOwnedGroups(ctx, world.withoutExcludedGroups(service))
 		if ownedErr != nil {
 			return nil, ownedErr
 		}
 		out = append(out, owned...)
+	}
+	// The service's declared egress, generated from the environment on every
+	// path — run and render alike — so the service reads the same hosts the
+	// cell file allows it, never a copy of its own.
+	egress, err := world.egressGroup(world.withoutExcludedGroups(service))
+	if err != nil {
+		return nil, err
+	}
+	if egress != nil {
+		out = append(out, egress)
 	}
 	// Last, because it reads the OUTCOME: every value that carried a reference
 	// must still be here. Core resolves the root's groups leniently and drops
@@ -943,11 +956,11 @@ func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified s
 			continue
 		}
 		if !inRun(producer) {
-			warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position,
+			warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position, producer,
 				"its producer is not part of this run (excluded, or a run of fewer services than the workspace), so no local address exists for it")
 			continue
 		}
-		warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position,
+		warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position, producer,
 			"its producer is part of this run and no address could be derived for it yet (it recorded no endpoint, or --temporary-ports allocates its address at initialization)")
 	}
 	return nil
@@ -971,15 +984,22 @@ func (world *World) workspaceHasProducer(ctx context.Context, producer string) b
 // drops the same value at DEBUG, and a configuration value absent without a word
 // is the fault cli#882 exists to remove.
 //
-// It names the consumer, the value and WHICH reference of it — never the
-// reference's text. A log line is the easiest place for a value to leak: it is
-// written whether or not anyone is watching, kept, and shipped. The group, the
-// key and the position locate the reference in the operator's own file.
-func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, qualified, position, because string) {
+// It names the consumer, the value, WHICH reference of it and the producer —
+// never the reference's text. A log line is the easiest place for a value to
+// leak: it is written whether or not anyone is watching, kept, and shipped. The
+// group, the key and the position locate the reference in the operator's own
+// file. The producer is the one exception, and it publishes nothing from the
+// value: by the time a value is judged here core's check has held every one of
+// its references to the workspace's own manifest
+// (checkEffectiveWorkspaceConfigurationReferences), so it names a
+// <module>/<service> the workspace declares — the same ground
+// referencedProducerMappings names one on.
+func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, qualified, position, producer, because string) {
 	wool.Get(ctx).In("World.refuseDroppedWorkspaceConfigurationValues").Warn(
 		"a workspace configuration value is missing for this service: "+because,
 		wool.Field("consumer", consumer),
-		wool.Field("value", qualified), wool.Field("reference", position))
+		wool.Field("value", qualified), wool.Field("reference", position),
+		wool.Field("producer", producer))
 }
 
 // consumerLabel names the service a diagnostic is about. resources.WithUnique
@@ -1108,4 +1128,43 @@ func (b *Builder) workspaceConfigurations(
 ) ([]*basev0.Configuration, error) {
 	return b.world.workspaceConfigurationsFor(ctx, b.instance.Service,
 		dependencyMappings, resources.NewContainerNetworkAccess())
+}
+
+// egressGroup is the egress group a service that declares it receives: its
+// declared hosts from the environment's egress block, HOSTS empty when the
+// environment declares none for it. Nil for a service that does not declare
+// the group.
+func (world *World) egressGroup(service *resources.Service) (*basev0.Configuration, error) {
+	if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.EgressConfiguration) {
+		return nil, nil
+	}
+	identity, err := service.Identity()
+	if err != nil {
+		return nil, fmt.Errorf("%s declares the %s workspace configuration, but its module is unknown, so its egress declaration cannot be read: %w",
+			service.Name, environments.EgressConfiguration, err)
+	}
+	return world.Env.EgressGroup(identity.Module, identity.Name), nil
+}
+
+// withoutExcludedGroups is service as the run sees it: its declared workspace
+// configuration groups less the ones the run excludes. A render-owned group is
+// rendered by the CLI rather than resolved, so it is trimmed here, before the
+// render, or an excluded group would still be rendered — and refused when this
+// run's host has nothing to render it from.
+func (world *World) withoutExcludedGroups(service *resources.Service) *resources.Service {
+	if len(world.excludedWorkspaceConfigurations) == 0 {
+		return service
+	}
+	kept := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
+	for _, group := range service.WorkspaceConfigurationDependencies {
+		if !world.excludedWorkspaceConfigurations[group] {
+			kept = append(kept, group)
+		}
+	}
+	if len(kept) == len(service.WorkspaceConfigurationDependencies) {
+		return service
+	}
+	trimmed := *service
+	trimmed.WorkspaceConfigurationDependencies = kept
+	return &trimmed
 }

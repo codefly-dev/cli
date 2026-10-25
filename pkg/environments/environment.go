@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/codefly-dev/cli/pkg/secretgen"
+
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/distribution/reference"
@@ -854,6 +856,14 @@ type EnvironmentServiceSecrets struct {
 	MayBeEmpty []string `yaml:"may-be-empty,omitempty"`
 }
 
+// Stored reports whether the block names a secret store, as a cluster's does. A
+// block that declares only generators names none: its keys live in the
+// workspace's own secret configurations, which a local run generates, and a
+// render, which carries secrets only as references into a store, refuses it.
+func (s *EnvironmentServiceSecrets) Stored() bool {
+	return s != nil && s.SecretStore != (EnvironmentSecretStoreReference{})
+}
+
 // Secret generator scopes: which configuration a generator's keys belong to.
 const (
 	SecretGeneratorScopeWorkspace = "workspace"
@@ -887,6 +897,24 @@ type EnvironmentSecretGenerator struct {
 	Keys          []string `yaml:"keys"`
 	Format        string   `yaml:"format,omitempty"`
 	Bytes         int      `yaml:"bytes,omitempty"`
+}
+
+// Encoding is how the generator's values are minted: its format, hex by
+// default, and its size in bytes, 32 by default (12 for an identifier). A local
+// run and `codefly deploy secrets` mint through it alike.
+func (generator *EnvironmentSecretGenerator) Encoding() (secretgen.Format, int) {
+	format := secretgen.Format(generator.Format)
+	if format == "" {
+		format = secretgen.FormatHex
+	}
+	size := generator.Bytes
+	if size == 0 {
+		size = 32
+		if format == secretgen.FormatIdentifier {
+			size = 12
+		}
+	}
+	return format, size
 }
 
 // UnmarshalYAML refuses an unknown key: a mistyped `keys` would otherwise leave a
@@ -1120,6 +1148,14 @@ func (ref EnvironmentSecretStoreReference) validate(label string) error {
 func (s *EnvironmentServiceSecrets) Validate() error {
 	if s == nil {
 		return nil
+	}
+	if !s.Stored() && s.Defaults == nil && len(s.Services) == 0 && len(s.MayBeEmpty) == 0 {
+		// Generators alone: the store is the workspace's own secret
+		// configurations, which a local run writes (codefly run).
+		if len(s.Generate) == 0 {
+			return fmt.Errorf("service-secrets declares neither a secret-store nor a generator")
+		}
+		return s.validateGenerators()
 	}
 	if err := s.SecretStore.validate("service-secrets secret-store"); err != nil {
 		return err
@@ -1424,6 +1460,14 @@ type Environment struct {
 	// (the same MODULE__OPERATION key generate runnable-bindings emits).
 	// Installation input only: Runtime deliberately does not send it to agents.
 	RunnableScopeSelections map[string]ScopeSelections `yaml:"runnable-scope-selections,omitempty"`
+	// RunnableCallEndpoint is the declared HTTP-based endpoint,
+	// "<module>/<service>/<endpoint>", every call `generate runnable-bindings`
+	// prepares for this environment is sent to in place of the owner's
+	// listener: the composition's hop in front of its modules, say. Declared
+	// here, the prepared bindings and their --check are a function of the
+	// workspace; the command's --call-endpoint overrides it for one
+	// invocation. Installation input only, like RunnableScopeSelections.
+	RunnableCallEndpoint string `yaml:"runnable-call-endpoint,omitempty"`
 
 	// Deploy-target overrides (CLI-side; not serialized to proto).
 	// Empty values fall back to legacy defaults (local k3d, ~/.kube/config,
@@ -1704,6 +1748,35 @@ func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressH
 	return hosts
 }
 
+// EgressConfiguration is the workspace configuration group that hands a
+// service its own declared egress: the hosts the environment's `egress:`
+// block names for it — the list the cell file carries so the cell allows
+// exactly those — so the service never keeps a copy of its own. The CLI
+// generates it from that declaration, for a service that declares the group,
+// on every path that delivers workspace configurations (a native or container
+// run and a render alike); an authored file for it is refused.
+const EgressConfiguration = "egress"
+
+// EgressHostsKey is the one value of EgressConfiguration: the service's
+// declared hosts as comma-separated `host:port`, sorted, every port explicit;
+// empty when the environment declares no egress for the service.
+const EgressHostsKey = "HOSTS"
+
+// EgressGroup is the EgressConfiguration group one service receives. It is
+// always the group, HOSTS empty when nothing is declared, so a service reads
+// "this environment declares no egress for me" rather than an absent group.
+func (env *Environment) EgressGroup(module, service string) *basev0.Configuration {
+	hosts := env.EgressHosts(module, service)
+	entries := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		entries = append(entries, fmt.Sprintf("%s:%d", host.Name, host.Port))
+	}
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+		Name:                EgressConfiguration,
+		ConfigurationValues: []*basev0.ConfigurationValue{{Key: EgressHostsKey, Value: strings.Join(entries, ",")}},
+	}}}
+}
+
 // EnvironmentCellWorkload is what the composition declares about one service
 // for the cell: the platform bindings it holds, cloud identity, and the
 // endpoints whose listener accepts only a protected waypoint's assertion of
@@ -1849,4 +1922,13 @@ func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWor
 	presenter := append([]string(nil), workload.Presenter...)
 	sort.Strings(presenter)
 	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity, Presenter: presenter}, true
+}
+
+func (s *EnvironmentServiceSecrets) validateGenerators() error {
+	for index := range s.Generate {
+		if err := s.Generate[index].validate(index); err != nil {
+			return err
+		}
+	}
+	return nil
 }

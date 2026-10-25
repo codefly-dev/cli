@@ -89,7 +89,7 @@ restart its consumers. An identifier or signing key is never rotated.`,
 		if err != nil {
 			return err
 		}
-		if env.ServiceSecrets == nil {
+		if !env.ServiceSecrets.Stored() {
 			return fmt.Errorf("environment %q declares no service-secrets store", env.Name)
 		}
 		rendered, err := gitops.RenderedServiceSecrets(workspace.Dir(), env.Name)

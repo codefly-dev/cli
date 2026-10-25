@@ -3,6 +3,8 @@ package orchestration
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/environments"
+
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -24,6 +26,7 @@ type FlowOption func(*flowOptions)
 
 type flowOptions struct {
 	moduleClosureSeeds []string
+	compositionCheck   CompositionCheck
 }
 
 // WithRunModuleClosure derives the flow's dependency graph from the modules its
@@ -78,4 +81,34 @@ func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds
 		}
 	}
 	return scoped, nil
+}
+
+// CompositionCheck validates selected declarations before execution effects.
+type CompositionCheck func(context.Context, *resources.Workspace, *environments.Environment) error
+
+// WithCompositionCheck applies the same preflight to construction and extension.
+func WithCompositionCheck(check CompositionCheck) FlowOption {
+	return func(options *flowOptions) { options.compositionCheck = check }
+}
+
+// CheckComposition checks refreshed declarations even when no roots were added.
+func (flow *Flow) CheckComposition(ctx context.Context, workspace *resources.Workspace, roots ...string) error {
+	if flow.compositionCheck == nil {
+		return nil
+	}
+	seeds := append([]string(nil), flow.moduleSeeds...)
+	for _, root := range roots {
+		info, err := resources.ParseServiceWithOptionalModule(root)
+		if err != nil {
+			return err
+		}
+		if info.Module != "" {
+			seeds = append(seeds, info.Module)
+		}
+	}
+	closure, err := runModuleClosure(ctx, workspace, seeds)
+	if err != nil {
+		return err
+	}
+	return flow.compositionCheck(ctx, closure, flow.Environment())
 }

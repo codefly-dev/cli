@@ -50,11 +50,13 @@ const (
 )
 
 // RenderOwnedWorkspaceConfiguration names the groups supplied per workload by
-// the render (or by the native run standing in for it). They are never
-// dependencies of the configuration manager and cannot be provided by
-// authored workspace configuration files.
+// the CLI rather than authored: by the render (or by the native run standing
+// in for it), and EgressConfiguration by every delivery path from the
+// environment's egress declaration. They are never dependencies of the
+// configuration manager and cannot be provided by authored workspace
+// configuration files.
 func RenderOwnedWorkspaceConfiguration(group string) bool {
-	return group == ModuleAuthorityConfiguration || group == ArtifactCacheConfiguration
+	return group == ModuleAuthorityConfiguration || group == ArtifactCacheConfiguration || group == EgressConfiguration
 }
 
 // OptionalWorkspaceConfiguration names the groups whose absence is itself an

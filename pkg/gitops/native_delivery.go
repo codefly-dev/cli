@@ -17,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	runcomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/workloadidentity"
 )
@@ -29,8 +31,9 @@ import (
 // POSTed to the same route with a delivery credential the run issues — so the
 // host's registry, mint and installation run their one code path. What
 // differs is where the manifest's facts come from: its workloads are the
-// identity services this run started, each running as the account a cell
-// would give it, and its endpoints carry the addresses this run allocated.
+// identity services admitted to this run (or its started services when no
+// explicit declaration is supplied), each with the account a cell would give
+// it. Endpoints carry allocated addresses only for the ready subset.
 
 // NativeIdentity is one workload a native run issues a credential for and
 // lists in its module's manifest: a service that declares module-identity,
@@ -73,13 +76,15 @@ func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace
 }
 
 // NativeWorkload is one module a native run delivers a manifest for: the
-// module, its services, the identity workloads this run has started, and the
-// addresses the run resolved for its routed endpoints.
+// module, its services, admitted identity workloads, and ready routed endpoints.
 type NativeWorkload struct {
 	Module   *resources.Module
 	Services []*resources.Service
-	// Started are the module's identity workloads this run has started; the
-	// manifest lists every one, and only those.
+	// Declared are the identity workloads admitted to this run's closure.
+	// Nil retains the existing started-only delivery behavior. A non-nil set
+	// permits authority admission before any workload starts.
+	Declared []NativeIdentity
+	// Started is the subset whose processes are ready to receive traffic.
 	Started []NativeIdentity
 	// Carriers are the addresses of the module's routed endpoints, keyed as
 	// the gateway reads them.
@@ -89,6 +94,10 @@ type NativeWorkload struct {
 	// manifest's frontend payload names, since what runs is what is
 	// delivered. Nil when the component declares no page.
 	FrontendBundle *solutionhost.FrontendPayload
+	// DeferFrontend deliberately omits current frontend publication while
+	// admitting workload authority. It removes any previous current page on
+	// a replacing generation; it never means "keep the previous frontend".
+	DeferFrontend bool
 }
 
 // NativeDeliverer renders, signs and delivers a native run's manifests.
@@ -96,7 +105,7 @@ type NativeDeliverer struct {
 	Workspace *resources.Workspace
 	Env       *environments.Environment
 	Signer    solutionhost.Signer
-	// StateDir keeps the generations delivered so far: changed content is the
+	// StateDir keeps the generations reserved so far: changed content is the
 	// next generation, unchanged content is replayed.
 	StateDir string
 	// DeliveryURL is the host's delivery listener (the accounts REST address).
@@ -106,14 +115,37 @@ type NativeDeliverer struct {
 	// ObserverToken belongs to the separate read-only applied-state publisher.
 	ObserverToken func() (string, error)
 	Client        *http.Client
+
+	// Post, when set, carries a signed manifest to the host instead of the HTTP
+	// delivery route: a host that implements codefly.dev/composition receives it
+	// through ApplyManifest. Applied, when set, answers the applied state the
+	// same way. Both nil is the saas HTTP delivery, the transition's.
+	Post DeliveryPost
+	// Prepare captures transport-owned content before generation reservation.
+	// Its Post must send exactly that captured content with the settled carrier.
+	Prepare func(ctx context.Context, module string, removed bool) (*PreparedDelivery, error)
+	Applied func(ctx context.Context, binding string) (*AppliedManifest, bool, error)
 }
 
-// Render builds the manifest of a module this run started identity workloads
-// of, by the rules a cell's render follows (moduleInstanceOf,
+// DeliveryPost sends a carrier whose generation has already been settled.
+type DeliveryPost func(context.Context, string, *solutionhost.Signed, string) (Receipt, error)
+
+// PreparedDelivery binds generation content to its immutable send operation.
+type PreparedDelivery struct {
+	Content []byte
+	Post    DeliveryPost
+}
+
+// Render builds the manifest of a module's admitted identity workloads,
+// by the rules a cell's render follows (moduleInstanceOf,
 // ModuleManifestOf), at generation 1.
 func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) (*solutionhost.ModuleManifest, error) {
-	if len(workload.Started) == 0 {
-		return nil, fmt.Errorf("module %s has no started identity workload to deliver", workload.Module.Name)
+	declared := workload.Declared
+	if declared == nil {
+		declared = workload.Started
+	}
+	if len(declared) == 0 {
+		return nil, fmt.Errorf("module %s has no admitted identity workload to deliver", workload.Module.Name)
 	}
 	manifest, err := composition.LoadPackageManifest(workload.Module.Dir())
 	if err != nil {
@@ -132,6 +164,10 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	// cache by the digest named here. A declared page without it is refused:
 	// a host admits no frontend without its signed payload.
 	switch {
+	case workload.DeferFrontend && workload.FrontendBundle != nil:
+		return nil, fmt.Errorf("module %s cannot both defer and publish a frontend bundle", workload.Module.Name)
+	case workload.DeferFrontend:
+		instance.Frontend = nil
 	case workload.FrontendBundle != nil && instance.Frontend == nil:
 		return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
 	case workload.FrontendBundle != nil:
@@ -144,20 +180,30 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	for _, identity := range instance.Identities {
 		identities[identity.Service] = true
 	}
-	started := map[string]bool{}
-	workloads := make([]solutionhost.Workload, 0, len(workload.Started))
-	for _, identity := range workload.Started {
-		if !identities[identity.Service] {
-			return nil, fmt.Errorf("module %s service %s was started as an identity workload and does not declare module-identity", workload.Module.Name, identity.Service)
+	declaredServices := map[string]bool{}
+	workloads := make([]solutionhost.Workload, 0, len(declared))
+	for _, identity := range declared {
+		if identity.Module != workload.Module.Name || !identities[identity.Service] {
+			return nil, fmt.Errorf("module %s workload %s/%s does not declare module-identity in this module", workload.Module.Name, identity.Module, identity.Service)
 		}
-		started[identity.Service] = true
+		if declaredServices[identity.Service] {
+			return nil, fmt.Errorf("module %s declares workload %s more than once", workload.Module.Name, identity.Service)
+		}
+		declaredServices[identity.Service] = true
 		// A native workload declares no cell: the run vouches for (module,
 		// service) directly, and a manifest names only what the module is.
 		workloads = append(workloads, solutionhost.Workload{Service: identity.Service, Container: identity.Service})
 	}
 	sort.Slice(workloads, func(i, j int) bool { return workloads[i].Service < workloads[j].Service })
+	started := map[string]bool{}
+	for _, identity := range workload.Started {
+		if identity.Module != workload.Module.Name || !declaredServices[identity.Service] {
+			return nil, fmt.Errorf("module %s routes ready workload %s/%s outside its declared membership", workload.Module.Name, identity.Module, identity.Service)
+		}
+		started[identity.Service] = true
+	}
 	// An identity workload this run has not started yet routes nothing yet:
-	// its endpoints join the manifest at the generation that lists it.
+	// its endpoints join a later generation once the workload is ready.
 	if instance.Endpoints, err = routedEndpoints(workload.Module.Name, workload.Services, workload.Carriers, identities, started); err != nil {
 		return nil, err
 	}
@@ -168,7 +214,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	return ModuleManifestOf(binding, d.Env.Host, instance, workloads)
 }
 
-// nativeGenerations is the run's record of what it delivered: per binding,
+// nativeGenerations is the run's record of what it reserved: per binding,
 // the generation and the content it carried. It outlives a run, so a restart
 // that delivers the same content replays its generation.
 type nativeGenerations struct {
@@ -178,6 +224,7 @@ type nativeGenerations struct {
 type nativeGeneration struct {
 	Generation uint64 `json:"generation"`
 	Content    string `json:"content"`
+	Removed    bool   `json:"removed,omitempty"`
 }
 
 func (d *NativeDeliverer) generationsPath() string {
@@ -202,7 +249,7 @@ func (d *NativeDeliverer) loadGenerations() (*nativeGenerations, error) {
 	return record, nil
 }
 
-func (d *NativeDeliverer) saveGenerations(record *nativeGenerations) error {
+func (d *NativeDeliverer) saveGenerations(ctx context.Context, record *nativeGenerations) error {
 	if err := os.MkdirAll(d.StateDir, 0o700); err != nil {
 		return err
 	}
@@ -210,25 +257,32 @@ func (d *NativeDeliverer) saveGenerations(record *nativeGenerations) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(d.generationsPath(), data, 0o600)
+	return shared.WriteFileAtomic(ctx, d.generationsPath(), data, 0o600)
 }
 
 // settle assigns a manifest its generation: the one it had when its content is
-// unchanged, the next one otherwise. content is the canonical payload at
-// generation 1.
-func settle(record *nativeGenerations, key string, content []byte) uint64 {
+// unchanged, the next one otherwise. Content includes the canonical Core payload
+// at generation 1 and any prepared transport declaration; withdrawals are terminal.
+func settle(record *nativeGenerations, key string, content []byte, removed bool) (uint64, error) {
 	hash := sha256.Sum256(content)
 	digest := hex.EncodeToString(hash[:])
 	entry, known := record.Entries[key]
 	if known && entry.Content == digest {
-		return entry.Generation
+		// Old records did not retain terminality. An exact withdrawal replay
+		// can record it without advancing the immutable terminal generation.
+		entry.Removed = entry.Removed || removed
+		record.Entries[key] = entry
+		return entry.Generation, nil
+	}
+	if entry.Removed {
+		return 0, fmt.Errorf("%w: binding %s has a reserved withdrawal; replay it or use a new binding", solutionhost.ErrWithdrawn, key)
 	}
 	next := uint64(1)
 	if known {
 		next = entry.Generation + 1
 	}
-	record.Entries[key] = nativeGeneration{Generation: next, Content: digest}
-	return next
+	record.Entries[key] = nativeGeneration{Generation: next, Content: digest, Removed: removed}
+	return next, nil
 }
 
 // Receipt is the host's answer to one delivered manifest: 200 with the
@@ -245,30 +299,71 @@ type Receipt struct {
 // host as the delivery account of namespace — the namespace of the manifest's
 // workloads, or for a withdrawal the one its binding was delivered in.
 func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.ModuleManifest) (Receipt, error) {
-	record, err := d.loadGenerations()
+	if err := ctx.Err(); err != nil {
+		return Receipt{}, err
+	}
+	if err := os.MkdirAll(d.StateDir, 0o700); err != nil {
+		return Receipt{}, err
+	}
+	post := d.Post
+	// Source preparation and reservation share one short transaction. No
+	// credential acquisition, signing or network operation holds this lock.
+	err := runcomposition.WithFileLockContext(ctx, d.generationsPath()+".lock", 30*time.Second, func() error {
+		record, err := d.loadGenerations()
+		if err != nil {
+			return err
+		}
+		manifest.Generation = 1
+		content, err := solutionhost.SignedPayload(manifest)
+		if err != nil {
+			return err
+		}
+		if d.Prepare != nil {
+			prepared, prepareErr := d.Prepare(ctx, manifest.Alias, manifest.Removed)
+			if prepareErr != nil {
+				return prepareErr
+			}
+			if prepared == nil || prepared.Post == nil {
+				return errors.New("delivery preparation supplied no send operation")
+			}
+			post = prepared.Post
+			// Withdrawals retain their old Core-only identity: a terminal
+			// binding cannot accept a migration to a later generation.
+			if !manifest.Removed {
+				content, err = json.Marshal(struct {
+					Version      int
+					Core, Policy []byte
+				}{1, content, prepared.Content})
+				if err != nil {
+					return err
+				}
+			}
+		}
+		manifest.Generation, err = settle(record, manifest.Binding, content, manifest.Removed)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// A lost acknowledgement must never permit different content to
+		// reuse this generation, including after process restart.
+		return d.saveGenerations(ctx, record)
+	})
 	if err != nil {
 		return Receipt{}, err
 	}
-	// The generation is settled from the content at generation 1, so the
-	// same content always settles to the same generation.
-	manifest.Generation = 1
-	content, err := solutionhost.SignedPayload(manifest)
-	if err != nil {
+	if err = ctx.Err(); err != nil {
 		return Receipt{}, err
 	}
-	manifest.Generation = settle(record, manifest.Binding, content)
 	payload, err := solutionhost.SignedPayload(manifest)
 	if err != nil {
 		return Receipt{}, err
 	}
-	receipt, err := d.post(ctx, manifest.Alias, payload)
-	if err != nil {
-		return receipt, err
-	}
-	return receipt, d.saveGenerations(record)
+	return d.post(ctx, manifest.Alias, payload, post)
 }
 
-func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byte) (Receipt, error) {
+func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byte, post DeliveryPost) (Receipt, error) {
 	envelope, err := solutionhost.SignEnvelope(payload, d.Signer)
 	if err != nil {
 		return Receipt{}, err
@@ -284,6 +379,9 @@ func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byt
 	token, err := d.Token(module)
 	if err != nil {
 		return Receipt{}, err
+	}
+	if post != nil {
+		return post(ctx, module, signed, token)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(d.DeliveryURL, "/")+manifestDeliveryPath, bytes.NewReader(body))
 	if err != nil {

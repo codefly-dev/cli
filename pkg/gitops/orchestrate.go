@@ -49,6 +49,9 @@ func renderModuleTree(
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return RenderResult{}, err
+	}
 	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
 		return RenderResult{}, err
 	}
@@ -613,6 +616,9 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 
 func renderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, build renderBuild, sink orchestration.OutputSink) (RenderResult, error) {
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
+		return RenderResult{}, err
+	}
+	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
 		return RenderResult{}, err
 	}
 	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {

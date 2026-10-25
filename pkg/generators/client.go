@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
 	"github.com/codefly-dev/cli/pkg/cli"
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
@@ -302,15 +303,25 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		Module:      moduleName,
 		Services:    entry.Services,
 		Facade:      facade,
+		GoRequires:  linkedGoBindings(),
+	}
+	var set descriptorpb.FileDescriptorSet
+	if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
+		return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
 	}
 	var mapped []upstreamProtoModule
-	if len(entry.ProtoSources) > 0 {
+	if len(entry.ProtoSources) > 0 && !vendorsUpstreamModules(entry.ProtoSources, &set, lang) {
+		// Generated from sources, buf compiles only the entry's own files: the
+		// shared modules it imports are left to their distributions, exactly as
+		// when they are marked as imports below. A service that vendors an
+		// upstream module's files under its own proto tree (codefly/base,
+		// authority/hop) takes the descriptor path instead, where those files
+		// are marked as imports: compiled as sources they would be emitted
+		// again beside the module that owns them, and a binary linking both
+		// panics at init on the duplicate registration.
 		req.Sources = entry.ProtoSources
+		mapped = upstreamModulesIn(&set, lang)
 	} else {
-		var set descriptorpb.FileDescriptorSet
-		if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
-			return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
-		}
 		image, marked, err := markUpstreamModulesAsImports(&set, lang)
 		if err != nil {
 			return nil, fmt.Errorf("cannot prepare contract descriptor set: %w", err)
@@ -400,10 +411,12 @@ func (n bufModuleName) identity() string {
 	return n.remote + "/" + n.owner + "/" + n.repository
 }
 
-const (
-	googleapisPyPI    = "googleapis-common-protos"
-	protovalidatePyPI = "protovalidate"
-)
+// googleapisPyPI ships google/api, google/rpc and google/type. buf/validate
+// has no PyPI distribution: `protovalidate` imports buf.validate without
+// shipping it (1.x) or ships it under its own package (2.x). The proto
+// companion's Python plugin drops an import used only for an option, which is
+// all a client ever makes of buf/validate, so the bindings never import it.
+const googleapisPyPI = "googleapis-common-protos"
 
 var (
 	googleapisModule    = bufModuleName{remote: "buf.build", owner: "googleapis", repository: "googleapis"}
@@ -428,7 +441,7 @@ var upstreamProtoModules = []upstreamProtoModule{
 	{pathPrefix: "google/api/", protoPackage: "google.api", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
 	{pathPrefix: "google/rpc/", protoPackage: "google.rpc", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
 	{pathPrefix: "google/type/", protoPackage: "google.type", bufModule: googleapisModule, pythonPackage: googleapisPyPI},
-	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule, pythonPackage: protovalidatePyPI},
+	{pathPrefix: "buf/validate/", protoPackage: "buf.validate", bufModule: protovalidateModule},
 }
 
 // buf marks a file that an image carries only to resolve imports with
@@ -487,6 +500,58 @@ func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang lang
 		return nil, nil, err
 	}
 	return data, marked, nil
+}
+
+// linkedGoBindings are the Go packages a generated Go library imports rather
+// than owns because a Go module publishes them: the hop's policy option, whose
+// bindings this CLI links to read method policies. A contract file declaring
+// that go_package is the hop's own file, vendored to compile, so the library
+// imports it from there instead of registering a second copy (core's
+// ClientRequest.GoRequires). Read from the linked descriptor, never retyped.
+func linkedGoBindings() []string {
+	options, _ := hopv1.File_authority_hop_v1_policy_proto.Options().(*descriptorpb.FileOptions)
+	importPath, _, _ := strings.Cut(options.GetGoPackage(), ";")
+	if importPath == "" {
+		return nil
+	}
+	return []string{importPath}
+}
+
+// vendorsUpstreamModules is whether any of sources is a file of an upstream
+// proto module (by its path and package in set): a vendored copy, which must
+// be generated as an import, never as the library's own file.
+func vendorsUpstreamModules(sources []coreproto.Source, set *descriptorpb.FileDescriptorSet, lang languages.Language) bool {
+	own := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		own[filepath.ToSlash(source.Path)] = true
+	}
+	for _, file := range set.GetFile() {
+		if !own[file.GetName()] {
+			continue
+		}
+		if coreproto.IsForeignFile(file, lang, linkedGoBindings()...) {
+			return true
+		}
+		if _, found := upstreamModuleFor(file, lang); found {
+			return true
+		}
+	}
+	return false
+}
+
+// upstreamModulesIn is the set of upstream proto modules set's files belong
+// to, once each.
+func upstreamModulesIn(set *descriptorpb.FileDescriptorSet, lang languages.Language) []upstreamProtoModule {
+	var modules []upstreamProtoModule
+	seen := map[string]bool{}
+	for _, file := range set.GetFile() {
+		module, found := upstreamModuleFor(file, lang)
+		if found && !seen[module.bufModule.identity()] {
+			seen[module.bufModule.identity()] = true
+			modules = append(modules, module)
+		}
+	}
+	return modules
 }
 
 func upstreamModuleFor(file *descriptorpb.FileDescriptorProto, lang languages.Language) (upstreamProtoModule, bool) {

@@ -466,10 +466,7 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), roots.owned...) {
 			continue
 		}
-		if directive == nil || directive.Path == "" || directive.Path != receipt.ResolvedPath() {
-			return false, nil
-		}
-		if !receipt.Answers(ref, ResolutionModeFor(ref, directive, receipt, declared[ref.Name])) {
+		if !moduleReceiptAnswers(ref, directive, receipt, ResolutionModeFor(ref, directive, receipt, declared[ref.Name])) {
 			return false, nil
 		}
 		// The receipt answers the request, but only where the materialization it
@@ -499,16 +496,7 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 			if !serviceManaged(serviceDirective, receipt.ResolvedPath(), roots.owned...) {
 				continue
 			}
-			// A directive still naming a version has not been materialized into a
-			// path yet, whatever a receipt records.
-			if serviceDirective.Version != "" || serviceDirective.Path != receipt.ResolvedPath() {
-				return false, nil
-			}
-			// The request itself lives only on the receipt, so there is no second
-			// copy to compare it against. What can still have moved underneath it
-			// is the module identity the package was pulled from, and the mode it
-			// was pulled in.
-			if receipt.Source != ref.Source || receipt.Module != ref.Module || receipt.Mode != moduleMode {
+			if !serviceReceiptAnswers(ref, serviceDirective, receipt, moduleMode) {
 				return false, nil
 			}
 			// Same gate as the module loop above: a path under a root that is no

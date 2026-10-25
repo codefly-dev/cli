@@ -122,7 +122,7 @@ func TestANativeManifestRoutesOnlyToTheModulesWorkloads(t *testing.T) {
 	require.ErrorContains(t, err, "does not declare module-identity")
 
 	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services})
-	require.ErrorContains(t, err, "no started identity workload")
+	require.ErrorContains(t, err, "no admitted identity workload")
 }
 
 // A native run delivers the bundle it built: the payload names it, a page
@@ -245,9 +245,9 @@ func TestANativeGenerationMovesOnlyWhenTheContentDoes(t *testing.T) {
 }
 
 // A host's refusal (409: a stale or rewritten generation, a withdrawn
-// binding) is an error with its reason, and records nothing: delivering the
+// binding) is an error with its reason, and retains the reservation: delivering the
 // same content again settles to the same generation.
-func TestANativeDeliveryTheHostRefusesIsAnErrorAndRecordsNothing(t *testing.T) {
+func TestANativeDeliveryTheHostRefusesRetainsItsReservation(t *testing.T) {
 	module, services := nativeModule(t, "crm", false)
 	host := newDeliveryHost(t)
 	host.status = []int{http.StatusConflict}
@@ -258,7 +258,7 @@ func TestANativeDeliveryTheHostRefusesIsAnErrorAndRecordsNothing(t *testing.T) {
 	require.Equal(t, http.StatusConflict, receipt.Status)
 	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
-	require.Equal(t, uint64(1), host.manifests[1].Generation, "the refused delivery recorded no generation")
+	require.Equal(t, uint64(1), host.manifests[1].Generation, "the refused delivery retained its reserved generation")
 }
 
 // TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration: what withdraws

@@ -450,6 +450,16 @@ func loadRenderedPublication(
 	if err != nil {
 		return Inventory{}, err
 	}
+	module, loadErr := workspace.LoadModuleFromName(ctx, request.Module)
+	if loadErr == nil {
+		if err = ValidateModulePermissions(ctx, workspace, module, env); err != nil {
+			return Inventory{}, err
+		}
+	} else if !isModuleNotFound(loadErr) {
+		return Inventory{}, loadErr
+	} else if err = validateSolutionUnits(request.Module, inventory.Units); err != nil {
+		return Inventory{}, loadErr
+	}
 	if err = holdRenderedGroups(ctx, workspace, request, env, &inventory); err != nil {
 		return Inventory{}, err
 	}

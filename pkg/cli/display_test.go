@@ -257,3 +257,20 @@ func TestActionableRootIsTheInnermostLayerOtherwise(t *testing.T) {
 		t.Errorf("got %q, want the innermost layer", got)
 	}
 }
+
+// A sentinel wrapped with its reason ("%w: reason") is the innermost layer,
+// but it names only the refusal's class: plain mode shows the layer that
+// carries the reason, so the refusal never reaches the user without it.
+func TestActionableRootKeepsTheReasonASentinelWasWrappedWith(t *testing.T) {
+	sentinel := errors.New("module contract negotiation failed")
+	reason := fmt.Errorf("%w: contract path %q for api/http is not under an artifact root", sentinel, "contracts/api/api/http/openapi.json")
+	top := fmt.Errorf("module billing: %w", reason)
+	got := actionableRoot(top)
+	want := `module contract negotiation failed: contract path "contracts/api/api/http/openapi.json" for api/http is not under an artifact root`
+	if got != want {
+		t.Errorf("\ngot:  %q\nwant: %q", got, want)
+	}
+	if got := actionableRoot(reason); got != want {
+		t.Errorf("unwrapped reason: got %q, want %q", got, want)
+	}
+}

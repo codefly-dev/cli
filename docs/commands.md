@@ -64,6 +64,11 @@ export OPENAI_API_KEY=...
 codefly explain build service
 ```
 
+The `go install` needs read access to `codefly-dev/authority` and
+`GOPRIVATE=github.com/codefly-dev/authority`: the CLI's module requires that
+private repository's libraries, so it is not supported from outside the
+codefly-dev organization while the repository stays private.
+
 The reference `codefly-help` provider is built and installed separately from
 the main CLI. It calls the OpenAI Responses API without an SDK, defaults to
 `gpt-5.6-luna`, and accepts `CLI_HELP_MODEL` and `CLI_HELP_API_URL` overrides.
@@ -195,6 +200,16 @@ signed manifest is delivered to the host once it runs, and the module is
 offered for installation in the host's own registry. See
 [module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
 
+A component declaring `solution.frontend.codefly.yaml` has its remote built
+before native delivery. Codefly reuses the deployed frontend builder to run
+`npm ci && npm run build` from the remote's own npm project (or the module root),
+with the pinned Node image. Local edits and nonignored new files are included;
+the frontend's `dist` and `node_modules` are excluded. BuildKit caches by input
+content, so an unchanged build is reused. Failure names the component and includes the build's
+output; an old dist is never delivered instead. The complete generated bundle
+is retained by digest in the existing artifact cache. See
+[module manifests](module-manifests.md) for source and cache semantics.
+
 ### `codefly run service [name...]`
 
 Run one or more services locally with their dependency graph.
@@ -285,6 +300,38 @@ Profiles affect run composition only: they do not rewrite service or workspace
 manifests, and build and deployment operations ignore them. In-process callers
 select the identical resolver through
 `control.RunRequest{Service: "mind/mind", Profile: "local"}`.
+
+#### Generated secrets
+
+A run generates the secrets its environment declares, the way `codefly deploy
+secrets` generates a cell's: under `service-secrets.generate`. An environment
+run locally names no secret store, since its store is the workspace's own
+secret configurations, so it declares the generators alone:
+
+```yaml
+environments:
+  - name: local
+    service-secrets:
+      generate:
+        - scope: workspace
+          configuration: hop
+          keys: [PROOF]
+        - scope: workspace
+          configuration: tracing-read-cursors
+          keys: [CURSOR_KEY]
+```
+
+Before it loads configuration, the run sets every declared key the
+configuration does not hold yet to a value minted by the same generator, into
+the file `codefly config generate` writes (`configurations/<profile>/<group>.secret.env`,
+0600, refused when git would track it), and says which keys it generated,
+never their values. A held value is never rotated. A `service` generator names
+the services it covers; a local run guesses none. An environment whose
+`service-secrets` names a store keeps its secrets there, and a run writes
+nothing for it; a render refuses a secret in an environment that names no
+store, since it carries secrets only as references into one. So a playground
+needs no make target or script that calls `codefly config generate` before it
+runs: its environment says what is generated.
 
 ### `codefly run solution`
 
@@ -854,6 +901,16 @@ environments:
     egress:
       shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
 ```
+
+**A service reads its own egress from the same declaration.** A service that
+declares the `egress` workspace configuration group receives, on every run and
+render for the environment, `egress/HOSTS`: its `egress:` hosts as
+comma-separated `host:port`, sorted and with every port explicit
+(`api.github.com:8443,identity.example.test:443` for `shop/api` above), or empty
+when the environment declares none for it. It is generated, never authored — a
+render refuses an `egress.env` — so a service that admits only its declared
+hosts never keeps a second copy of the list the cell allows
+([workspace configuration groups](orchestration.md#workspace-configuration-groups)).
 
 **Where a service's telemetry goes.** An environment's `telemetry:` block names
 the OTLP intake its services export operational traces to: `otlp-endpoint` as
@@ -2485,6 +2542,52 @@ the environment's declared publication path.
 with same-named services. Qualified values override bare values per key. Unknown
 qualified entries and ambiguous bare entries fail workspace validation.
 
+#### Extending imported workspace configuration
+
+By default, an own group replaces an imported workspace's group whole.
+To add product-owned keys instead, declare the extension in the consuming
+`workspace.codefly.yaml`:
+
+```yaml
+configuration-extensions:
+  edge:
+    append:
+      MODULES: ","
+  fixture-grants: {}
+```
+
+Both workspaces keep their contributions in the usual
+`configurations/<profile>/edge.env` and `fixture-grants.yaml` files. Codefly
+selects each workspace's profile through the existing profile resolver, then
+assembles the group before endpoint resolution and run/render injection.
+No generated endpoint address needs to be copied into either file.
+
+For `edge`, platform-core declares `MODULES=robin,tracing` and the module
+upstream keys; platform-obin declares `MODULES=wiki`, `WIKI_REST` and `FRONTEND`.
+Codefly produces `MODULES=robin,tracing,wiki` and retains every upstream key.
+Other duplicate env keys are refused by name, even if their values agree;
+matching retains Core's case-insensitive, dash/underscore-equivalent rules.
+`append` keys use the exact spelling in the consuming file and require a
+nonempty delimiter and plaintext values on both sides. Empty or duplicate list
+items, secrets, templates and unresolved `${profile}` values cannot be appended.
+
+For `fixture-grants`, platform-core's `roles` list contains the module roles;
+platform-obin's `roles` list contains only wiki roles, plus its `installations`.
+YAML mappings combine recursively and sequences append in imported-then-own
+order. A scalar collision or a type mismatch is refused with its complete key
+path, such as `fixture-grants key $.settings.mode`. Lists are ordered additions;
+the owner consuming the document validates domain identities such as role names.
+Repeated mapping keys, aliases, merge keys, multiple YAML documents, and mixing
+an env group with a YAML group are refused. Secret YAML remains secret if either
+contribution is secret. Diagnostics never print configuration values.
+
+An extension requires both an own group and an unambiguous imported group.
+Differing sibling imports still conflict, and extension works transitively.
+Unfulfilled profile requirements remain required. Configuration inspection
+reports both contributing files, including both sources of an appended env key
+or an assembled YAML document. This applies to workspace imports; it does not
+change module-default overlays or profile derivation.
+
 #### `codefly environment show`
 
 Print the resolved `resources.Environment` as YAML (default) or `--json`.
@@ -3162,6 +3265,14 @@ codefly generate runnable-bindings --env staging                                
 | `--template` | Generation template, relative to `--output` or absolute (default: `--proto`/`buf.gen.yaml`) |
 | `--local` | Select `--output`/`buf.gen.local.yaml`; plugins still run inside the pinned companion |
 
+When a v2 template declares `inputs`, Buf uses those inputs and their `paths`
+and `exclude_paths`; Codefly does not replace them with `--proto`. Without
+template inputs, `--proto` supplies the input. Relative template inputs resolve
+against the template's directory and must be visible within the companion's
+mount. Explicit `--path` follows Buf's behavior: it overrides each input's
+`paths`, rather than intersecting with that list. Omit it to retain the
+template's selection.
+
 buf resolves each `out` in the template against the template's directory, inside
 the companion. The companion therefore mounts the nearest common ancestor of
 `--proto`, `--output`, the template's directory and **every** `out` the template
@@ -3347,6 +3458,16 @@ the package name alone reaches every client and message schema. The scaffold
 dev dependency and a `build` script (`tsc -p tsconfig.json`) that produces
 `dist/` — the only directory, with the README, that the package ships.
 
+The Python package root is not a purely generated directory either. A run
+replaces `<pkg>/_gen/` whole and, at the root, only the files a protoc plugin's
+generated-code notice says it wrote — the facade (whose docstring reads
+`generated by protoc-gen-codefly-facade-python from <package>; do not edit`),
+including a stale one an earlier `--module-name` left, or a file opening with
+`# Code generated by protoc-gen-<name>. DO NOT EDIT.`. Every other root file —
+a hand-written reader beside the facade, a helper the package exports,
+`__init__.py` — is the developer's and survives regeneration byte for byte. The
+notice is read from the file's leading comments and docstring only.
+
 Use `codefly sync library-dependencies` to link a generated library into a
 service locally, and `codefly publish library <name>` to distribute it.
 
@@ -3359,15 +3480,28 @@ module's `interface` declares (`module.codefly.yaml`'s `interface:` block) into
 `contracts/api` and writes `contracts/api/catalog.codefly.json`. gRPC and connect
 endpoints get a serialized `FileDescriptorSet` (`contract.binpb`) plus a copy of
 the service's proto sources; REST endpoints get their OpenAPI document
-(`openapi.json`). HTTP and TCP endpoints have no machine-readable contract and are
+(`openapi.json`). An HTTP endpoint gets the OpenAPI document its service carries
+at `openapi/api.swagger.json`, when it carries one, exported exactly as a REST
+endpoint's is (no agent is loaded for it: an `http` endpoint reports no API
+details). TCP and MCP endpoints have no machine-readable contract and are
 skipped. When the module has a `module.package.codefly.yaml`, its
 `services[*].api-contracts` are updated to match.
 
+An HTTP endpoint's document is how a solution backend, which serves plain HTTP,
+publishes its routes and what a call to each must hold: every operation's
+`x-codefly-authority-policy` (an `authority.hop.v1.Policy` as JSON). The route
+policy rows the authority applies, `"<VERB> <basePath><path>"`, are derived from
+it exactly as from a REST module's contract, so the document describes the
+routes as the backend serves them: no `basePath` when its paths already carry
+the prefix the authority's edge forwards them on (`/v1/<id>/…`). A solution
+built on solution-runtime-go renders it with `solution.InterfaceDocument`.
+
 An exported endpoint that carries no machine-readable contract is skipped with a
-notice, never a failure: `http` and `tcp` endpoints, a `connect` endpoint on a
-service with no proto, and a `rest` endpoint with no OpenAPI document. An
-interface may export such an endpoint so composed modules can reach it (a
-gateway's REST surface, say); that export is reachability, not a contract.
+notice, never a failure: `tcp` and `mcp` endpoints, an `http` endpoint whose
+service carries no OpenAPI document, a `connect` endpoint on a service with no
+proto, and a `rest` endpoint with no OpenAPI document. An interface may export
+such an endpoint so composed modules can reach it (a gateway's REST surface,
+say); that export is reachability, not a contract.
 
 For a restricted protobuf listener, publish a procedure inventory projected from
 its runtime registration/routing tables. Configure it in the module's
@@ -3410,17 +3544,17 @@ supply the inventory, since copying a full descriptor to each cannot prove which
 listener serves a method. A single endpoint keeps the full-descriptor default;
 restricted single listeners must also supply their inventory.
 
-A declared inventory also settles which proto **package** each endpoint's
-contract covers, which matters for a service that generates client stubs from
-another service's API. Those protos declare services in a foreign package and
-must sit in the owned tree for codegen to reach them, yet the endpoint does not
-serve them. Without an inventory such a tree is refused — `proto declares
-services in multiple packages …; a contract endpoint must be single-package` —
-for a contract that is in fact single-package. With one, candidate packages are
-scoped to those the inventory names. A service that declares no inventory is
-unaffected, and so is one whose inventory names no package the descriptor set
-declares a service in: the single-package rule and its diagnostics stand
-unchanged, rather than yielding an empty contract.
+A declared inventory may serve several protobuf packages on one listener,
+including implemented interfaces such as `host.authority.v1` alongside the
+service's own API. Every service and procedure is validated against the complete
+descriptor set, including imports. Unlisted imported/client services stay out
+of the catalog. Single-package endpoints retain `package`; a multi-package
+endpoint writes `package: ""`, with each `services[].fullName` carrying its own
+package. Package manifests carry the same empty value. Contract evidence and
+client selection use the explicit inventory. Policy delivery refuses a missing
+catalog for a multi-package contract instead of silently selecting no methods.
+Without an inventory, inference still requires one service-owned package; a
+descriptor alone cannot prove which of several packages a listener serves.
 
 This input is a stopgap for the released Core/agent endpoint report. In Core
 v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without
@@ -3522,8 +3656,16 @@ and the MCP `list_runnables` tool, with facility `service` and a `source` of
 
 #### generate runnable-bindings
 
-`codefly generate runnable-bindings [--env <env>] [--check]` prepares every
+`codefly generate runnable-bindings [--env <env>] [--naming-scope <scope>]
+[--call-endpoint <module>/<service>/<endpoint>] [--check]` prepares every
 operation the workspace's modules derived (`contracts/runnables/index.json`).
+Addresses resolve in the run's naming scope (`--naming-scope` as `codefly run`
+reads it: omitted keeps the environment's, empty clears it). The environment's
+`runnable-call-endpoint` sends every prepared call to a declared HTTP-based
+endpoint — a composition's hop — while the operation, route, contract, digest
+and policy stay the owner's; `--call-endpoint` overrides it for one invocation.
+See [naming scope and a declared call
+endpoint](runnable.md#naming-scope-and-a-declared-call-endpoint).
 The existing environment declaration in `workspace.codefly.yaml` supplies both
 endpoint facts and `runnable-scope-selections`: a map from output binding key to
 a list of Core `ScopeSelection` messages. See [the selection YAML and refusal
@@ -4329,3 +4471,52 @@ untouched and require explicit recovery by container ID; startup never relabels 
 In the same scope, stopped orphans and running ephemeral orphans remain eligible,
 while live owners, running stateful containers and session-ledger-owned containers are preserved. Startup
 removal does not request deletion of volumes.
+
+### Generate permissions
+
+`codefly generate permissions [module]` reads the same digest-checked published
+protobuf/OpenAPI method policies as authority delivery and emits
+`permissions_gen.go` and `permissions_gen.ts` into each Go service's own Go
+module: `<service>/<source-dir>/pkg/gen/permissions`, where `source-dir` is the
+Go agent's setting (`code` unless the service declares another; its first
+segment is where `go.mod` lives) and `pkg/gen` is the tree the go-grpc layout
+generates its bindings into. Each service's table holds the methods its own
+published contracts serve, plus the module contract's `foreign_methods`, which
+name no service and so appear in every Go service's table. What an endpoint
+serves is what the contract catalog (`contracts/api/catalog.codefly.json`)
+records for it: the module's declared surface (`contracts.codefly.yaml`, see
+[Generate contracts](#generate-contracts)), or every service of the endpoint's
+package when it declares none. A method a published descriptor carries that no
+endpoint serves (a protocol the module publishes for other modules to serve,
+say, which those modules declare through their own `foreign_methods`) is in no
+table and needs no policy; it is named in a note. Authority delivery reads the
+same served set, so such a method is never delivered as the module's. A served
+method with no policy fails by name. The TypeScript file
+sits beside the Go file: no generator places TypeScript per service (`generate
+client` writes a library). A Python service (a `python-*` agent) gets no table:
+nothing in it reads one, because the authority's hop in front of it decides
+every call, so it is skipped with a note and the module's Go services still get
+theirs. Any other service that publishes a contract but has no `go.mod` at its
+Go source root fails by name. `--output` writes the whole
+module's table to one directory instead. Go constants have type
+`Permission`, with `Kind()` and `Action()` accessors; TypeScript constants carry
+literal types. Both include the method requirement table and any-checked-caller
+marker. Identifier collisions and invalid policies fail by name.
+
+After editing an RPC, run `codefly generate contracts --permissions` to update
+both contracts and permissions. CI runs the same command with `--check`; it
+regenerates contracts for comparison and checks permission files without changing
+them. `generate permissions --check` checks only against the published contracts,
+so it cannot by itself detect an unpublished proto edit. With no flags it checks
+every default destination; with `--output` it checks that one directory. Missing
+files count as drift. Standalone generation is also available for published dependency packages.
+
+Run/refresh permission preflight also detects changed source trees against each
+existing published protobuf endpoint's recorded snapshot. It warns during local
+adoption and refuses strict source-backed delivery, naming the command to
+re-export. This comparison does not compile source, inspect external imports,
+or prove generated output freshness; keep the CI regeneration check above.
+Published package dependencies do not require local source trees.
+
+Permission generation is available through the CLI; no separate MCP generator
+was added. MCP run/test use the same composition preflight as their CLI paths.

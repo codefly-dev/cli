@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/cli/pkg/gitops"
+
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -70,7 +72,7 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		return nil, nil, w.Wrap(err)
 	}
 
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode, orchestration.WithCompositionCheck(gitops.PermissionPreflight(true)), orchestration.WithRunModuleClosure(module.Name))
 	if err != nil {
 		return nil, nil, w.Wrap(err)
 	}
