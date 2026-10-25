@@ -24,19 +24,20 @@ func provisionGeneratedSecrets(ctx context.Context, workspace *resources.Workspa
 	if secrets == nil || secrets.Stored() || len(secrets.Generate) == 0 {
 		return nil, nil
 	}
-	profile, err := env.ConfigurationProfileName()
+	configProfile, err := env.ConfigurationProfileName()
 	if err != nil {
 		return nil, err
 	}
 	var written []string
-	for index, generator := range secrets.Generate {
+	for index := range secrets.Generate {
+		generator := &secrets.Generate[index]
 		scopes, err := generatorScopes(ctx, workspace, generator)
 		if err != nil {
 			return nil, fmt.Errorf("service-secrets generate[%d]: %w", index, err)
 		}
 		format, size := generator.Encoding()
 		for _, scope := range scopes {
-			target := config.Target{ScopeDir: scope, Profile: profile, Name: generator.Configuration, Secret: true}
+			target := config.Target{ScopeDir: scope, Profile: configProfile, Name: generator.Configuration, Secret: true}
 			keys, err := generateMissing(target, generator.Keys, format, size)
 			if err != nil {
 				return nil, fmt.Errorf("service-secrets generate[%d] %s: %w", index, generator.Configuration, err)
@@ -51,7 +52,7 @@ func provisionGeneratedSecrets(ctx context.Context, workspace *resources.Workspa
 
 // generatorScopes is the directory each of the generator's configurations
 // lives under: the workspace's, or each named service's.
-func generatorScopes(ctx context.Context, workspace *resources.Workspace, generator environments.EnvironmentSecretGenerator) ([]string, error) {
+func generatorScopes(ctx context.Context, workspace *resources.Workspace, generator *environments.EnvironmentSecretGenerator) ([]string, error) {
 	if generator.Scope == environments.SecretGeneratorScopeWorkspace {
 		return []string{workspace.Dir()}, nil
 	}

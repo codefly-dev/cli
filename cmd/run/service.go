@@ -20,6 +20,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -891,13 +892,6 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	generated, err := provisionGeneratedSecrets(ctx, workspace, env)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-	if len(generated) > 0 {
-		cli.Info("generated %s, as environment %s's service-secrets declare (values never printed)", strings.Join(generated, ", "), env.Name)
-	}
 
 	// Parse remote services
 	remoteServices, err := parseRemote(workspace, remotes)
@@ -907,9 +901,18 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	w.Info("Running with remotes", wool.Field("remotes", remoteServices))
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode,
-		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...))
+		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...),
+		orchestration.WithCompositionCheck(gitops.PermissionPreflight(false)))
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+
+	generated, err := provisionGeneratedSecrets(ctx, workspace, env)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	if len(generated) > 0 {
+		cli.Info("generated %s, as environment %s's service-secrets declare (values never printed)", strings.Join(generated, ", "), env.Name)
 	}
 
 	flow.WithOutputSink(cli.NewOutputSink())

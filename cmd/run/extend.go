@@ -167,6 +167,9 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 		known[root] = true
 	}
 	fresh := freshRoots(known, roots)
+	if err = flow.CheckComposition(ctx, workspace, fresh...); err != nil {
+		return err
+	}
 	merged := solutionrun.RunInputs{Overrides: derivedOverrides}
 	for _, root := range fresh {
 		info, parseErr := resources.ParseServiceWithOptionalModule(root)

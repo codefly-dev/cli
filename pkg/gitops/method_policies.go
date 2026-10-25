@@ -34,15 +34,16 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := os.Stat(filepath.Join(dir, composition.PackageManifestFileName)); os.IsNotExist(err) {
+	if _, statErr := os.Stat(filepath.Join(dir, composition.PackageManifestFileName)); os.IsNotExist(statErr) {
 		return foreign, len(foreign) > 0, nil
 	}
 	manifest, err := composition.LoadPackageManifest(dir)
 	if err != nil {
 		return nil, false, err
 	}
-	seen := map[string]bool{}
-	for _, service := range manifest.Services {
+	seen := map[string]*compositionv1.MethodPolicyV1{}
+	for index := range manifest.Services {
+		service := &manifest.Services[index]
 		for _, contract := range service.APIContracts {
 			read := contractMethods
 			switch contract.Kind {
@@ -57,9 +58,11 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 				return nil, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, err)
 			}
 			for _, m := range served {
-				if !seen[m.GetMethod()] {
-					seen[m.GetMethod()] = true
+				if previous := seen[m.GetMethod()]; previous == nil {
+					seen[m.GetMethod()] = m
 					methods = append(methods, m)
+				} else if !proto.Equal(previous, m) {
+					return nil, false, fmt.Errorf("module package %s: conflicting policies for %s", manifest.ID, m.GetMethod())
 				}
 			}
 		}
@@ -67,10 +70,10 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 	// A foreign method is one no published contract serves: a module that
 	// declares one it also publishes would have two answers for one method.
 	for _, m := range foreign {
-		if seen[m.GetMethod()] {
+		if seen[m.GetMethod()] != nil {
 			return nil, false, fmt.Errorf("module package %s declares foreign method %s, which its published contracts already serve", manifest.ID, m.GetMethod())
 		}
-		seen[m.GetMethod()] = true
+		seen[m.GetMethod()] = m
 		methods = append(methods, m)
 	}
 	sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
@@ -136,7 +139,10 @@ func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, erro
 				}
 				out = append(out, m)
 				for _, route := range httpRoutes(method.GetOptions()) {
-					bound := proto.Clone(m).(*compositionv1.MethodPolicyV1)
+					bound, ok := proto.Clone(m).(*compositionv1.MethodPolicyV1)
+					if !ok {
+						return nil, fmt.Errorf("cannot clone policy for %s", m.GetMethod())
+					}
 					bound.Method = route
 					out = append(out, bound)
 				}

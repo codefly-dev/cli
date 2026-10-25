@@ -56,6 +56,9 @@ var ModuleCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+			return err
+		}
 		if renderOnly {
 			cli.Header(2, "render-only mode — manifests written to disk, no kubectl apply")
 			result, resultErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{

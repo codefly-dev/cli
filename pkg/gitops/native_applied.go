@@ -53,9 +53,9 @@ func (d *NativeDeliverer) WaitForWithdrawal(ctx context.Context, withdrawal *sol
 	return fmt.Errorf("binding %s withdrawal generation %d is received but not applied; retained for the next composition refresh", withdrawal.Binding, withdrawal.Generation)
 }
 
-// appliedManifest is the host's applied record of a binding:
+// AppliedManifest is the host's applied record of a binding:
 // GET <accounts REST>/platform/_delivery/applied/<binding>.
-type appliedManifest struct {
+type AppliedManifest struct {
 	Binding    string `json:"binding"`
 	Generation uint64 `json:"generation"`
 	Digest     string `json:"digest"`
@@ -103,7 +103,7 @@ func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solution
 }
 
 // appliedState reads the host's applied record of binding; found is false on 404.
-func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*appliedManifest, bool, error) {
+func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*AppliedManifest, bool, error) {
 	if d.Applied != nil {
 		return d.Applied(ctx, binding)
 	}
@@ -131,7 +131,7 @@ func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*ap
 	if response.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("host refused applied-state observation (%s)", response.Status)
 	}
-	var applied appliedManifest
+	var applied AppliedManifest
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&applied); err != nil {
 		return nil, false, fmt.Errorf("read applied state: %w", err)
 	}
@@ -163,7 +163,7 @@ func (d *NativeDeliverer) withdrawalApplied(ctx context.Context, withdrawal *sol
 	if response.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("host refused applied-state observation (%s)", response.Status)
 	}
-	var applied appliedManifest
+	var applied AppliedManifest
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&applied); err != nil {
 		return false, fmt.Errorf("read applied withdrawal: %w", err)
 	}

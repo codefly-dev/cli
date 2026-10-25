@@ -2686,6 +2686,7 @@ Subcommands:
 
 - [`codefly generate client`](#codefly-generate-client)
 - [`codefly generate contracts`](#codefly-generate-contracts)
+- [`codefly generate permissions`](#codefly-generate-permissions)
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
 - [`codefly generate runnables`](#codefly-generate-runnables)
@@ -2760,6 +2761,31 @@ Flags:
       --check           do not write; exit 1 if the on-disk catalog differs from what would be generated
       --format string   output format: text|json (default "text")
       --output string   output directory for generated contracts (default: <module dir>/contracts/api)
+      --permissions     also generate typed permission constants; with --check, verify their freshness
+```
+
+## `codefly generate permissions`
+
+Generate typed Go and TypeScript permissions from published contracts
+
+```
+Read the same digest-checked published method policies used by authority delivery.
+Generate typed permission constants and a method requirement table in Go and
+TypeScript. Run codefly generate contracts first after editing an API.
+--check compares both generated files without writing. Missing or contradictory
+policies and colliding identifiers fail by name. This validates vocabulary,
+not a person's resource access, installation or consent.
+```
+
+```
+codefly generate permissions [module]
+```
+
+Flags:
+
+```
+      --check           fail on missing or stale output without writing
+      --output string   output directory (default: <module>/pkg/gen/permissions)
 ```
 
 ## `codefly generate proto`

@@ -2,7 +2,6 @@ package environments
 
 import (
 	"fmt"
-	"github.com/codefly-dev/cli/pkg/secretgen"
 	"maps"
 	"path/filepath"
 	"regexp"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/codefly-dev/cli/pkg/secretgen"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -809,7 +810,7 @@ type EnvironmentSecretGenerator struct {
 // Encoding is how the generator's values are minted: its format, hex by
 // default, and its size in bytes, 32 by default (12 for an identifier). A local
 // run and `codefly deploy secrets` mint through it alike.
-func (generator EnvironmentSecretGenerator) Encoding() (secretgen.Format, int) {
+func (generator *EnvironmentSecretGenerator) Encoding() (secretgen.Format, int) {
 	format := secretgen.Format(generator.Format)
 	if format == "" {
 		format = secretgen.FormatHex
@@ -1062,12 +1063,7 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 		if len(s.Generate) == 0 {
 			return fmt.Errorf("service-secrets declares neither a secret-store nor a generator")
 		}
-		for index := range s.Generate {
-			if err := s.Generate[index].validate(index); err != nil {
-				return err
-			}
-		}
-		return nil
+		return s.validateGenerators()
 	}
 	if err := s.SecretStore.validate("service-secrets secret-store"); err != nil {
 		return err
@@ -1797,4 +1793,13 @@ func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWor
 	presenter := append([]string(nil), workload.Presenter...)
 	sort.Strings(presenter)
 	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity, Presenter: presenter}, true
+}
+
+func (s *EnvironmentServiceSecrets) validateGenerators() error {
+	for index := range s.Generate {
+		if err := s.Generate[index].validate(index); err != nil {
+			return err
+		}
+	}
+	return nil
 }

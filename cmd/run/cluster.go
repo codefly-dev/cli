@@ -90,6 +90,9 @@ func runCluster(modules []string) error {
 			modules = append(modules, reference.Name)
 		}
 	}
+	if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true, modules...); err != nil {
+		return err
+	}
 	plane, err := control.NewAt(workspace.Dir())
 	if err != nil {
 		return err

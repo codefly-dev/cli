@@ -3,11 +3,10 @@ package run
 import (
 	"context"
 	"fmt"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
-	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
@@ -545,33 +547,33 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 	// ApplyManifest and holds the manifest as the ceiling: no envelope, no
 	// gateway, nothing of the host known here but the interface it declares.
 	if cluster.hostImplements(ctx, compositionInterface) {
-		conn, err := grpc.NewClient(strings.TrimPrefix(strings.TrimPrefix(deliveryURL, "http://"), "grpc://"), grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return nil, "", fmt.Errorf("dial the host's composition interface: %w", err)
+		conn, dialErr := grpc.NewClient(strings.TrimPrefix(strings.TrimPrefix(deliveryURL, "http://"), "grpc://"), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if dialErr != nil {
+			return nil, "", fmt.Errorf("dial the host's composition interface: %w", dialErr)
 		}
 		composition := gitops.NewCompositionDelivery(conn, cluster.signer,
 			func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
-				m, err := cluster.composed().LoadModuleFromName(ctx, module)
-				if err != nil {
-					return nil, false, err
+				m, loadErr := cluster.composed().LoadModuleFromName(ctx, module)
+				if loadErr != nil {
+					return nil, false, loadErr
 				}
 				return gitops.MethodPolicies(m.Dir())
 			},
 			func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
-				m, err := cluster.composed().LoadModuleFromName(ctx, module)
-				if err != nil {
-					return nil, err
+				m, loadErr := cluster.composed().LoadModuleFromName(ctx, module)
+				if loadErr != nil {
+					return nil, loadErr
 				}
 				return gitops.ScopeCeilings(m.Dir())
 			},
 			func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error) {
-				m, err := cluster.composed().LoadModuleFromName(ctx, module)
-				if err != nil {
-					return nil, err
+				m, loadErr := cluster.composed().LoadModuleFromName(ctx, module)
+				if loadErr != nil {
+					return nil, loadErr
 				}
-				declared, err := gitops.SolutionRoles(m.Dir())
-				if err != nil || declared == nil {
-					return nil, err
+				declared, rolesErr := gitops.SolutionRoles(m.Dir())
+				if rolesErr != nil || declared == nil {
+					return nil, rolesErr
 				}
 				return declared.Roles, nil
 			})

@@ -29,9 +29,10 @@ import (
 )
 
 var (
-	contractsOutput string
-	contractsCheck  bool
-	contractsFormat string
+	contractsOutput      string
+	contractsCheck       bool
+	contractsPermissions bool
+	contractsFormat      string
 )
 
 // yamlStringTag is the yaml.v3 tag for a plain string scalar node.
@@ -95,7 +96,13 @@ against what's on disk, without writing anything.
 		}
 
 		if contractsCheck {
-			return runContractsCheck(ctx, workspace, module, output)
+			if err = runContractsCheck(ctx, workspace, module, output); err != nil {
+				return err
+			}
+			if contractsPermissions {
+				return generatePermissions(ctx, module.Dir(), "", true)
+			}
+			return nil
 		}
 
 		catalog, err := generateContracts(ctx, workspace, module, generateOptions{
@@ -107,6 +114,11 @@ against what's on disk, without writing anything.
 			return err
 		}
 
+		if contractsPermissions {
+			if err = generatePermissions(ctx, module.Dir(), "", false); err != nil {
+				return err
+			}
+		}
 		if contractsFormat == "json" {
 			data, err := catalog.CanonicalBytes()
 			if err != nil {
@@ -120,6 +132,7 @@ against what's on disk, without writing anything.
 }
 
 func init() {
+	ContractsCmd.Flags().BoolVar(&contractsPermissions, "permissions", false, "also generate typed permission constants; with --check, verify their freshness")
 	ContractsCmd.Flags().StringVar(&contractsOutput, "output", "", "output directory for generated contracts (default: <module dir>/contracts/api)")
 	ContractsCmd.Flags().BoolVar(&contractsCheck, "check", false, "do not write; exit 1 if the on-disk catalog differs from what would be generated")
 	ContractsCmd.Flags().StringVar(&contractsFormat, "format", "text", "output format: text|json")
@@ -252,7 +265,7 @@ func anyCarriesContract(exported []*basev0.Endpoint) bool {
 
 // contractCarriers keeps the exported endpoints that carry a machine-readable
 // contract, saying why each of the others is skipped.
-func contractCarriers(ctx context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto, serviceHasOpenAPI bool) []*basev0.Endpoint {
+func contractCarriers(_ context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto, serviceHasOpenAPI bool) []*basev0.Endpoint {
 	var carriers []*basev0.Endpoint
 	for _, endpoint := range exported {
 		switch {

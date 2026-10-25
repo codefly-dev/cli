@@ -112,7 +112,7 @@ type NativeDeliverer struct {
 	// through ApplyManifest. Applied, when set, answers the applied state the
 	// same way. Both nil is the saas HTTP delivery, the transition's.
 	Post    func(ctx context.Context, module string, signed *solutionhost.Signed, token string) (Receipt, error)
-	Applied func(ctx context.Context, binding string) (*appliedManifest, bool, error)
+	Applied func(ctx context.Context, binding string) (*AppliedManifest, bool, error)
 }
 
 // Render builds the manifest of a module this run started identity workloads

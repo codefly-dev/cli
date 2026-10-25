@@ -4,11 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"github.com/codefly-dev/core/standards"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/codefly-dev/core/standards"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"

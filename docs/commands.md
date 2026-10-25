@@ -4151,3 +4151,23 @@ untouched and require explicit recovery by container ID; startup never relabels 
 In the same scope, stopped orphans and running ephemeral orphans remain eligible,
 while live owners, running stateful containers and session-ledger-owned containers are preserved. Startup
 removal does not request deletion of volumes.
+
+### Generate permissions
+
+`codefly generate permissions [module]` reads the same digest-checked published
+protobuf/OpenAPI method policies as authority delivery and emits
+`pkg/gen/permissions/permissions_gen.go` and `permissions_gen.ts`. Use `--output`
+for the consuming package's generated directory. Go constants have type
+`Permission`, with `Kind()` and `Action()` accessors; TypeScript constants carry
+literal types. Both include the method requirement table and any-checked-caller
+marker. Identifier collisions and invalid policies fail by name.
+
+After editing an RPC, run `codefly generate contracts --permissions` to update
+both contracts and permissions. CI runs the same command with `--check`; it
+regenerates contracts for comparison and checks permission files without changing
+them. `generate permissions --check` checks only against the published contracts,
+so it cannot by itself detect an unpublished proto edit. Missing files count as
+drift. Standalone generation is also available for published dependency packages.
+
+Permission generation is available through the CLI; no separate MCP generator
+was added. MCP run/test use the same composition preflight as their CLI paths.

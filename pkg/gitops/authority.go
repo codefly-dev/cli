@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/configurations"
@@ -88,9 +89,9 @@ func moduleAuthority(
 		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
 	}
 	callees := newComposedCallees(func(name string) ([]*compositionv1.MethodPolicyV1, bool, error) {
-		callee, err := workspace.LoadModuleFromName(ctx, name)
-		if err != nil {
-			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", err)
+		callee, loadErr := workspace.LoadModuleFromName(ctx, name)
+		if loadErr != nil {
+			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
 		}
 		return MethodPolicies(callee.Dir())
 	})

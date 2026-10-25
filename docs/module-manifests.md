@@ -1073,3 +1073,27 @@ Named and not built: a **withdrawal path for a whole module** — a module
 removed from the composition has no render and so no publish, and its manifest
 stays applied on the host until a publish of that module's path with no
 instance writes its withdrawal.
+
+## Permission preflight
+
+Before native CLI/control-plane runs construct their dependency graph, a preflight
+reads policies from the selected module closure, checks declaration validity and
+resolves authority bindings through the existing contract resolver. Local runs
+log findings as warnings during adoption; fixture roles are diagnosed again by
+the development authority when their modules are delivered. Refreshing a running
+composition rechecks declarations even if no new root was added.
+
+Render, direct deploy, development image deployment and source-module publication
+reject invalid declarations before their build/apply effects. Hop warning mode
+cannot bypass these checks. Unknown or contradictory method requirements are
+invalid; an intentionally restricted business role is valid. Identical policies
+published on multiple endpoints are accepted; conflicting policies for the same
+method are refused rather than silently taking the first.
+
+The checker validates published bytes and their package digests. Run
+`codefly generate contracts --permissions --check` in CI to additionally detect
+source/output drift. Static checks cannot prove resource visibility, active
+installation, consent, provider availability or a successful runtime call.
+Packaged solution publications without a source module and rollback of old
+rendered artifacts still need artifact-level permission qualification; source
+preflight alone does not validate those paths.

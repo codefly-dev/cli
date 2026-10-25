@@ -35,6 +35,7 @@ import (
 )
 
 type Flow struct {
+	compositionCheck CompositionCheck
 	// configurationReferences orders a consumer after the producers its
 	// workspace configurations reference (configurationReferenceOption); every
 	// rebuild of the graph carries it.
@@ -465,6 +466,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
+	if options.compositionCheck != nil {
+		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
+			return nil, w.Wrap(err)
+		}
+	}
+
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
 	// after it, as for a declared dependency.
@@ -580,11 +587,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	flow := &Flow{
-		workspace:      workspace,
-		graphWorkspace: graphWorkspace,
-		moduleSeeds:    options.moduleClosureSeeds,
-		originService:  service,
-		originModule:   module,
+		workspace:        workspace,
+		graphWorkspace:   graphWorkspace,
+		compositionCheck: options.compositionCheck,
+		moduleSeeds:      options.moduleClosureSeeds,
+		originService:    service,
+		originModule:     module,
 
 		world: world,
 

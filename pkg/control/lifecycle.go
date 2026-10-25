@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -107,7 +108,8 @@ func (p *planeImpl) buildFlow(ctx context.Context, mode orchestration.Mode, name
 		return nil, fmt.Errorf("select environment %q: %w", envName, err)
 	}
 	flow, err := orchestration.NewFlow(ctx, ws, module, service, env, mode,
-		orchestration.WithRunModuleClosure(moduleClosureSeeds(mode, module)...))
+		orchestration.WithRunModuleClosure(moduleClosureSeeds(mode, module)...),
+		orchestration.WithCompositionCheck(gitops.PermissionPreflight(mode != orchestration.RunMode && mode != orchestration.TestMode)))
 	if err != nil {
 		return nil, fmt.Errorf("create flow: %w", err)
 	}

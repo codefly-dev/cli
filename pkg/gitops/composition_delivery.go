@@ -126,14 +126,14 @@ func (c *CompositionDelivery) authority(ctx context.Context, module string, mani
 
 // Applied is NativeDeliverer.Applied over the interface: ApplyManifest applies
 // synchronously, so what it answered is what the host holds.
-func (c *CompositionDelivery) Applied(_ context.Context, binding string) (*appliedManifest, bool, error) {
+func (c *CompositionDelivery) Applied(_ context.Context, binding string) (*AppliedManifest, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	generation, ok := c.applied[binding]
 	if !ok {
 		return nil, false, nil
 	}
-	return &appliedManifest{Binding: binding, Generation: generation}, true, nil
+	return &AppliedManifest{Binding: binding, Generation: generation}, true, nil
 }
 
 // httpStatusOf maps a refusal's code onto the status the run's classification
