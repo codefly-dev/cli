@@ -850,13 +850,32 @@ RuntimeInit  → RuntimeStart (once init completes)
 RuntimeStart → done (service is running)
 ```
 
-At each transition, the policy checks the dependency graph: if service B depends on service A, then B's `RuntimeLoad` won't fire until A's `RuntimeLoad` completes. Services at the same DAG level transition in parallel.
+At each transition, the policy checks the dependency graph: if service B depends on service A, then B's `RuntimeLoad` won't fire until A's `RuntimeLoad` completes. The playbook executes queued actions synchronously; a callback cannot wait for another action later in that queue to start its prerequisite. Required ordering belongs in the dependency graph.
 
 If an action fails (executor returns `Wait`), the action is marked as `Failing` and the PauseManager handles retry.
 
+`World.BeforeRuntimeStart`, when supplied by the run's composition owner, runs
+synchronously after request validation and immediately before each local agent
+`Runtime.Start` RPC, including restarts. Refusal or cancellation prevents that RPC.
+Remote services and actions that only initialize or validate never invoke it.
+The callback is an admission boundary; it neither schedules prerequisites nor
+establishes host readiness by itself. Native manifest delivery is not yet wired
+to this callback and still follows the Running hook.
+
 ### RuntimeTestPolicy
 
-Same as RuntimeStartPolicy, but adds `RuntimeTest` after `RuntimeStart` for the target service. The playbook stops after the test action completes.
+The agent's test dependency mode selects what starts before the target's test:
+
+- `NONE` initializes only the target and starts no process.
+- `START_DEPENDENCIES` starts the dependencies, then passes a sequencing barrier
+  for the target without starting it.
+- `START_STACK` starts dependencies and target.
+
+Successful real starts emit Running through the same lifecycle hook as an
+ordinary run, making them visible to readiness and delivery. The target barrier
+emits no Running event and calls no pre-start admission hook. Failed, waiting,
+or canceled starts do not become Running. The playbook stops after the target's
+test action completes.
 
 ### BuilderBuildPolicy (BuildPolicy)
 

@@ -229,6 +229,11 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
+	// BeforeRuntimeStart completes run-owned admission immediately before the
+	// agent starts a local process. It runs on every start, including restarts;
+	// returning an error prevents the Start RPC. Nil when no admission is needed.
+	BeforeRuntimeStart func(context.Context, *resources.Service) error
+
 	// RenderOwnedGroups supplies the render-owned workspace configuration
 	// group (module-authority) to one service of a NATIVE run. A render
 	// projects it per workload; a laptop run has no render, so the CLI hands
