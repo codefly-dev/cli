@@ -363,3 +363,13 @@ per-flow isolation inside a long-lived control process whose agent forwarding is
 still global. Tests cover separate subprocesses, late writes and forced rotation,
 repeated contexts through Core's actual log fanout, legacy discovery and terminal
 close behavior.
+
+## Composition withdrawal policy
+
+The composition adapter sends a terminal signed withdrawal without an authority
+sidecar. It does not read the removed module's method policies, ceilings or
+solution roles: withdrawal must work after those source files disappear, and
+live declarations contradict the tombstone. Ordinary delivery still signs and
+pairs those policies with its carrier. Transport regressions cover both module
+and solution withdrawals through the generated composition client. This does
+not qualify the launcher's separate withdrawal-completion path or live shutdown.

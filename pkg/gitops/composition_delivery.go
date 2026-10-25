@@ -83,7 +83,9 @@ func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *s
 // manifest by its module, generation and digest, under the key that signs the
 // manifest. Nil when the module declares none of them.
 func (c *CompositionDelivery) authority(ctx context.Context, module string, manifest *solutionhost.ModuleManifest, core []byte) (*compositionv1.SignedManifestV1, error) {
-	if c.signer == nil {
+	// A withdrawal is self-contained. Its removed source need not remain readable,
+	// and attaching live policies would contradict the terminal manifest.
+	if manifest.Removed || c.signer == nil {
 		return nil, nil
 	}
 	var methods []*compositionv1.MethodPolicyV1

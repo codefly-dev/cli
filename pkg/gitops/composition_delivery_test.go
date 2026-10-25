@@ -2,6 +2,8 @@ package gitops
 
 import (
 	"context"
+	"errors"
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	"net"
 	"net/http"
 	"testing"
@@ -109,4 +111,52 @@ func asHostStatus(err error, target **HostStatusError) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func TestCompositionWithdrawalDoesNotReadOrDeliverLivePolicies(t *testing.T) {
+	for _, kind := range []solutionhost.Kind{solutionhost.KindModule, solutionhost.KindSolution} {
+		t.Run(string(kind), func(t *testing.T) {
+			host := &compositionStub{held: map[string]uint64{}}
+			server := grpc.NewServer()
+			compositionv1.RegisterCompositionServiceServer(server, host)
+			listener := bufconn.Listen(1 << 20)
+			go func() { _ = server.Serve(listener) }()
+			t.Cleanup(server.Stop)
+			conn, err := grpc.NewClient("passthrough:///bufconn", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			sourceReads := 0
+			missing := func() error { sourceReads++; return errors.New("removed module source no longer available") }
+			signer := nativeSigner(t)
+			delivery := NewCompositionDelivery(conn, signer,
+				func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+					return nil, false, missing()
+				},
+				func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return nil, missing() },
+				func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, missing() })
+			manifest := &solutionhost.ModuleManifest{Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: kind, Generation: 2, Removed: true,
+				Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"}}
+			payload, err := solutionhost.SignedPayload(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelope, err := solutionhost.SignEnvelope(payload, signer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signed, err := solutionhost.Carrier(payload, envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := delivery.Post(context.Background(), "probe", signed, "delivery-credential")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if receipt.Generation != 2 || sourceReads != 0 || len(host.seen) != 1 || host.seen[0].Authority != nil {
+				t.Fatalf("withdrawal depends on live policy: reads=%d receipt=%+v", sourceReads, receipt)
+			}
+		})
+	}
 }
