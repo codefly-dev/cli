@@ -134,3 +134,17 @@ func TestProfileImportRefusesAuthoredOrSymlinkedFiles(t *testing.T) {
 		})
 	}
 }
+
+// A source profile may carry the module envelope: every cell deriving from it is
+// delivered that ceiling (fixture.EnvelopeFile), so importing a cell onto a
+// profile that states one must not refuse it as an unvalidated input.
+func TestProfileImportAcceptsTheSourceProfilesModuleEnvelope(t *testing.T) {
+	root := profileSource(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "hosted", "module-envelope.json"), []byte(`{"principals":{}}`+"\n"), 0o644))
+	require.NoError(t, materializeConfigurationProfile(t.Context(), root, profileEnvironment("blue"), false))
+	_, err := os.Stat(filepath.Join(root, "configurations", "blue", configurations.ProfileDerivationFile))
+	require.NoError(t, err)
+	// It is accepted by its exact name only.
+	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "hosted", "module-envelope.backup.json"), []byte("{}\n"), 0o644))
+	require.ErrorContains(t, materializeConfigurationProfile(t.Context(), root, profileEnvironment("green"), false), "only flat .env inputs")
+}

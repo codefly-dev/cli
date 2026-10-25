@@ -2467,7 +2467,8 @@ An imported environment may declare `configuration-source: hosted` and select
 in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
 The profile chain selects the first directory at each location; inheritance adds
 shared groups and per-profile values. Import validates every inherited source:
-only flat `.env` inputs and profile derivation metadata are accepted; secret
+only flat `.env` inputs, the module envelope (`module-envelope.json`, which every
+environment deriving from the profile inherits) and profile derivation metadata are accepted; secret
 files contain empty placeholders, symlinks are refused, and sources may
 not contain environment-specific runnable bindings. Dry-run writes nothing.
 Import refuses authored destination files and retires only its own earlier copied
