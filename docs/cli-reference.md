@@ -3279,10 +3279,17 @@ codefly login [flags]
 Read or follow logs from the current Codefly session
 
 ```
-Show codefly's detailed session logs (~/.codefly/logs/<date>.log).
+Show codefly's detailed session logs (under the Codefly home logs directory).
 
-By default prints the last 100 lines of today's log, pretty-printed. This is the
-log the failure hint points at, so the usual flow after a command fails is:
+By default prints the last 100 lines from the latest-started invocation,
+pretty-printed. Each invocation owns a separate directory; late shutdown records
+from an older process stay in its files. The failure hint names the exact file.
+CODEFLY_HOME (or --plugin-path) controls the log root. Old daily logs remain
+readable, and are the default fallback when no invocation logs exist.
+
+Follow stays on the selected file, including across later runs; it does not
+switch files on rotation. Use --file to select a known invocation segment.
+The usual flow after a command fails is:
 
   codefly logs            # what just happened
   codefly logs -f         # follow live (e.g. in a second terminal during a run)
@@ -3298,7 +3305,7 @@ codefly logs [flags]
 Flags:
 
 ```
-      --file string   Read a specific log file instead of today's
+      --file string   Read a specific log file instead of the latest invocation segment
   -f, --follow        Follow the log live
       --path          Print only the log file path
       --raw           Print raw JSON lines (for jq/grep)

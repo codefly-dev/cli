@@ -340,3 +340,26 @@ make check-coverage   # Run tests with coverage report
 - **Context propagation** through all functions
 - **Signal handling** in all long-running commands
 - **Error wrapping** with `w.Wrapf(err, "context message")`
+
+## Detailed log ownership
+
+The CLI's existing JSON file logger allocates one exclusive invocation directory
+beneath the resolved Codefly home `logs` directory. Nested command contexts reuse
+that sink and register it with Core's agent log forwarding only once. Context
+completion does not close it: preparation, delegated service execution and final
+shutdown belong to the same invocation. The process owns its final descriptor
+lifetime. Explicitly closing a standalone logger is terminal and idempotent.
+
+Date/size rotation exclusively creates segments inside the original invocation
+directory. Log discovery selects the latest-started invocation, then its latest
+segment; delayed writes or rotations in an older process cannot change that
+selection. Legacy root-level daily files remain a fallback and explicit paths
+remain readable. A follower keeps its opened descriptor across rotation and later
+runs; it does not automatically switch to a different file.
+
+This isolates the detailed JSON files of separate CLI processes. It does not
+change caller-owned stdout/stderr capture, daemon/service logs, or establish
+per-flow isolation inside a long-lived control process whose agent forwarding is
+still global. Tests cover separate subprocesses, late writes and forced rotation,
+repeated contexts through Core's actual log fanout, legacy discovery and terminal
+close behavior.
