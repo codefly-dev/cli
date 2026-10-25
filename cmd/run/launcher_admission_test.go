@@ -202,19 +202,68 @@ func TestNativeAuthorityOrdersHostWithoutAuthoredDependency(t *testing.T) {
 	require.Empty(t, order)
 }
 
+// writeTargetBinding gives alpha one binding, read-target, addressed to the
+// audience the composition names.
+func writeTargetBinding(t *testing.T, cluster *launcher, audience string) {
+	t.Helper()
+	contract := "schema: codefly/module-contract/v1\nprincipal: alpha\nnamespaces: []\nqueues: []\ndestinations: []\nscope_ceilings: []\nbindings:\n  - id: read-target\n    operations: [invoke]\n    audience: {from: target/read-audience}\n    scope_ceiling:\n      invoke:\n        - resource_kind: target.item\n          actions: [read]\n"
+	configDir := filepath.Join(cluster.composed().Dir(), "configurations", "local")
+	require.NoError(t, os.MkdirAll(configDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "target.env"), []byte("READ_AUDIENCE="+audience+"\n"), 0600))
+	path := filepath.Join(cluster.composed().Dir(), "modules", "alpha", "module.contract.codefly.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(contract), 0600))
+}
+
+// A binding to a module the run selects but declares to no authority (the
+// host's own) could never be served: admission refuses the whole selection
+// before sending any manifest.
 func TestAdmissionRefusesUndeliveredBindingBeforeSending(t *testing.T) {
-	for _, audience := range []string{"missing", "model"} {
-		t.Run(audience, func(t *testing.T) {
+	cluster, peer := admissionLauncher(t)
+	writeTargetBinding(t, cluster, "model")
+	err := cluster.admitSelected(t.Context())
+	require.ErrorContains(t, err, "binding read-target targets model")
+	require.Empty(t, peer.snapshots(), "validate the entire selection before applying any manifest")
+}
+
+// A run composes a unit and only the modules it consumes: a binding to a
+// module outside the run does not stop startup. The delivered manifest
+// carries no grant through it, every selected module is still admitted with
+// its own workloads only, and the selected target's binding is kept.
+func TestAdmissionWithholdsBindingToUnselectedModule(t *testing.T) {
+	for _, tc := range []struct {
+		audience string
+		kept     bool
+	}{{"missing", false}, {"beta", true}} {
+		t.Run(tc.audience, func(t *testing.T) {
 			cluster, peer := admissionLauncher(t)
-			contract := "schema: codefly/module-contract/v1\nprincipal: alpha\nnamespaces: []\nqueues: []\ndestinations: []\nscope_ceilings: []\nbindings:\n  - id: read-target\n    operations: [invoke]\n    audience: {from: target/read-audience}\n    scope_ceiling:\n      invoke:\n        - resource_kind: target.item\n          actions: [read]\n"
-			configDir := filepath.Join(cluster.composed().Dir(), "configurations", "local")
-			require.NoError(t, os.MkdirAll(configDir, 0700))
-			require.NoError(t, os.WriteFile(filepath.Join(configDir, "target.env"), []byte("READ_AUDIENCE="+audience+"\n"), 0600))
-			path := filepath.Join(cluster.composed().Dir(), "modules", "alpha", "module.contract.codefly.yaml")
-			require.NoError(t, os.WriteFile(path, []byte(contract), 0600))
-			err := cluster.admitSelected(t.Context())
-			require.ErrorContains(t, err, "binding read-target targets "+audience)
-			require.Empty(t, peer.snapshots(), "validate the entire selection before applying any manifest")
+			writeTargetBinding(t, cluster, tc.audience)
+			require.NoError(t, cluster.admitSelected(t.Context()))
+			snapshots := peer.snapshots()
+			require.Len(t, snapshots, 2, "every selected module is admitted")
+			for _, m := range snapshots {
+				require.NotNil(t, m.Authority)
+				for _, w := range m.Workloads {
+					require.Equal(t, "api", w.Service, "an identity is declared for a selected workload only")
+				}
+				if m.Alias != "alpha" {
+					continue
+				}
+				var audiences []string
+				for _, binding := range m.Authority.Bindings {
+					audiences = append(audiences, binding.Audience)
+				}
+				if tc.kept {
+					require.Equal(t, []string{tc.audience}, audiences, "a binding to a selected module is delivered")
+				} else {
+					require.Empty(t, audiences, "a binding to a module outside the run carries no grant")
+				}
+			}
+			// The ready delivery renders through the same path and withholds it too.
+			cluster.running["alpha/api"] = true
+			require.NoError(t, cluster.deliverReadiness(t.Context(), "alpha", false))
+			latest := peer.snapshots()[len(peer.snapshots())-1]
+			require.Equal(t, "alpha", latest.Alias)
+			require.Equal(t, tc.kept, len(latest.Authority.Bindings) == 1)
 		})
 	}
 }

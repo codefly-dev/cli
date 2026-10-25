@@ -872,7 +872,8 @@ func (cluster *launcher) deliverReadiness(ctx context.Context, module string, ea
 
 // renderDelivery renders a loaded module's manifest. An early delivery keeps
 // the page payload previously published, since deferral removes a page; a
-// ready one names the bundle its caller built.
+// ready one names the bundle its caller built. A binding to a module outside
+// the run is withheld (withholdUnselectedBindings).
 func (cluster *launcher) renderDelivery(ctx context.Context, deliverer *gitops.NativeDeliverer, loaded *resources.Module, early bool, bundle *solutionhost.FrontendPayload) (*solutionhost.ModuleManifest, error) {
 	module := loaded.Name
 	services := make([]*resources.Service, 0, len(loaded.ServiceReferences))
@@ -899,10 +900,15 @@ func (cluster *launcher) renderDelivery(ctx context.Context, deliverer *gitops.N
 	if err != nil {
 		return nil, err
 	}
-	return deliverer.Render(ctx, &gitops.NativeWorkload{
+	manifest, err := deliverer.Render(ctx, &gitops.NativeWorkload{
 		Module: loaded, Services: services, Declared: cluster.declaredIdentities(module),
 		Started: started, Carriers: carriers, FrontendBundle: bundle, DeferFrontend: early && bundle == nil,
 	})
+	if err != nil {
+		return nil, err
+	}
+	cluster.withholdUnselectedBindings(ctx, manifest)
+	return manifest, nil
 }
 
 // Caller holds delivery across rendering, generation reservation and Applied.
