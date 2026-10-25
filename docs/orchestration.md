@@ -1205,18 +1205,25 @@ stale contract artifacts, conflicting destinations, and unreachable exact
 endpoints refuse before a hop starts. The hop keeps authority enforcement:
 routes identify a listener and policy method, never grants or readiness.
 
-The selected Core validator checks package/catalog identity and artifact bytes;
-it does not independently reconcile every catalog route or procedure with those
-bytes. Inventory comes from `codefly generate contracts`. This path does not
+Each listener's methods are the method policy table delivered to the
+authority for that listener, read by the same reader from the digest-checked
+contract bytes: a protobuf listener's served procedures, an OpenAPI listener's
+operations, `<VERB> <basePath><path>` (a Swagger 2.0 `basePath` prefixes both
+sides alike). The catalog's own route list never names a route, so a catalog
+that omits a stricter route its document declares cannot make the hop check that
+call against a looser template. Which procedures a protobuf listener serves is
+the catalog's record, for the routes and the delivered table alike. Inventory
+comes from `codefly generate contracts`. This path does not
 prove that unexported source is current or that a running listener registers
 every published method; generation checks and live module qualification remain
 separate requirements.
 
 The snapshot lasts for one run. Ordinary source reload keeps accepted endpoint
 addresses. Changing the published route inventory or a used address requires
-stopping and restarting the run. `SIGUSR1`, withdrawal, extension and loader
-reload and source-watch admission reject a changed snapshot before stopping
-services or adopting declarations; endpoint publication cannot
+stopping and restarting the run. `SIGUSR1`, withdrawal, extension, loader
+reload, source-watch admission, startup admission and readiness delivery reject
+a changed snapshot before stopping services, adopting declarations or
+delivering a policy table read since; endpoint publication cannot
 replace an address already handed to a snapshot. An address first learned from
 an agent's Init response is rejected before publication; this does not undo that
 agent's process effects. This is an explicit restart

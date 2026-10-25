@@ -146,14 +146,27 @@ func TestRoutingSnapshotCannotChangeDuringReloadOrIncrementalRefresh(t *testing.
 	require.NoError(t, flow.CheckRoutingSnapshot(ctx, workspace))
 	module, err := workspace.LoadModuleFromName(ctx, "platform")
 	require.NoError(t, err)
-	path := filepath.Join(module.Dir(), composition.APIContractCatalogFileName)
-	raw, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte(strings.Replace(string(raw), `"path":"/first"`, `"path":"/changed"`, 1)), 0600))
+	// Republish first's contract with another route: the document and the
+	// digests the manifest and catalog name.
+	files := []string{"contracts/api/first.json", "module.package.codefly.yaml", composition.APIContractCatalogFileName}
+	saved := map[string][]byte{}
+	for _, file := range files {
+		raw, err := os.ReadFile(filepath.Join(module.Dir(), file))
+		require.NoError(t, err)
+		saved[file] = raw
+	}
+	changed := strings.Replace(string(saved["contracts/api/first.json"]), `"/first"`, `"/changed"`, 1)
+	before, after := composition.APIContractDigest(saved["contracts/api/first.json"]), composition.APIContractDigest([]byte(changed))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), files[0]), []byte(changed), 0600))
+	for _, file := range files[1:] {
+		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), file), []byte(strings.ReplaceAll(string(saved[file]), before, after)), 0600))
+	}
 	require.ErrorContains(t, flow.CheckRoutingSnapshot(ctx, workspace), "stop and restart")
 	require.ErrorContains(t, flow.ConfigurationManager.Load(ctx, flow.world.Env.Runtime()), "stop and restart")
 	// Restoring the selected inventory reuses the accepted snapshot.
-	require.NoError(t, os.WriteFile(path, raw, 0600))
+	for file, raw := range saved {
+		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), file), raw, 0600))
+	}
 	require.NoError(t, flow.CheckRoutingSnapshot(ctx, workspace))
 	// The generated group cannot be replaced with an authored route table.
 	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations/local/hop-routes.env"), []byte("ROUTES={}\n"), 0600))

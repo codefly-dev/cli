@@ -856,6 +856,9 @@ func (cluster *launcher) deliverReadiness(ctx context.Context, module string, ea
 	if len(cluster.declaredIdentities(module)) == 0 {
 		return nil
 	}
+	if err = cluster.checkRoutingSnapshot(ctx); err != nil {
+		return err
+	}
 	deliverer, gatewayURL, err := cluster.newDeliverer(ctx)
 	if err != nil {
 		return err
@@ -921,6 +924,17 @@ func (cluster *launcher) applyDelivery(ctx context.Context, deliverer *gitops.Na
 		return fmt.Errorf("module %s is delivered and not served: %w", manifest.Alias, err)
 	}
 	w.Info("applied", wool.Field("module", manifest.Alias), wool.Field("generation", manifest.Generation))
+	return nil
+}
+
+// checkRoutingSnapshot refuses a delivery whose policy tables a hop's frozen
+// routes no longer describe: the tables are read live, the routes were fixed
+// when the run started, and a contract published since would deliver new
+// policies behind old routes. Called under the delivery lock, before reading.
+func (cluster *launcher) checkRoutingSnapshot(ctx context.Context) error {
+	if err := cluster.flow.CheckRoutingSnapshot(ctx, cluster.composed()); err != nil {
+		return fmt.Errorf("deliver no policy table behind the hop's routes: %w", err)
+	}
 	return nil
 }
 

@@ -386,3 +386,22 @@ func TestRunnerFailureReplacesLauncherRoutes(t *testing.T) {
 		t.Fatal("Flow.Stop did not stop launcher")
 	}
 }
+
+// A contract published after the hop's routes were frozen is never delivered
+// behind them: startup admission and readiness delivery re-check the routing
+// snapshot under the delivery lock and send nothing when it moved.
+func TestAdmissionAndDeliveryRefuseAMovedRoutingSnapshot(t *testing.T) {
+	cluster, peer := admissionLauncher(t)
+	flow, ok := cluster.flow.(*admissionFlow)
+	require.True(t, ok)
+	flow.routing = fmt.Errorf("published hop routes changed: stop and restart this Codefly run to adopt them")
+	service, err := cluster.composed().LoadService(t.Context(), &resources.ServiceWithModule{Module: "alpha", Name: "api"})
+	require.NoError(t, err)
+	_, err = admitRuntimeAttempt(t, cluster, service)
+	require.ErrorContains(t, err, "deliver no policy table behind the hop's routes")
+	require.ErrorContains(t, err, "stop and restart")
+	cluster.delivered["alpha"] = &solutionhost.ModuleManifest{}
+	cluster.running["alpha/api"] = true
+	require.ErrorContains(t, cluster.deliverReadiness(t.Context(), "alpha", true), "stop and restart")
+	require.Empty(t, peer.snapshots(), "nothing is sent behind moved routes")
+}

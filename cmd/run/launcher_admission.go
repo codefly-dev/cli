@@ -95,6 +95,9 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		names = append(names, module)
 	}
 	sort.Strings(names)
+	if err := cluster.checkRoutingSnapshot(ctx); err != nil {
+		return err
+	}
 	deliverer, gatewayURL, err := cluster.newDeliverer(ctx)
 	if err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/authority/libraries/hop/go/routing"
+	"github.com/codefly-dev/cli/pkg/methodpolicy"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
@@ -176,15 +177,31 @@ func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]rou
 		}
 		entry := routing.RouteEndpoint{Audience: contract.Principal, Service: endpoint.Service, Endpoint: endpoint.Endpoint, Transport: endpoint.API,
 			Address: "${endpoint:" + module.Name + "/" + endpoint.Service + "/" + endpoint.Endpoint + "}", Package: catalog.Package, Version: catalog.Version, Digest: endpoint.Digest}
+		published, findErr := publishedContract(manifest, endpoint)
+		if findErr != nil {
+			return nil, findErr
+		}
+		// The methods are the policy table the authority receives for this
+		// listener (methodpolicy, the reader of every delivered table), read
+		// from the digest-checked contract bytes, never the catalog's own route
+		// list: a route the hop maps onto is a route the authority holds a
+		// policy for, spelled the same way, basePath included.
+		policies, _, policyErr := methodpolicy.Contract(module.Dir(), catalog, endpoint.Service, published)
+		if policyErr != nil {
+			return nil, fmt.Errorf("catalog listener %s/%s: %w", endpoint.Service, endpoint.Endpoint, policyErr)
+		}
 		switch {
 		case endpoint.Kind == composition.APIContractKindProtobuf && (endpoint.API == "grpc" || endpoint.API == "connect"):
-			for _, svc := range endpoint.Services {
-				entry.Methods = append(entry.Methods, svc.Procedures...)
+			for _, policy := range policies {
+				// A procedure; its google.api.http routes belong to an HTTP face.
+				if strings.HasPrefix(policy.GetMethod(), "/") {
+					entry.Methods = append(entry.Methods, policy.GetMethod())
+				}
 			}
 		case endpoint.Kind == composition.APIContractKindOpenAPI && (endpoint.API == "http" || endpoint.API == "rest"):
 			entry.Transport = "http"
-			for _, route := range endpoint.Routes {
-				entry.Methods = append(entry.Methods, route.Method+" "+route.Path)
+			for _, policy := range policies {
+				entry.Methods = append(entry.Methods, policy.GetMethod())
 			}
 		default:
 			return nil, fmt.Errorf("catalog listener %s/%s has unsupported %s/%s publication", endpoint.Service, endpoint.Endpoint, endpoint.API, endpoint.Kind)
@@ -196,6 +213,27 @@ func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]rou
 		return strings.Compare(a.Service+"/"+a.Endpoint, b.Service+"/"+b.Endpoint)
 	})
 	return out, nil
+}
+
+// publishedContract is the package manifest's contract for a catalog
+// listener, under the same digest: the bytes the authority's table is read from.
+func publishedContract(manifest *composition.PackageManifest, endpoint *composition.APIContractEndpoint) (*composition.ProvidedAPIContract, error) {
+	for i := range manifest.Services {
+		service := &manifest.Services[i]
+		if service.Name != endpoint.Service {
+			continue
+		}
+		for j := range service.APIContracts {
+			contract := &service.APIContracts[j]
+			if contract.Endpoint == endpoint.Endpoint && contract.Kind == endpoint.Kind {
+				if contract.Digest != endpoint.Digest {
+					return nil, fmt.Errorf("catalog listener %s/%s records %s, the package manifest publishes %s", endpoint.Service, endpoint.Endpoint, endpoint.Digest, contract.Digest)
+				}
+				return contract, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("catalog listener %s/%s has no %s contract in the package manifest", endpoint.Service, endpoint.Endpoint, endpoint.Kind)
 }
 
 // CheckRoutingSnapshot must run before withdrawal, declaration admission or

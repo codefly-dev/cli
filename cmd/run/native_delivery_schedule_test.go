@@ -274,6 +274,8 @@ type fakeLauncherFlow struct {
 	runtime string
 	// address, when set, is every endpoint's address.
 	address string
+	// routing, when set, is the routing snapshot check's refusal.
+	routing error
 
 	mu                       sync.Mutex
 	attempts                 int
@@ -283,6 +285,9 @@ type fakeLauncherFlow struct {
 func (f *fakeLauncherFlow) World() *orchestration.World { return nil }
 func (f *fakeLauncherFlow) ServiceFromUnique(string) (*resources.Service, error) {
 	return nil, errors.New("no service in this test")
+}
+func (f *fakeLauncherFlow) CheckRoutingSnapshot(context.Context, *resources.Workspace) error {
+	return f.routing
 }
 func (f *fakeLauncherFlow) attempt() {
 	f.mu.Lock()
