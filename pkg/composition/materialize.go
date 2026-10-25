@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/modulecache"
+
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/resources"
@@ -691,22 +693,10 @@ func (roots moduleCacheRoots) holds(path string) bool {
 	return underAnyDir([]string{roots.clone, roots.verified}, path)
 }
 
-// verifiedPinnedModuleCacheRoot is the content-addressed module cache the core
-// Materializer writes into. By default it is workspace-scoped — the digest tree
-// NewMaterializer(workspaceDir) picks — while the git-clone cache root is
-// process-global (pinnedModuleCacheRoot); both are recognized when deciding
-// whether an overlay path is CLI-managed. A configured ModuleCacheEnv moves it
-// beside the clones, under the one reserved subdirectory, so a workspace
-// repository holds no module bytes at all.
+// verifiedPinnedModuleCacheRoot is the verified-package cache root
+// (modulecache.VerifiedRoot).
 func verifiedPinnedModuleCacheRoot(workspaceDir string) (string, error) {
-	configured, err := configuredModuleCacheRoot()
-	if err != nil {
-		return "", err
-	}
-	if configured != "" {
-		return filepath.Join(configured, verifiedPackageCacheDirName), nil
-	}
-	return filepath.Join(workspaceDir, ".codefly", "cache", "modules"), nil
+	return modulecache.VerifiedRoot(workspaceDir)
 }
 
 // pruneStalePinnedEntries drops auto-managed cache entries whose module is no
@@ -1130,20 +1120,12 @@ func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// ModuleCacheEnv relocates the module cache — both the git-clone cache and the
-// verified-package cache — to a directory the developer chooses, so the modules
-// a workspace composes can be browsed (and deleted) where they expect them
-// rather than inside CODEFLY_HOME and inside the workspace respectively. It
-// must name an absolute path; a leading "~" is expanded.
-const ModuleCacheEnv = "CODEFLY_MODULE_CACHE"
+// ModuleCacheEnv relocates the module cache (modulecache.Env).
+const ModuleCacheEnv = modulecache.Env
 
-// verifiedPackageCacheDirName is the subdirectory of a configured cache root
-// that holds verified module packages. Those are content-addressed by digest
-// (that addressing is what makes a cache hit checkable against what was
-// verified), so they cannot share the browsable <owner>/<repo>/<version> tree
-// the git clones occupy; keeping them under one reserved name is what lets both
-// live under the single root the developer configured.
-const verifiedPackageCacheDirName = ".packages"
+// verifiedPackageCacheDirName is the verified packages' subdirectory of a
+// configured cache root (modulecache.VerifiedDirName).
+const verifiedPackageCacheDirName = modulecache.VerifiedDirName
 
 // stagingCacheDirName is the subdirectory of a cache root that holds in-flight
 // clones. They live under one reserved name rather than as `.pull-*` siblings of
@@ -1153,53 +1135,14 @@ const verifiedPackageCacheDirName = ".packages"
 // the checkouts it is promoted into, which being under the same root guarantees.
 const stagingCacheDirName = ".staging"
 
-// configuredModuleCacheRoot returns the root named by ModuleCacheEnv, or "" when
-// it is unset. A value that is not usable as a root is an error rather than an
-// ignored setting: silently falling back would put the modules somewhere other
-// than where the developer said, and they would look for them where they asked.
-func configuredModuleCacheRoot() (string, error) {
-	raw := strings.TrimSpace(os.Getenv(ModuleCacheEnv))
-	if raw == "" {
-		return "", nil
-	}
-	expanded := raw
-	if raw == "~" || strings.HasPrefix(raw, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("%s is %q but the home directory cannot be resolved: %w", ModuleCacheEnv, raw, err)
-		}
-		expanded = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(raw, "~"), "/"))
-	}
-	if !filepath.IsAbs(expanded) {
-		return "", fmt.Errorf("%s must be an absolute path (or start with ~), got %q", ModuleCacheEnv, raw)
-	}
-	return filepath.Clean(expanded), nil
-}
+// configuredModuleCacheRoot is modulecache.Configured.
+func configuredModuleCacheRoot() (string, error) { return modulecache.Configured() }
 
-// pinnedModuleCacheRoot is the root of the git-clone cache: the configured root
-// when there is one, otherwise the process-global default. Under either, a
-// module lands at <root>/<owner>/<repo>/<tag>/ plus its optional module
-// subpath, which is the layout a developer pointing ModuleCacheEnv at their own
-// vendor directory browses.
-func pinnedModuleCacheRoot() (string, error) {
-	configured, err := configuredModuleCacheRoot()
-	if err != nil {
-		return "", err
-	}
-	if configured != "" {
-		return configured, nil
-	}
-	return filepath.Join(resources.CodeflyHomeDir(), "modules"), nil
-}
+// pinnedModuleCacheRoot is the git-clone cache root (modulecache.CloneRoot).
+func pinnedModuleCacheRoot() (string, error) { return modulecache.CloneRoot() }
 
 // underDir reports whether path is dir itself or nested inside it.
-func underDir(dir, path string) bool {
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
-}
+func underDir(dir, path string) bool { return modulecache.Under(dir, path) }
 
 // underAnyDir reports whether path is under any of dirs (empty entries are
 // skipped). Used to recognize both the git-clone fallback's cache root and the

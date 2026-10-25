@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/modulecache"
+
 	"google.golang.org/protobuf/proto"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -244,7 +246,11 @@ func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recip
 		// other inputs.
 		return nil, w.Wrap(publishedFromOtherInputs(recipe.GetImage(), b.instance.Service.Agent, labels[buildAgentLabel]))
 	case identity.Key != "" && published != "":
-		warning, refusal := publishedReleaseVerdict(recipe.GetImage(), identity, b.instance.Service.Agent, labels)
+		pinned, err := modulecache.Owned(b.world.Workspace.Dir(), b.instance.Service.Dir())
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot tell whether %s builds a pinned release", b.instance.Unique())
+		}
+		warning, refusal := publishedReleaseVerdict(recipe.GetImage(), identity, b.instance.Service.Agent, labels, pinned)
 		if refusal != nil {
 			return nil, w.Wrap(refusal)
 		}
@@ -1127,9 +1133,12 @@ func withBuildInputsLabel(args []string, identity imageIdentity) []string {
 // override (override_build.go), which the release does not name.
 //
 // An image labelled before the classes were recorded carries only the
-// aggregate, so its code cannot be compared: it is adopted, saying so, and
-// --rebuild is the operator's way to build it again instead.
-func publishedReleaseVerdict(image string, identity imageIdentity, agent *resources.Agent, labels map[string]string) (string, error) {
+// aggregate, so its code cannot be compared with this build's. It is adopted
+// only when pinned says this build's code is a pinned release the CLI
+// materialized (modulecache.Owned) — the release's own code, by construction —
+// and refused otherwise: from a checkout, an edited service whose version did
+// not move would be handed the earlier release's image with nothing compared.
+func publishedReleaseVerdict(image string, identity imageIdentity, agent *resources.Agent, labels map[string]string, pinned bool) (string, error) {
 	const release = "release a new version (codefly publish) instead of rebuilding a published one"
 	publishedAgent := labels[buildAgentLabel]
 	if agent != nil && publishedAgent != "" && publishedAgent != agent.Identifier() {
@@ -1141,9 +1150,12 @@ func publishedReleaseVerdict(image string, identity imageIdentity, agent *resour
 	}
 	code := labels[buildCodeLabel]
 	switch {
+	case code == "" && pinned:
+		return "the published image predates per-class build labels; this build's code is the pinned release the CLI materialized, " +
+			"so adopting it as the release's build (--rebuild builds it again)", nil
 	case code == "":
-		return "the published image predates per-class build labels, so its code was not compared with this build's; " +
-			"adopting it as the release's build (--rebuild builds it again)", nil
+		return "", fmt.Errorf("%s is already published, and it predates per-class build labels, so its code cannot be compared with this build's, "+
+			"which is not a pinned release the CLI materialized (a checkout or an override): build from the pinned release, or %s", image, release)
 	case code != classes.Code:
 		return "", fmt.Errorf("%s is already published from other code: the service's build context or Go module manifests differ from the published build's, "+
 			"so its code changed without its version moving; %s", image, release)
