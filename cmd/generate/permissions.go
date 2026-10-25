@@ -16,6 +16,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/golang"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 )
@@ -29,10 +30,19 @@ var PermissionsCmd = &cobra.Command{
 	Long: `Read the same digest-checked published method policies used by authority delivery.
 Generate typed permission constants and a method requirement table in Go and
 TypeScript. Run codefly generate contracts first after editing an API.
---check compares both generated files without writing. Missing or contradictory
+
+By default each Go service gets its own table in its own Go module:
+<service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
+generates its bindings into (source-dir is the Go agent's setting, "code"
+unless the service declares another). A service's table holds the methods its
+published contracts serve plus the module contract's foreign methods, which
+name no service. The TypeScript file sits beside the Go file. A service that
+publishes a contract but has no go.mod at its Go source root fails by name.
+--output writes the whole module's table to one directory instead.
+--check compares every generated file without writing. Missing or contradictory
 policies and colliding identifiers fail by name. This validates vocabulary,
 not a person's resource access, installation or consent.`,
-	Example: "codefly generate permissions\ncodefly generate permissions --check",
+	Example: "codefly generate permissions\ncodefly generate permissions --check\ncodefly generate permissions --output services/api/code/pkg/gen/permissions",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -51,44 +61,121 @@ not a person's resource access, installation or consent.`,
 		if err != nil {
 			return err
 		}
-		return generatePermissions(ctx, module.Dir(), permissionsOutput, permissionsCheck)
+		return generatePermissions(ctx, module, permissionsOutput, permissionsCheck)
 	},
 }
 
 func init() {
-	PermissionsCmd.Flags().StringVar(&permissionsOutput, "output", "", "output directory (default: <module>/pkg/gen/permissions)")
+	PermissionsCmd.Flags().StringVar(&permissionsOutput, "output", "", "write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions)")
 	PermissionsCmd.Flags().BoolVar(&permissionsCheck, "check", false, "fail on missing or stale output without writing")
 }
 
-func generatePermissions(ctx context.Context, moduleDir, output string, check bool) error {
-	methods, declared, err := gitops.MethodPolicies(moduleDir)
+func generatePermissions(ctx context.Context, module *resources.Module, output string, check bool) error {
+	destinations, err := permissionDestinations(ctx, module, output)
 	if err != nil {
 		return err
 	}
-	if !declared {
-		return fmt.Errorf("%s publishes no policies; run codefly generate contracts", moduleDir)
-	}
-	files, err := permissionFiles(methods)
-	if err != nil {
-		return err
-	}
-	if output == "" {
-		output = filepath.Join(moduleDir, "pkg", "gen", "permissions")
-	}
-	for _, name := range []string{"permissions_gen.go", "permissions_gen.ts"} {
-		path := filepath.Join(output, name)
-		if check {
-			actual, err := os.ReadFile(path)
-			if err != nil || !bytes.Equal(actual, files[name]) {
-				return fmt.Errorf("%s is missing or stale; run codefly generate permissions", path)
-			}
-		} else {
-			if err := shared.WriteFileAtomic(ctx, path, files[name], 0o644); err != nil {
+	for _, destination := range destinations {
+		files, err := permissionFiles(destination.methods)
+		if err != nil {
+			return err
+		}
+		for _, name := range []string{"permissions_gen.go", "permissions_gen.ts"} {
+			path := filepath.Join(destination.dir, name)
+			if check {
+				actual, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(actual, files[name]) {
+					return fmt.Errorf("%s is missing or stale; run codefly generate permissions", path)
+				}
+			} else if err := shared.WriteFileAtomic(ctx, path, files[name], 0o644); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// permissionDestination is one directory and the method table it holds.
+type permissionDestination struct {
+	dir     string
+	methods []*compositionv1.MethodPolicyV1
+}
+
+// permissionDestinations places the module's method policies. An explicit
+// output holds the whole module's table. Otherwise each Go service gets the
+// methods its own published contracts serve, plus the foreign methods the
+// module contract declares without naming a service, in the generated tree
+// of its own Go module, so the service imports them with no flag.
+func permissionDestinations(ctx context.Context, module *resources.Module, output string) ([]permissionDestination, error) {
+	if output != "" {
+		methods, declared, err := gitops.MethodPolicies(module.Dir())
+		if err != nil {
+			return nil, err
+		}
+		if !declared {
+			return nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
+		}
+		return []permissionDestination{{dir: output, methods: methods}}, nil
+	}
+	served, declared, err := gitops.ServiceMethodPolicies(module.Dir())
+	if err != nil {
+		return nil, err
+	}
+	if !declared {
+		return nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
+	}
+	services, err := module.LoadServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var destinations []permissionDestination
+	placed := map[string]bool{}
+	for _, service := range services {
+		root, isGo, err := goModuleRoot(service)
+		if err != nil {
+			return nil, err
+		}
+		own := served.ByService[service.Name]
+		if !isGo {
+			if len(own) > 0 {
+				return nil, fmt.Errorf("service %s publishes method policies but has no go.mod at %s; pass --output", service.Name, root)
+			}
+			continue
+		}
+		methods := append(append([]*compositionv1.MethodPolicyV1(nil), own...), served.Foreign...)
+		if len(methods) == 0 {
+			continue
+		}
+		placed[service.Name] = true
+		destinations = append(destinations, permissionDestination{dir: filepath.Join(root, "pkg", "gen", "permissions"), methods: methods})
+	}
+	for _, name := range served.Services {
+		if !placed[name] {
+			return nil, fmt.Errorf("service %s publishes method policies but is not a service of module %s; pass --output", name, module.Name)
+		}
+	}
+	if len(destinations) == 0 {
+		return nil, fmt.Errorf("module %s declares method policies but has no Go service to generate them into; pass --output", module.Name)
+	}
+	return destinations, nil
+}
+
+// goModuleRoot is where a service's go.mod lives: the module root of the Go
+// agent's source-dir (core's golang settings, "code" unless the service
+// declares another), below the service directory. isGo reports whether a
+// go.mod is there.
+func goModuleRoot(service *resources.Service) (root string, isGo bool, err error) {
+	var settings golang.GoAgentSettings
+	if err := service.LoadSettingsFromSpec(&settings); err != nil {
+		return "", false, fmt.Errorf("service %s: %w", service.Name, err)
+	}
+	if err := settings.Validate(); err != nil {
+		return "", false, fmt.Errorf("service %s: %w", service.Name, err)
+	}
+	moduleRoot, _ := golang.SplitSourceDir(filepath.ToSlash(settings.GoSourceDir()))
+	root = filepath.Join(service.Dir(), filepath.FromSlash(moduleRoot))
+	info, statErr := os.Stat(filepath.Join(root, "go.mod"))
+	return root, statErr == nil && !info.IsDir(), nil
 }
 
 func permissionIdentifier(raw string) string {

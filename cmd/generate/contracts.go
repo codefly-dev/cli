@@ -100,7 +100,7 @@ against what's on disk, without writing anything.
 				return err
 			}
 			if contractsPermissions {
-				return generatePermissions(ctx, module.Dir(), "", true)
+				return generatePermissions(ctx, module, "", true)
 			}
 			return nil
 		}
@@ -115,7 +115,7 @@ against what's on disk, without writing anything.
 		}
 
 		if contractsPermissions {
-			if err = generatePermissions(ctx, module.Dir(), "", false); err != nil {
+			if err = generatePermissions(ctx, module, "", false); err != nil {
 				return err
 			}
 		}

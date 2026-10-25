@@ -2772,7 +2772,16 @@ Generate typed Go and TypeScript permissions from published contracts
 Read the same digest-checked published method policies used by authority delivery.
 Generate typed permission constants and a method requirement table in Go and
 TypeScript. Run codefly generate contracts first after editing an API.
---check compares both generated files without writing. Missing or contradictory
+
+By default each Go service gets its own table in its own Go module:
+<service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
+generates its bindings into (source-dir is the Go agent's setting, "code"
+unless the service declares another). A service's table holds the methods its
+published contracts serve plus the module contract's foreign methods, which
+name no service. The TypeScript file sits beside the Go file. A service that
+publishes a contract but has no go.mod at its Go source root fails by name.
+--output writes the whole module's table to one directory instead.
+--check compares every generated file without writing. Missing or contradictory
 policies and colliding identifiers fail by name. This validates vocabulary,
 not a person's resource access, installation or consent.
 ```
@@ -2785,7 +2794,7 @@ Flags:
 
 ```
       --check           fail on missing or stale output without writing
-      --output string   output directory (default: <module>/pkg/gen/permissions)
+      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions)
 ```
 
 ## `codefly generate proto`

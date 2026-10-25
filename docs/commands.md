@@ -4163,8 +4163,17 @@ removal does not request deletion of volumes.
 
 `codefly generate permissions [module]` reads the same digest-checked published
 protobuf/OpenAPI method policies as authority delivery and emits
-`pkg/gen/permissions/permissions_gen.go` and `permissions_gen.ts`. Use `--output`
-for the consuming package's generated directory. Go constants have type
+`permissions_gen.go` and `permissions_gen.ts` into each Go service's own Go
+module: `<service>/<source-dir>/pkg/gen/permissions`, where `source-dir` is the
+Go agent's setting (`code` unless the service declares another; its first
+segment is where `go.mod` lives) and `pkg/gen` is the tree the go-grpc layout
+generates its bindings into. Each service's table holds the methods its own
+published contracts serve, plus the module contract's `foreign_methods`, which
+name no service and so appear in every Go service's table. The TypeScript file
+sits beside the Go file: no generator places TypeScript per service (`generate
+client` writes a library). A service that publishes a contract but has no
+`go.mod` at its Go source root fails by name. `--output` writes the whole
+module's table to one directory instead. Go constants have type
 `Permission`, with `Kind()` and `Action()` accessors; TypeScript constants carry
 literal types. Both include the method requirement table and any-checked-caller
 marker. Identifier collisions and invalid policies fail by name.
@@ -4173,8 +4182,9 @@ After editing an RPC, run `codefly generate contracts --permissions` to update
 both contracts and permissions. CI runs the same command with `--check`; it
 regenerates contracts for comparison and checks permission files without changing
 them. `generate permissions --check` checks only against the published contracts,
-so it cannot by itself detect an unpublished proto edit. Missing files count as
-drift. Standalone generation is also available for published dependency packages.
+so it cannot by itself detect an unpublished proto edit. With no flags it checks
+every default destination; with `--output` it checks that one directory. Missing
+files count as drift. Standalone generation is also available for published dependency packages.
 
 Permission generation is available through the CLI; no separate MCP generator
 was added. MCP run/test use the same composition preflight as their CLI paths.

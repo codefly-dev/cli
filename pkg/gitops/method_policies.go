@@ -30,20 +30,57 @@ import (
 // field set, so the authority tells "declares nothing" from "not served".
 // A module with no package declares no method policy: ok is false.
 func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok bool, err error) {
+	served, ok, err := ServiceMethodPolicies(dir)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	methods = append(methods, served.Foreign...)
+	seen := map[string]bool{}
+	for _, service := range served.Services {
+		for _, m := range served.ByService[service] {
+			if !seen[m.GetMethod()] {
+				seen[m.GetMethod()] = true
+				methods = append(methods, m)
+			}
+		}
+	}
+	sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
+	return methods, true, nil
+}
+
+// ServedMethodPolicies is a module's method policies by where they are
+// served: each service's published contracts, and the module contract's
+// foreign methods, which name no service.
+type ServedMethodPolicies struct {
+	// Services are the package's services that publish a contract, in
+	// manifest order.
+	Services  []string
+	ByService map[string][]*compositionv1.MethodPolicyV1
+	Foreign   []*compositionv1.MethodPolicyV1
+}
+
+// ServiceMethodPolicies reads the same policies as MethodPolicies, kept by
+// the service whose published contract serves them. A method two services
+// serve must carry one policy, and a foreign method no published contract may
+// serve, exactly as MethodPolicies refuses.
+func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, err error) {
 	foreign, err := foreignMethods(dir)
 	if err != nil {
-		return nil, false, err
+		return served, false, err
 	}
+	served.Foreign = foreign
+	served.ByService = map[string][]*compositionv1.MethodPolicyV1{}
 	if _, statErr := os.Stat(filepath.Join(dir, composition.PackageManifestFileName)); os.IsNotExist(statErr) {
-		return foreign, len(foreign) > 0, nil
+		return served, len(foreign) > 0, nil
 	}
 	manifest, err := composition.LoadPackageManifest(dir)
 	if err != nil {
-		return nil, false, err
+		return served, false, err
 	}
 	seen := map[string]*compositionv1.MethodPolicyV1{}
 	for index := range manifest.Services {
 		service := &manifest.Services[index]
+		own := map[string]bool{}
 		for _, contract := range service.APIContracts {
 			read := contractMethods
 			switch contract.Kind {
@@ -53,31 +90,36 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 			default:
 				continue
 			}
-			served, err := read(filepath.Join(dir, contract.Path), contract.Digest)
+			methods, err := read(filepath.Join(dir, contract.Path), contract.Digest)
 			if err != nil {
-				return nil, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, err)
+				return served, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, err)
 			}
-			for _, m := range served {
+			for _, m := range methods {
 				if previous := seen[m.GetMethod()]; previous == nil {
 					seen[m.GetMethod()] = m
-					methods = append(methods, m)
 				} else if !proto.Equal(previous, m) {
-					return nil, false, fmt.Errorf("module package %s: conflicting policies for %s", manifest.ID, m.GetMethod())
+					return served, false, fmt.Errorf("module package %s: conflicting policies for %s", manifest.ID, m.GetMethod())
+				}
+				if !own[m.GetMethod()] {
+					own[m.GetMethod()] = true
+					served.ByService[service.Name] = append(served.ByService[service.Name], m)
 				}
 			}
+		}
+		if methods := served.ByService[service.Name]; len(methods) > 0 {
+			sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
+			served.Services = append(served.Services, service.Name)
 		}
 	}
 	// A foreign method is one no published contract serves: a module that
 	// declares one it also publishes would have two answers for one method.
 	for _, m := range foreign {
 		if seen[m.GetMethod()] != nil {
-			return nil, false, fmt.Errorf("module package %s declares foreign method %s, which its published contracts already serve", manifest.ID, m.GetMethod())
+			return served, false, fmt.Errorf("module package %s declares foreign method %s, which its published contracts already serve", manifest.ID, m.GetMethod())
 		}
 		seen[m.GetMethod()] = m
-		methods = append(methods, m)
 	}
-	sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
-	return methods, true, nil
+	return served, true, nil
 }
 
 // foreignMethods reads the methods the module at dir serves from a protocol
