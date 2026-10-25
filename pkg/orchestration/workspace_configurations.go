@@ -943,11 +943,11 @@ func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified s
 			continue
 		}
 		if !inRun(producer) {
-			warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position,
+			warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position, producer,
 				"its producer is not part of this run (excluded, or a run of fewer services than the workspace), so no local address exists for it")
 			continue
 		}
-		warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position,
+		warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position, producer,
 			"its producer is part of this run and no address could be derived for it yet (it recorded no endpoint, or --temporary-ports allocates its address at initialization)")
 	}
 	return nil
@@ -971,15 +971,22 @@ func (world *World) workspaceHasProducer(ctx context.Context, producer string) b
 // drops the same value at DEBUG, and a configuration value absent without a word
 // is the fault cli#882 exists to remove.
 //
-// It names the consumer, the value and WHICH reference of it — never the
-// reference's text. A log line is the easiest place for a value to leak: it is
-// written whether or not anyone is watching, kept, and shipped. The group, the
-// key and the position locate the reference in the operator's own file.
-func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, qualified, position, because string) {
+// It names the consumer, the value, WHICH reference of it and the producer —
+// never the reference's text. A log line is the easiest place for a value to
+// leak: it is written whether or not anyone is watching, kept, and shipped. The
+// group, the key and the position locate the reference in the operator's own
+// file. The producer is the one exception, and it publishes nothing from the
+// value: by the time a value is judged here core's check has held every one of
+// its references to the workspace's own manifest
+// (checkEffectiveWorkspaceConfigurationReferences), so it names a
+// <module>/<service> the workspace declares — the same ground
+// referencedProducerMappings names one on.
+func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, qualified, position, producer, because string) {
 	wool.Get(ctx).In("World.refuseDroppedWorkspaceConfigurationValues").Warn(
 		"a workspace configuration value is missing for this service: "+because,
 		wool.Field("consumer", consumer),
-		wool.Field("value", qualified), wool.Field("reference", position))
+		wool.Field("value", qualified), wool.Field("reference", position),
+		wool.Field("producer", producer))
 }
 
 // consumerLabel names the service a diagnostic is about. resources.WithUnique

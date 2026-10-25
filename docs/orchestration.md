@@ -384,6 +384,20 @@ whose graph is a slice of the workspace, and judging it against that slice would
 report a real producer as "not a service of this workspace" and refuse the run.
 Whether a producer is in *this* run is not a plan-time question.
 
+A group a consumer **declares** is judged against the plan's graph and, beyond
+it, every other service of the workspace except one this run excludes. A
+module-closure run's graph holds the seeds' modules and the modules their
+service dependencies reach — never a module only a configuration value names —
+so `codefly run service authority/hop` alone does not contain the producers its
+own group references. Such a producer is not a plan-time fault: the resolution
+drops the value at WARN, naming the consumer, the value, which reference of it
+and the producer, exactly as for a root group. Only membership is relaxed: the
+endpoint must still exist and be visible to the consumer, a producer the
+workspace does not have is still "not a service of this workspace", and a
+producer the run **excludes** (`--exclude-dependency`, a run profile) still
+refuses the run naming the exclusion — the exclusion and the group that
+references it are coupled, and a value is never dropped because of one.
+
 ##### What this refuses that used to be tolerated
 
 This is a **behaviour change for existing compositions**, and it can refuse a
