@@ -185,12 +185,26 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &cli.GetConfigurationResponse{
-		Configuration: conf,
-		ProcessVariables: []*basev0.ConfigurationValue{{
-			Key: resources.EnvironmentPrefix, Value: environment.Name,
-		}},
-	}, nil
+	// Workspace groups are already narrowed by the composition resolver. Like
+	// a running service, the SDK receives them directly, without the backend
+	// filter used for configurations published by dependency agents.
+	workspace, err := flow.WorkspaceConfigurationsFor(ctx, svc)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	variables := []*basev0.ConfigurationValue{{Key: resources.EnvironmentPrefix, Value: environment.Name}}
+	for _, group := range workspace {
+		for _, secret := range []bool{false, true} {
+			resolved, err := resources.ConfigurationAsEnvironmentVariables(group, environment.Name, secret)
+			if err != nil {
+				return nil, status.Error(codes.Internal, err.Error())
+			}
+			for _, variable := range resolved {
+				variables = append(variables, &basev0.ConfigurationValue{Key: variable.Key, Value: variable.ValueAsString(), Secret: secret})
+			}
+		}
+	}
+	return &cli.GetConfigurationResponse{Configuration: conf, ProcessVariables: variables}, nil
 }
 
 func (s *Server) GetDependenciesConfigurations(ctx context.Context, req *cli.GetConfigurationRequest) (*cli.GetConfigurationsResponse, error) {

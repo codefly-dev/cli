@@ -137,6 +137,16 @@ The `World` holds shared state that all managers can access:
 
 ### Workspace configuration groups
 
+SDK dependency sessions receive these groups through the CLI configuration RPC,
+including excluded-root consumers. The RPC uses the same resolver as a running
+service, preserving endpoint resolution and credential withholding.
+The current dependency RPC resolves references for the service's selected runtime
+context; the SDK process must use that same context. An excluded SDK consumer's
+saved container preference does not negotiate a native test process's context.
+The Core SDK also does not remove previously injected keys on refresh until the
+session is released. One-shot native admission evidence does not qualify either
+mixed-context selection or removal of credentials during refresh.
+
 Every path that delivers workspace configuration groups to a service resolves
 them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
 
