@@ -4178,7 +4178,16 @@ Go agent's setting (`code` unless the service declares another; its first
 segment is where `go.mod` lives) and `pkg/gen` is the tree the go-grpc layout
 generates its bindings into. Each service's table holds the methods its own
 published contracts serve, plus the module contract's `foreign_methods`, which
-name no service and so appear in every Go service's table. The TypeScript file
+name no service and so appear in every Go service's table. What an endpoint
+serves is what the contract catalog (`contracts/api/catalog.codefly.json`)
+records for it: the module's declared surface (`contracts.codefly.yaml`, see
+[Generate contracts](#generate-contracts)), or every service of the endpoint's
+package when it declares none. A method a published descriptor carries that no
+endpoint serves (a protocol the module publishes for other modules to serve,
+say, which those modules declare through their own `foreign_methods`) is in no
+table and needs no policy; it is named in a note. Authority delivery reads the
+same served set, so such a method is never delivered as the module's. A served
+method with no policy fails by name. The TypeScript file
 sits beside the Go file: no generator places TypeScript per service (`generate
 client` writes a library). A Python service (a `python-*` agent) gets no table:
 nothing in it reads one, because the authority's hop in front of it decides

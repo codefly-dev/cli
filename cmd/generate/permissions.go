@@ -37,13 +37,17 @@ By default each Go service gets its own table in its own Go module:
 generates its bindings into (source-dir is the Go agent's setting, "code"
 unless the service declares another). A service's table holds the methods its
 published contracts serve plus the module contract's foreign methods, which
-name no service. The TypeScript file sits beside the Go file. A Python service
+name no service. What an endpoint serves is what the contract catalog records
+for it (the declared surface, or every service of its package); a method a
+published descriptor declares that no endpoint serves, such as a protocol other
+modules serve, is left out with a note and needs no policy. The TypeScript file
+sits beside the Go file. A Python service
 gets no table: nothing in it reads one, since the authority's hop in front of it
 decides every call, so it is skipped with a note. Any other service that
 publishes a contract but has no go.mod at its Go source root fails by name.
 --output writes the whole module's table to one directory instead.
---check compares every generated file without writing. Missing or contradictory
-policies and colliding identifiers fail by name. This validates vocabulary,
+--check compares every generated file without writing. A served method with no
+policy, contradictory policies and colliding identifiers fail by name. This validates vocabulary,
 not a person's resource access, installation or consent.`,
 	Example: "codefly generate permissions\ncodefly generate permissions --check\ncodefly generate permissions --output services/api/code/pkg/gen/permissions",
 	Args:    cobra.MaximumNArgs(1),
@@ -74,9 +78,13 @@ func init() {
 }
 
 func generatePermissions(ctx context.Context, module *resources.Module, output string, check bool) error {
-	destinations, skipped, err := permissionDestinations(ctx, module, output)
+	destinations, skipped, unserved, err := permissionDestinations(ctx, module, output)
 	if err != nil {
 		return err
+	}
+	if len(unserved) > 0 {
+		wool.Get(ctx).In("generatePermissions").Info("not in any permissions table: a published descriptor declares these methods but no endpoint of the module serves them",
+			wool.Field("methods", strings.Join(unserved, ", ")))
 	}
 	for _, service := range skipped {
 		wool.Get(ctx).In("generatePermissions").Info("no permissions table for a Python service: nothing in it reads one",
@@ -108,34 +116,28 @@ type permissionDestination struct {
 	methods []*compositionv1.MethodPolicyV1
 }
 
-// permissionDestinations places the module's method policies. An explicit
+// permissionDestinations places the module's method policies, and names the
+// published methods no endpoint serves, which no table holds. An explicit
 // output holds the whole module's table. Otherwise each Go service gets the
 // methods its own published contracts serve, plus the foreign methods the
 // module contract declares without naming a service, in the generated tree
 // of its own Go module, so the service imports them with no flag. A Python
 // service that publishes policies is skipped and named in skipped: nothing in
 // it reads a table, because the hop in front of it decides every call.
-func permissionDestinations(ctx context.Context, module *resources.Module, output string) (destinations []permissionDestination, skipped []string, err error) {
-	if output != "" {
-		methods, declared, loadErr := gitops.MethodPolicies(module.Dir())
-		if loadErr != nil {
-			return nil, nil, loadErr
-		}
-		if !declared {
-			return nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
-		}
-		return []permissionDestination{{dir: output, methods: methods}}, nil, nil
-	}
+func permissionDestinations(ctx context.Context, module *resources.Module, output string) (destinations []permissionDestination, skipped, unserved []string, err error) {
 	served, declared, err := gitops.ServiceMethodPolicies(module.Dir())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if !declared {
-		return nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
+		return nil, nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
+	}
+	if output != "" {
+		return []permissionDestination{{dir: output, methods: served.All()}}, nil, served.Unserved, nil
 	}
 	services, err := module.LoadServices(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	placed := map[string]bool{}
 	for _, service := range services {
@@ -149,11 +151,11 @@ func permissionDestinations(ctx context.Context, module *resources.Module, outpu
 		}
 		root, isGo, err := goModuleRoot(service)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if !isGo {
 			if len(own) > 0 {
-				return nil, nil, fmt.Errorf("service %s publishes method policies but has no go.mod at %s; pass --output", service.Name, root)
+				return nil, nil, nil, fmt.Errorf("service %s publishes method policies but has no go.mod at %s; pass --output", service.Name, root)
 			}
 			continue
 		}
@@ -166,13 +168,13 @@ func permissionDestinations(ctx context.Context, module *resources.Module, outpu
 	}
 	for _, name := range served.Services {
 		if !placed[name] {
-			return nil, nil, fmt.Errorf("service %s publishes method policies but is not a service of module %s; pass --output", name, module.Name)
+			return nil, nil, nil, fmt.Errorf("service %s publishes method policies but is not a service of module %s; pass --output", name, module.Name)
 		}
 	}
 	if len(destinations) == 0 && len(skipped) == 0 {
-		return nil, nil, fmt.Errorf("module %s declares method policies but has no Go service to generate them into; pass --output", module.Name)
+		return nil, nil, nil, fmt.Errorf("module %s declares method policies but has no Go service to generate them into; pass --output", module.Name)
 	}
-	return destinations, skipped, nil
+	return destinations, skipped, served.Unserved, nil
 }
 
 // isPythonService reports whether a service's agent builds Python

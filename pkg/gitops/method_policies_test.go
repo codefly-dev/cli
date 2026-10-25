@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/genproto/googleapis/api/annotations"
@@ -344,5 +345,62 @@ foreign_methods:
 	write("/api.ApiService/WhoAmI")
 	if _, _, err := MethodPolicies(dir); err == nil || !strings.Contains(err.Error(), "already serve") {
 		t.Fatalf("a foreign method the package publishes: %v", err)
+	}
+}
+
+// What delivery lists is what the module serves: a method the descriptor
+// carries but the catalog records no endpoint serving is left out, routes
+// and all, and named as unserved; a catalog naming another digest, or no
+// entry for the endpoint, is stale and refused.
+func TestMethodPoliciesListOnlyTheServedMethods(t *testing.T) {
+	dir := policyPackage(t, false)
+	manifest, err := composition.LoadPackageManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := manifest.Services[0].APIContracts[0]
+	writeCatalog := func(digest string, endpoints ...string) {
+		catalog := composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: manifest.ID, Version: manifest.Version}
+		for _, endpoint := range endpoints {
+			catalog.Endpoints = append(catalog.Endpoints, composition.APIContractEndpoint{
+				Service: "api", Endpoint: endpoint, API: "grpc", Kind: contract.Kind, Package: contract.Package, Path: contract.Path, Digest: digest,
+				Services: []composition.APIContractService{{Name: "ApiService", FullName: "api.ApiService", Procedures: []string{"/api.ApiService/WhoAmI", "/api.ApiService/Version"}}},
+			})
+		}
+		data, err := catalog.CanonicalBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, filepath.FromSlash(composition.APIContractCatalogFileName))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCatalog(contract.Digest, "grpc")
+	served, ok, err := ServiceMethodPolicies(dir)
+	if err != nil || !ok {
+		t.Fatalf("served: %v %v", ok, err)
+	}
+	if !slices.Equal(served.Unserved, []string{"/api.ApiService/Plain"}) {
+		t.Fatalf("unserved: %v", served.Unserved)
+	}
+	methods := served.All()
+	var names []string
+	for _, m := range methods {
+		names = append(names, m.GetMethod())
+	}
+	if len(methods) != 5 || slices.Contains(names, "/api.ApiService/Plain") || !slices.Contains(names, "GET /v1/console/whoami") {
+		t.Fatalf("served methods: %v", names)
+	}
+	writeCatalog("sha256:"+strings.Repeat("0", 64), "grpc")
+	if _, _, err := MethodPolicies(dir); err == nil || !strings.Contains(err.Error(), "run codefly generate contracts") {
+		t.Fatalf("a catalog naming another digest: %v", err)
+	}
+	writeCatalog(contract.Digest, "connect")
+	if _, _, err := MethodPolicies(dir); err == nil || !strings.Contains(err.Error(), "records no endpoint api/grpc") {
+		t.Fatalf("a catalog with no entry for the endpoint: %v", err)
 	}
 }

@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
+	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -252,7 +254,7 @@ func TestPermissionsRefuseAContractServiceWithNoGoModule(t *testing.T) {
 // refusal, because nothing in it reads a table (the hop decides every call).
 func TestPermissionsSkipAPythonServiceByName(t *testing.T) {
 	module := permissionsModule(t)
-	destinations, skipped, err := permissionDestinations(t.Context(), module, "")
+	destinations, skipped, _, err := permissionDestinations(t.Context(), module, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"engine"}, skipped)
 	var dirs []string
@@ -267,7 +269,97 @@ func TestPermissionsSkipAPythonServiceByName(t *testing.T) {
 	// A Python service publishing policies is skipped even with a go.mod
 	// lying in its tree: the agent says what the service is built from.
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), "services", "engine", "code", "go.mod"), []byte("module example.com/ledger/engine\n\ngo 1.26.0\n"), 0o644))
-	_, skipped, err = permissionDestinations(t.Context(), module, "")
+	_, skipped, _, err = permissionDestinations(t.Context(), module, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"engine"}, skipped)
+}
+
+// servedCatalog writes the module's contract catalog as generate contracts
+// does, every service of each endpoint's package served, except the services
+// unserved names on the api endpoint.
+func servedCatalog(t *testing.T, module *resources.Module, unserved ...string) {
+	t.Helper()
+	manifest, err := composition.LoadPackageManifest(module.Dir())
+	require.NoError(t, err)
+	catalog := &composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: manifest.ID, Version: manifest.Version}
+	for _, service := range manifest.Services {
+		for _, contract := range service.APIContracts {
+			data, err := os.ReadFile(filepath.Join(module.Dir(), contract.Path))
+			require.NoError(t, err)
+			var set descriptorpb.FileDescriptorSet
+			require.NoError(t, proto.Unmarshal(data, &set))
+			var services []composition.APIContractService
+			for _, s := range composition.ProtobufServices(&set, contract.Package) {
+				if service.Name != "api" || !slices.Contains(unserved, s.FullName) {
+					services = append(services, s)
+				}
+			}
+			catalog.Endpoints = append(catalog.Endpoints, composition.APIContractEndpoint{
+				Service: service.Name, Endpoint: contract.Endpoint, API: "grpc", Kind: contract.Kind,
+				Package: contract.Package, Path: contract.Path, Digest: contract.Digest, Services: services,
+			})
+		}
+	}
+	data, err := catalog.CanonicalBytes()
+	require.NoError(t, err)
+	path := filepath.Join(module.Dir(), filepath.FromSlash(composition.APIContractCatalogFileName))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+}
+
+// TestPermissionsCoverTheServedMethodsOnly pins a module that publishes a
+// protocol it does not serve: the api contract's descriptor carries
+// TargetAuthorityService, unmarked, beside its own ApiService, as a module
+// publishing an owner protocol for other modules to serve does. The catalog
+// records api's endpoint serving ApiService alone, so the protocol's method is
+// in no table, needs no policy and is named as unserved; a served method with
+// no policy is still refused by name.
+func TestPermissionsCoverTheServedMethodsOnly(t *testing.T) {
+	module := permissionsModule(t)
+	read := &descriptorpb.MethodDescriptorProto{Name: proto.String("Read"), InputType: proto.String(".ledger.Empty"), OutputType: proto.String(".ledger.Empty"), Options: &descriptorpb.MethodOptions{}}
+	proto.SetExtension(read.Options, hopv1.E_Policy, &hopv1.Policy{Requires: []*hopv1.Requirement{{ResourceKind: "ledger.entry", Actions: []string{"read"}}}})
+	check := &descriptorpb.MethodDescriptorProto{Name: proto.String("Check"), InputType: proto.String(".ledger.Empty"), OutputType: proto.String(".ledger.Empty")}
+	set, err := proto.Marshal(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name: proto.String("api.proto"), Package: proto.String("ledger"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Empty")}},
+		Service: []*descriptorpb.ServiceDescriptorProto{
+			{Name: proto.String("ApiService"), Method: []*descriptorpb.MethodDescriptorProto{read}},
+			{Name: proto.String("TargetAuthorityService"), Method: []*descriptorpb.MethodDescriptorProto{check}},
+		},
+	}}})
+	require.NoError(t, err)
+	contractPath := filepath.Join(module.Dir(), "contracts", "api", "api", "grpc", "contract.binpb")
+	before, err := os.ReadFile(contractPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(contractPath, set, 0o644))
+	manifestPath := filepath.Join(module.Dir(), "module.package.codefly.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	digest := func(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+	require.NoError(t, os.WriteFile(manifestPath, bytes.Replace(manifest, []byte(digest(before)), []byte(digest(set)), 1), 0o644))
+
+	// With no catalog, an endpoint serves every service of its package: the
+	// unmarked Check is served, and refused by name.
+	require.ErrorContains(t, generatePermissions(t.Context(), module, "", false), "/ledger.TargetAuthorityService/Check")
+
+	servedCatalog(t, module, "ledger.TargetAuthorityService")
+	_, _, unserved, err := permissionDestinations(t.Context(), module, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"/ledger.TargetAuthorityService/Check"}, unserved)
+	require.NoError(t, generatePermissions(t.Context(), module, "", false))
+	require.NoError(t, generatePermissions(t.Context(), module, "", true))
+	table, err := os.ReadFile(filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions", "permissions_gen.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(table), `"/ledger.ApiService/Read"`)
+	require.NotContains(t, string(table), "TargetAuthorityService")
+	output := filepath.Join(t.TempDir(), "permissions")
+	require.NoError(t, generatePermissions(t.Context(), module, output, false))
+	whole, err := os.ReadFile(filepath.Join(output, "permissions_gen.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(whole), "TargetAuthorityService")
+
+	// The catalog recording the protocol as served makes Check a served
+	// method with no policy: refused by name, as every served method is.
+	servedCatalog(t, module)
+	require.ErrorContains(t, generatePermissions(t.Context(), module, "", true), "/ledger.TargetAuthorityService/Check")
 }

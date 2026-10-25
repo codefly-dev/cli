@@ -27,14 +27,23 @@ import (
 // MethodPolicies reads what each method a module's published protobuf contracts
 // serve declares with the authority's policy option, from the module package
 // at dir. Every served method is listed, a method with no mark with neither
-// field set, so the authority tells "declares nothing" from "not served".
-// A module with no package declares no method policy: ok is false.
+// field set, so the authority tells "declares nothing" from "not served". A
+// method a published descriptor declares but no endpoint of the module serves
+// (a protocol another module serves, say) is not listed: the module answers
+// for no call to it. A module with no package declares no method policy: ok is
+// false.
 func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok bool, err error) {
 	served, ok, err := ServiceMethodPolicies(dir)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	methods = append(methods, served.Foreign...)
+	return served.All(), true, nil
+}
+
+// All is the whole module's table: every service's served methods, each
+// once, and the foreign methods, sorted by method.
+func (served ServedMethodPolicies) All() []*compositionv1.MethodPolicyV1 {
+	methods := append([]*compositionv1.MethodPolicyV1(nil), served.Foreign...)
 	seen := map[string]bool{}
 	for _, service := range served.Services {
 		for _, m := range served.ByService[service] {
@@ -45,7 +54,7 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 		}
 	}
 	sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
-	return methods, true, nil
+	return methods
 }
 
 // ServedMethodPolicies is a module's method policies by where they are
@@ -57,12 +66,24 @@ type ServedMethodPolicies struct {
 	Services  []string
 	ByService map[string][]*compositionv1.MethodPolicyV1
 	Foreign   []*compositionv1.MethodPolicyV1
+	// Unserved are the methods a published descriptor declares that no
+	// endpoint of the module serves, sorted: left out of every table, so a
+	// caller can say so.
+	Unserved []string
 }
 
 // ServiceMethodPolicies reads the same policies as MethodPolicies, kept by
 // the service whose published contract serves them. A method two services
 // serve must carry one policy, and a foreign method no published contract may
 // serve, exactly as MethodPolicies refuses.
+//
+// What a protobuf endpoint serves is what the API contract catalog
+// (contracts/api/catalog.codefly.json) records for it: the services and
+// procedures its listener registers, which `codefly generate contracts` writes
+// from the module's declared surface, or as every service of the endpoint's
+// package when it declares none. A descriptor carries more than that, its
+// package's other services and its imports', so the rest is Unserved. A
+// package with no catalog falls back to that same default.
 func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, err error) {
 	foreign, err := foreignMethods(dir)
 	if err != nil {
@@ -77,20 +98,33 @@ func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, er
 	if err != nil {
 		return served, false, err
 	}
+	catalog, err := loadServedCatalog(dir)
+	if err != nil {
+		return served, false, err
+	}
 	seen := map[string]*compositionv1.MethodPolicyV1{}
+	unserved := map[string]bool{}
 	for index := range manifest.Services {
 		service := &manifest.Services[index]
 		own := map[string]bool{}
 		for _, contract := range service.APIContracts {
-			read := contractMethods
+			var methods []*compositionv1.MethodPolicyV1
 			switch contract.Kind {
-			case "protobuf":
+			case composition.APIContractKindProtobuf:
+				serves, servesErr := endpointServes(catalog, service.Name, contract)
+				if servesErr != nil {
+					return served, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, servesErr)
+				}
+				var skipped []string
+				methods, skipped, err = contractMethods(filepath.Join(dir, contract.Path), contract.Digest, serves)
+				for _, method := range skipped {
+					unserved[method] = true
+				}
 			case composition.APIContractKindOpenAPI:
-				read = routeMethods
+				methods, err = routeMethods(filepath.Join(dir, contract.Path), contract.Digest)
 			default:
 				continue
 			}
-			methods, err := read(filepath.Join(dir, contract.Path), contract.Digest)
 			if err != nil {
 				return served, false, fmt.Errorf("module package %s, service %s: %w", manifest.ID, service.Name, err)
 			}
@@ -119,7 +153,52 @@ func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, er
 		}
 		seen[m.GetMethod()] = m
 	}
+	// A method one endpoint serves and another's descriptor merely carries is
+	// served.
+	for method := range unserved {
+		if seen[method] == nil {
+			served.Unserved = append(served.Unserved, method)
+		}
+	}
+	sort.Strings(served.Unserved)
 	return served, true, nil
+}
+
+// loadServedCatalog reads the module's API contract catalog, or nil when the
+// package has none.
+func loadServedCatalog(dir string) (*composition.APIContractCatalog, error) {
+	catalog, err := composition.LoadAPIContractCatalog(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return catalog, err
+}
+
+// endpointServes answers which of a protobuf contract's methods its endpoint
+// serves, by the package a method's service is declared in and its procedure:
+// the procedures the catalog records for the endpoint, or with no catalog every
+// service of the contract's package, the catalog's own default. A catalog that
+// records the endpoint under another digest, or not at all, is stale.
+func endpointServes(catalog *composition.APIContractCatalog, service string, contract composition.ProvidedAPIContract) (func(pkg, procedure string) bool, error) {
+	if catalog == nil {
+		return func(pkg, _ string) bool { return pkg == contract.Package }, nil
+	}
+	for _, endpoint := range catalog.Endpoints {
+		if endpoint.Service != service || endpoint.Endpoint != contract.Endpoint {
+			continue
+		}
+		if endpoint.Digest != contract.Digest {
+			return nil, fmt.Errorf("%s records endpoint %s/%s as %s, the package names %s; run codefly generate contracts", composition.APIContractCatalogFileName, service, contract.Endpoint, endpoint.Digest, contract.Digest)
+		}
+		procedures := map[string]bool{}
+		for _, s := range endpoint.Services {
+			for _, procedure := range s.Procedures {
+				procedures[procedure] = true
+			}
+		}
+		return func(_, procedure string) bool { return procedures[procedure] }, nil
+	}
+	return nil, fmt.Errorf("%s records no endpoint %s/%s; run codefly generate contracts", composition.APIContractCatalogFileName, service, contract.Endpoint)
 }
 
 // foreignMethods reads the methods the module at dir serves from a protocol
@@ -145,32 +224,37 @@ func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, error) {
 }
 
 // contractMethods reads one published contract, refusing one whose bytes are
-// not the digest the package names. A method bound to HTTP routes
+// not the digest the package names. Only the methods serves admits are read;
+// the others are returned as unserved, with no policy read and no route. A
+// method bound to HTTP routes
 // (google.api.http) is listed under each route too, "<VERB> <template>", with
 // the same policy: the hop's HTTP face decides a REST call by its route, and
 // the proto is the one place the module declares both.
-func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, error) {
+func contractMethods(path, digest string, serves func(pkg, procedure string) bool) (out []*compositionv1.MethodPolicyV1, unserved []string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sum := sha256.Sum256(data)
 	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digest {
-		return nil, fmt.Errorf("contract %s is %s, the package names %s; run codefly generate contracts", path, got, digest)
+		return nil, nil, fmt.Errorf("contract %s is %s, the package names %s; run codefly generate contracts", path, got, digest)
 	}
 	var set descriptorpb.FileDescriptorSet
 	// Decoded against the registered types, so the policy option reads as a
 	// message rather than unknown bytes.
 	if err := (proto.UnmarshalOptions{Resolver: protoregistry.GlobalTypes}).Unmarshal(data, &set); err != nil {
-		return nil, fmt.Errorf("contract %s does not decode: %w", path, err)
+		return nil, nil, fmt.Errorf("contract %s does not decode: %w", path, err)
 	}
-	var out []*compositionv1.MethodPolicyV1
 	for _, file := range set.GetFile() {
 		for _, service := range file.GetService() {
 			for _, method := range service.GetMethod() {
 				m := &compositionv1.MethodPolicyV1{Method: "/" + file.GetPackage() + "." + service.GetName() + "/" + method.GetName()}
 				if file.GetPackage() == "" {
 					m.Method = "/" + service.GetName() + "/" + method.GetName()
+				}
+				if !serves(file.GetPackage(), m.Method) {
+					unserved = append(unserved, m.Method)
+					continue
 				}
 				if options := method.GetOptions(); options != nil && proto.HasExtension(options, hopv1.E_Policy) {
 					policy, _ := proto.GetExtension(options, hopv1.E_Policy).(*hopv1.Policy)
@@ -183,7 +267,7 @@ func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, erro
 				for _, route := range httpRoutes(method.GetOptions()) {
 					bound, ok := proto.Clone(m).(*compositionv1.MethodPolicyV1)
 					if !ok {
-						return nil, fmt.Errorf("cannot clone policy for %s", m.GetMethod())
+						return nil, nil, fmt.Errorf("cannot clone policy for %s", m.GetMethod())
 					}
 					bound.Method = route
 					out = append(out, bound)
@@ -191,7 +275,7 @@ func contractMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, erro
 			}
 		}
 	}
-	return out, nil
+	return out, unserved, nil
 }
 
 // httpRoutes are the routes a method's google.api.http option binds it to,
