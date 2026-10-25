@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/modulecache"
+
 	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -856,15 +858,32 @@ func TestAPublishedVersionFromTheSameInputsIsAdoptedNotRebuilt(t *testing.T) {
 }
 
 // An image labelled before builds recorded their input classes carries only the
-// aggregate, which cannot say whether its code is this build's. It is the
-// release's build, so it is adopted, not rebuilt over and not refused.
-func TestAPublishedVersionLabelledBeforeClassesIsAdopted(t *testing.T) {
+// aggregate, which cannot say whether its code is this build's. Built from the
+// pinned release the CLI materialized, the code is the release's by
+// construction, so the image is adopted, not rebuilt over and not refused.
+func TestAPublishedVersionLabelledBeforeClassesIsAdoptedFromAPinnedRelease(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
+	// The clone root is <CODEFLY_HOME>/modules, which holds the service.
+	t.Setenv(resources.CodeflyHomeEnv, harness.workspaceDir)
+	t.Setenv(modulecache.Env, "")
 	harness.peer.image = "example.test/app:1.2.3"
 	published := "sha256:" + strings.Repeat("d", 64)
 	stubPublishedImage(t, published, "sha256:"+strings.Repeat("e", 64))
 	require.Equal(t, published, harness.build(t))
 	require.Equal(t, 0, harness.docker.calls(t, "build"))
+}
+
+// From a checkout, the same image is refused: an edited service whose version
+// did not move would otherwise be handed the earlier release's image with
+// nothing compared.
+func TestAPublishedVersionLabelledBeforeClassesIsRefusedFromACheckout(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	stubPublishedImage(t, "sha256:"+strings.Repeat("d", 64), "sha256:"+strings.Repeat("e", 64))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	require.ErrorContains(t, harness.tryBuild(ctx, t), "cannot be compared with this build's")
+	require.Equal(t, 0, harness.docker.calls(t, "build"), "a published release is never rebuilt")
 }
 
 // An image published before builds recorded their inputs proves nothing either

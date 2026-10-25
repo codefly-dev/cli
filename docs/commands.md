@@ -4095,7 +4095,7 @@ move with its code:
 | records this build's code; its recipe or bases differ (another checkout, another builder, a re-pushed base) | adopts it — it is the release's build — and warns naming the class that differs |
 | records other code | refuses: the code changed without its version moving, and the fix is a new release, never a rebuild under the old version |
 | records another agent than the release pins | refuses: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
-| records only the aggregate (labelled before the classes existed) | adopts it with a warning that its code was not compared; `--rebuild` builds it again instead |
+| records only the aggregate (labelled before the classes existed) | adopts it, with a warning, only when the service builds from a pinned release the CLI materialized (its code is the release's by construction); from a checkout or an override it refuses, since nothing can compare the code — build from the pinned release, or release a new version |
 
 Adopting is the default for an image that cannot be compared because the two
 alternatives are worse: refusing blocks every render of every module on a cell

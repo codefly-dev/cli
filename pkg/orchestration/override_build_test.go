@@ -140,9 +140,12 @@ func TestAPublishedReleaseIsJudgedByItsCode(t *testing.T) {
 		refuse string
 	}{
 		"same code, other recipe and bases": {labels: with(map[string]string{buildInputsLabel: other, buildRecipeLabel: other, buildBasesLabel: other})},
-		"labelled before the classes": {labels: with(map[string]string{
+		// The harness builds from a checkout, not a pinned release the CLI
+		// materialized, so code nothing can compare is refused
+		// (TestPublishedReleaseVerdictNamesTheClass adopts it from one).
+		"labelled before the classes, from a checkout": {labels: with(map[string]string{
 			buildInputsLabel: other, buildCodeLabel: "", buildRecipeLabel: "", buildBasesLabel: "",
-		})},
+		}), refuse: "cannot be compared with this build's"},
 		"other code":  {labels: with(map[string]string{buildInputsLabel: other, buildCodeLabel: other}), refuse: "is already published from other code"},
 		"other agent": {labels: with(map[string]string{buildInputsLabel: other, buildAgentLabel: "codefly.dev/go:0.0.9"}), refuse: "from a build by agent codefly.dev/go:0.0.9"},
 	} {
@@ -168,18 +171,22 @@ func TestPublishedReleaseVerdictNamesTheClass(t *testing.T) {
 	labels := func(code, recipe, bases string) map[string]string {
 		return map[string]string{buildInputsLabel: "sha256:other", buildCodeLabel: code, buildRecipeLabel: recipe, buildBasesLabel: bases}
 	}
-	warning, err := publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:c", "sha256:x", "sha256:b"))
+	warning, err := publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:c", "sha256:x", "sha256:b"), false)
 	require.NoError(t, err)
 	require.Contains(t, warning, "the build recipe its agent emitted")
 	require.NotContains(t, warning, "base images")
-	warning, err = publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:c", "sha256:r", "sha256:x"))
+	warning, err = publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:c", "sha256:r", "sha256:x"), false)
 	require.NoError(t, err)
 	require.Contains(t, warning, "the resolved base images")
 	require.NotContains(t, warning, "recipe")
-	warning, err = publishedReleaseVerdict("app:1.2.3", ours, agent, map[string]string{buildInputsLabel: "sha256:other"})
+	unlabelled := map[string]string{buildInputsLabel: "sha256:other"}
+	warning, err = publishedReleaseVerdict("app:1.2.3", ours, agent, unlabelled, true)
 	require.NoError(t, err)
 	require.Contains(t, warning, "predates per-class build labels")
-	_, err = publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:x", "sha256:r", "sha256:b"))
+	_, err = publishedReleaseVerdict("app:1.2.3", ours, agent, unlabelled, false)
+	require.ErrorContains(t, err, "cannot be compared")
+	require.ErrorContains(t, err, "release a new version")
+	_, err = publishedReleaseVerdict("app:1.2.3", ours, agent, labels("sha256:x", "sha256:r", "sha256:b"), true)
 	require.ErrorContains(t, err, "app:1.2.3 is already published from other code")
 	require.ErrorContains(t, err, "release a new version")
 }
