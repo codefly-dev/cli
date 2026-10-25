@@ -33,7 +33,7 @@ func ValidateMethodPolicies(methods []*compositionv1.MethodPolicyV1) error {
 
 // ValidateModulePermissions runs before render/build/publication effects. Hop
 // warning mode never changes structural validity. Contract.Resolve remains the
-// owner of binding/callee checks; SolutionRoles owns role declaration checks.
+// owner of binding/callee checks; its Validate owns the roles a contract declares.
 func ValidateModulePermissions(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment) error {
 	return validateModulePermissions(ctx, workspace, module, env, nil)
 }

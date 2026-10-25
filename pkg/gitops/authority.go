@@ -75,15 +75,11 @@ func moduleAuthority(
 	request authorityRequest,
 ) (*solutionhost.Authority, error) {
 	authority := &solutionhost.Authority{Principal: module.Name}
-	// A solution's own kinds come from its roles declaration, whatever it asks
-	// for at other modules: the authority's document ceils and grants roles on
-	// a kind only when the core manifest names it.
-	declared, err := SolutionRoles(module.Dir())
-	if err != nil {
+	if err := refuseRetiredRoles(module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", module.Name, err)
 	}
 	if request.undeclared != "" {
-		return withOwnKinds(authority, declared), nil
+		return authority, nil
 	}
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
@@ -165,21 +161,7 @@ func moduleAuthority(
 			authority.ResourceKinds = append(authority.ResourceKinds, ceiling.ResourceKind)
 		}
 	}
-	return withOwnKinds(authority, declared), nil
-}
-
-// withOwnKinds names in the authority block each kind a solution's roles
-// declaration serves, once; nil declares none.
-func withOwnKinds(authority *solutionhost.Authority, declared *RolesDeclaration) *solutionhost.Authority {
-	if declared == nil {
-		return authority
-	}
-	for _, ceiling := range declared.ScopeCeilings {
-		if !slices.Contains(authority.ResourceKinds, ceiling.GetResourceKind()) {
-			authority.ResourceKinds = append(authority.ResourceKinds, ceiling.GetResourceKind())
-		}
-	}
-	return authority
+	return authority, nil
 }
 
 // authorityRequest is what a module asks for authority with, from exactly one

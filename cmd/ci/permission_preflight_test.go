@@ -15,13 +15,18 @@ func TestCIDeployRejectsInvalidRoleBeforeStartingAgents(t *testing.T) {
 		"workspace.codefly.yaml":                        "name: preflight\nlayout: modules\nmodules:\n  - name: app\n",
 		"modules/app/module.codefly.yaml":               "kind: module\nname: app\nservices:\n  - name: api\n",
 		"modules/app/services/api/service.codefly.yaml": "kind: service\nname: api\nversion: 0.0.0\nmodule: app\n",
-		"modules/app/roles.codefly.yaml": `schema: codefly/solution-roles/v1
+		"modules/app/module.contract.codefly.yaml": `schema: codefly/module-contract/v1
+principal: app
+namespaces: []
+queues: []
 scope_ceilings:
   - {resource_kind: app.entry, actions: [read]}
 roles:
   - name: installer
     scopes:
       - {resource_kind: app.entry, actions: [typo]}
+bindings: []
+destinations: []
 `,
 	}
 	for path, data := range files {

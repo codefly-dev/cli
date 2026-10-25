@@ -32,7 +32,7 @@ type CompositionDelivery struct {
 	// ceilings reads the module's own resource kinds with their actions, from
 	// its module contract; none when it publishes no contract.
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error)
-	// roles reads the roles a solution declares, from its roles declaration;
+	// roles reads the roles a solution declares, from its module contract;
 	// none for a module, which declares no roles.
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
 
@@ -45,8 +45,8 @@ type CompositionDelivery struct {
 // the module declares, read by methods from the module's package, and the
 // actions on each of its own resource kinds, read by ceilings from its module
 // contract (core's manifest names the kinds alone), and the roles a solution
-// declares, read by roles from its roles declaration (core's manifest carries
-// none).
+// declares, read by roles from its module contract too (core's manifest
+// carries none).
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),

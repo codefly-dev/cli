@@ -581,11 +581,7 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 				if loadErr != nil {
 					return nil, loadErr
 				}
-				declared, rolesErr := gitops.SolutionRoles(m.Dir())
-				if rolesErr != nil || declared == nil {
-					return nil, rolesErr
-				}
-				return declared.Roles, nil
+				return gitops.Roles(m.Dir())
 			})
 		return &gitops.NativeDeliverer{
 			Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,

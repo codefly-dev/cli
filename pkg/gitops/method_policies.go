@@ -323,27 +323,17 @@ func routeMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, error) 
 var httpVerbs = map[string]bool{"get": true, "put": true, "post": true, "delete": true, "patch": true, "head": true, "options": true}
 
 // ScopeCeilings reads the module's own resource kinds with the actions declared
-// on each, from the module at dir: its module contract's scope ceilings, and a
-// solution's from its roles declaration (SolutionRoles). A module that publishes
-// neither declares none.
+// on each, from its module contract's scope_ceilings: the one declaration of
+// them, a solution's as much as a module's. A module that publishes no
+// contract declares none.
 func ScopeCeilings(dir string) ([]*authorityv1.WorkScopeV1, error) {
-	var out []*authorityv1.WorkScopeV1
-	contract, err := modulecontract.Load(dir)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err != nil:
-		return nil, err
-	default:
-		for _, ceiling := range contract.ScopeCeilings {
-			out = append(out, &authorityv1.WorkScopeV1{ResourceKind: ceiling.ResourceKind, Actions: append([]string(nil), ceiling.Actions...)})
-		}
-	}
-	declared, err := SolutionRoles(dir)
-	if err != nil {
+	contract, err := ownContract(dir)
+	if err != nil || contract == nil {
 		return nil, err
 	}
-	if declared != nil {
-		out = append(out, declared.ScopeCeilings...)
+	out := make([]*authorityv1.WorkScopeV1, 0, len(contract.ScopeCeilings))
+	for _, ceiling := range contract.ScopeCeilings {
+		out = append(out, &authorityv1.WorkScopeV1{ResourceKind: ceiling.ResourceKind, Actions: append([]string(nil), ceiling.Actions...)})
 	}
 	return out, nil
 }

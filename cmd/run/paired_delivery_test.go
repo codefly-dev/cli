@@ -14,6 +14,7 @@ import (
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/run/identity"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
@@ -69,10 +70,10 @@ func TestLauncherReservesGenerationFromChangedSolutionRoles(t *testing.T) {
 	require.NoError(t, err)
 	cluster := &launcher{workspace: workspace, env: env, signer: signer, vouch: vouch, stateDir: t.TempDir(), hostModule: "model", hostService: "model", flow: &pairedLauncherFlow{address: listener.Addr().String()}}
 	cluster.declare(map[string]gitops.NativeIdentity{"model/model": {Module: "model", Service: "model"}})
-	rolesPath := filepath.Join(workspace.Dir(), "modules", "model", gitops.SolutionRolesFileName)
+	contractPath := filepath.Join(workspace.Dir(), "modules", "model", modulecontract.FileName)
 	for _, action := range []string{"read", "read", "write", "write"} {
-		roles := fmt.Sprintf("schema: codefly/solution-roles/v1\nscope_ceilings:\n  - resource_kind: model.item\n    actions: [read, write]\nroles:\n  - name: installer\n    scopes:\n      - resource_kind: model.item\n        actions: [%s]\n", action)
-		require.NoError(t, os.WriteFile(rolesPath, []byte(roles), 0600))
+		contract := fmt.Sprintf("schema: codefly/module-contract/v1\nprincipal: model\nnamespaces: []\nqueues: []\nscope_ceilings:\n  - resource_kind: model.item\n    actions: [read, write]\nroles:\n  - name: installer\n    scopes:\n      - resource_kind: model.item\n        actions: [%s]\nbindings: []\ndestinations: []\n", action)
+		require.NoError(t, os.WriteFile(contractPath, []byte(contract), 0600))
 		// The production retry path constructs a new deliverer each attempt.
 		d, gateway, err := cluster.newDeliverer(t.Context())
 		require.NoError(t, err)

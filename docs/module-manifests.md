@@ -274,6 +274,22 @@ that is not a prepared binding fails the render by key. A module that asks for
 nothing — no contract, no scoped consumption — gains nothing: the host grants
 it its envelope whole, and a request would change that.
 
+**A solution's roles are part of its contract.** A unit a person uses declares
+the roles a person may hold on an installation of it in the same
+`module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under
+core's rules (an `installer` among them; each scope within the unit's own kinds,
+or a permission at another module one of its bindings spells out for `invoke`
+or `lookup`) — see core's `docs/module-contract.md`. The core manifest names the
+kinds alone; for a composition-interface host the delivery carries each own
+kind with its actions (`AuthorityManifestV1.scope_ceilings`, read once from the
+contract's `scope_ceilings`) and the roles as declared
+(`AuthorityManifestV1.roles`). A solution asking for scopes on `api.consumes`
+declares roles by moving that consumption into the contract's bindings, since a
+module asks for authority from one declaration. The CLI defines no roles schema
+of its own: a unit still shipping the retired `roles.codefly.yaml`
+(`codefly/solution-roles/v1`) fails the render and the delivery, naming the file
+and the contract its kinds and roles now belong in.
+
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the
 module's queues and namespaces, its own scope ceilings and the destinations it

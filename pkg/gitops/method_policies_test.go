@@ -166,7 +166,7 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 	}
 	want := []*compositionv1.MethodPolicyV1{{Method: "/api.ApiService/WhoAmI", Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "console.identity", Actions: []string{"read"}}}}}
 	ceilings := []*authorityv1.WorkScopeV1{{ResourceKind: "console.identity", Actions: []string{"read"}}}
-	roles := []*compositionv1.RoleV1{{Name: InstallerRole, Scopes: ceilings}}
+	roles := []*compositionv1.RoleV1{{Name: modulecontract.InstallerRole, Scopes: ceilings}}
 	d := NewCompositionDelivery(conn, signer, func(_ context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 		return want, module == "console", nil
 	}, func(_ context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
