@@ -301,7 +301,8 @@ refuses far from the contract that caused it. The reader holds the convention
 the modules publish against — `audience` from a `*-audience` key (or a
 `*-prefix` one: a module's prefix is the audience a capability for it is
 addressed to), `resource_kind` from a `*-resource-kind` key, `binding_key` from
-a `*-binding` key — in either key spelling core accepts, and refuses a slot
+a `*-binding` key, `audiences` from a `*-audiences` key and `resource_kinds`
+from a `*-resource-kinds` key — in either key spelling core accepts, and refuses a slot
 whose key is named otherwise.
 
 A binding's **scope ceiling** is written per operation in one of two spellings,
@@ -339,6 +340,28 @@ unfilled slot is refused by name, the refusal saying the binding is optional and
 was filled in part, because a misspelt key must never silently drop a binding
 (`TestAnOptionalBindingFilledInPartIsRefusedByName`). A secret-classified record
 fills its slot, and is refused as a secret rather than omitted around.
+
+A binding may be addressed to a **list of audiences** the composition writes —
+for a generic module that reaches whichever modules a composition wires to it,
+such as a store of comments reaching the owner of each kind of thing commented
+on. It declares `audiences: {from: <group>/<key>-audiences}` in place of
+`audience`, the value comma-separated with no space (`robin,documents`), and,
+for a bare-action ceiling, `resource_kinds: {from: <group>/<key>-resource-kinds}`
+whose value is `<audience>=<kind>` pairs. The render delivers it **once per
+listed audience**, in core's resolution: binding `<binding>:<audience>`
+addressed to that audience, its `calls` read from that audience's own published
+contracts (so two owners declaring one protocol's methods differently get two
+ceilings), its bare actions qualified by that audience's kind. A call one listed
+audience does not serve is refused naming the binding, the call and the
+audience; the audience that serves it is not blamed. The render logs
+`module <m>: binding <id> is delivered once per listed audience, as` followed by
+the delivered ids, since they are not the ones the contract spells. The issuer
+holds each delivered binding to its one audience, exactly as a single-audience
+binding, so a module is issued a context toward one owner by naming
+`<binding>:<owner>`. An optional list composes with the rule above: the list
+absent or empty omits the binding, and filled with its kinds missing is filled in
+part, refused by name (`audience_list_binding_test.go`). A binding with
+`audience` renders exactly as before, under its own id.
 
 
 ## What publish settles

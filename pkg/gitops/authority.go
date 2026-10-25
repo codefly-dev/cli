@@ -119,6 +119,26 @@ func moduleAuthority(
 			fmt.Sprintf("module %s: optional binding %s is omitted from the delivered manifest: %s", module.Name, omitted.ID, omitted.Reason),
 			wool.Field("module", module.Name), wool.Field("binding", omitted.ID))
 	}
+	// A binding addressed to a list of audiences is delivered once per listed
+	// audience, each its own binding (core's AudienceBindingID) with the
+	// ceiling that audience's own declarations give it; the render says which,
+	// since the delivered ids are not the ones the contract spells.
+	for _, declared := range request.contract.Bindings {
+		if declared.Audiences == nil {
+			continue
+		}
+		var delivered []string
+		for _, binding := range resolved.Bindings {
+			if strings.HasPrefix(binding.ID, modulecontract.AudienceBindingID(declared.ID, "")) {
+				delivered = append(delivered, binding.ID)
+			}
+		}
+		if len(delivered) > 0 {
+			wool.Get(ctx).In("gitops.moduleAuthority").Info(
+				fmt.Sprintf("module %s: binding %s is delivered once per listed audience, as %s", module.Name, declared.ID, strings.Join(delivered, ", ")),
+				wool.Field("module", module.Name), wool.Field("binding", declared.ID))
+		}
+	}
 	for _, binding := range resolved.Bindings {
 		operations := make(map[string][]string, len(binding.Operations))
 		for _, operation := range binding.Operations {
