@@ -139,6 +139,109 @@ func TestAModuleContractRequiresAPolicyOnEveryMethodWhereverDelivered(t *testing
 	require.ErrorContains(t, err, "sets require_method_policies")
 }
 
+// composeSaasHost composes the host as platform compositions name it locally:
+// host.component is saas, and saas's own accounts service is host.delivery,
+// implementing codefly.dev/composition. saas publishes that many
+// unmarked methods of its own (the shape of its 447), which are the host's,
+// not methods behind the hop.
+func composeSaasHost(t *testing.T, workspace *resources.Workspace, methods int) *resources.Workspace {
+	t.Helper()
+	config := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(config)
+	require.NoError(t, err)
+	composed := strings.Replace(string(data), "  - name: billing\n", "  - name: billing\n  - name: saas\n", 1)
+	composed = strings.Replace(composed, "      component: platform-host\n", "      component: saas\n", 1)
+	composed = strings.Replace(composed, "      delivery: platform/accounts/rest\n", "      delivery: saas/accounts/connect\n", 1)
+	require.Equal(t, 3, len(strings.Split(composed, "saas"))-1, "the host is saas by component and by delivery")
+	require.NoError(t, os.WriteFile(config, []byte(composed), 0o644))
+
+	service := &descriptorpb.ServiceDescriptorProto{Name: proto.String("AccountsService")}
+	for i := range methods {
+		service.Method = append(service.Method, &descriptorpb.MethodDescriptorProto{Name: proto.String(fmt.Sprintf("Method%03d", i)), InputType: proto.String(".accounts.Empty"), OutputType: proto.String(".accounts.Empty")})
+	}
+	set, err := proto.Marshal(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name: proto.String("accounts.proto"), Package: proto.String("accounts"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Empty")}}, Service: []*descriptorpb.ServiceDescriptorProto{service},
+	}}})
+	require.NoError(t, err)
+	source := "syntax = \"proto3\";\npackage accounts;\n"
+	files := map[string]string{
+		filepath.Join("modules", "saas", resources.ModuleConfigurationName):                          "kind: module\nname: saas\nservices:\n  - name: accounts\ninterface:\n  endpoints:\n    - service: accounts\n      endpoint: grpc\n      implements: [" + CompositionInterface + "@1.0.0]\n",
+		filepath.Join("modules", "saas", "services", "accounts", resources.ServiceConfigurationName): hostedServiceYAML("accounts", "shop"),
+		filepath.Join("modules", "saas", "services", "accounts", "proto", "accounts.proto"):          source,
+		filepath.Join("modules", "saas", "contracts", "accounts", "grpc", "proto", "accounts.proto"): source,
+		filepath.Join("modules", "saas", "contracts", "accounts", "grpc", "contract.binpb"):          string(set),
+		filepath.Join("modules", "saas", "module.package.codefly.yaml"): fmt.Sprintf(`schema: codefly/module-package/v2
+kind: module-package
+id: platform/saas
+version: 0.1.0
+minimum-codefly-version: ">=0.3.32 <1.0.0"
+artifact-roots:
+  - contracts
+  - services
+services:
+  - name: accounts
+    endpoints: [grpc]
+    api-contracts:
+      - endpoint: grpc
+        kind: protobuf
+        package: accounts
+        path: contracts/accounts/grpc/contract.binpb
+        digest: sha256:%x
+contracts:
+  composition: ">=2.0.0 <3.0.0"
+`, sha256.Sum256(set)),
+	}
+	for rel, content := range files {
+		full := filepath.Join(workspace.Dir(), rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+	require.NoError(t, err)
+	return reloaded
+}
+
+// The host's own module is not behind the hop: when host.component names saas
+// and saas's accounts service implements codefly.dev/composition, saas's own
+// unmarked methods are the host's and pass, while every module the hop fronts
+// is still held to a policy on every method and refused by name.
+func TestTheHostsOwnModuleIsNotHeldToPoliciesItReceives(t *testing.T) {
+	const saasMethods = 447
+	workspace, module := unmarkedPolicyWorkspace(t)
+	workspace = composeSaasHost(t, workspace, saasMethods)
+	env := selectedEnvironment(t, workspace, "staging")
+	require.Equal(t, "saas", env.Host.Component)
+
+	saas, err := workspace.LoadModuleFromName(t.Context(), "saas")
+	require.NoError(t, err)
+	methods, ok, err := MethodPolicies(saas.Dir())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Len(t, methods, saasMethods)
+	require.Error(t, ValidateMethodPolicies(methods, true), "every saas method is unmarked")
+	require.NoError(t, ValidateModulePermissions(t.Context(), workspace, saas, env))
+
+	module, err = workspace.LoadModuleFromName(t.Context(), module.Name)
+	require.NoError(t, err)
+	err = ValidateModulePermissions(t.Context(), workspace, module, env)
+	require.ErrorContains(t, err, "/api.ApiService/Plain declares no permission policy")
+	require.ErrorContains(t, err, "delivered to host saas/accounts, which implements "+CompositionInterface)
+
+	err = CheckCompositionPermissions(t.Context(), workspace, env, true, "shop", "saas")
+	require.ErrorContains(t, err, "/api.ApiService/Plain declares no permission policy")
+	require.NotContains(t, err.Error(), "/accounts.AccountsService/")
+	require.NotContains(t, err.Error(), "module saas")
+
+	// The host module's own contract may still hold it to a policy everywhere.
+	require.NoError(t, os.WriteFile(filepath.Join(saas.Dir(), modulecontract.FileName), []byte("schema: codefly/module-contract/v1\nprincipal: saas\nnamespaces: []\nqueues: []\nscope_ceilings: []\nbindings: []\ndestinations: []\nrequire_method_policies: true\n"), 0o644))
+	saas, err = workspace.LoadModuleFromName(t.Context(), "saas")
+	require.NoError(t, err)
+	err = ValidateModulePermissions(t.Context(), workspace, saas, env)
+	require.ErrorContains(t, err, "/accounts.AccountsService/Method000 declares no permission policy")
+	require.ErrorContains(t, err, "sets require_method_policies")
+}
+
 func TestDuplicatePublishedPolicyCannotHideConflictingDeclaration(t *testing.T) {
 	dir := policyPackage(t, false)
 	path := filepath.Join(dir, "module.package.codefly.yaml")
