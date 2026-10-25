@@ -775,7 +775,11 @@ func (cluster *launcher) fixtureAdministrator(ctx context.Context) (runfixture.A
 // (runfixture.ReadCompositionGrants), with an entry for each prepared binding
 // a module installs (gitops.WithPreparedBindingGrants).
 func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.EnvelopeGrant, error) {
-	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), cluster.env.Name)
+	envelopeProfile, err := cluster.env.ConfigurationProfileName()
+	if err != nil {
+		return nil, err
+	}
+	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), envelopeProfile)
 	if err != nil {
 		return nil, err
 	}

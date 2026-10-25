@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"encoding/json"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"os"
 	"path/filepath"
 	"testing"
@@ -271,11 +272,12 @@ func TestOnlyTheHostingModulesHostedPublishDeclaresTheEnvelope(t *testing.T) {
 	require.NoError(t, err)
 
 	hosting := &Inventory{Module: "platform", HostsDelivery: true}
+	prod := &environments.Environment{Name: "prod"}
 	for name, publication := range map[string]*deliveryPublication{
-		"hosted":     {workspace: workspace, options: deliveryPublishOptions{Target: testDeliveryTarget()}},
-		"no host":    {workspace: workspace},
-		"local":      {workspace: workspace, local: true, options: deliveryPublishOptions{Target: testDeliveryTarget()}},
-		"not hosted": {workspace: workspace, options: deliveryPublishOptions{Target: testDeliveryTarget()}},
+		"hosted":     {workspace: workspace, env: prod, options: deliveryPublishOptions{Target: testDeliveryTarget()}},
+		"no host":    {workspace: workspace, env: prod},
+		"local":      {workspace: workspace, env: prod, local: true, options: deliveryPublishOptions{Target: testDeliveryTarget()}},
+		"not hosted": {workspace: workspace, env: prod, options: deliveryPublishOptions{Target: testDeliveryTarget()}},
 	} {
 		inventory := hosting
 		if name == "not hosted" {
@@ -291,7 +293,7 @@ func TestOnlyTheHostingModulesHostedPublishDeclaresTheEnvelope(t *testing.T) {
 		require.Contains(t, publication.options.Envelope.Principals, "records")
 		require.Equal(t, uint64(3), publication.options.Envelope.MinimumRevision)
 	}
-	other := &deliveryPublication{workspace: workspace, options: deliveryPublishOptions{Target: testDeliveryTarget()}}
+	other := &deliveryPublication{workspace: workspace, env: &environments.Environment{Name: "staging"}, options: deliveryPublishOptions{Target: testDeliveryTarget()}}
 	require.NoError(t, other.declareEnvelope(hosting, "staging"))
 	require.False(t, other.options.Envelope.Stated, "an environment with no file states nothing")
 }

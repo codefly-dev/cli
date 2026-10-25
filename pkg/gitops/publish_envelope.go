@@ -82,19 +82,26 @@ func (p *deliveryPublication) declareEnvelope(inventory *Inventory, environment 
 	if !inventory.HostsDelivery || p.options.Target == nil || p.local || p.workspace == nil {
 		return nil
 	}
-	principals, err := fixture.ReadCompositionGrants(p.workspace, environment)
+	// The environment's own configuration profile states it, or a profile it
+	// derives from, so every cell deriving from one hosted profile is
+	// delivered the ceiling that profile states.
+	profile, err := p.env.ConfigurationProfileName()
+	if err != nil {
+		return fmt.Errorf("select the configuration profile the module envelope of %s is read from: %w", environment, err)
+	}
+	principals, err := fixture.ReadCompositionGrants(p.workspace, profile)
 	if err != nil {
 		return fmt.Errorf("read the module envelope the composition states for %s: %w", environment, err)
 	}
-	stated, err := fixture.StatesGrants(p.workspace, environment)
+	stated, err := fixture.StatesGrants(p.workspace, profile)
 	if err != nil {
 		return err
 	}
-	statesPrincipals, err := fixture.StatesPrincipals(p.workspace, environment)
+	statesPrincipals, err := fixture.StatesPrincipals(p.workspace, profile)
 	if err != nil {
 		return err
 	}
-	floor, err := fixture.ReadCompositionMinimumRevision(p.workspace, environment)
+	floor, err := fixture.ReadCompositionMinimumRevision(p.workspace, profile)
 	if err != nil {
 		return err
 	}
