@@ -1,7 +1,9 @@
 package gitops
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,4 +68,26 @@ func TestWithdrawalCompletionRequiresExactAppliedWithdrawal(t *testing.T) {
 		})
 	}
 	require.Error(t, (&NativeDeliverer{ObserverToken: func() (string, error) { return "", nil }}).WaitForWithdrawal(t.Context(), live), "a live manifest is no withdrawal to wait for")
+}
+
+func TestWithdrawalCompletionUsesTheDeclaredAppliedInterface(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	live := renderNative(t, module, services, "api")
+	withdrawal, err := WithdrawalOf(live)
+	require.NoError(t, err)
+	digest, err := withdrawal.Digest()
+	require.NoError(t, err)
+	calls := 0
+	d := &NativeDeliverer{Applied: func(_ context.Context, binding string) (*AppliedManifest, bool, error) {
+		calls++
+		require.Equal(t, withdrawal.Binding, binding)
+		return &AppliedManifest{Binding: binding, Generation: withdrawal.Generation, Digest: digest, Release: withdrawal.Release.Identity(), Removed: true}, true, nil
+	}, ObserverToken: func() (string, error) {
+		t.Error("interface completion attempted legacy observer authentication")
+		return "", errors.New("legacy observer unavailable")
+	}}
+	require.NoError(t, d.WaitForWithdrawal(t.Context(), withdrawal))
+	require.Equal(t, 1, calls)
+	d.ObserverToken = nil
+	require.NoError(t, d.WaitForWithdrawal(t.Context(), withdrawal))
 }

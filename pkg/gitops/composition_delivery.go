@@ -37,7 +37,7 @@ type CompositionDelivery struct {
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
 
 	mu      sync.Mutex
-	applied map[string]uint64
+	applied map[string]AppliedManifest
 }
 
 // NewCompositionDelivery speaks the interface over conn. With each manifest it
@@ -51,7 +51,7 @@ func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.S
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)) *CompositionDelivery {
-	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, applied: map[string]uint64{}}
+	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, applied: map[string]AppliedManifest{}}
 }
 
 // Post is NativeDeliverer.Post over the interface.
@@ -72,8 +72,17 @@ func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *s
 		return Receipt{Status: httpStatusOf(err), Error: err.Error()}, &HostStatusError{Status: httpStatusOf(err),
 			Message: fmt.Sprintf("the host refused the module manifest of %s through the composition interface: %v", module, err)}
 	}
+	if out.GetGeneration() != manifest.Generation {
+		return Receipt{}, fmt.Errorf("the composition host acknowledged generation %d for binding %s, sent %d", out.GetGeneration(), manifest.Binding, manifest.Generation)
+	}
+	digest, err := manifest.Digest()
+	if err != nil {
+		return Receipt{}, err
+	}
 	c.mu.Lock()
-	c.applied[manifest.Binding] = out.GetGeneration()
+	if held, ok := c.applied[manifest.Binding]; !ok || held.Generation <= manifest.Generation {
+		c.applied[manifest.Binding] = AppliedManifest{Binding: manifest.Binding, Generation: manifest.Generation, Digest: digest, Release: manifest.Release.Identity(), Removed: manifest.Removed}
+	}
 	c.mu.Unlock()
 	return Receipt{Status: http.StatusOK, Disposition: "accepted", Generation: out.GetGeneration()}, nil
 }
@@ -127,15 +136,16 @@ func (c *CompositionDelivery) authority(ctx context.Context, module string, mani
 }
 
 // Applied is NativeDeliverer.Applied over the interface: ApplyManifest applies
-// synchronously, so what it answered is what the host holds.
+// synchronously. Retain the acknowledged request identity for completion in
+// this delivery attempt; this is not a remote state query across host restarts.
 func (c *CompositionDelivery) Applied(_ context.Context, binding string) (*AppliedManifest, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	generation, ok := c.applied[binding]
+	applied, ok := c.applied[binding]
 	if !ok {
 		return nil, false, nil
 	}
-	return &AppliedManifest{Binding: binding, Generation: generation}, true, nil
+	return &applied, true, nil
 }
 
 // httpStatusOf maps a refusal's code onto the status the run's classification

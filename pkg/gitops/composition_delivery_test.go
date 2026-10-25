@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"errors"
+	"fmt"
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	"net"
 	"net/http"
@@ -23,8 +24,9 @@ import (
 // name, as the suite requires of every implementation.
 type compositionStub struct {
 	compositionv1.UnimplementedCompositionServiceServer
-	held map[string]uint64
-	seen []*compositionv1.ApplyManifestRequest
+	held            map[string]uint64
+	seen            []*compositionv1.ApplyManifestRequest
+	replyGeneration uint64
 }
 
 func (s *compositionStub) ApplyManifest(_ context.Context, req *compositionv1.ApplyManifestRequest) (*compositionv1.ApplyManifestResponse, error) {
@@ -40,7 +42,11 @@ func (s *compositionStub) ApplyManifest(_ context.Context, req *compositionv1.Ap
 		return nil, status.Errorf(codes.FailedPrecondition, "generation %d does not move %s forward", manifest.Generation, manifest.Binding)
 	}
 	s.held[manifest.Binding] = manifest.Generation
-	return &compositionv1.ApplyManifestResponse{Principal: manifest.Alias, Generation: manifest.Generation}, nil
+	generation := manifest.Generation
+	if s.replyGeneration != 0 {
+		generation = s.replyGeneration
+	}
+	return &compositionv1.ApplyManifestResponse{Principal: manifest.Alias, Generation: generation}, nil
 }
 
 func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *testing.T) {
@@ -154,8 +160,43 @@ func TestCompositionWithdrawalDoesNotReadOrDeliverLivePolicies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			native := &NativeDeliverer{Applied: delivery.Applied}
+			if err := native.WaitForWithdrawal(t.Context(), manifest); err != nil {
+				t.Fatalf("interface receipt did not prove withdrawal: %v", err)
+			}
 			if receipt.Generation != 2 || sourceReads != 0 || len(host.seen) != 1 || host.seen[0].Authority != nil {
 				t.Fatalf("withdrawal depends on live policy: reads=%d receipt=%+v", sourceReads, receipt)
+			}
+		})
+	}
+}
+
+func TestCompositionDeliveryRefusesAMismatchedAcknowledgement(t *testing.T) {
+	for _, generation := range []uint64{1, 3} {
+		t.Run(fmt.Sprint(generation), func(t *testing.T) {
+			host := &compositionStub{held: map[string]uint64{}, replyGeneration: generation}
+			server := grpc.NewServer()
+			compositionv1.RegisterCompositionServiceServer(server, host)
+			listener := bufconn.Listen(1 << 20)
+			go func() { _ = server.Serve(listener) }()
+			t.Cleanup(server.Stop)
+			conn, err := grpc.NewClient("passthrough:///bufconn", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			delivery := NewCompositionDelivery(conn, nil, nil, nil, nil)
+			manifest := &solutionhost.ModuleManifest{Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: solutionhost.KindModule, Generation: 2, Removed: true, Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"}}
+			document, err := solutionhost.SignedPayload(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = delivery.Post(t.Context(), "probe", &solutionhost.Signed{Document: document, Envelope: []byte(`{"test":true}`)}, "credential")
+			if err == nil {
+				t.Fatal("wrong generation was treated as applied")
+			}
+			if _, found, err := delivery.Applied(t.Context(), "probe"); err != nil || found {
+				t.Fatalf("mismatched reply populated applied record: %v %v", found, err)
 			}
 		})
 	}

@@ -21,12 +21,12 @@ const (
 )
 
 // WaitForWithdrawal observes the host's applied record of a withdrawn binding
-// through the host's read-only applied-state endpoint, until it holds the
-// withdrawal this run delivered.
+// through its declared Applied callback or the legacy read-only endpoint,
+// until it holds the exact withdrawal this run delivered.
 func (d *NativeDeliverer) WaitForWithdrawal(ctx context.Context, withdrawal *solutionhost.ModuleManifest) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(withdrawalAttempts)*withdrawalInterval)
 	defer cancel()
-	if withdrawal == nil || !withdrawal.Removed || d.ObserverToken == nil {
+	if withdrawal == nil || !withdrawal.Removed || (d.Applied == nil && d.ObserverToken == nil) {
 		return fmt.Errorf("withdrawal completion requires a withdrawal and an applied-state observer")
 	}
 	digest, err := withdrawal.Digest()
@@ -53,8 +53,8 @@ func (d *NativeDeliverer) WaitForWithdrawal(ctx context.Context, withdrawal *sol
 	return fmt.Errorf("binding %s withdrawal generation %d is received but not applied; retained for the next composition refresh", withdrawal.Binding, withdrawal.Generation)
 }
 
-// AppliedManifest is the host's applied record of a binding:
-// GET <accounts REST>/platform/_delivery/applied/<binding>.
+// AppliedManifest is the host's applied identity of a binding, supplied by
+// the composition callback or the legacy read-only applied-state endpoint.
 type AppliedManifest struct {
 	Binding    string `json:"binding"`
 	Generation uint64 `json:"generation"`
@@ -73,7 +73,7 @@ type AppliedManifest struct {
 // generation, or withheld it and said why. A receipt says the carrier was
 // accepted into the inbox; only the applied state says the module is served.
 func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solutionhost.ModuleManifest) error {
-	if manifest == nil || d.ObserverToken == nil {
+	if manifest == nil || (d.Applied == nil && d.ObserverToken == nil) {
 		return fmt.Errorf("applied-state observation requires a manifest and an observer")
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(withdrawalAttempts)*withdrawalInterval)
@@ -139,33 +139,15 @@ func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*Ap
 }
 
 func (d *NativeDeliverer) withdrawalApplied(ctx context.Context, withdrawal *solutionhost.ModuleManifest, digest string) (bool, error) {
-	token, err := d.ObserverToken()
+	applied, found, err := d.appliedState(ctx, withdrawal.Binding)
 	if err != nil {
 		return false, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(d.DeliveryURL, "/")+"/platform/_delivery/applied/"+url.PathEscape(withdrawal.Binding), nil)
-	if err != nil {
-		return false, err
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	client := d.Client
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return false, fmt.Errorf("observe withdrawal: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
+	if !found {
 		return false, nil
 	}
-	if response.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("host refused applied-state observation (%s)", response.Status)
-	}
-	var applied AppliedManifest
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&applied); err != nil {
-		return false, fmt.Errorf("read applied withdrawal: %w", err)
+	if applied == nil {
+		return false, fmt.Errorf("host reported applied binding %s without its record", withdrawal.Binding)
 	}
 	if applied.Binding != withdrawal.Binding {
 		return false, fmt.Errorf("applied record names binding %q, not %s", applied.Binding, withdrawal.Binding)
