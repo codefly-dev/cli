@@ -4197,5 +4197,12 @@ so it cannot by itself detect an unpublished proto edit. With no flags it checks
 every default destination; with `--output` it checks that one directory. Missing
 files count as drift. Standalone generation is also available for published dependency packages.
 
+Run/refresh permission preflight also detects changed source trees against each
+existing published protobuf endpoint's recorded snapshot. It warns during local
+adoption and refuses strict source-backed delivery, naming the command to
+re-export. This comparison does not compile source, inspect external imports,
+or prove generated output freshness; keep the CI regeneration check above.
+Published package dependencies do not require local source trees.
+
 Permission generation is available through the CLI; no separate MCP generator
 was added. MCP run/test use the same composition preflight as their CLI paths.

@@ -185,9 +185,6 @@ func digestImages(root string) ([]string, error) {
 // DeployDev builds one service from its dev source and re-pins its image in the
 // already-rendered tree of the requested environment.
 func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
-	if err := ValidateModulePermissions(ctx, request.Workspace, request.Module, request.Environment); err != nil {
-		return DevResult{}, err
-	}
 	root := moduleRenderDestination(request.Workspace, request.Module.Name)
 	inventory, unit, err := loadDevTarget(root, request.Module.Name, request.Service, request.Environment.Name, request.AppProject)
 	if err != nil {
@@ -195,6 +192,9 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	}
 	service, err := loadDevService(ctx, request.Module, request.Service, request.Source)
 	if err != nil {
+		return DevResult{}, err
+	}
+	if err = validateModulePermissions(ctx, request.Workspace, request.Module, request.Environment, service); err != nil {
 		return DevResult{}, err
 	}
 	// A configuration error refuses the deploy before the image is built.

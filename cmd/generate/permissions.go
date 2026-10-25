@@ -117,9 +117,9 @@ type permissionDestination struct {
 // it reads a table, because the hop in front of it decides every call.
 func permissionDestinations(ctx context.Context, module *resources.Module, output string) (destinations []permissionDestination, skipped []string, err error) {
 	if output != "" {
-		methods, declared, err := gitops.MethodPolicies(module.Dir())
-		if err != nil {
-			return nil, nil, err
+		methods, declared, loadErr := gitops.MethodPolicies(module.Dir())
+		if loadErr != nil {
+			return nil, nil, loadErr
 		}
 		if !declared {
 			return nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())

@@ -698,6 +698,10 @@ func renderComposition(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true); err != nil {
+		return err
+	}
+
 	modules, err := workspace.LoadModules(ctx)
 	if err != nil {
 		return err

@@ -1106,9 +1106,30 @@ invalid; an intentionally restricted business role is valid. Identical policies
 published on multiple endpoints are accepted; conflicting policies for the same
 method are refused rather than silently taking the first.
 
-The checker validates published bytes and their package digests. Run
-`codefly generate contracts --permissions --check` in CI to additionally detect
-source/output drift. Static checks cannot prove resource visibility, active
+The checker validates published bytes and their package digests. For each
+published protobuf endpoint resolved from local source (including service
+overrides and materialized git clones), it also compares the service's `proto/`
+tree with the snapshot recorded by `generate contracts`. Edits, added/deleted
+files, and missing source or snapshots warn during local adoption and refuse
+strict delivery. Module/service render checks the selected dependency closure
+before effects, including producers reached through declared configuration groups
+using the invocation-aware configuration reader; whole-composition render checks all modules before its first
+build. Development image deployment validates the service selected by `--path`
+even when replacing a packaged service. The existing ban on invocation configuration
+overrides in delivery still applies. The diagnostic names the module, service, endpoint and changed
+files, and directs the author to `codefly generate contracts <module>`.
+Even comment-only changes require re-export before strict delivery.
+
+Verified materialized packages retain artifact checks without requiring source;
+the materializer's receipts distinguish them from checkouts. Unresolved or stale
+materialization is reported, not silently treated as an artifact exemption.
+
+This early guard covers existing published protobuf exports, not a newly added
+endpoint with no export, OpenAPI source changes, external imports, descriptor
+derivation or generated clients/permission constants. Modules with no package
+manifest have no recorded source snapshot to compare. Run
+`codefly generate contracts --permissions --check` in CI for full contract
+regeneration and permission-output freshness. Static checks cannot prove resource visibility, active
 installation, consent, provider availability or a successful runtime call.
 Packaged solution publications without a source module and rollback of old
 rendered artifacts still need artifact-level permission qualification; source

@@ -10,6 +10,8 @@ import (
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -33,12 +35,21 @@ func ValidateMethodPolicies(methods []*compositionv1.MethodPolicyV1) error {
 // warning mode never changes structural validity. Contract.Resolve remains the
 // owner of binding/callee checks; SolutionRoles owns role declaration checks.
 func ValidateModulePermissions(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment) error {
+	return validateModulePermissions(ctx, workspace, module, env, nil)
+}
+
+// selectedSource is an explicit development deployment input, already resolved
+// through loadDevService, which must be checked even atop a published package.
+func validateModulePermissions(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, selectedSource *resources.Service) error {
 	methods, _, err := MethodPolicies(module.Dir())
 	if err != nil {
 		return err
 	}
 	if err = ValidateMethodPolicies(methods); err != nil {
 		return fmt.Errorf("module %s permissions: %w", module.Name, err)
+	}
+	if err = validatePermissionSource(ctx, workspace, module, selectedSource); err != nil {
+		return err
 	}
 	request, err := authorityRequestOf(module)
 	if err != nil {
@@ -57,8 +68,15 @@ func ValidateModulePermissions(ctx context.Context, workspace *resources.Workspa
 func CheckCompositionPermissions(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, strict bool, seeds ...string) error {
 	var selected *resources.ModuleClosure
 	if len(seeds) > 0 {
-		var err error
-		selected, err = workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds)
+		provided, _, err := orchestration.WorkspaceConfigurationsForChecking(ctx, workspace, env)
+		if err != nil {
+			return err
+		}
+		var references map[string][]string
+		if provided != nil {
+			references = configurations.EndpointProducers(provided.Infos)
+		}
+		selected, err = workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds, resources.WithModuleConfigurationReferences(references))
 		if err != nil {
 			return err
 		}
