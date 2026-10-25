@@ -1127,6 +1127,16 @@ host already applied, and a canceled call does not establish whether it applied.
 Delivery still begins after Running; these bounds do not make authority available
 to a service during its own startup.
 
+The native renderer also accepts an explicit admitted workload set independently
+of the ready subset used for endpoint publication. Ready workloads must belong
+to that admitted set. Its explicit frontend-deferral input permits authority-only
+declarations before a bundle exists; ordinary frontend publication still requires
+the complete built payload. Deferral omits the frontend in a full replacement
+manifest, deliberately removing any previous current page. It does not preserve
+an old page implicitly. A caller retaining a valid ready page must supply its
+verified payload instead. The launcher does not yet use these inputs: graph
+ordering, pre-start delivery and lifecycle integration remain separate work.
+
 The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both under
 `.codefly/run/<environment>/host/`; it refuses both in a pod. The
