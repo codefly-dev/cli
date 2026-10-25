@@ -36,6 +36,12 @@ concurrency:
   group: companions-publish
   cancel-in-progress: false
 
+env:
+  # The CLI requires codefly-dev/authority's libraries, and that repository is
+  # private: fetched from GitHub with the CI reader app's token, never via the
+  # module proxy or the checksum database (go.yml says how).
+  GOPRIVATE: github.com/codefly-dev/authority
+
 jobs:
   publish:
     name: Publish and verify companion images
@@ -82,9 +88,23 @@ jobs:
           go-version-file: cli/go.mod
           cache: false
 
+      - name: Read the authority's libraries
+        id: authority
+        uses: ./cli/.github/actions/read-authority
+        with:
+          app-id: ${{ secrets.CI_READER_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_READER_GITHUB_APP_PRIVATE_KEY }}
+
+      # The token reaches git in the download alone; the build reads the cache.
       - name: Build the codefly CLI
         working-directory: cli
-        run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
+        env:
+          AUTHORITY_TOKEN: ${{ steps.authority.outputs.token }}
+          GOWORK: "off"
+        run: |
+          .github/scripts/download-go-modules.sh
+          unset AUTHORITY_TOKEN
+          GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
 
       # A multi-platform buildx push builds every image as one manifest, so the
       # arm64 stages need an emulator (QEMU) and a builder that can emit a
@@ -228,9 +248,23 @@ jobs:
           go-version-file: cli/go.mod
           cache: false
 
+      - name: Read the authority's libraries
+        id: authority
+        uses: ./cli/.github/actions/read-authority
+        with:
+          app-id: ${{ secrets.CI_READER_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_READER_GITHUB_APP_PRIVATE_KEY }}
+
+      # The token reaches git in the download alone; the build reads the cache.
       - name: Build the codefly CLI
         working-directory: cli
-        run: GOWORK=off GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
+        env:
+          AUTHORITY_TOKEN: ${{ steps.authority.outputs.token }}
+          GOWORK: "off"
+        run: |
+          .github/scripts/download-go-modules.sh
+          unset AUTHORITY_TOKEN
+          GOBIN="${{ github.workspace }}/bin" go install ./cmd/codefly
 
       - name: Verify linux/arm64 assets for the qualification fixtures
         # Test inputs only: these identities never select production agents or

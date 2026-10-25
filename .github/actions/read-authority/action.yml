@@ -1,0 +1,39 @@
+name: Read the authority's libraries
+description: >-
+  Mints a read-only token for codefly-dev/authority with the CI reader app, as
+  obin-ai/module-directory's and module-compute-engine's actions of the same
+  name do. The CLI requires the authority's interface client, hop and delivery
+  libraries (libraries/authority-client/go, libraries/hop/go,
+  libraries/delivery/go), and that repository is private. The app must be
+  installed on the codefly-dev organization with read access to it.
+
+  It writes no git configuration: it answers the token, and the one step that
+  downloads modules (.github/scripts/download-go-modules.sh) lets git use it
+  for that step alone, so no later step (build, vet, lint, a test a pull
+  request supplies) can read it.
+
+inputs:
+  app-id:
+    description: The CI reader app's id (secrets.CI_READER_GITHUB_APP_ID).
+    required: true
+  private-key:
+    description: The CI reader app's key (secrets.CI_READER_GITHUB_APP_PRIVATE_KEY).
+    required: true
+
+outputs:
+  token:
+    description: A read-only token for codefly-dev/authority.
+    value: ${{ steps.reader.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mint the read-only authority token
+      id: reader
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: codefly-dev
+        repositories: authority
+        permission-contents: read

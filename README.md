@@ -22,6 +22,20 @@ GitHub release for each immutable version. See [CLI releases and
 updates](docs/cli-updates.md) for direct installation, update commands,
 verification, rollback, and package-manager ownership.
 
+The release is the install path. The CLI requires libraries from
+`codefly-dev/authority`, which is a private repository, so `go install
+github.com/codefly-dev/cli/...` (the CLI or `codefly-help`) is not supported
+from outside the codefly-dev organization while that repository stays private:
+the module proxy cannot serve it and `go` cannot fetch it without read access.
+Releases ship prebuilt, signed binaries and need no access to it.
+
+Building from source needs read access to `codefly-dev/authority` and
+`GOPRIVATE=github.com/codefly-dev/authority`, so `go` fetches it with git
+(your own credentials) rather than asking the public proxy and checksum
+database. CI reads it with the organization's CI reader app
+(`.github/actions/read-authority`, handed to git for the download step alone by
+`.github/scripts/download-go-modules.sh`).
+
 # Development
 
 ## Repository layout

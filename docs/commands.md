@@ -64,6 +64,11 @@ export OPENAI_API_KEY=...
 codefly explain build service
 ```
 
+The `go install` needs read access to `codefly-dev/authority` and
+`GOPRIVATE=github.com/codefly-dev/authority`: the CLI's module requires that
+private repository's libraries, so it is not supported from outside the
+codefly-dev organization while the repository stays private.
+
 The reference `codefly-help` provider is built and installed separately from
 the main CLI. It calls the OpenAI Responses API without an SDK, defaults to
 `gpt-5.6-luna`, and accepts `CLI_HELP_MODEL` and `CLI_HELP_API_URL` overrides.

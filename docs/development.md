@@ -120,10 +120,13 @@ codefly self build
 
 `go install` produces an operator-managed development build. It does not carry
 the authenticated release metadata and `codefly self update` will not replace
-it:
+it. It needs read access to `codefly-dev/authority`, a private repository whose
+libraries the CLI requires, so it is not supported from outside the codefly-dev
+organization; releases are the install path there:
 
 ```bash
-go install github.com/codefly-dev/cli/cmd/codefly@<version>
+GOPRIVATE=github.com/codefly-dev/authority \
+  go install github.com/codefly-dev/cli/cmd/codefly@<version>
 ```
 
 For a self-updating direct installation, use a signed release archive as
