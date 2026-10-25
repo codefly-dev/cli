@@ -49,8 +49,12 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
-contract and are skipped, as is a connect endpoint whose service has no proto.
+document (openapi.json). An HTTP endpoint gets the OpenAPI document its service
+carries (openapi/api.swagger.json), when it carries one: a solution backend
+publishes its routes there, each with its x-codefly-authority-policy. TCP and
+MCP endpoints have no machine-readable contract and are skipped, as are an HTTP
+endpoint whose service carries no document and a connect endpoint whose
+service has no proto.
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
@@ -201,7 +205,9 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		// A rest endpoint's contract is the OpenAPI document its service carries
 		// where core loads it (standards.OpenAPIPath). The exported endpoint is
 		// read from the module's interface and carries no API details, so it
-		// cannot answer this; asking it skipped every REST face.
+		// cannot answer this; asking it skipped every REST face. An http
+		// endpoint's is the same document, when its service carries one: a
+		// solution backend serves plain HTTP and publishes its routes there.
 		serviceHasOpenAPI, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), standards.OpenAPIPath))
 
 		carriers := contractCarriers(ctx, serviceName, exported, serviceHasProto, serviceHasOpenAPI)
@@ -213,17 +219,29 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			return nil, fmt.Errorf("module %s: %w", module.Name, surfaceErr)
 		}
 
-		loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
-		if loadErr != nil {
-			return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
-		}
-		loadedByName := make(map[string]*basev0.Endpoint, len(loaded))
-		for _, endpoint := range loaded {
-			loadedByName[endpoint.Name] = endpoint
+		// The agent reports each endpoint's API details at Load. An http
+		// endpoint has none to report (its document is the service's file), so
+		// a service whose carriers are all http is not loaded.
+		var loadedByName map[string]*basev0.Endpoint
+		for _, endpoint := range carriers {
+			if endpoint.Api == standards.HTTP || loadedByName != nil {
+				continue
+			}
+			loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
+			if loadErr != nil {
+				return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
+			}
+			loadedByName = make(map[string]*basev0.Endpoint, len(loaded))
+			for _, endpoint := range loaded {
+				loadedByName[endpoint.Name] = endpoint
+			}
 		}
 
 		for _, endpoint := range carriers {
-			actual, ok := loadedByName[endpoint.Name]
+			actual, ok := endpoint, true
+			if endpoint.Api != standards.HTTP {
+				actual, ok = loadedByName[endpoint.Name]
+			}
 			if !ok {
 				return nil, fmt.Errorf("service %s does not report endpoint %q at Builder.Load", serviceName, endpoint.Name)
 			}
@@ -275,6 +293,8 @@ func contractCarriers(_ context.Context, serviceName string, exported []*basev0.
 			cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
 		case endpoint.Api == standards.REST && !serviceHasOpenAPI:
 			cli.Info("endpoint %s/%s (api rest) has no OpenAPI document; exported for reachability only, skipped", serviceName, endpoint.Name)
+		case endpoint.Api == standards.HTTP && !serviceHasOpenAPI:
+			cli.Info("endpoint %s/%s (api http) has no OpenAPI document; skipped", serviceName, endpoint.Name)
 		default:
 			carriers = append(carriers, endpoint)
 		}
@@ -338,9 +358,10 @@ func resolvePackageIdentity(module *resources.Module) (string, string, *composit
 
 // endpointCarriesContract reports whether an endpoint's API can be exported as
 // a machine-readable contract: grpc and connect resolve to a protobuf
-// FileDescriptorSet, rest to an OpenAPI document. http and tcp have none.
+// FileDescriptorSet, rest and http to an OpenAPI document (http only when its
+// service carries one, which contractCarriers decides). tcp and mcp have none.
 func endpointCarriesContract(api string) bool {
-	return api == standards.GRPC || api == standards.CONNECT || api == standards.REST
+	return api == standards.GRPC || api == standards.CONNECT || api == standards.REST || api == standards.HTTP
 }
 
 // writeEndpointContract writes one endpoint's contract files and returns its
@@ -359,6 +380,17 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 		return writeProtobufContract(ctx, module, service, endpoint, surface, physicalDir, canonicalDir)
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
+		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
+	}
+	if endpoint.Api == standards.HTTP {
+		// An http endpoint reports no API details at Load, so its document is
+		// read where the service carries it, by core's own REST loader: the
+		// same bytes and routes a rest endpoint's agent reports.
+		document := filepath.Join(service.Dir(), standards.OpenAPIPath)
+		rest, err := resources.LoadRestAPI(ctx, &document)
+		if err != nil {
+			return nil, fmt.Errorf("endpoint %s: %s: %w", endpoint.Name, standards.OpenAPIPath, err)
+		}
 		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
 	}
 	return nil, fmt.Errorf("endpoint %s reports neither a grpc/connect nor a rest contract", endpoint.Name)

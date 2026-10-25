@@ -3252,15 +3252,28 @@ module's `interface` declares (`module.codefly.yaml`'s `interface:` block) into
 `contracts/api` and writes `contracts/api/catalog.codefly.json`. gRPC and connect
 endpoints get a serialized `FileDescriptorSet` (`contract.binpb`) plus a copy of
 the service's proto sources; REST endpoints get their OpenAPI document
-(`openapi.json`). HTTP and TCP endpoints have no machine-readable contract and are
+(`openapi.json`). An HTTP endpoint gets the OpenAPI document its service carries
+at `openapi/api.swagger.json`, when it carries one, exported exactly as a REST
+endpoint's is (no agent is loaded for it: an `http` endpoint reports no API
+details). TCP and MCP endpoints have no machine-readable contract and are
 skipped. When the module has a `module.package.codefly.yaml`, its
 `services[*].api-contracts` are updated to match.
 
+An HTTP endpoint's document is how a solution backend, which serves plain HTTP,
+publishes its routes and what a call to each must hold: every operation's
+`x-codefly-authority-policy` (an `authority.hop.v1.Policy` as JSON). The route
+policy rows the authority applies, `"<VERB> <basePath><path>"`, are derived from
+it exactly as from a REST module's contract, so the document describes the
+routes as the backend serves them: no `basePath` when its paths already carry
+the prefix the authority's edge forwards them on (`/v1/<id>/…`). A solution
+built on solution-runtime-go renders it with `solution.InterfaceDocument`.
+
 An exported endpoint that carries no machine-readable contract is skipped with a
-notice, never a failure: `http` and `tcp` endpoints, a `connect` endpoint on a
-service with no proto, and a `rest` endpoint with no OpenAPI document. An
-interface may export such an endpoint so composed modules can reach it (a
-gateway's REST surface, say); that export is reachability, not a contract.
+notice, never a failure: `tcp` and `mcp` endpoints, an `http` endpoint whose
+service carries no OpenAPI document, a `connect` endpoint on a service with no
+proto, and a `rest` endpoint with no OpenAPI document. An interface may export
+such an endpoint so composed modules can reach it (a gateway's REST surface,
+say); that export is reachability, not a contract.
 
 For a restricted protobuf listener, publish a procedure inventory projected from
 its runtime registration/routing tables. Configure it in the module's

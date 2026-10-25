@@ -2737,8 +2737,12 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
-contract and are skipped, as is a connect endpoint whose service has no proto.
+document (openapi.json). An HTTP endpoint gets the OpenAPI document its service
+carries (openapi/api.swagger.json), when it carries one: a solution backend
+publishes its routes there, each with its x-codefly-authority-policy. TCP and
+MCP endpoints have no machine-readable contract and are skipped, as are an HTTP
+endpoint whose service carries no document and a connect endpoint whose
+service has no proto.
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
