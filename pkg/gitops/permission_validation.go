@@ -71,17 +71,19 @@ func HostImplements(ctx context.Context, workspace *resources.Workspace, hostMod
 // contract opts in (require_method_policies). Toward any other host an unmarked
 // method passes, as MethodPolicies lists it: the hop refuses it per call.
 //
-// The host's own module — the one host.component names — is not behind the
-// hop: its methods are the host's, never fronted by the policies it receives,
-// so the host clause does not hold it (its own require_method_policies still
-// does). Every other module in the composition is held.
+// The host's own module — the module of the host.delivery service — is not
+// behind the hop: its methods are the host's, never fronted by the policies it
+// receives, so the host clause does not hold it (its own
+// require_method_policies still does). Every other module in the composition
+// is held. host.component names the host's instance, not a module, so it is
+// never read here.
 func methodPoliciesRequired(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, moduleName string, request authorityRequest) (string, bool) {
 	if request.contract != nil && request.contract.RequireMethodPolicies {
 		return "its " + modulecontract.FileName + " sets require_method_policies", true
 	}
-	if env != nil && env.Host != nil && env.Host.Component != moduleName {
+	if env != nil && env.Host != nil {
 		hostModule, hostService, _ := env.Host.DeliveryEndpoint()
-		if HostImplements(ctx, workspace, hostModule, hostService, CompositionInterface) {
+		if hostModule != moduleName && HostImplements(ctx, workspace, hostModule, hostService, CompositionInterface) {
 			return fmt.Sprintf("its policies are delivered to host %s/%s, which implements %s", hostModule, hostService, CompositionInterface), true
 		}
 	}

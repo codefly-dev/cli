@@ -1185,11 +1185,11 @@ declares nothing at all is refused, by name and with the reason, in two cases:
   `require_method_policies: true`, which holds it to a policy on every method
   wherever it is delivered.
 
-The host's own module — the module `host.component` names, for example `saas`
-when a local environment's host is `component: saas` with
-`delivery: saas/accounts/connect` — is not behind the hop: its methods are the
-host's, never fronted by the policies the host receives, so the first case does
-not hold it. Only that one module is set aside; every other module in the
+The host's own module — the module of the `host.delivery` service, `saas` for
+`delivery: saas/accounts/connect` whatever `host.component` says (`saas` on a
+local environment, `platform-obin` on a cell) — is not behind the hop: its
+methods are the host's, never fronted by the policies the host receives, so the
+first case does not hold it. Only that one module is set aside; every other module in the
 composition is still refused by name, and the host module's own
 `require_method_policies: true` still holds it.
 
