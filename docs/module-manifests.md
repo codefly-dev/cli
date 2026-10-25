@@ -1028,10 +1028,27 @@ run, the CLI is:
   `/platform/_delivery/manifest` with a native credential for account
   `delivery` in the module's namespace. When the set of running identity
   workloads changes, the manifest is delivered again; its generation is
-  settled from its content — unchanged content replays its generation,
-  changed content is the next one — and recorded under
-  `.codefly/run/<environment>/delivery/generations.json`, so a
-  restart replays rather than rewrites.
+  settled from its content. For a composition-interface host, that includes
+  the captured method policies, scope ceilings and solution roles, including
+  whether a policy document is present. The same captured declaration is
+  signed and sent: a policy-only change advances the generation once.
+  The run reserves that content and generation under
+  `.codefly/run/<environment>/delivery/generations.json` before sending,
+  using a cancellable shared file lock and Core's atomic writer. Neither signing
+  nor network I/O holds the lock. A lost response or refusal keeps the reservation:
+  after restart unchanged content replays it; changed content advances it.
+  Entering paired settlement from an old live Core-only record advances once,
+  because the old record cannot establish policy equality. Withdrawals keep their
+  Core-only identity and read no policy source, so an old terminal withdrawal
+  still replays its exact generation. A reserved withdrawal is terminal locally:
+  only its exact content may replay, including when its response was lost or signing
+  failed before sending; a later live attempt cannot displace that reservation. An old record learns terminality
+  when its exact withdrawal is replayed. Older records alone cannot reconstruct
+  host tombstones they never recorded. Legacy HTTP delivery retains Core-only
+  settlement and also reserves before sending. Deleting the record is not a
+  recovery procedure; it loses the evidence needed to avoid rewriting a generation.
+  These rules do not establish policy-file watch/reload behavior or power-loss
+  durability beyond Core's atomic writer.
 - **the administrator** — before delivering, it makes sure the host holds the
   composition's envelope: `{"revision": N, "principals": {"<module>":
   {"grant": <grant>}}}`, each grant read from the `principals` of

@@ -54,8 +54,21 @@ func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.S
 	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, applied: map[string]AppliedManifest{}}
 }
 
-// Post is NativeDeliverer.Post over the interface.
+// Post sends an already-settled carrier, reading its policy now. Native runs
+// use Prepare instead so policy participates in generation settlement.
 func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *solutionhost.Signed, token string) (Receipt, error) {
+	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
+	if err != nil {
+		return Receipt{}, err
+	}
+	prepared, err := c.Prepare(ctx, module, manifest.Removed)
+	if err != nil {
+		return Receipt{}, err
+	}
+	return prepared.Post(ctx, module, signed, token)
+}
+
+func (c *CompositionDelivery) post(ctx context.Context, module string, signed *solutionhost.Signed, token string, declaration []byte) (Receipt, error) {
 	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
 	if err != nil {
 		return Receipt{}, err
@@ -64,7 +77,7 @@ func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *s
 		Carrier:    &compositionv1.SignedManifestV1{Document: signed.Document, Envelope: signed.Envelope},
 		Credential: token,
 	}
-	if request.Authority, err = c.authority(ctx, module, manifest, signed.Document); err != nil {
+	if request.Authority, err = c.authority(manifest, signed.Document, declaration); err != nil {
 		return Receipt{}, err
 	}
 	out, err := c.client.ApplyManifest(ctx, request)
@@ -87,16 +100,29 @@ func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *s
 	return Receipt{Status: http.StatusOK, Disposition: "accepted", Generation: out.GetGeneration()}, nil
 }
 
-// authority signs the authority's document for one delivery: the module's
-// method policies, scope ceilings and a solution's roles, bound to the core
-// manifest by its module, generation and digest, under the key that signs the
-// manifest. Nil when the module declares none of them.
-func (c *CompositionDelivery) authority(ctx context.Context, module string, manifest *solutionhost.ModuleManifest, core []byte) (*compositionv1.SignedManifestV1, error) {
-	// A withdrawal is self-contained. Its removed source need not remain readable,
-	// and attaching live policies would contradict the terminal manifest.
-	if manifest.Removed || c.signer == nil {
-		return nil, nil
+// Prepare captures one declaration. Deterministic bytes both identify its
+// generation and supply the signed sidecar; caller-owned protobufs cannot
+// change the captured policy during credential acquisition or signing.
+func (c *CompositionDelivery) Prepare(ctx context.Context, module string, removed bool) (*PreparedDelivery, error) {
+	var declaration []byte
+	if !removed && c.signer != nil {
+		var err error
+		declaration, err = c.declaration(ctx, module)
+		if err != nil {
+			return nil, err
+		}
 	}
+	// Presence is significant even when the declaration serializes empty.
+	content := []byte{0}
+	if declaration != nil {
+		content = append([]byte{1}, declaration...)
+	}
+	return &PreparedDelivery{Content: content, Post: func(ctx context.Context, module string, signed *solutionhost.Signed, token string) (Receipt, error) {
+		return c.post(ctx, module, signed, token, declaration)
+	}}, nil
+}
+
+func (c *CompositionDelivery) declaration(ctx context.Context, module string) ([]byte, error) {
 	var methods []*compositionv1.MethodPolicyV1
 	declared := false
 	if c.methods != nil {
@@ -122,9 +148,22 @@ func (c *CompositionDelivery) authority(ctx context.Context, module string, mani
 	if !declared && len(ceilings) == 0 && len(roles) == 0 {
 		return nil, nil
 	}
-	document, err := proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
-		Module: manifest.Alias, Generation: manifest.Generation, CoreManifestDigest: delivery.Digest(core), Methods: methods, ScopeCeilings: ceilings, Roles: roles,
+	return proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
+		Methods: methods, ScopeCeilings: ceilings, Roles: roles,
 	})
+}
+
+// authority binds the captured declaration to the final Core bytes and signs it.
+func (c *CompositionDelivery) authority(manifest *solutionhost.ModuleManifest, core, declaration []byte) (*compositionv1.SignedManifestV1, error) {
+	if declaration == nil {
+		return nil, nil
+	}
+	var policy compositionv1.AuthorityManifestV1
+	if err := proto.Unmarshal(declaration, &policy); err != nil {
+		return nil, err
+	}
+	policy.Module, policy.Generation, policy.CoreManifestDigest = manifest.Alias, manifest.Generation, delivery.Digest(core)
+	document, err := proto.MarshalOptions{Deterministic: true}.Marshal(&policy)
 	if err != nil {
 		return nil, err
 	}

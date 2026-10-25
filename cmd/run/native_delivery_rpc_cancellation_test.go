@@ -54,7 +54,7 @@ func TestNativeDeliveryCancelsTheGeneratedCompositionRPC(t *testing.T) {
 			signer, err := solutionhost.NewInMemorySigner("delivery-test", private)
 			require.NoError(t, err)
 			composition := gitops.NewCompositionDelivery(conn, signer, nil, nil, nil)
-			native := &gitops.NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Post: composition.Post,
+			native := &gitops.NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare,
 				Token: func(string) (string, error) { return "test-carrier", nil }}
 			manifest := &solutionhost.ModuleManifest{
 				Schema: solutionhost.SchemaModuleManifestV1, Binding: "test.local.module_a", Alias: "module_a", Kind: solutionhost.KindModule,

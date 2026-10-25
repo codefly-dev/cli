@@ -594,7 +594,7 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 				return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
 			},
 			ObserverToken: func() (string, error) { return cluster.vouch.Issue(cluster.vouch.Observer()) },
-			Post:          composition.Post, Applied: composition.Applied,
+			Prepare:       composition.Prepare, Applied: composition.Applied,
 		}, "", nil
 	}
 	gatewayModule, gatewayService, ok := strings.Cut(cluster.env.Host.Gateway, "/")

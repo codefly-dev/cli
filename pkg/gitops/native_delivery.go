@@ -17,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	runcomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/workloadidentity"
 )
@@ -96,7 +98,7 @@ type NativeDeliverer struct {
 	Workspace *resources.Workspace
 	Env       *environments.Environment
 	Signer    solutionhost.Signer
-	// StateDir keeps the generations delivered so far: changed content is the
+	// StateDir keeps the generations reserved so far: changed content is the
 	// next generation, unchanged content is replayed.
 	StateDir string
 	// DeliveryURL is the host's delivery listener (the accounts REST address).
@@ -111,8 +113,20 @@ type NativeDeliverer struct {
 	// delivery route: a host that implements codefly.dev/composition receives it
 	// through ApplyManifest. Applied, when set, answers the applied state the
 	// same way. Both nil is the saas HTTP delivery, the transition's.
-	Post    func(ctx context.Context, module string, signed *solutionhost.Signed, token string) (Receipt, error)
+	Post DeliveryPost
+	// Prepare captures transport-owned content before generation reservation.
+	// Its Post must send exactly that captured content with the settled carrier.
+	Prepare func(ctx context.Context, module string, removed bool) (*PreparedDelivery, error)
 	Applied func(ctx context.Context, binding string) (*AppliedManifest, bool, error)
+}
+
+// DeliveryPost sends a carrier whose generation has already been settled.
+type DeliveryPost func(context.Context, string, *solutionhost.Signed, string) (Receipt, error)
+
+// PreparedDelivery binds generation content to its immutable send operation.
+type PreparedDelivery struct {
+	Content []byte
+	Post    DeliveryPost
 }
 
 // Render builds the manifest of a module this run started identity workloads
@@ -175,7 +189,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	return ModuleManifestOf(binding, d.Env.Host, instance, workloads)
 }
 
-// nativeGenerations is the run's record of what it delivered: per binding,
+// nativeGenerations is the run's record of what it reserved: per binding,
 // the generation and the content it carried. It outlives a run, so a restart
 // that delivers the same content replays its generation.
 type nativeGenerations struct {
@@ -185,6 +199,7 @@ type nativeGenerations struct {
 type nativeGeneration struct {
 	Generation uint64 `json:"generation"`
 	Content    string `json:"content"`
+	Removed    bool   `json:"removed,omitempty"`
 }
 
 func (d *NativeDeliverer) generationsPath() string {
@@ -209,7 +224,7 @@ func (d *NativeDeliverer) loadGenerations() (*nativeGenerations, error) {
 	return record, nil
 }
 
-func (d *NativeDeliverer) saveGenerations(record *nativeGenerations) error {
+func (d *NativeDeliverer) saveGenerations(ctx context.Context, record *nativeGenerations) error {
 	if err := os.MkdirAll(d.StateDir, 0o700); err != nil {
 		return err
 	}
@@ -217,25 +232,32 @@ func (d *NativeDeliverer) saveGenerations(record *nativeGenerations) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(d.generationsPath(), data, 0o600)
+	return shared.WriteFileAtomic(ctx, d.generationsPath(), data, 0o600)
 }
 
 // settle assigns a manifest its generation: the one it had when its content is
-// unchanged, the next one otherwise. content is the canonical payload at
-// generation 1.
-func settle(record *nativeGenerations, key string, content []byte) uint64 {
+// unchanged, the next one otherwise. Content includes the canonical Core payload
+// at generation 1 and any prepared transport declaration; withdrawals are terminal.
+func settle(record *nativeGenerations, key string, content []byte, removed bool) (uint64, error) {
 	hash := sha256.Sum256(content)
 	digest := hex.EncodeToString(hash[:])
 	entry, known := record.Entries[key]
 	if known && entry.Content == digest {
-		return entry.Generation
+		// Old records did not retain terminality. An exact withdrawal replay
+		// can record it without advancing the immutable terminal generation.
+		entry.Removed = entry.Removed || removed
+		record.Entries[key] = entry
+		return entry.Generation, nil
+	}
+	if entry.Removed {
+		return 0, fmt.Errorf("%w: binding %s has a reserved withdrawal; replay it or use a new binding", solutionhost.ErrWithdrawn, key)
 	}
 	next := uint64(1)
 	if known {
 		next = entry.Generation + 1
 	}
-	record.Entries[key] = nativeGeneration{Generation: next, Content: digest}
-	return next
+	record.Entries[key] = nativeGeneration{Generation: next, Content: digest, Removed: removed}
+	return next, nil
 }
 
 // Receipt is the host's answer to one delivered manifest: 200 with the
@@ -252,30 +274,71 @@ type Receipt struct {
 // host as the delivery account of namespace — the namespace of the manifest's
 // workloads, or for a withdrawal the one its binding was delivered in.
 func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.ModuleManifest) (Receipt, error) {
-	record, err := d.loadGenerations()
+	if err := ctx.Err(); err != nil {
+		return Receipt{}, err
+	}
+	if err := os.MkdirAll(d.StateDir, 0o700); err != nil {
+		return Receipt{}, err
+	}
+	post := d.Post
+	// Source preparation and reservation share one short transaction. No
+	// credential acquisition, signing or network operation holds this lock.
+	err := runcomposition.WithFileLockContext(ctx, d.generationsPath()+".lock", 30*time.Second, func() error {
+		record, err := d.loadGenerations()
+		if err != nil {
+			return err
+		}
+		manifest.Generation = 1
+		content, err := solutionhost.SignedPayload(manifest)
+		if err != nil {
+			return err
+		}
+		if d.Prepare != nil {
+			prepared, prepareErr := d.Prepare(ctx, manifest.Alias, manifest.Removed)
+			if prepareErr != nil {
+				return prepareErr
+			}
+			if prepared == nil || prepared.Post == nil {
+				return errors.New("delivery preparation supplied no send operation")
+			}
+			post = prepared.Post
+			// Withdrawals retain their old Core-only identity: a terminal
+			// binding cannot accept a migration to a later generation.
+			if !manifest.Removed {
+				content, err = json.Marshal(struct {
+					Version      int
+					Core, Policy []byte
+				}{1, content, prepared.Content})
+				if err != nil {
+					return err
+				}
+			}
+		}
+		manifest.Generation, err = settle(record, manifest.Binding, content, manifest.Removed)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// A lost acknowledgement must never permit different content to
+		// reuse this generation, including after process restart.
+		return d.saveGenerations(ctx, record)
+	})
 	if err != nil {
 		return Receipt{}, err
 	}
-	// The generation is settled from the content at generation 1, so the
-	// same content always settles to the same generation.
-	manifest.Generation = 1
-	content, err := solutionhost.SignedPayload(manifest)
-	if err != nil {
+	if err = ctx.Err(); err != nil {
 		return Receipt{}, err
 	}
-	manifest.Generation = settle(record, manifest.Binding, content)
 	payload, err := solutionhost.SignedPayload(manifest)
 	if err != nil {
 		return Receipt{}, err
 	}
-	receipt, err := d.post(ctx, manifest.Alias, payload)
-	if err != nil {
-		return receipt, err
-	}
-	return receipt, d.saveGenerations(record)
+	return d.post(ctx, manifest.Alias, payload, post)
 }
 
-func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byte) (Receipt, error) {
+func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byte, post DeliveryPost) (Receipt, error) {
 	envelope, err := solutionhost.SignEnvelope(payload, d.Signer)
 	if err != nil {
 		return Receipt{}, err
@@ -292,8 +355,8 @@ func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byt
 	if err != nil {
 		return Receipt{}, err
 	}
-	if d.Post != nil {
-		return d.Post(ctx, module, signed, token)
+	if post != nil {
+		return post(ctx, module, signed, token)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(d.DeliveryURL, "/")+manifestDeliveryPath, bytes.NewReader(body))
 	if err != nil {
