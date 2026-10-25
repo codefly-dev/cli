@@ -12,5 +12,6 @@ var InstallCmd = &cobra.Command{
 }
 
 func init() {
+	InstallCmd.AddCommand(install.ModulesCmd)
 	InstallCmd.AddCommand(install.LibraryCmd)
 }
