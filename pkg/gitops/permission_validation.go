@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/codefly-dev/core/wool"
 
@@ -12,23 +13,74 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 )
 
 // ValidateMethodPolicies validates the exact published inputs used by delivery.
-// An uncovered business role is not malformed policy.
-func ValidateMethodPolicies(methods []*compositionv1.MethodPolicyV1) error {
+// Structure is checked wherever a policy is read: a method declaring both
+// requirements and any checked caller, a requirement with no action, a kind or
+// action outside the vocabulary. requireDeclaration also refuses a method that
+// declares nothing, by name; it is set only where the policies are consumed
+// (methodPoliciesRequired), since elsewhere such a method is passed through for
+// the hop to refuse per call. An uncovered business role is not malformed
+// policy.
+func ValidateMethodPolicies(methods []*compositionv1.MethodPolicyV1, requireDeclaration bool) error {
 	var problems []error
 	for _, m := range methods {
 		requires := map[string][]string{}
 		for _, sc := range m.GetRequires() {
 			requires[sc.GetResourceKind()] = append(requires[sc.GetResourceKind()], sc.GetActions()...)
 		}
-		if err := delivery.ValidateMethodPolicy(m.GetMethod(), m.GetAnyCheckedCaller(), requires, true); err != nil {
+		if err := delivery.ValidateMethodPolicy(m.GetMethod(), m.GetAnyCheckedCaller(), requires, requireDeclaration); err != nil {
 			problems = append(problems, err)
 		}
 	}
 	return errors.Join(problems...)
+}
+
+// CompositionInterface is the Codefly interface a host declares when it
+// receives manifests through ApplyManifest, method policies with them.
+const CompositionInterface = "codefly.dev/composition"
+
+// HostImplements reports whether the host service declares, in its module's
+// interface endpoints, that it implements the named Codefly interface at any
+// version. A host module the workspace does not compose declares nothing here.
+func HostImplements(ctx context.Context, workspace *resources.Workspace, hostModule, hostService, name string) bool {
+	module, err := workspace.LoadModuleFromName(ctx, hostModule)
+	if err != nil || module.Interface == nil {
+		return false
+	}
+	for _, endpoint := range module.Interface.Endpoints {
+		if endpoint.Service != hostService {
+			continue
+		}
+		for _, implemented := range endpoint.Implements {
+			if implemented == name || strings.HasPrefix(implemented, name+"@") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// methodPoliciesRequired answers whether every method the module publishes
+// must declare a policy before anything is rendered, and why. A policy is
+// required where it is consumed: by a host implementing codefly.dev/composition,
+// which receives the policies with each manifest, or wherever the module's own
+// contract opts in (require_method_policies). Toward any other host an unmarked
+// method passes, as MethodPolicies lists it: the hop refuses it per call.
+func methodPoliciesRequired(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, request authorityRequest) (string, bool) {
+	if request.contract != nil && request.contract.RequireMethodPolicies {
+		return "its " + modulecontract.FileName + " sets require_method_policies", true
+	}
+	if env != nil && env.Host != nil {
+		hostModule, hostService, _ := env.Host.DeliveryEndpoint()
+		if HostImplements(ctx, workspace, hostModule, hostService, CompositionInterface) {
+			return fmt.Sprintf("its policies are delivered to host %s/%s, which implements %s", hostModule, hostService, CompositionInterface), true
+		}
+	}
+	return "", false
 }
 
 // ValidateModulePermissions runs before render/build/publication effects. Hop
@@ -45,14 +97,18 @@ func validateModulePermissions(ctx context.Context, workspace *resources.Workspa
 	if err != nil {
 		return err
 	}
-	if err = ValidateMethodPolicies(methods); err != nil {
+	request, err := authorityRequestOf(module)
+	if err != nil {
+		return err
+	}
+	reason, required := methodPoliciesRequired(ctx, workspace, env, request)
+	if err = ValidateMethodPolicies(methods, required); err != nil {
+		if required {
+			return fmt.Errorf("module %s permissions (every published method declares a policy: %s): %w", module.Name, reason, err)
+		}
 		return fmt.Errorf("module %s permissions: %w", module.Name, err)
 	}
 	if err = validatePermissionSource(ctx, workspace, module, selectedSource); err != nil {
-		return err
-	}
-	request, err := authorityRequestOf(module)
-	if err != nil {
 		return err
 	}
 	services, err := loadModuleServices(ctx, module, env)

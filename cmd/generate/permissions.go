@@ -217,7 +217,8 @@ func permissionIdentifier(raw string) string {
 }
 
 func permissionFiles(methods []*compositionv1.MethodPolicyV1) (map[string][]byte, error) {
-	if err := gitops.ValidateMethodPolicies(methods); err != nil {
+	// The generator is opt-in: a table names every method, so each declares.
+	if err := gitops.ValidateMethodPolicies(methods, true); err != nil {
 		return nil, err
 	}
 	names := map[string]string{}

@@ -1172,6 +1172,33 @@ invalid; an intentionally restricted business role is valid. Identical policies
 published on multiple endpoints are accepted; conflicting policies for the same
 method are refused rather than silently taking the first.
 
+**A method that declares no policy is refused only where policies are
+consumed.** The structural checks above hold everywhere: both `requires` and
+`any_checked_caller` on one method, a requirement with no action, a kind or
+action outside the vocabulary, colliding identifiers. A published method that
+declares nothing at all is refused, by name and with the reason, in two cases:
+
+- the environment's host (the service `host.delivery` names) declares that it
+  implements `codefly.dev/composition`, so every method's policy travels with
+  the manifest to the host's authority; or
+- the module's `module.contract.codefly.yaml` sets
+  `require_method_policies: true`, which holds it to a policy on every method
+  wherever it is delivered.
+
+Toward any other host — the saas host every released composition delivers to —
+an unmarked method passes, listed with neither field set exactly as
+`MethodPolicies` reads it, and the hop in front of the module refuses it per
+call. `codefly generate permissions` always requires a declaration: a table
+names every method.
+
+*Migrating a module to the hop vocabulary.* Mark each RPC with
+`option (authority.hop.v1.policy)` (`requires` or `any_checked_caller: true`)
+and each OpenAPI operation with `x-codefly-authority-policy`, then run
+`codefly generate contracts --permissions`. Until every method is marked the
+module still renders toward a host that does not consume policies; before it is
+composed under a host implementing `codefly.dev/composition`, or once it sets
+`require_method_policies: true`, every unmarked method is refused by name.
+
 The checker validates published bytes and their package digests. For each
 published protobuf endpoint resolved from local source (including service
 overrides and materialized git clones), it also compares the service's `proto/`

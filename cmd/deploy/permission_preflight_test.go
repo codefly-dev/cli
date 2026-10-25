@@ -45,6 +45,9 @@ contracts:
   composition: ">=2.0.0 <3.0.0"
 `, sha256.Sum256(descriptor)),
 		"modules/zulu/contracts/api.binpb": string(descriptor),
+		// Zulu holds every method it publishes to a policy wherever it is
+		// delivered, so its unmarked method refuses even with no host.
+		"modules/zulu/module.contract.codefly.yaml": "schema: codefly/module-contract/v1\nprincipal: zulu\nnamespaces: []\nqueues: []\nscope_ceilings: []\nbindings: []\ndestinations: []\nrequire_method_policies: true\n",
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)
@@ -55,6 +58,7 @@ contracts:
 	// be reported before even that first module's readiness/render pipeline.
 	err = renderComposition(t.Context())
 	require.ErrorContains(t, err, "/bad.Api/Unmarked declares no permission policy")
+	require.ErrorContains(t, err, "require_method_policies")
 	_, err = os.Stat(filepath.Join(root, "deployments"))
 	require.ErrorIs(t, err, os.ErrNotExist)
 }

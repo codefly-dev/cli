@@ -556,7 +556,7 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 	// A host that implements codefly.dev/composition receives manifests through
 	// ApplyManifest and holds the manifest as the ceiling: no envelope, no
 	// gateway, nothing of the host known here but the interface it declares.
-	if cluster.hostImplements(ctx, compositionInterface) {
+	if gitops.HostImplements(ctx, cluster.composed(), cluster.hostModule, cluster.hostService, gitops.CompositionInterface) {
 		conn, dialErr := grpc.NewClient(strings.TrimPrefix(strings.TrimPrefix(deliveryURL, "http://"), "grpc://"), grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if dialErr != nil {
 			return nil, "", fmt.Errorf("dial the host's composition interface: %w", dialErr)
@@ -862,29 +862,4 @@ func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.Envelope
 		out[prefix] = gitops.EnvelopeGrant(grant)
 	}
 	return out, nil
-}
-
-// compositionInterface is the Codefly interface a host declares when it receives
-// manifests through ApplyManifest.
-const compositionInterface = "codefly.dev/composition"
-
-// hostImplements reports whether the run's host service declares, in its
-// module's interface endpoints, that it implements the named Codefly interface at
-// any version.
-func (cluster *launcher) hostImplements(ctx context.Context, name string) bool {
-	module, err := cluster.composed().LoadModuleFromName(ctx, cluster.hostModule)
-	if err != nil || module.Interface == nil {
-		return false
-	}
-	for _, endpoint := range module.Interface.Endpoints {
-		if endpoint.Service != cluster.hostService {
-			continue
-		}
-		for _, implemented := range endpoint.Implements {
-			if implemented == name || strings.HasPrefix(implemented, name+"@") {
-				return true
-			}
-		}
-	}
-	return false
 }
