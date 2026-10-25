@@ -583,6 +583,61 @@ func TestBuildAcceptsAnEmptyPropertyTheEnvironmentDeclares(t *testing.T) {
 	}
 }
 
+// A key the environment declares empty and nothing holds is written empty, not
+// required: the declaration says what the value is, and leaving the property
+// absent keeps the ExternalSecret reading it from ever materializing.
+func TestBuildWritesADeclaredEmptyPropertyNothingHolds(t *testing.T) {
+	rendered := fixture()
+	documents := seeded()
+	delete(documents["host-accounts"], clientSecret)
+	store := newFakeStore(documents)
+	ctx := context.Background()
+	plan, err := Build(ctx, &Inputs{Rendered: rendered,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, MayBeEmpty: []string{clientSecret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range plan.Required() {
+		if strings.Contains(required, clientSecret) {
+			t.Fatalf("Required() names %s, want it planned empty: the environment declares it", clientSecret)
+		}
+	}
+	if _, err = plan.Apply(ctx, store, true); err != nil {
+		t.Fatal(err)
+	}
+	value, present := store.documents["host-accounts"][clientSecret]
+	if !present || value != "" {
+		t.Errorf("apply stored (%q, present=%v), want the property present and empty", value, present)
+	}
+	// A second plan keeps it: the stored empty is the declared one.
+	again, err := Build(ctx, &Inputs{Rendered: rendered,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, MayBeEmpty: []string{clientSecret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(again.Changes(), "host-accounts") {
+		t.Errorf("a re-plan rewrites host-accounts, want the stored empty kept")
+	}
+}
+
+// Without the declaration the same absent property is still the operator's.
+func TestBuildRequiresAnAbsentPropertyNotDeclaredEmpty(t *testing.T) {
+	rendered := fixture()
+	documents := seeded()
+	delete(documents["host-accounts"], clientSecret)
+	plan, err := Build(context.Background(), &Inputs{Rendered: rendered,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: newFakeStore(documents), ReadPayloads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Required(), func(required string) bool { return strings.Contains(required, clientSecret) }) {
+		t.Errorf("Required() = %v, want the undeclared %s required", plan.Required(), clientSecret)
+	}
+}
+
 // Declaring one of a property's keys is not declaring the property: a property
 // two services read under two keys is only safely empty when neither needs one.
 func TestBuildStillRefusesWhenOnlySomeOfAPropertysKeysAreDeclared(t *testing.T) {
