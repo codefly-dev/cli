@@ -181,6 +181,9 @@ func loadServedCatalog(dir string) (*composition.APIContractCatalog, error) {
 // records the endpoint under another digest, or not at all, is stale.
 func endpointServes(catalog *composition.APIContractCatalog, service string, contract composition.ProvidedAPIContract) (func(pkg, procedure string) bool, error) {
 	if catalog == nil {
+		if contract.Package == "" {
+			return nil, fmt.Errorf("endpoint %s/%s has no single protobuf package and requires %s to identify its served procedures; run codefly generate contracts", service, contract.Endpoint, composition.APIContractCatalogFileName)
+		}
 		return func(pkg, _ string) bool { return pkg == contract.Package }, nil
 	}
 	for _, endpoint := range catalog.Endpoints {

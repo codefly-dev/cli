@@ -1661,6 +1661,14 @@ deploy time: <scope>/configurations/<profile>/<name>[.secret].env.
 Configuration is Codefly's, so provisioning it is a Codefly operation — not a
 shell script in your repository. Values are written but never printed.
 
+A workspace may add to an imported group with configuration-extensions in
+workspace.codefly.yaml. Env keys must be disjoint unless append explicitly
+names the key and its delimiter (for example edge: {append: {MODULES: ","}}).
+YAML mappings combine recursively and sequences append; duplicate scalar keys
+are refused by name. Both an own and an imported group must exist. Without
+this declaration, an own group replaces the imported group whole.
+See docs/commands.md#extending-imported-workspace-configuration.
+
 Secrets are refused when git would track the destination file, are stored 0600
 inside a 0700 directory, and are never overwritten without --force so re-running
 setup cannot rotate a credential another service already holds.
@@ -2748,7 +2756,10 @@ For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
 configuration, separate from the agent's spec. Multiple exported protobuf
 endpoints require an inventory; a full descriptor alone does not establish what
-each listener serves. See docs/commands.md#generate-contracts.
+each listener serves. An inventory may include implemented interfaces from other
+protobuf packages; every named procedure must exist in the descriptor. For such
+multi-package endpoints, package is empty and services[].fullName identifies
+each package. See docs/commands.md#generate-contracts.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares

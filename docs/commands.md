@@ -2360,6 +2360,52 @@ the environment's declared publication path.
 with same-named services. Qualified values override bare values per key. Unknown
 qualified entries and ambiguous bare entries fail workspace validation.
 
+#### Extending imported workspace configuration
+
+By default, an own group replaces an imported workspace's group whole.
+To add product-owned keys instead, declare the extension in the consuming
+`workspace.codefly.yaml`:
+
+```yaml
+configuration-extensions:
+  edge:
+    append:
+      MODULES: ","
+  fixture-grants: {}
+```
+
+Both workspaces keep their contributions in the usual
+`configurations/<profile>/edge.env` and `fixture-grants.yaml` files. Codefly
+selects each workspace's profile through the existing profile resolver, then
+assembles the group before endpoint resolution and run/render injection.
+No generated endpoint address needs to be copied into either file.
+
+For `edge`, platform-core declares `MODULES=robin,tracing` and the module
+upstream keys; platform-obin declares `MODULES=wiki`, `WIKI_REST` and `FRONTEND`.
+Codefly produces `MODULES=robin,tracing,wiki` and retains every upstream key.
+Other duplicate env keys are refused by name, even if their values agree;
+matching retains Core's case-insensitive, dash/underscore-equivalent rules.
+`append` keys use the exact spelling in the consuming file and require a
+nonempty delimiter and plaintext values on both sides. Empty or duplicate list
+items, secrets, templates and unresolved `${profile}` values cannot be appended.
+
+For `fixture-grants`, platform-core's `roles` list contains the module roles;
+platform-obin's `roles` list contains only wiki roles, plus its `installations`.
+YAML mappings combine recursively and sequences append in imported-then-own
+order. A scalar collision or a type mismatch is refused with its complete key
+path, such as `fixture-grants key $.settings.mode`. Lists are ordered additions;
+the owner consuming the document validates domain identities such as role names.
+Repeated mapping keys, aliases, merge keys, multiple YAML documents, and mixing
+an env group with a YAML group are refused. Secret YAML remains secret if either
+contribution is secret. Diagnostics never print configuration values.
+
+An extension requires both an own group and an unambiguous imported group.
+Differing sibling imports still conflict, and extension works transitively.
+Unfulfilled profile requirements remain required. Configuration inspection
+reports both contributing files, including both sources of an appended env key
+or an assembled YAML document. This applies to workspace imports; it does not
+change module-default overlays or profile derivation.
+
 #### `codefly environment show`
 
 Print the resolved `resources.Environment` as YAML (default) or `--json`.
@@ -3316,17 +3362,17 @@ supply the inventory, since copying a full descriptor to each cannot prove which
 listener serves a method. A single endpoint keeps the full-descriptor default;
 restricted single listeners must also supply their inventory.
 
-A declared inventory also settles which proto **package** each endpoint's
-contract covers, which matters for a service that generates client stubs from
-another service's API. Those protos declare services in a foreign package and
-must sit in the owned tree for codegen to reach them, yet the endpoint does not
-serve them. Without an inventory such a tree is refused — `proto declares
-services in multiple packages …; a contract endpoint must be single-package` —
-for a contract that is in fact single-package. With one, candidate packages are
-scoped to those the inventory names. A service that declares no inventory is
-unaffected, and so is one whose inventory names no package the descriptor set
-declares a service in: the single-package rule and its diagnostics stand
-unchanged, rather than yielding an empty contract.
+A declared inventory may serve several protobuf packages on one listener,
+including implemented interfaces such as `host.authority.v1` alongside the
+service's own API. Every service and procedure is validated against the complete
+descriptor set, including imports. Unlisted imported/client services stay out
+of the catalog. Single-package endpoints retain `package`; a multi-package
+endpoint writes `package: ""`, with each `services[].fullName` carrying its own
+package. Package manifests carry the same empty value. Contract evidence and
+client selection use the explicit inventory. Policy delivery refuses a missing
+catalog for a multi-package contract instead of silently selecting no methods.
+Without an inventory, inference still requires one service-owned package; a
+descriptor alone cannot prove which of several packages a listener serves.
 
 This input is a stopgap for the released Core/agent endpoint report. In Core
 v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without

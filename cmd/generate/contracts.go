@@ -60,7 +60,10 @@ For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
 configuration, separate from the agent's spec. Multiple exported protobuf
 endpoints require an inventory; a full descriptor alone does not establish what
-each listener serves. See docs/commands.md#generate-contracts.
+each listener serves. An inventory may include implemented interfaces from other
+protobuf packages; every named procedure must exist in the descriptor. For such
+multi-package endpoints, package is empty and services[].fullName identifies
+each package. See docs/commands.md#generate-contracts.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -488,24 +491,26 @@ func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, s
 	return entry, nil
 }
 
-// serviceContractPackage returns the single proto package that the service's
-// own proto files — those physically under protoDir, not the transitive
-// imports buf pulls in — use to declare services. A codefly service declares
-// all of its RPC services in one package; message-only packages contributed
-// alongside it (composed settings, shared types) carry no service to expose in
-// a client contract and are ignored.
-//
-// `surface` is the endpoint's declared served surface, when the module declares
-// one through contracts.codefly.yaml. It names which services this endpoint
-// serves, so it also settles which proto package the contract covers, and the
-// candidates are scoped to it. That matters for a service that must generate
-// client stubs from ANOTHER service's API: those protos declare services in a
-// foreign package and have to live in the owned tree for codegen to reach them,
-// yet the endpoint does not serve them, so without this they make a
-// single-package endpoint look multi-package and the export fails on a
-// contract that is in fact well formed. A module that declares no surface is
-// unchanged: nothing narrows the candidates and the single-package rule stands.
+// serviceContractPackage preserves the single-package default. An explicit
+// listener inventory may span packages; then the package field is empty and
+// each service's fully qualified name supplies its package.
 func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string, surface []composition.APIContractService) (string, error) {
+	if packages := surfacePackages(surface); len(packages) > 0 {
+		names := make([]string, 0, len(packages))
+		for pkg := range packages {
+			names = append(names, pkg)
+		}
+		sort.Strings(names)
+		for _, pkg := range names {
+			if len(composition.ProtobufServices(set, pkg)) == 0 {
+				return "", fmt.Errorf("inventory package %s declares no services in the descriptor", pkg)
+			}
+		}
+		if len(names) == 1 {
+			return names[0], nil
+		}
+		return "", nil
+	}
 	own := map[string]struct{}{}
 	walkErr := filepath.WalkDir(protoDir, func(p string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -544,23 +549,6 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 		packages = append(packages, pkg)
 	}
 	sort.Strings(packages)
-
-	// Scope to the declared surface. Dropping to zero means the surface names
-	// no package the descriptor set declares a service in, which is a
-	// configuration error the unscoped diagnostics below describe better than a
-	// silent empty contract, so the narrowing is only applied when it keeps at
-	// least one candidate.
-	if served := surfacePackages(surface); len(served) > 0 {
-		scoped := make([]string, 0, len(packages))
-		for _, pkg := range packages {
-			if _, ok := served[pkg]; ok {
-				scoped = append(scoped, pkg)
-			}
-		}
-		if len(scoped) > 0 {
-			packages = scoped
-		}
-	}
 
 	switch len(packages) {
 	case 0:

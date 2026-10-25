@@ -792,7 +792,7 @@ func TestServiceContractPackage(t *testing.T) {
 		}
 	})
 
-	t.Run("a surface naming no declared package falls back to the unscoped diagnostics", func(t *testing.T) {
+	t.Run("a surface naming no declared package is refused by name", func(t *testing.T) {
 		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
 			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
@@ -800,8 +800,19 @@ func TestServiceContractPackage(t *testing.T) {
 		surface := []composition.APIContractService{
 			{Name: "Absent", FullName: "saas.absent.v1.Absent"},
 		}
-		if _, err := serviceContractPackage(set, protoDir, surface); err == nil {
-			t.Fatal("expected the multi-package refusal rather than a silent empty contract")
+		if _, err := serviceContractPackage(set, protoDir, surface); err == nil || !strings.Contains(err.Error(), "saas.absent.v1") {
+			t.Fatalf("expected the absent inventory package to be named: %v", err)
+		}
+	})
+
+	t.Run("a listener may exclusively implement an imported package", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
+			file("host/authority/v1/api.proto", "host.authority.v1", true),
+		}}
+		pkg, err := serviceContractPackage(set, protoDir, []composition.APIContractService{{Name: "Svc", FullName: "host.authority.v1.Svc"}})
+		if err != nil || pkg != "host.authority.v1" {
+			t.Fatalf("imported interface package: %q, %v", pkg, err)
 		}
 	})
 
