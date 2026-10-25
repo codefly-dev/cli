@@ -62,7 +62,10 @@ func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 // workScopes spells contract scopes as the authority's: a kind and actions,
 // never ids.
 func workScopes(scopes []modulecontract.CeilingScope) []*authorityv1.WorkScopeV1 {
-	var out []*authorityv1.WorkScopeV1
+	if len(scopes) == 0 {
+		return nil
+	}
+	out := make([]*authorityv1.WorkScopeV1, 0, len(scopes))
 	for _, scope := range scopes {
 		out = append(out, &authorityv1.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: append([]string(nil), scope.Actions...)})
 	}
