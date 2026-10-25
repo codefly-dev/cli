@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/wool"
 )
 
 // --- What a module asks for ---
@@ -109,6 +110,14 @@ func moduleAuthority(
 	}
 	if err := refuseUndeclaredDestinations(module.Name, resolved, services); err != nil {
 		return nil, err
+	}
+	// An optional binding the composition fills none of the slots of is left
+	// out of the delivered manifest by core's resolution, so no credential can
+	// be issued through it; the render says so rather than drop it silently.
+	for _, omitted := range resolved.Omitted {
+		wool.Get(ctx).In("gitops.moduleAuthority").Info(
+			fmt.Sprintf("module %s: optional binding %s is omitted from the delivered manifest: %s", module.Name, omitted.ID, omitted.Reason),
+			wool.Field("module", module.Name), wool.Field("binding", omitted.ID))
 	}
 	for _, binding := range resolved.Bindings {
 		operations := make(map[string][]string, len(binding.Operations))

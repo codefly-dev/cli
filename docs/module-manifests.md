@@ -324,6 +324,22 @@ naming the other module's permission namespace literally — a namespace is fixe
 by the module that contributes it, exactly as its proto package is, while a
 service the composition chooses stays a slot.
 
+A binding is **mandatory** unless its contract marks it `optional: true`: every
+composition fills a mandatory binding's slots or the render refuses. An optional
+binding is for a capability the module degrades without, and core's resolution
+decides it on the slots alone. A composition that fills **none** of them — each
+key absent from its group, or supplied empty, as a module's declared
+configuration supplies a key nobody set — renders the module without it: the
+delivered manifest carries no such binding, so no credential can be issued
+through it, its calls are never read (the audience need not be composed), and
+the render logs it, `module <m>: optional binding <id> is omitted from the
+delivered manifest:` followed by every unfilled slot. Filled, it renders exactly
+as a mandatory binding. Filled **in part**, it is resolved whole and each
+unfilled slot is refused by name, the refusal saying the binding is optional and
+was filled in part, because a misspelt key must never silently drop a binding
+(`TestAnOptionalBindingFilledInPartIsRefusedByName`). A secret-classified record
+fills its slot, and is refused as a secret rather than omitted around.
+
 
 ## What publish settles
 
