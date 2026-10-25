@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -431,34 +433,106 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 	return nil, nil, nil, fmt.Errorf("endpoint %s reports neither a grpc nor a rest contract", endpoint.Name)
 }
 
-// collectProtoSources reads every .proto file directly (and doubly) under
-// protoDir into proto.GenerateClient's Sources form, path relative to
-// protoDir — the same files buildDescriptorSet compiled, so generation from
-// Sources produces the same code the persisted descriptor set describes.
+// collectProtoSources reads the .proto files buf compiles from protoDir into
+// proto.GenerateClient's Sources form — the same files buildDescriptorSet
+// compiled, under the same names, so generation from Sources produces the code
+// the persisted descriptor set describes.
+//
+// The names and the set both come from buf.yaml. A v2 buf.yaml may declare
+// several modules: each file is named relative to the module that holds it (a
+// file under a `vendor` module is `codefly/base/v0/x.proto`, as every import of
+// it spells it and as the descriptor set names it), and a module's `excludes`
+// are not compiled at all. Walking protoDir flat instead named a vendored
+// upstream file `vendor/...`, so vendorsUpstreamModules never recognised it and
+// generation took the Sources path with imports that resolved to nothing, and
+// it compiled an excluded tree beside the canonical one, declaring every
+// message twice.
 func collectProtoSources(protoDir string) ([]coreproto.Source, error) {
-	var sources []coreproto.Source
-	err := filepath.WalkDir(protoDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".proto") {
-			return err
-		}
-		rel, err := filepath.Rel(protoDir, p)
-		if err != nil {
-			return err
-		}
-		content, err := os.ReadFile(p) //nolint:gosec // p is walked from a service's own committed proto directory
-		if err != nil {
-			return err
-		}
-		sources = append(sources, coreproto.Source{Path: filepath.ToSlash(rel), Content: content})
-		return nil
-	})
+	modules, err := bufModules(protoDir)
 	if err != nil {
 		return nil, err
+	}
+	var sources []coreproto.Source
+	for _, module := range modules {
+		root := filepath.Join(protoDir, filepath.FromSlash(module.Path))
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if p != root && module.excludes(protoDir, p) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(p, ".proto") {
+				return nil
+			}
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				return err
+			}
+			content, err := os.ReadFile(p) //nolint:gosec // p is walked from a service's own committed proto directory
+			if err != nil {
+				return err
+			}
+			sources = append(sources, coreproto.Source{Path: filepath.ToSlash(rel), Content: content})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("no .proto files under %s", protoDir)
 	}
 	return sources, nil
+}
+
+// bufModule is one module of a buf.yaml: its directory relative to the
+// buf.yaml, and the directories (relative to the buf.yaml too) it excludes.
+type bufModule struct {
+	Path     string   `yaml:"path"`
+	Excludes []string `yaml:"excludes"`
+}
+
+func (m bufModule) excludes(protoDir, dir string) bool {
+	rel, err := filepath.Rel(protoDir, dir)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	for _, excluded := range m.Excludes {
+		if rel == path.Clean(excluded) {
+			return true
+		}
+	}
+	return false
+}
+
+// bufModules is the modules protoDir/buf.yaml declares: a v2 file's `modules`,
+// or the one module at its root when it declares none (v1, or v2 without the
+// key).
+func bufModules(protoDir string) ([]bufModule, error) {
+	raw, err := os.ReadFile(filepath.Join(protoDir, "buf.yaml")) //nolint:gosec // the service's own buf.yaml
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", filepath.Join(protoDir, "buf.yaml"), err)
+	}
+	var config struct {
+		Modules []bufModule `yaml:"modules"`
+	}
+	if err := yaml.Unmarshal(raw, &config); err != nil {
+		return nil, fmt.Errorf("cannot parse %s: %w", filepath.Join(protoDir, "buf.yaml"), err)
+	}
+	if len(config.Modules) == 0 {
+		return []bufModule{{Path: "."}}, nil
+	}
+	for i, module := range config.Modules {
+		if module.Path == "" {
+			config.Modules[i].Path = "."
+		}
+	}
+	return config.Modules, nil
 }
 
 // resolvePackageSource handles --from package:<id>@<version>: it finds the
