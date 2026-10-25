@@ -81,6 +81,13 @@ func moduleAuthority(
 	if request.undeclared != "" {
 		return authority, nil
 	}
+	// The principal is the module's own name, and the contract is held to it
+	// before anything resolves: a module claiming another module's principal
+	// would claim its grant, and a binding addressed to the module itself
+	// ({self: true}) resolves to the contract's principal — this name.
+	if request.contract.Principal != module.Name {
+		return nil, fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, request.contract.Principal, module.Name)
+	}
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
@@ -98,11 +105,6 @@ func moduleAuthority(
 	}
 	if err := refuseUnaddressableConsumption(workspace, module, request, resolved); err != nil {
 		return nil, err
-	}
-	// The principal is the module's own name, and the contract is held to it:
-	// a module claiming another module's principal would claim its grant.
-	if resolved.Principal != module.Name {
-		return nil, fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, resolved.Principal, module.Name)
 	}
 	if err := refuseUndeclaredDestinations(module.Name, resolved, services); err != nil {
 		return nil, err

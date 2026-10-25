@@ -379,6 +379,23 @@ absent or empty omits the binding, and filled with its kinds missing is filled i
 part, refused by name (`audience_list_binding_test.go`). A binding with
 `audience` renders exactly as before, under its own id.
 
+A binding may be addressed to **the module itself** — a module admitting work
+into itself on someone's behalf, such as a scheduler issued the capability an
+occurrence is admitted under. It writes `audience: {self: true}`, and core's
+resolution delivers it with the contract's principal as its audience. The
+render holds that principal to the module's name **before** anything resolves
+(the same check that refuses a module claiming another's principal), so the
+self binding is addressed to exactly the principal the manifest's `authority`
+block names, read from no workspace configuration value: a configured value
+carrying the module's own name would restate an identity the render already
+resolves, and could drift from it. Core holds what such a binding may ask for —
+no `resource_kind` slot, every scope spelled out within the module's own
+`scope_ceilings`, `self` on an audience only — see core's
+`docs/module-contract.md`. It composes with the rules above: an optional self
+binding is omitted by its other slots alone (its `binding_key`, say), and an
+audience-list binding beside it is delivered once per owner as before
+(`self_audience_binding_test.go`).
+
 
 ## What publish settles
 
