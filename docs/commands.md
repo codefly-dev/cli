@@ -4179,8 +4179,11 @@ generates its bindings into. Each service's table holds the methods its own
 published contracts serve, plus the module contract's `foreign_methods`, which
 name no service and so appear in every Go service's table. The TypeScript file
 sits beside the Go file: no generator places TypeScript per service (`generate
-client` writes a library). A service that publishes a contract but has no
-`go.mod` at its Go source root fails by name. `--output` writes the whole
+client` writes a library). A Python service (a `python-*` agent) gets no table:
+nothing in it reads one, because the authority's hop in front of it decides
+every call, so it is skipped with a note and the module's Go services still get
+theirs. Any other service that publishes a contract but has no `go.mod` at its
+Go source root fails by name. `--output` writes the whole
 module's table to one directory instead. Go constants have type
 `Permission`, with `Kind()` and `Action()` accessors; TypeScript constants carry
 literal types. Both include the method requirement table and any-checked-caller

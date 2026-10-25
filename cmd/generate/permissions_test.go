@@ -78,8 +78,9 @@ func TestPermissionGenerationRefusesCollisionsAndMissingPolicies(t *testing.T) {
 // permissionsModule writes a module "ledger" with two Go services, api
 // (source-dir defaulted) and admin (source-dir go/cmd/admin, so its go.mod is
 // at go/), each publishing one protobuf contract with its own marked methods,
-// a store service with no Go module and no contract, and a module contract
-// declaring one foreign method. It returns the loaded module.
+// a Python service engine publishing one too, a store service with no Go
+// module and no contract, and a module contract declaring one foreign method.
+// It returns the loaded module.
 func permissionsModule(t *testing.T) *resources.Module {
 	t.Helper()
 	dir := t.TempDir()
@@ -89,11 +90,14 @@ func permissionsModule(t *testing.T) *resources.Module {
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	}
-	write("module.codefly.yaml", "kind: module\nname: ledger\nservices:\n  - name: api\n  - name: admin\n  - name: store\n")
+	write("module.codefly.yaml", "kind: module\nname: ledger\nservices:\n  - name: api\n  - name: admin\n  - name: engine\n  - name: store\n")
 	agent := "agent:\n  kind: codefly:service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.dev\n"
 	write("services/api/service.codefly.yaml", "name: api\nversion: 0.0.0\n"+agent)
 	write("services/admin/service.codefly.yaml", "name: admin\nversion: 0.0.0\n"+agent+"spec:\n  source-dir: go/cmd/admin\n")
 	write("services/store/service.codefly.yaml", "name: store\nversion: 0.0.0\nagent:\n  kind: codefly:service\n  name: postgres\n  version: 0.0.1\n  publisher: codefly.dev\nspec:\n  database-name: ledger\n")
+	write("services/engine/service.codefly.yaml", "name: engine\nversion: 0.0.0\nagent:\n  kind: codefly:service\n  name: python-fastapi\n  version: 0.0.1\n  publisher: codefly.dev\nspec:\n  Settings:\n    source-dir: \"\"\n")
+	write("services/engine/code/pyproject.toml", "[project]\nname = \"engine\"\nversion = \"0.0.0\"\n")
+	write("services/engine/code/src/main.py", "")
 	write("services/api/code/go.mod", "module example.com/ledger/api\n\ngo 1.26.0\n")
 	write("services/admin/go/go.mod", "module example.com/ledger/admin\n\ngo 1.26.0\n")
 	write("module.contract.codefly.yaml", `schema: codefly/module-contract/v1
@@ -140,7 +144,7 @@ artifact-roots:
   - contracts
   - services
 services:
-`+contract("api", "Read", "read")+contract("admin", "Approve", "approve")+`contracts:
+`+contract("api", "Read", "read")+contract("admin", "Approve", "approve")+contract("engine", "Recompute", "write")+`contracts:
   composition: ">=2.0.0 <3.0.0"
 `)
 	module, err := resources.LoadModuleFromDir(t.Context(), dir)
@@ -154,6 +158,10 @@ func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	require.NoError(t, generatePermissions(t.Context(), module, "", true))
 	require.NoDirExists(t, filepath.Join(module.Dir(), "pkg"))
 	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "store", "code"))
+	// The Python service publishes policies and gets no table, and its methods
+	// are in no Go service's table.
+	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "engine", "code", "pkg"))
+	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "engine", "code", "src", "gen"))
 
 	api := filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions")
 	admin := filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions")
@@ -171,6 +179,7 @@ func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	for _, dir := range []string{api, admin} {
 		require.Contains(t, read(dir, "permissions_gen.go"), `"/otlp.TraceService/Export"`)
 		require.Contains(t, read(dir, "permissions_gen.ts"), `"/otlp.TraceService/Export"`)
+		require.NotContains(t, read(dir, "permissions_gen.go"), "EngineService")
 	}
 
 	// The api service imports its table as a package of its own go.mod.
@@ -224,7 +233,7 @@ func TestPermissionsOutputOverrideHoldsTheWholeModule(t *testing.T) {
 	require.NoError(t, generatePermissions(t.Context(), module, output, true))
 	data, err := os.ReadFile(filepath.Join(output, "permissions_gen.go"))
 	require.NoError(t, err)
-	for _, method := range []string{"/ledger.ApiService/Read", "/ledger.AdminService/Approve", "/otlp.TraceService/Export"} {
+	for _, method := range []string{"/ledger.ApiService/Read", "/ledger.AdminService/Approve", "/ledger.EngineService/Recompute", "/otlp.TraceService/Export"} {
 		require.Contains(t, string(data), strconv.Quote(method))
 	}
 	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen"))
@@ -235,4 +244,30 @@ func TestPermissionsRefuseAContractServiceWithNoGoModule(t *testing.T) {
 	module := permissionsModule(t)
 	require.NoError(t, os.Remove(filepath.Join(module.Dir(), "services", "admin", "go", "go.mod")))
 	require.ErrorContains(t, generatePermissions(t.Context(), module, "", false), "service admin publishes method policies but has no go.mod")
+}
+
+// TestPermissionsSkipAPythonServiceByName pins the mixed module: compute's
+// shape, a Go service beside Python services that publish contracts. The Go
+// services get their tables; the Python one is named as skipped, never a
+// refusal, because nothing in it reads a table (the hop decides every call).
+func TestPermissionsSkipAPythonServiceByName(t *testing.T) {
+	module := permissionsModule(t)
+	destinations, skipped, err := permissionDestinations(t.Context(), module, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"engine"}, skipped)
+	var dirs []string
+	for _, destination := range destinations {
+		dirs = append(dirs, destination.dir)
+	}
+	require.ElementsMatch(t, []string{
+		filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions"),
+		filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions"),
+	}, dirs)
+
+	// A Python service publishing policies is skipped even with a go.mod
+	// lying in its tree: the agent says what the service is built from.
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), "services", "engine", "code", "go.mod"), []byte("module example.com/ledger/engine\n\ngo 1.26.0\n"), 0o644))
+	_, skipped, err = permissionDestinations(t.Context(), module, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"engine"}, skipped)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/golang"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 )
 
@@ -36,7 +37,9 @@ By default each Go service gets its own table in its own Go module:
 generates its bindings into (source-dir is the Go agent's setting, "code"
 unless the service declares another). A service's table holds the methods its
 published contracts serve plus the module contract's foreign methods, which
-name no service. The TypeScript file sits beside the Go file. A service that
+name no service. The TypeScript file sits beside the Go file. A Python service
+gets no table: nothing in it reads one, since the authority's hop in front of it
+decides every call, so it is skipped with a note. Any other service that
 publishes a contract but has no go.mod at its Go source root fails by name.
 --output writes the whole module's table to one directory instead.
 --check compares every generated file without writing. Missing or contradictory
@@ -71,9 +74,13 @@ func init() {
 }
 
 func generatePermissions(ctx context.Context, module *resources.Module, output string, check bool) error {
-	destinations, err := permissionDestinations(ctx, module, output)
+	destinations, skipped, err := permissionDestinations(ctx, module, output)
 	if err != nil {
 		return err
+	}
+	for _, service := range skipped {
+		wool.Get(ctx).In("generatePermissions").Info("no permissions table for a Python service: nothing in it reads one",
+			wool.Field("service", service))
 	}
 	for _, destination := range destinations {
 		files, err := permissionFiles(destination.methods)
@@ -105,40 +112,48 @@ type permissionDestination struct {
 // output holds the whole module's table. Otherwise each Go service gets the
 // methods its own published contracts serve, plus the foreign methods the
 // module contract declares without naming a service, in the generated tree
-// of its own Go module, so the service imports them with no flag.
-func permissionDestinations(ctx context.Context, module *resources.Module, output string) ([]permissionDestination, error) {
+// of its own Go module, so the service imports them with no flag. A Python
+// service that publishes policies is skipped and named in skipped: nothing in
+// it reads a table, because the hop in front of it decides every call.
+func permissionDestinations(ctx context.Context, module *resources.Module, output string) (destinations []permissionDestination, skipped []string, err error) {
 	if output != "" {
 		methods, declared, err := gitops.MethodPolicies(module.Dir())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !declared {
-			return nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
+			return nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
 		}
-		return []permissionDestination{{dir: output, methods: methods}}, nil
+		return []permissionDestination{{dir: output, methods: methods}}, nil, nil
 	}
 	served, declared, err := gitops.ServiceMethodPolicies(module.Dir())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !declared {
-		return nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
+		return nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
 	}
 	services, err := module.LoadServices(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var destinations []permissionDestination
 	placed := map[string]bool{}
 	for _, service := range services {
+		own := served.ByService[service.Name]
+		if isPythonService(service) {
+			if len(own) > 0 {
+				placed[service.Name] = true
+				skipped = append(skipped, service.Name)
+			}
+			continue
+		}
 		root, isGo, err := goModuleRoot(service)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		own := served.ByService[service.Name]
 		if !isGo {
 			if len(own) > 0 {
-				return nil, fmt.Errorf("service %s publishes method policies but has no go.mod at %s; pass --output", service.Name, root)
+				return nil, nil, fmt.Errorf("service %s publishes method policies but has no go.mod at %s; pass --output", service.Name, root)
 			}
 			continue
 		}
@@ -151,13 +166,19 @@ func permissionDestinations(ctx context.Context, module *resources.Module, outpu
 	}
 	for _, name := range served.Services {
 		if !placed[name] {
-			return nil, fmt.Errorf("service %s publishes method policies but is not a service of module %s; pass --output", name, module.Name)
+			return nil, nil, fmt.Errorf("service %s publishes method policies but is not a service of module %s; pass --output", name, module.Name)
 		}
 	}
-	if len(destinations) == 0 {
-		return nil, fmt.Errorf("module %s declares method policies but has no Go service to generate them into; pass --output", module.Name)
+	if len(destinations) == 0 && len(skipped) == 0 {
+		return nil, nil, fmt.Errorf("module %s declares method policies but has no Go service to generate them into; pass --output", module.Name)
 	}
-	return destinations, nil
+	return destinations, skipped, nil
+}
+
+// isPythonService reports whether a service's agent builds Python
+// (python-fastapi, python-grpc, ...).
+func isPythonService(service *resources.Service) bool {
+	return service.Agent != nil && strings.HasPrefix(service.Agent.Name, "python")
 }
 
 // goModuleRoot is where a service's go.mod lives: the module root of the Go
