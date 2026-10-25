@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/standards"
 	"github.com/stretchr/testify/require"
 	googleproto "google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 // The bindings a playground generates are read by the run it starts, so they
@@ -189,12 +190,70 @@ func TestRunnableBindingsRefuseAnUnusableCallEndpoint(t *testing.T) {
 	} {
 		t.Run(tc.coordinate, func(t *testing.T) {
 			resetRunnableBindingsFlags(t)
-			runnableBindingsCallEndpoint = tc.coordinate
+			require.NoError(t, RunnableBindingsCmd.Flags().Set("call-endpoint", tc.coordinate))
 			err := RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil)
 			require.ErrorContains(t, err, tc.want)
 			require.NoFileExists(t, filepath.Join(root, "configurations", "local", RunnableBindingsGroup+".env"))
 		})
 	}
+}
+
+// The environment declares where its calls go, so a plain invocation and its
+// --check prepare through the hop with no flag; --call-endpoint stays an
+// explicit override, and its empty value sends each call to its owner.
+func TestAnEnvironmentDeclaresWhereItsRunnableCallsGo(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint())
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+	resetRunnableBindingsFlags(t)
+	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}))
+	publishFixtureConnectEndpoint(t, moduleDir, "connect", nil)
+	addFixtureHop(t, ctx, root)
+	declareLocalCallEndpoint(t, ctx, root, "authority/hop/http")
+	target := filepath.Join(root, "configurations", "local", RunnableBindingsGroup+".env")
+	addressOf := func() string {
+		t.Helper()
+		values := readPreparedValues(t, target)
+		require.NotEmpty(t, values)
+		var address string
+		for _, value := range values {
+			prepared, err := corerunnable.DecodePrepared([]byte(value))
+			require.NoError(t, err)
+			address = prepared.GetCall().GetAddress()
+		}
+		return address
+	}
+
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+	hop := nativeFixtureAddress(t, ctx, root, "authority", "hop", "http", "")
+	require.Equal(t, hop, addressOf(), "the declared endpoint is used with no flag")
+	runnableBindingsCheck = true
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil), "a plain --check is deterministic against the declaration")
+
+	resetRunnableBindingsFlags(t)
+	require.NoError(t, RunnableBindingsCmd.Flags().Set("call-endpoint", ""))
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+	owner := nativeFixtureAddress(t, ctx, root, "documents", "runtime-worker", "connect", "")
+	require.Equal(t, owner, addressOf(), "an explicit empty override sends each call to its owner")
+
+	resetRunnableBindingsFlags(t)
+	runnableBindingsCheck = true
+	err := RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil)
+	require.ErrorContains(t, err, "out of date")
+	require.ErrorContains(t, err, "runnable-bindings --env local`", "the declared endpoint needs no flag to regenerate")
+}
+
+// declareLocalCallEndpoint declares the local environment with a runnable call
+// endpoint, as workspace.codefly.yaml spells it.
+func declareLocalCallEndpoint(t *testing.T, ctx context.Context, root, endpoint string) {
+	t.Helper()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	var value resources.YAMLValue
+	require.NoError(t, yaml.Unmarshal([]byte(endpoint), &value))
+	workspace.Environments = append(workspace.Environments, &resources.Environment{Name: "local", Extensions: map[string]resources.YAMLValue{"runnable-call-endpoint": value}})
+	require.NoError(t, workspace.SaveToDirUnsafe(ctx, root))
 }
 
 // declareLocalNamingScope declares the local environment with a naming scope.

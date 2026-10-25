@@ -2884,9 +2884,12 @@ no run the address is the one the run will bind. A service that installs derived
 operations declares runnable-bindings as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
 
---call-endpoint <module>/<service>/<endpoint> sends every call this invocation
-prepares to that declared endpoint instead of the owner's listener: the
-composition's hop in front of its modules, for example. It must be an HTTP-based
+An environment's runnable-call-endpoint: <module>/<service>/<endpoint> in
+workspace.codefly.yaml sends every call prepared for it to that declared
+endpoint instead of the owner's listener: the composition's hop in front of its
+modules, for example. Declared there, the file and its --check depend on the
+workspace alone. --call-endpoint overrides the declaration for one invocation,
+and an explicitly empty value sends each call to its owner. It must be an HTTP-based
 endpoint of a workspace module, and it is resolved like an owner's (same
 environment, same naming scope). Only the address moves: the owner is still
 loaded and held to its served surface and published contract, and the
@@ -2924,6 +2927,7 @@ Examples:
   codefly generate runnable-bindings --env staging
   codefly generate runnable-bindings --env staging --check
   codefly generate runnable-bindings --env local --naming-scope demo --call-endpoint authority/hop/http
+  codefly generate runnable-bindings --env local --call-endpoint ""   # owners, despite a declared runnable-call-endpoint
 ```
 
 ```
@@ -2933,7 +2937,7 @@ codefly generate runnable-bindings [flags]
 Flags:
 
 ```
-      --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener (the owner's operation, route, contract and policy are kept)
+      --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)
       --check                                   do not write; exit 1 if the on-disk file differs from what would be generated
       --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
       --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it

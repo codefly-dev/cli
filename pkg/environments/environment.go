@@ -1368,6 +1368,14 @@ type Environment struct {
 	// (the same MODULE__OPERATION key generate runnable-bindings emits).
 	// Installation input only: Runtime deliberately does not send it to agents.
 	RunnableScopeSelections map[string]ScopeSelections `yaml:"runnable-scope-selections,omitempty"`
+	// RunnableCallEndpoint is the declared HTTP-based endpoint,
+	// "<module>/<service>/<endpoint>", every call `generate runnable-bindings`
+	// prepares for this environment is sent to in place of the owner's
+	// listener: the composition's hop in front of its modules, say. Declared
+	// here, the prepared bindings and their --check are a function of the
+	// workspace; the command's --call-endpoint overrides it for one
+	// invocation. Installation input only, like RunnableScopeSelections.
+	RunnableCallEndpoint string `yaml:"runnable-call-endpoint,omitempty"`
 
 	// Deploy-target overrides (CLI-side; not serialized to proto).
 	// Empty values fall back to legacy defaults (local k3d, ~/.kube/config,

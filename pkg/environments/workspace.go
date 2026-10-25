@@ -115,6 +115,9 @@ func (env *Environment) Validate() error {
 	if err := env.validateRunnableScopeSelections(); err != nil {
 		return err
 	}
+	if err := env.validateRunnableCallEndpoint(); err != nil {
+		return err
+	}
 	if err := env.ServiceConfig.Validate(); err != nil {
 		return err
 	}

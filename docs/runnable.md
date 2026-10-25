@@ -20,7 +20,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
-| `codefly generate runnable-bindings [--env=<env>] [--naming-scope=<scope>] [--call-endpoint=<module>/<service>/<endpoint>] [--check]` | Resolve the environment's scope selections and owner endpoints into prepared bindings |
+| `codefly generate runnable-bindings [--env=<env>] [--naming-scope=<scope>] [--call-endpoint=<module>/<service>/<endpoint>] [--check]` | Resolve the environment's scope selections, owner endpoints and declared `runnable-call-endpoint` into prepared bindings |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -243,10 +243,25 @@ codefly generate runnable-bindings --env local --naming-scope demo
 codefly run service ... --env local --naming-scope demo
 ```
 
-`--call-endpoint <module>/<service>/<endpoint>` names a declared endpoint every
-call this invocation prepares is sent to instead of the owner's listener — the
-composition's hop in front of its modules, for example
-`--call-endpoint authority/hop/http`. The coordinate is parsed as an endpoint
+An environment declares the endpoint every call prepared for it is sent to
+instead of the owner's listener — the composition's hop in front of its
+modules, for example:
+
+```yaml
+environments:
+  - name: local
+    runnable-call-endpoint: authority/hop/http
+```
+
+Declared there, a plain `codefly generate runnable-bindings` and its `--check`
+prepare through it, so the committed file depends on the workspace and not on a
+flag retyped per invocation. `--call-endpoint <module>/<service>/<endpoint>`
+overrides the declaration for one invocation (`--call-endpoint ""` sends each
+call to its owner), and an environment that declares nothing keeps working with
+the flag alone; `--check` names the flag in its regeneration command only when
+the file was prepared for an endpoint other than the declared one. The
+declaration is installation input: it is never sent to an agent. The coordinate
+is parsed as an endpoint
 reference, must name a declared endpoint of a workspace module, and must be
 HTTP-based (`http`, `connect`, `rest` or `mcp`), because a prepared call carries an
 HTTP base URL; it resolves in the same environment and scope as the owners.

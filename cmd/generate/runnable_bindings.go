@@ -86,9 +86,12 @@ no run the address is the one the run will bind. A service that installs derived
 operations declares ` + RunnableBindingsGroup + ` as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
 
---call-endpoint <module>/<service>/<endpoint> sends every call this invocation
-prepares to that declared endpoint instead of the owner's listener: the
-composition's hop in front of its modules, for example. It must be an HTTP-based
+An environment's runnable-call-endpoint: <module>/<service>/<endpoint> in
+workspace.codefly.yaml sends every call prepared for it to that declared
+endpoint instead of the owner's listener: the composition's hop in front of its
+modules, for example. Declared there, the file and its --check depend on the
+workspace alone. --call-endpoint overrides the declaration for one invocation,
+and an explicitly empty value sends each call to its owner. It must be an HTTP-based
 endpoint of a workspace module, and it is resolved like an owner's (same
 environment, same naming scope). Only the address moves: the owner is still
 loaded and held to its served surface and published contract, and the
@@ -125,7 +128,8 @@ Examples:
   codefly generate runnable-bindings
   codefly generate runnable-bindings --env staging
   codefly generate runnable-bindings --env staging --check
-  codefly generate runnable-bindings --env local --naming-scope demo --call-endpoint authority/hop/http`,
+  codefly generate runnable-bindings --env local --naming-scope demo --call-endpoint authority/hop/http
+  codefly generate runnable-bindings --env local --call-endpoint ""   # owners, despite a declared runnable-call-endpoint`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
@@ -141,7 +145,8 @@ Examples:
 		if err != nil {
 			return err
 		}
-		prepared, err := prepareRunnableBindings(ctx, workspace, env, runnableBindingsCallEndpoint)
+		callEndpoint := runnableBindingsCallEndpointFor(env, cmd.Flags().Changed("call-endpoint"))
+		prepared, err := prepareRunnableBindings(ctx, workspace, env, callEndpoint)
 		if err != nil {
 			return err
 		}
@@ -163,7 +168,7 @@ Examples:
 				current = errors.Is(err, os.ErrNotExist)
 			}
 			if !current {
-				return fmt.Errorf("%s is out of date: run `%s`", target, runnableBindingsRegenerate(env))
+				return fmt.Errorf("%s is out of date: run `%s`", target, runnableBindingsRegenerate(env, callEndpoint))
 			}
 			cli.Info("runnable-bindings: %s is current (%d operation(s), %d declined)", target, prepared.count, len(prepared.declined))
 			return nil
@@ -193,7 +198,7 @@ func init() {
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment supplying resolved addresses and runnable-scope-selections")
 	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsNamingScope, "naming-scope", "", "`scope` addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it")
-	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsCallEndpoint, "call-endpoint", "", "declared HTTP-based endpoint, as `module/service/endpoint`, every prepared call is sent to instead of the owner's listener (the owner's operation, route, contract and policy are kept)")
+	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsCallEndpoint, "call-endpoint", "", "declared HTTP-based endpoint, as `module/service/endpoint`, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)")
 }
 
 // runnableBindingsEnvironment selects the environment the bindings are
@@ -212,15 +217,30 @@ func runnableBindingsEnvironment(workspace *resources.Workspace, explicitScope b
 	return env, nil
 }
 
+// runnableBindingsCallEndpointFor is where this invocation sends every
+// prepared call: the environment's runnable-call-endpoint, or --call-endpoint
+// when it is passed, which overrides it for this invocation (an explicit empty
+// value sends calls to each owner's own listener).
+func runnableBindingsCallEndpointFor(env *environments.Environment, explicit bool) string {
+	if explicit {
+		return runnableBindingsCallEndpoint
+	}
+	return env.RunnableCallEndpoint
+}
+
 // runnableBindingsRegenerate is the command that regenerates what --check
-// compared against, with the scope and call endpoint it was prepared for.
-func runnableBindingsRegenerate(env *environments.Environment) string {
+// compared against, with the scope and call endpoint it was prepared for: a
+// call endpoint the environment declares needs no flag.
+func runnableBindingsRegenerate(env *environments.Environment, callEndpoint string) string {
 	command := "codefly generate runnable-bindings --env " + env.Name
 	if env.NamingScope != "" {
 		command += " --naming-scope " + env.NamingScope
 	}
-	if runnableBindingsCallEndpoint != "" {
-		command += " --call-endpoint " + runnableBindingsCallEndpoint
+	if callEndpoint != env.RunnableCallEndpoint {
+		if callEndpoint == "" {
+			callEndpoint = `""`
+		}
+		command += " --call-endpoint " + callEndpoint
 	}
 	return command
 }
