@@ -39,9 +39,10 @@ func refuseRetiredRoles(dir string) error {
 // Roles reads the roles the module at dir declares in its module contract,
 // in the authority's spelling, in the order written: what the authority's
 // document carries for it (AuthorityManifestV1.roles). Core's reader holds
-// them to its rules — an installer among them, each scope within the unit's
-// own kinds or a permission its bindings ask for on a person's behalf. None
-// when it publishes no contract or its contract declares none.
+// them to its rules — an installer among them, each scope and each
+// installation-owned scope within the unit's own kinds or a permission its
+// bindings ask for on a person's behalf, an installation-owned scope naming
+// no ids. None when it publishes no contract or its contract declares none.
 func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 	contract, err := ownContract(dir)
 	if err != nil || contract == nil {
@@ -49,13 +50,23 @@ func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 	}
 	var out []*compositionv1.RoleV1
 	for _, role := range contract.Roles {
-		granted := &compositionv1.RoleV1{Name: role.Name}
-		for _, scope := range role.Scopes {
-			granted.Scopes = append(granted.Scopes, &authorityv1.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: append([]string(nil), scope.Actions...)})
-		}
-		out = append(out, granted)
+		out = append(out, &compositionv1.RoleV1{
+			Name:                    role.Name,
+			Scopes:                  workScopes(role.Scopes),
+			InstallationOwnedScopes: workScopes(role.InstallationOwnedScopes),
+		})
 	}
 	return out, nil
+}
+
+// workScopes spells contract scopes as the authority's: a kind and actions,
+// never ids.
+func workScopes(scopes []modulecontract.CeilingScope) []*authorityv1.WorkScopeV1 {
+	var out []*authorityv1.WorkScopeV1
+	for _, scope := range scopes {
+		out = append(out, &authorityv1.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: append([]string(nil), scope.Actions...)})
+	}
+	return out
 }
 
 // ownContract reads the module contract at dir for its own vocabulary and
