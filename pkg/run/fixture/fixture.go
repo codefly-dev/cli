@@ -284,14 +284,16 @@ func composedDirsOf(workspace *resources.Workspace) []string {
 // workspace holding no directory for it states no envelope for it, rather
 // than lending the envelope it states for another environment.
 func grantsPath(workspaceDir, profile string) (string, error) {
-	path, _, err := configurations.ProfileFile(context.Background(), workspaceDir, "configurations", []string{profile}, envelopeFile)
+	path, _, err := configurations.ProfileFile(context.Background(), workspaceDir, "configurations", []string{profile}, EnvelopeFile)
 	if err != nil {
 		return "", fmt.Errorf("resolve the module envelope of configuration profile %q in %s: %w", profile, workspaceDir, err)
 	}
 	return path, nil
 }
 
-const envelopeFile = "module-envelope.json"
+// EnvelopeFile is the module envelope's file name in a configuration profile
+// directory: a single-file declaration a derived profile inherits (grantsPath).
+const EnvelopeFile = "module-envelope.json"
 
 // composedWorkspacesOf is every workspace the composition inherits from, the
 // deepest first, so a base's base is read before the base.
