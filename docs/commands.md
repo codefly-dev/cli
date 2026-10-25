@@ -3022,6 +3022,14 @@ codefly generate runnable-bindings --env staging                                
 | `--template` | Generation template, relative to `--output` or absolute (default: `--proto`/`buf.gen.yaml`) |
 | `--local` | Select `--output`/`buf.gen.local.yaml`; plugins still run inside the pinned companion |
 
+When a v2 template declares `inputs`, Buf uses those inputs and their `paths`
+and `exclude_paths`; Codefly does not replace them with `--proto`. Without
+template inputs, `--proto` supplies the input. Relative template inputs resolve
+against the template's directory and must be visible within the companion's
+mount. Explicit `--path` follows Buf's behavior: it overrides each input's
+`paths`, rather than intersecting with that list. Omit it to retain the
+template's selection.
+
 buf resolves each `out` in the template against the template's directory, inside
 the companion. The companion therefore mounts the nearest common ancestor of
 `--proto`, `--output`, the template's directory and **every** `out` the template
