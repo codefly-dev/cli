@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -251,4 +252,135 @@ func gitRun(t *testing.T, root string, args ...string) {
 	t.Helper()
 	output, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
 	require.NoError(t, err, string(output))
+}
+
+// packTarball packs a package holding index.js exporting content into
+// vendorDir with npm, and answers its file name.
+func packTarball(t *testing.T, vendorDir, version, content string) string {
+	t.Helper()
+	source := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(source, "package.json"), []byte(`{"name":"shared","version":"`+version+`","main":"index.js"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "index.js"), []byte("module.exports = "+strconvQuote(content)+";\n"), 0o600))
+	require.NoError(t, os.MkdirAll(vendorDir, 0o755))
+	command := exec.Command("npm", "pack", "--silent", "--pack-destination", vendorDir, "--cache", t.TempDir())
+	command.Dir = source
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	return strings.TrimSpace(string(output))
+}
+
+func strconvQuote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
+
+// A project depending on a vendored tarball beside another component — as
+// every solution depending on the wiki's vendored UI does — reads it: the
+// tarball is a source at the path npm resolves, so an empty npm cache installs
+// it from the staged copy; replacing it changes the digest, and a vendor bump
+// rebuilds with the new tarball.
+func TestAVendoredTarballDependencyIsASource(t *testing.T) {
+	root := gitRepository(t, map[string]string{
+		"solutions/wiki/services/fe-remote/package.json":  `{"name":"wiki"}`,
+		"solutions/other/services/fe-remote/package.json": `{"name":"remote","version":"1.0.0","private":true,"dependencies":{"shared":"file:../../../wiki/services/fe-remote/vendor/shared-1.0.0.tgz"}}`,
+	})
+	vendor := filepath.Join(root, "solutions/wiki/services/fe-remote/vendor")
+	module := &resources.Module{Name: "other", ServiceEntry: "api"}
+	module.WithDir(filepath.Join(root, "solutions/other"))
+	remote := filepath.Join(module.ServicesDir(), "fe-remote")
+
+	require.NoError(t, os.MkdirAll(vendor, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(vendor, "shared-1.0.0.tgz"), []byte("v1"), 0o600))
+	sources, err := selectFrontendSources(t.Context(), module)
+	require.NoError(t, err)
+	require.Contains(t, sources.files, "solutions/wiki/services/fe-remote/vendor/shared-1.0.0.tgz")
+	first, _, err := sources.digest(module, false)
+	require.NoError(t, err)
+	staged := t.TempDir()
+	require.NoError(t, sources.sync(t.Context(), staged))
+	require.FileExists(t, filepath.Join(staged, "solutions/wiki/services/fe-remote/vendor/shared-1.0.0.tgz"))
+	require.NoError(t, os.WriteFile(filepath.Join(vendor, "shared-1.0.0.tgz"), []byte("v2"), 0o600))
+	replaced, _, err := sources.digest(module, false)
+	require.NoError(t, err)
+	require.NotEqual(t, first, replaced, "replacing the tarball changes what the build reads")
+
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "package.json"), []byte(`{"name":"remote","dependencies":{"shared":"file:../missing.tgz"}}`), 0o600))
+	_, err = selectFrontendSources(t.Context(), module)
+	require.ErrorContains(t, err, "names nothing readable")
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "package.json"), []byte(`{"name":"remote","dependencies":{"shared":"file:../../../../../outside.tgz"}}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(root), "outside.tgz"), []byte("x"), 0o600))
+	_, err = selectFrontendSources(t.Context(), module)
+	require.ErrorContains(t, err, "is outside")
+
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm is not installed: the cold-cache install is not qualified here")
+	}
+	require.NoError(t, os.Remove(filepath.Join(vendor, "shared-1.0.0.tgz")))
+	depend := func(tarball string) {
+		require.NoError(t, os.WriteFile(filepath.Join(remote, "package.json"), []byte(`{"name":"remote","version":"1.0.0","private":true,"scripts":{"build":"node build.cjs"},"dependencies":{"shared":"file:../../../wiki/services/fe-remote/vendor/`+tarball+`"}}`), 0o600))
+	}
+	depend(packTarball(t, vendor, "1.0.0", "shared v1"))
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "build.cjs"), []byte(`const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/mf-manifest.json',JSON.stringify({shared:require('shared')}));`), 0o600))
+	relock := func() {
+		command := exec.Command("npm", "install", "--package-lock-only", "--offline", "--no-audit", "--no-fund", "--cache", t.TempDir())
+		command.Dir = remote
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, string(output))
+	}
+	relock()
+	t.Setenv("npm_config_cache", t.TempDir()) // cold: nothing but the staged copy holds the tarball
+	t.Setenv("npm_config_offline", "true")
+	var bundles []string
+	build := LocalFrontend{
+		StateDir: t.TempDir(),
+		Retain: func(_ context.Context, root string) (string, error) {
+			data, err := os.ReadFile(filepath.Join(root, FrontendBundleManifest))
+			bundles = append(bundles, string(data))
+			return "sha256:" + string(rune('a'+len(bundles))), err
+		},
+		Retained: func(string) bool { return true },
+	}
+	_, err = build.Bundle(t.Context(), module)
+	require.NoError(t, err, "a cold-cache install reads the vendored tarball from the staged copy")
+	require.Equal(t, `{"shared":"shared v1"}`, bundles[0])
+	// A vendor bump, as one lands: a new tarball, the dependency and the
+	// lockfile moved to it.
+	require.NoError(t, os.Remove(filepath.Join(vendor, "shared-1.0.0.tgz")))
+	depend(packTarball(t, vendor, "1.0.1", "shared v2"))
+	relock()
+	_, err = build.Bundle(t.Context(), module)
+	require.NoError(t, err)
+	require.Len(t, bundles, 2, "a vendored tarball bump rebuilds")
+	require.Equal(t, `{"shared":"shared v2"}`, bundles[1])
+}
+
+// Staged copies are bounded: past the bound, the least recently built copies
+// of other modules are removed, never the one just built; Forget and ForgetAll
+// remove copies, their node_modules included, and keep the bundle records.
+func TestStagedFrontendCopiesAreBoundedAndForgotten(t *testing.T) {
+	state := t.TempDir()
+	stage := func(module string, size int, age time.Duration) {
+		dir := filepath.Join(state, module, "source", "node_modules", "dep")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "blob"), make([]byte, size), 0o600))
+		record := filepath.Join(state, module+".json")
+		require.NoError(t, os.WriteFile(record, []byte(`{}`), 0o600))
+		when := time.Now().Add(-age)
+		require.NoError(t, os.Chtimes(record, when, when))
+	}
+	stage("oldest", 400, 3*time.Hour)
+	stage("older", 400, 2*time.Hour)
+	stage("recent", 400, time.Hour)
+	stage("built", 400, 0)
+	build := LocalFrontend{StateDir: state, Bound: 1000}
+	require.NoError(t, build.prune(t.Context(), "built"))
+	for module, kept := range map[string]bool{"oldest": false, "older": false, "recent": true, "built": true} {
+		_, err := os.Stat(filepath.Join(state, module))
+		require.Equal(t, kept, err == nil, module)
+		require.FileExists(t, filepath.Join(state, module+".json"), "the record of %s stays", module)
+	}
+	require.NoError(t, build.Forget(t.Context(), "recent"))
+	require.NoDirExists(t, filepath.Join(state, "recent"))
+	require.NoError(t, build.Forget(t.Context(), "never-built"))
+	require.NoError(t, build.ForgetAll(t.Context()))
+	require.NoDirExists(t, filepath.Join(state, "built"))
+	require.FileExists(t, filepath.Join(state, "built.json"))
+	require.NoError(t, LocalFrontend{StateDir: filepath.Join(state, "absent")}.ForgetAll(t.Context()))
 }

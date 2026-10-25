@@ -110,12 +110,19 @@ reads, and reads a staged copy of exactly that: the files of its npm project
 repository tracks or does not ignore — but never an untracked dotenv file
 (`.env`, `.env.*`), which the deployed build, reading the committed tree,
 never sees — the same of every local package it depends on (a `file:` or
-`link:` dependency, transitively), and the top-level regular files of each
+`link:` dependency naming a directory, transitively), every file such a
+dependency names (a vendored `.tgz`, at the path npm resolves, so a cold npm
+cache installs it from the copy; replacing it installs and builds again), and
+the top-level regular files of each
 directory above the project (a tsconfig base, an `.npmrc`). Unchanged sources
 whose bundle is still retained build nothing, so a Go edit that restarts a
 service never rebuilds the page, while a new file in the project or an edit
 to a sibling package does; the record and the staged copy are kept under
-`.codefly/run/<environment>/frontend/`. The build runs before the run-wide
+`.codefly/run/<environment>/frontend/`. A module's staged copy, with its
+`node_modules`, is removed when the module leaves the composition and every
+copy when the run stops; the records stay, so a bundle still retained is
+reused. Past 2 GiB of staged copies in an environment, the least recently
+built copies of other modules are removed after a build. The build runs before the run-wide
 delivery lock is taken, so it delays no other module's delivery. It runs the
 frontend's own npm build natively in the staged copy (`npm ci` first when the
 copy's dependencies were not installed from this lockfile, then `npm run
@@ -1142,7 +1149,11 @@ run, the CLI is:
   host holds it; the local authority holds applied deliveries in memory only, so
   its refusal says to stop the run and start it again, after which the host
   accepts the module at that generation. A withdrawal the host refuses because
-  it already holds one for the binding is complete. Deleting the record is not
+  it already holds one for the binding is complete, over the composition
+  interface (a `FailedPrecondition`) and over the legacy HTTP route (the saas
+  host's 409) alike. Neither carries a typed signal for it yet, so the refusal
+  is recognized by core's `ErrWithdrawn` wording, a stopgap until
+  codefly-dev/authority#2. Deleting the record is not
   a recovery procedure; it loses the evidence needed to avoid rewriting a
   generation. These rules do not establish policy-file watch/reload behavior or
   power-loss durability beyond Core's atomic writer.

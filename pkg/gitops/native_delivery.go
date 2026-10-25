@@ -394,9 +394,26 @@ func (d *NativeDeliverer) postHTTP(ctx context.Context, signed *solutionhost.Sig
 		if message == "" {
 			message = strings.TrimSpace(string(answer))
 		}
-		return receipt, &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("the host refused the module manifest (%s): %s", response.Status, message)}
+		refusal := &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("the host refused the module manifest (%s): %s", response.Status, message)}
+		if response.StatusCode == http.StatusConflict && withdrawnRefusal(message) {
+			refusal.Reason = solutionhost.ErrWithdrawn
+		}
+		return receipt, refusal
 	}
 	return receipt, nil
+}
+
+// withdrawnRefusal reports whether a host's refusal says it still holds the
+// binding's withdrawal, which core's admission keeps terminal
+// (solutionhost.ErrWithdrawn).
+//
+// STOPGAP: neither codefly.dev/composition nor the legacy HTTP route carries a
+// typed signal for it, so it is recognized by core's own wording, which both
+// hosts pass through (the authority host as a FailedPrecondition message, the
+// saas host in its 409 body). Rewording on either side drops back to a
+// generic refusal. The interface gap is codefly-dev/authority#2.
+func withdrawnRefusal(message string) bool {
+	return strings.Contains(message, solutionhost.ErrWithdrawn.Error())
 }
 
 // HostStatusError is a refusal the host answered, with its gRPC code — or,

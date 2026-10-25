@@ -198,6 +198,31 @@ func (cluster *launcher) close() {
 		close(cluster.stop)
 	}
 	cluster.host.close()
+	// A run torn down keeps no staged frontend copy: the next run stages and
+	// installs again, and reuses every bundle still retained.
+	if cluster.stateDir != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := (solutionrun.LocalFrontend{StateDir: cluster.frontendState()}).ForgetAll(ctx); err != nil {
+			wool.Get(ctx).In("launcher.close").Warn("cannot remove the staged frontend copies", wool.ErrField(err))
+		}
+	}
+}
+
+// frontendState is where this run keeps its frontend build records and staged
+// copies, per environment.
+func (cluster *launcher) frontendState() string {
+	return filepath.Join(cluster.stateDir, "frontend")
+}
+
+// forgetFrontend removes a module's staged frontend copy.
+func (cluster *launcher) forgetFrontend(ctx context.Context, module string) error {
+	if cluster.stateDir == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return solutionrun.LocalFrontend{StateDir: cluster.frontendState()}.Forget(ctx, module)
 }
 
 // declare records identity workloads the run vouches for, with their delivery
@@ -451,7 +476,7 @@ func (cluster *launcher) frontendBundle(ctx context.Context, module *resources.M
 	}
 	workspaceDir := cluster.composed().Dir()
 	build := solutionrun.LocalFrontend{
-		StateDir: filepath.Join(cluster.stateDir, "frontend"),
+		StateDir: cluster.frontendState(),
 		Docker:   cluster.flow.ServiceRuntimeContext(resources.ServiceUnique(module.Name, module.ServiceEntry)) == resources.RuntimeContextContainer,
 		Retain: func(ctx context.Context, root string) (string, error) {
 			digest, _, retainErr := composition.RetainCanonicalArchive(ctx, workspaceDir, root)
@@ -720,6 +745,10 @@ func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]stri
 		}
 		if done {
 			withdrawn = append(withdrawn, module)
+			// A module that left the composition keeps no staged frontend.
+			if err := cluster.forgetFrontend(ctx, module); err != nil {
+				wool.Get(ctx).In("launcher.withdraw").Warn("cannot remove the staged frontend of a withdrawn module", wool.Field("module", module), wool.ErrField(err))
+			}
 		}
 	}
 	return withdrawn, nil

@@ -3,7 +3,6 @@ package gitops
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/codefly-dev/core/solutionhost"
@@ -178,15 +177,10 @@ func (c *CompositionDelivery) Applied(_ context.Context, binding string) (*Appli
 // (core's admission, solutionhost.ErrWithdrawn): the refusal then says what
 // the person can do, since the binding is derived from the workspace, the
 // environment and the module and is not theirs to choose.
-//
-// STOPGAP: codefly.dev/composition carries no typed refusal detail, so the
-// withdrawal is recognized by core's ErrWithdrawn text inside the
-// FailedPrecondition message, which the authority host passes through
-// verbatim. Rewording on either side drops back to the generic refusal. The
-// interface gap is codefly-dev/authority#2; match on its detail once released.
+// The withdrawal is recognized by a stopgap (withdrawnRefusal).
 func refusal(module string, manifest *solutionhost.ModuleManifest, err error) error {
 	code := status.Code(err)
-	if code == codes.FailedPrecondition && strings.Contains(status.Convert(err).Message(), solutionhost.ErrWithdrawn.Error()) {
+	if code == codes.FailedPrecondition && withdrawnRefusal(status.Convert(err).Message()) {
 		return &HostStatusError{Code: code, Reason: solutionhost.ErrWithdrawn, Message: fmt.Sprintf(
 			"the host refused module %s at generation %d: it still holds the withdrawal of binding %s from earlier in its life and keeps a withdrawal terminal (%v). "+
 				"The local authority holds applied deliveries in memory only: stop the run and start it again, and the host accepts the module afresh", module, manifest.Generation, manifest.Binding, err)}

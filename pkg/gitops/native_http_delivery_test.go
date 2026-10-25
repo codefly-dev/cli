@@ -328,3 +328,78 @@ func TestEnvelopeWriterReauthenticatesOnlyAnUnauthorizedRequest(t *testing.T) {
 		})
 	}
 }
+
+// admittingHTTPHost answers the manifest route as the saas host does: core's
+// admission against the manifest it holds, a withdrawn binding refused with a
+// 409 carrying core's wording.
+func admittingHTTPHost(t *testing.T) string {
+	t.Helper()
+	var mu sync.Mutex
+	held := map[string]*solutionhost.ModuleManifest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		signed, err := solutionhost.ParseSigned(body)
+		require.NoError(t, err)
+		manifest, err := solutionhost.ManifestFromVerified(signed.Document)
+		require.NoError(t, err)
+		mu.Lock()
+		defer mu.Unlock()
+		if _, err := solutionhost.Admit(manifest.Host.Coordinate, held[manifest.Binding], manifest); err != nil {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "module manifest generation conflicts with this binding's history: " + err.Error()})
+			return
+		}
+		held[manifest.Binding] = manifest
+		_ = json.NewEncoder(w).Encode(map[string]any{"disposition": "accepted", "generation": manifest.Generation})
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// Over the legacy HTTP delivery, the saas host's 409 for a binding it holds
+// withdrawn is recognized as such, as over the composition interface: a
+// refused re-add says so, and a second withdrawal after it is known complete
+// rather than refused forever.
+func TestALegacyHTTPHostHoldingAWithdrawalIsRecognized(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	deliverer := &NativeDeliverer{
+		Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment(), Signer: nativeSigner(t),
+		DeliveryURL: admittingHTTPHost(t), StateDir: t.TempDir(),
+		Token: func(string) (string, error) { return "delivery", nil },
+	}
+	live := renderNative(t, module, services, "api")
+	_, err := deliverer.Deliver(t.Context(), live)
+	require.NoError(t, err)
+	withdrawal, err := WithdrawalOf(live)
+	require.NoError(t, err)
+	_, err = deliverer.Deliver(t.Context(), withdrawal)
+	require.NoError(t, err)
+
+	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
+	require.ErrorIs(t, err, solutionhost.ErrWithdrawn, "a refused re-add is a held withdrawal")
+	var refusal *HostStatusError
+	require.ErrorAs(t, err, &refusal)
+	require.False(t, refusal.Transient())
+
+	again, err := WithdrawalOf(live)
+	require.NoError(t, err)
+	_, err = deliverer.Deliver(t.Context(), again)
+	require.ErrorIs(t, err, solutionhost.ErrWithdrawn, "the second withdrawal meets the one the host holds")
+
+	_, err = (&NativeDeliverer{
+		Workspace: deliverer.Workspace, Env: deliverer.Env, Signer: deliverer.Signer, StateDir: t.TempDir(), Token: deliverer.Token,
+		DeliveryURL: answeringConflict(t, "module manifest generation is older than the applied generation"),
+	}).Deliver(t.Context(), renderNative(t, module, services, "api"))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, solutionhost.ErrWithdrawn, "another conflict is not a withdrawal")
+}
+
+func answeringConflict(t *testing.T, message string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}

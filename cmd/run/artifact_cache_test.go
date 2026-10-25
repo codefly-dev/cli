@@ -270,3 +270,20 @@ func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.
 	_, err = federationGroup(&environments.EnvironmentHost{Coordinate: "obin/local/dev"})
 	require.ErrorContains(t, err, "host.domain")
 }
+
+// A run keeps no staged frontend copy past its teardown, nor past the module
+// leaving the composition; the bundle records stay, so retained bundles are
+// reused.
+func TestStagedFrontendCopiesLeaveWithTheModuleAndTheRun(t *testing.T) {
+	cluster := &launcher{stateDir: t.TempDir(), stop: make(chan struct{})}
+	for _, module := range []string{"wiki", "summary"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(cluster.frontendState(), module, "source", "node_modules"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(cluster.frontendState(), module+".json"), []byte(`{}`), 0o600))
+	}
+	require.NoError(t, cluster.forgetFrontend(context.Background(), "summary"))
+	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "summary"))
+	require.DirExists(t, filepath.Join(cluster.frontendState(), "wiki"))
+	cluster.close()
+	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "wiki"))
+	require.FileExists(t, filepath.Join(cluster.frontendState(), "wiki.json"))
+}

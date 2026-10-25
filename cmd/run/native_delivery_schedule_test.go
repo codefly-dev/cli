@@ -272,6 +272,8 @@ func TestANativeDeliveryAtTheDeadlineNamesTheReasonAndTheLastRefusal(t *testing.
 type fakeLauncherFlow struct {
 	ready   func(service string) bool
 	runtime string
+	// address, when set, is every endpoint's address.
+	address string
 
 	mu                       sync.Mutex
 	attempts                 int
@@ -290,6 +292,9 @@ func (f *fakeLauncherFlow) attempt() {
 }
 func (f *fakeLauncherFlow) GetAddressForEndpoint(context.Context, string, string, string) (string, error) {
 	f.attempt()
+	if f.address != "" {
+		return f.address, nil
+	}
 	return "", errors.New("no address in this test") // refused at once: the delivery ends after this one attempt
 }
 func (f *fakeLauncherFlow) GRPCEndpointTarget(context.Context, string, string, string) (orchestration.GRPCTarget, error) {

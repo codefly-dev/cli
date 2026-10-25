@@ -41,6 +41,15 @@ type LocalFrontend struct {
 	// answers its digest; Retained reports whether a digest is still there.
 	Retain   func(ctx context.Context, root string) (string, error)
 	Retained func(digest string) bool
+	// Bound overrides LocalFrontendStagingBound; zero keeps it.
+	Bound int64
+}
+
+func (b LocalFrontend) bound() int64 {
+	if b.Bound > 0 {
+		return b.Bound
+	}
+	return LocalFrontendStagingBound
 }
 
 // localFrontendRecord is what StateDir keeps for one module.
@@ -58,6 +67,115 @@ type localFrontendRecord struct {
 // build of the same frontend.
 const localFrontendBuildBound = 10 * time.Minute
 
+// LocalFrontendStagingBound bounds the staged copies of one StateDir, their
+// installed dependencies included: past it, the least recently built copies of
+// other modules are removed after a build, to be staged and installed again on
+// their next build.
+const LocalFrontendStagingBound int64 = 2 << 30
+
+// stagingDir is a module's staged copy, with its node_modules.
+func (b LocalFrontend) stagingDir(module string) string {
+	return filepath.Join(b.StateDir, module)
+}
+
+// lock holds a module's record lock: one build of a module at a time, and no
+// staged copy removed under a build.
+func (b LocalFrontend) lock(ctx context.Context, module string) (*flock.Flock, error) {
+	if err := os.MkdirAll(b.StateDir, 0o700); err != nil {
+		return nil, err
+	}
+	guard := flock.New(filepath.Join(b.StateDir, module+".json.lock"))
+	locked, err := guard.TryLockContext(ctx, 250*time.Millisecond)
+	if err != nil || !locked {
+		return nil, fmt.Errorf("wait for the frontend build of %s: %w", module, errors.Join(err, ctx.Err()))
+	}
+	return guard, nil
+}
+
+// Forget removes a module's staged copy, its installed dependencies included,
+// keeping the record of its retained bundle: a later build stages and installs
+// again. A copy a build holds past ctx is left to that build.
+func (b LocalFrontend) Forget(ctx context.Context, module string) error {
+	if _, err := os.Stat(b.stagingDir(module)); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	guard, err := b.lock(ctx, module)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = guard.Unlock() }()
+	return os.RemoveAll(b.stagingDir(module))
+}
+
+// ForgetAll forgets every module's staged copy under StateDir.
+func (b LocalFrontend) ForgetAll(ctx context.Context) error {
+	entries, err := os.ReadDir(b.StateDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var problems []error
+	for _, entry := range entries {
+		if entry.IsDir() {
+			problems = append(problems, b.Forget(ctx, entry.Name()))
+		}
+	}
+	return errors.Join(problems...)
+}
+
+// prune removes the least recently built staged copies of modules other than
+// keep until the copies under StateDir fit LocalFrontendStagingBound.
+func (b LocalFrontend) prune(ctx context.Context, keep string) error {
+	entries, err := os.ReadDir(b.StateDir)
+	if err != nil {
+		return err
+	}
+	type copyOf struct {
+		module string
+		size   int64
+		built  time.Time
+	}
+	var copies []copyOf
+	var total int64
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		var size int64
+		_ = filepath.WalkDir(b.stagingDir(entry.Name()), func(_ string, file fs.DirEntry, err error) error {
+			if err == nil && !file.IsDir() {
+				if info, infoErr := file.Info(); infoErr == nil {
+					size += info.Size()
+				}
+			}
+			return nil
+		})
+		built := time.Time{}
+		if info, statErr := os.Stat(filepath.Join(b.StateDir, entry.Name()+".json")); statErr == nil {
+			built = info.ModTime()
+		}
+		total += size
+		if entry.Name() != keep {
+			copies = append(copies, copyOf{entry.Name(), size, built})
+		}
+	}
+	sort.Slice(copies, func(i, j int) bool { return copies[i].built.Before(copies[j].built) })
+	var problems []error
+	for _, c := range copies {
+		if total <= b.bound() {
+			break
+		}
+		if err := b.Forget(ctx, c.module); err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		total -= c.size
+	}
+	return errors.Join(problems...)
+}
+
 // Bundle answers the digest of the module's frontend bundle as its sources are
 // now, building it only when no bundle is retained for these sources.
 func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (string, error) {
@@ -69,14 +187,10 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 	if err != nil {
 		return "", err
 	}
-	if err = os.MkdirAll(b.StateDir, 0o700); err != nil {
-		return "", err
-	}
 	recordPath := filepath.Join(b.StateDir, module.Name+".json")
-	guard := flock.New(recordPath + ".lock")
-	locked, err := guard.TryLockContext(ctx, 250*time.Millisecond)
-	if err != nil || !locked {
-		return "", fmt.Errorf("wait for the frontend build of %s: %w", module.Name, errors.Join(err, ctx.Err()))
+	guard, err := b.lock(ctx, module.Name)
+	if err != nil {
+		return "", err
 	}
 	defer func() { _ = guard.Unlock() }()
 	var record localFrontendRecord
@@ -104,7 +218,7 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 			return "", err
 		}
 	} else {
-		staging := filepath.Join(b.StateDir, module.Name, "source")
+		staging := filepath.Join(b.stagingDir(module.Name), "source")
 		if root, err = sources.buildNatively(ctx, module, staging, lock != record.Installed); err != nil {
 			return "", err
 		}
@@ -118,7 +232,17 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 	if err != nil {
 		return "", err
 	}
-	return record.Bundle, os.WriteFile(recordPath, data, 0o600)
+	if err = os.WriteFile(recordPath, data, 0o600); err != nil {
+		return "", err
+	}
+	if !b.Docker {
+		// Another module's copy is removed only once no build holds it; one
+		// held now is left for a later prune.
+		pruneCtx, cancelPrune := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancelPrune()
+		_ = b.prune(pruneCtx, module.Name)
+	}
+	return record.Bundle, nil
 }
 
 // frontendSources is what a local frontend build reads, relative to root (the
@@ -127,7 +251,8 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 //     it does not ignore — but never a new dotenv file (.env, .env.*), which
 //     the deployed build, reading the committed tree, never sees;
 //   - the same of each local package the project depends on (a `file:` or
-//     `link:` dependency), and of theirs;
+//     `link:` dependency naming a directory), and of theirs, and every file
+//     such a dependency names (a vendored `.tgz`), at its own path;
 //   - the top-level regular files of every directory from root down to the
 //     project (a tsconfig base, an .npmrc), as tracked.
 //
@@ -137,6 +262,9 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 type frontendSources struct {
 	root, component, project string
 	files                    []string
+	// tarballs are the files local dependencies name: with the lockfile, what
+	// an install reads.
+	tarballs map[string]bool
 }
 
 func selectFrontendSources(ctx context.Context, module *resources.Module) (*frontendSources, error) {
@@ -170,9 +298,16 @@ func selectFrontendSources(ctx context.Context, module *resources.Module) (*fron
 			selected[relative] = true
 		}
 	}
-	packages, err := localPackages(root, projectDir)
+	named := map[string]bool{}
+	packages, tarballs, err := localPackages(root, projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("the frontend of %s: %w", module.Name, err)
+	}
+	for _, tarball := range tarballs {
+		// Named by a dependency, so read whether the repository tracks it,
+		// ignores it or neither.
+		selected[rootRelative(root, tarball)] = true
+		named[rootRelative(root, tarball)] = true
 	}
 	for _, dir := range packages {
 		names, err := listFiles(ctx, dir, repository, true)
@@ -201,7 +336,7 @@ func selectFrontendSources(ctx context.Context, module *resources.Module) (*fron
 			}
 		}
 	}
-	sources := &frontendSources{root: root, component: filepath.ToSlash(component), project: rootRelative(root, projectDir)}
+	sources := &frontendSources{root: root, component: filepath.ToSlash(component), project: rootRelative(root, projectDir), tarballs: named}
 	for relative := range selected {
 		sources.files = append(sources.files, relative)
 	}
@@ -210,18 +345,28 @@ func selectFrontendSources(ctx context.Context, module *resources.Module) (*fron
 }
 
 // localPackages is the project and every local package it depends on — a
-// `file:` or `link:` dependency naming a directory — and theirs, each inside
-// root: a build cannot read a package the repository does not hold.
-func localPackages(root, project string) ([]string, error) {
-	var packages []string
+// `file:` or `link:` dependency naming a directory — and theirs, with every
+// such dependency naming a file (a vendored `.tgz`), each inside root: a build
+// cannot read a package the repository does not hold, and npm resolves each
+// at its path relative to the package that names it, so the staged copy keeps
+// that path. A local dependency that names nothing is refused by name, as npm
+// would refuse it.
+func localPackages(root, project string) ([]string, []string, error) {
+	var packages, tarballs []string
 	seen := map[string]bool{}
+	inside := func(target string) error {
+		if relative, err := filepath.Rel(root, target); err != nil || !filepath.IsLocal(relative) && relative != "." {
+			return fmt.Errorf("local dependency %s is outside %s, so no build can read it", target, root)
+		}
+		return nil
+	}
 	var visit func(string) error
 	visit = func(dir string) error {
 		if seen[dir] {
 			return nil
 		}
-		if relative, err := filepath.Rel(root, dir); err != nil || !filepath.IsLocal(relative) && relative != "." {
-			return fmt.Errorf("local package %s is outside %s, so no build can read it", dir, root)
+		if err := inside(dir); err != nil {
+			return err
 		}
 		seen[dir] = true
 		packages = append(packages, dir)
@@ -232,7 +377,7 @@ func localPackages(root, project string) ([]string, error) {
 		var manifest map[string]map[string]string
 		_ = json.Unmarshal(data, &manifest)
 		for _, field := range []string{"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"} {
-			for _, spec := range manifest[field] {
+			for name, spec := range manifest[field] {
 				local, ok := strings.CutPrefix(spec, "file:")
 				if !ok {
 					local, ok = strings.CutPrefix(spec, "link:")
@@ -240,17 +385,30 @@ func localPackages(root, project string) ([]string, error) {
 				if !ok {
 					continue
 				}
-				target := filepath.Join(dir, filepath.FromSlash(local))
-				if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+				target := filepath.FromSlash(local)
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(dir, target)
+				}
+				info, statErr := os.Stat(target)
+				switch {
+				case statErr != nil:
+					return fmt.Errorf("%s depends on %s at %q, which names nothing readable: %w", filepath.Join(dir, "package.json"), name, spec, statErr)
+				case info.IsDir():
 					if err := visit(target); err != nil {
 						return err
 					}
+				default:
+					if err := inside(target); err != nil {
+						return err
+					}
+					tarballs = append(tarballs, target)
 				}
 			}
 		}
 		return nil
 	}
-	return packages, visit(project)
+	err := visit(project)
+	return packages, tarballs, err
 }
 
 // listFiles lists the files under dir (only its own, unless recursive),
@@ -300,12 +458,15 @@ func listFiles(ctx context.Context, dir string, repository, recursive bool) (map
 }
 
 // digest is the sources by path, mode and content, with how they are built,
-// and the project's lockfile digest apart. A symlink or special file among
+// and apart, the digest of what an install reads: the project's lockfile and
+// the tarballs its local dependencies name, so replacing a vendored tarball
+// in place installs it again. A symlink or special file among
 // them is refused by name: the deployed build refuses one too.
 func (s *frontendSources) digest(module *resources.Module, docker bool) (string, string, error) {
 	sum := sha256.New()
 	_, _ = fmt.Fprintf(sum, "docker=%t image=%s project=%s\x00", docker, FrontendBuilderImage, s.project)
-	var lock string
+	install := sha256.New()
+	installs := 0
 	present := 0
 	for _, relative := range s.files {
 		full := filepath.Join(s.root, filepath.FromSlash(relative))
@@ -326,9 +487,14 @@ func (s *frontendSources) digest(module *resources.Module, docker bool) (string,
 		present++
 		hash := sha256.Sum256(content)
 		_, _ = fmt.Fprintf(sum, "%s\x00%o\x00%x\x00", relative, info.Mode().Perm(), hash)
-		if relative == path.Join(s.project, "package-lock.json") || relative == path.Join(s.project, "npm-shrinkwrap.json") {
-			lock = hex.EncodeToString(hash[:])
+		if s.tarballs[relative] || relative == path.Join(s.project, "package-lock.json") || relative == path.Join(s.project, "npm-shrinkwrap.json") {
+			_, _ = fmt.Fprintf(install, "%s\x00%x\x00", relative, hash)
+			installs++
 		}
+	}
+	var lock string
+	if installs > 0 {
+		lock = hex.EncodeToString(install.Sum(nil))
 	}
 	if present == 0 {
 		return "", "", fmt.Errorf("the frontend of %s cannot be built: its npm project %s holds no file to build from", module.Name, s.project)
