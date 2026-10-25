@@ -38,11 +38,12 @@ func ResolveWorkspaceReference(ctx context.Context, ref *resources.WorkspaceRefe
 	// The subpath a workspace reference spells `workspace:` is the subpath a
 	// module reference spells `module:`; ensurePinnedArtifact checks it is
 	// populated and says so by name when it is not.
-	dir, _, err := ensurePinnedArtifact(ctx, &resources.ModuleReference{
+	inspect, _ := ctx.Value(workspaceInspectionKey{}).(bool)
+	dir, _, err := pinnedArtifact(ctx, &resources.ModuleReference{
 		Source:  ref.Source,
 		Version: ref.Version,
 		Module:  ref.Workspace,
-	}, cacheRoot)
+	}, cacheRoot, !inspect)
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace %q at %s@%s: %w", ref.Name, ref.Source, ref.Version, err)
 	}
@@ -55,3 +56,14 @@ func ResolveWorkspaceReference(ctx context.Context, ref *resources.WorkspaceRefe
 func WithWorkspaceResolver(ctx context.Context) context.Context {
 	return resources.WithWorkspaceResolver(ctx, ResolveWorkspaceReference)
 }
+
+// WithWorkspaceInspection resolves only already-cached, exact workspace releases.
+// Inspection cannot acquire an import or choose a remote/floating version. A
+// missing release is a diagnostic for an explicit preparation operation. Core also
+// refuses legacy migration throughout the recursive import closure.
+func WithWorkspaceInspection(ctx context.Context) context.Context {
+	ctx = resources.WithWorkspaceMigrationRefusal(ctx)
+	return WithWorkspaceResolver(context.WithValue(ctx, workspaceInspectionKey{}, true))
+}
+
+type workspaceInspectionKey struct{}

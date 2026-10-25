@@ -16,6 +16,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/cmd/publish"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -26,6 +27,7 @@ import (
 	"github.com/codefly-dev/core/provider/configuration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -45,6 +47,7 @@ const (
 	codeConfigurationInvalid       = "configuration_invalid"
 	codeConfigurationDuplicate     = "configuration_duplicate"
 	codeConfigurationReference     = "configuration_reference_unresolved"
+	codeConfigurationProducer      = "configuration_producer_unavailable"
 	codeProviderNotConfigured      = "provider_not_configured"
 	codeProviderExecutableMissing  = "provider_executable_missing"
 	codeProviderAuthRequired       = "provider_authentication_required"
@@ -80,6 +83,7 @@ const (
 )
 
 type workspaceDiagnostic struct {
+	Module      string `json:"module,omitempty"` // structured subject when the check concerns one module
 	Code        string `json:"code"`
 	Name        string `json:"name"`
 	Status      string `json:"status"` // ok | warn | fail
@@ -87,7 +91,26 @@ type workspaceDiagnostic struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
+// configurationSourceGroup is a value-free inventory emitted by Core's resolver.
+// Owner describes the composed group, not the author of every overlaid key.
+type configurationSourceGroup struct {
+	Consumers  []string `json:"consumers"`
+	Name       string   `json:"name"`
+	Owner      string   `json:"owner"`
+	Keys       []string `json:"keys"`
+	SecretKeys []string `json:"secret_keys,omitempty"`
+	Document   bool     `json:"document"`
+}
+
 type workspaceReadinessReport struct {
+	ConfigurationProfiles  []*basev0.ConfigurationProfileSelection `json:"configuration_profiles,omitempty"`
+	ConfigurationDecisions []*basev0.ConfigurationDecision         `json:"configuration_decisions,omitempty"`
+	ConfigurationOrigins   []*basev0.ConfigurationOrigin           `json:"configuration_origins,omitempty"`
+	ConfigurationEvidence  *configurationEvidence                  `json:"configuration_evidence,omitempty"`
+	SourceOnly             bool                                    `json:"source_only,omitempty"`
+	ConfigurationGroups    []configurationSourceGroup              `json:"configuration_groups,omitempty"`
+	ConfigurationResolved  bool                                    `json:"configuration_resolved,omitempty"`
+
 	SchemaVersion       int                   `json:"schema_version"`
 	Workspace           string                `json:"workspace,omitempty"`
 	WorkspaceDir        string                `json:"workspace_dir,omitempty"`
@@ -109,6 +132,8 @@ func (report *workspaceReadinessReport) add(code, name, status, message, remedia
 }
 
 type workspaceReadinessOptions struct {
+	sourceOnly bool
+
 	// dir pins the workspace directory (tests). Empty means the usual upward
 	// discovery from the current directory.
 	dir string
@@ -126,7 +151,8 @@ type workspaceReadinessOptions struct {
 // must not create, modify, or delete any file, and must not start agents,
 // containers, or services. Secret references are resolved in memory through
 // the environment's configured backend and the values discarded immediately.
-func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *workspaceReadinessReport {
+func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *workspaceReadinessReport {
+	ctx = composition.WithWorkspaceInspection(ctx)
 	if opts.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
@@ -135,8 +161,20 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	report := &workspaceReadinessReport{
 		SchemaVersion: doctorWorkspaceSchemaVersion,
+		SourceOnly:    opts.sourceOnly,
 		Environment:   opts.env,
 		Status:        readinessStatusReady,
+	}
+	if opts.sourceOnly {
+		var err error
+		report.ConfigurationEvidence, err = newConfigurationEvidence()
+		defer func() {
+			report.ConfigurationEvidence.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}()
+		if err != nil {
+			report.add(codeConfigurationProducer, "configuration evidence", checkStatusFail,
+				"Cannot identify the executable producing this report", "Check access to the running Codefly executable and retry")
+		}
 	}
 
 	ws := checkWorkspace(ctx, opts, report)
@@ -157,9 +195,14 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 		return report
 	}
 
-	checkProviderBindings(ctx, ws, env, report)
-
-	resolvers, unavailable := checkSecretProviders(env, report)
+	if !opts.sourceOnly {
+		checkProviderBindings(ctx, ws, env, report)
+	}
+	var resolvers map[string]configurations.SecretResolver
+	var unavailable map[string]bool
+	if !opts.sourceOnly {
+		resolvers, unavailable = checkSecretProviders(env, report)
+	}
 
 	// Everything from here loads the workspace's services, which core refuses
 	// for a composed module nobody has materialized on this machine. The
@@ -185,12 +228,45 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	checkConfigurationReferences(ctx, ws, env, provided, scope, report)
 
-	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
+	if opts.sourceOnly {
+		if provided != nil {
+			report.ConfigurationResolved = true
+			report.ConfigurationOrigins = provided.Origins
+			report.ConfigurationProfiles = provided.ProfileSelections
+			report.ConfigurationDecisions = provided.Decisions
+			if report.ConfigurationEvidence != nil {
+				report.ConfigurationEvidence.Coverage = "composed-group-key-origins"
+			}
+			for _, info := range provided.Infos {
+				group := configurationSourceGroup{Name: info.Name, Owner: workspaceConfigurationOrigin(info.Name, provided.ComposedBy), Document: info.GetData() != nil, Keys: []string{}}
+				group.Consumers = []string{}
+				seenConsumers := map[string]bool{}
+				for _, consumer := range requiredBy[info.Name] {
+					if !seenConsumers[consumer] {
+						group.Consumers = append(group.Consumers, consumer)
+						seenConsumers[consumer] = true
+					}
+				}
+				sort.Strings(group.Consumers)
+				for _, value := range info.GetConfigurationValues() {
+					group.Keys = append(group.Keys, value.GetKey())
+					if value.GetSecret() {
+						group.SecretKeys = append(group.SecretKeys, value.GetKey())
+					}
+				}
+				sort.Strings(group.Keys)
+				sort.Strings(group.SecretKeys)
+				report.ConfigurationGroups = append(report.ConfigurationGroups, group)
+			}
+		}
+	} else {
+		checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
+	}
 
 	return report
 }
 
-func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report *workspaceReadinessReport) *resources.Workspace {
+func checkWorkspace(ctx context.Context, opts *workspaceReadinessOptions, report *workspaceReadinessReport) *resources.Workspace {
 	dir := opts.dir
 	if dir == "" {
 		found, err := resources.FindUp[resources.Workspace](ctx)
@@ -209,40 +285,11 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 		return nil
 	}
 
-	// Probe the raw YAML before the real load: loading a flat-layout workspace
-	// that still carries a legacy module.codefly.yaml migrates it on disk
-	// (rewrites workspace.codefly.yaml, deletes the module file). The doctor is
-	// strictly read-only, so that state is reported instead of loaded.
-	raw, err := os.ReadFile(filepath.Join(dir, resources.WorkspaceConfigurationName))
-	if err != nil {
-		report.add(codeWorkspaceInvalid, "workspace", "fail",
-			fmt.Sprintf("cannot read %s: %v", resources.WorkspaceConfigurationName, err),
-			"check file permissions on the workspace directory")
-		return nil
-	}
-	var probe struct {
-		Layout string `yaml:"layout"`
-	}
-	if probeErr := yaml.Unmarshal(raw, &probe); probeErr != nil {
-		report.add(codeWorkspaceInvalid, "workspace", "fail",
-			fmt.Sprintf("%s is not valid YAML: %v", resources.WorkspaceConfigurationName, probeErr),
-			"fix the workspace manifest syntax")
-		return nil
-	}
-	if probe.Layout == resources.LayoutKindFlat {
-		if _, statErr := os.Stat(filepath.Join(dir, resources.ModuleConfigurationName)); statErr == nil {
-			report.add(codeWorkspaceInvalid, "workspace", "fail",
-				fmt.Sprintf("flat-layout workspace still has a legacy %s pending migration; loading it would rewrite workspace files", resources.ModuleConfigurationName),
-				"run `codefly update workspace` once in your primary checkout, commit the migration, then re-run")
-			return nil
-		}
-	}
-
 	ws, err := resources.LoadWorkspaceFromDir(ctx, dir)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "workspace", "fail",
 			fmt.Sprintf("cannot load workspace: %v", err),
-			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, dir))
+			"fix the workspace identified by the diagnostic, then retry; explicitly migrate legacy layout before inspection")
 		return nil
 	}
 	report.Workspace = ws.Name
@@ -511,7 +558,7 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
-	declared, err := composition.LoadModuleResolutions(ws.Dir())
+	declared, err := composition.LoadModuleResolutionsContext(ctx, ws.Dir())
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "module resolution", "fail",
 			fmt.Sprintf("cannot read module resolution from %s: %v", resources.WorkspaceConfigurationName, err),
@@ -638,6 +685,7 @@ func checkModuleMaterialization(ref *resources.ModuleReference, directive *resou
 	report.add(codeModuleResolutionStale, "materialization of "+ref.Name, "warn",
 		fmt.Sprintf("module %q is materialized at %s for %s, but the workspace now requests %s: the next run re-resolves it and refuses that checkout if the request cannot be resolved", ref.Name, directive.Path, receiptRequestLabel(receipt), moduleRequestLabel(ref, mode)),
 		fmt.Sprintf("run `codefly run solution` to re-resolve %q, or set resolve.%s.path in %s to a local checkout", ref.Name, ref.Name, resources.LocalOverlayConfigurationName))
+	report.Checks[len(report.Checks)-1].Module = ref.Name
 }
 
 // receiptRequestLabel describes the request a receipt answered. A receipt
@@ -1637,11 +1685,12 @@ type machineReadableDoctorError struct{ error }
 func (machineReadableDoctorError) MachineReadable() bool { return true }
 
 var (
-	doctorWorkspaceEnv     string
-	doctorWorkspaceModule  string
-	doctorWorkspaceService string
-	doctorWorkspaceJSON    bool
-	doctorWorkspaceTimeout time.Duration
+	doctorWorkspaceEnv        string
+	doctorWorkspaceModule     string
+	doctorWorkspaceService    string
+	doctorWorkspaceJSON       bool
+	doctorWorkspaceSourceOnly bool
+	doctorWorkspaceTimeout    time.Duration
 )
 
 var DoctorWorkspaceCmd = &cobra.Command{
@@ -1666,6 +1715,11 @@ and the failure would otherwise only surface mid-orchestration.
 Exit codes:
   0  the workspace is ready (warnings allowed)
   1  at least one check failed, or the command itself failed
+
+With --sources-only, skip provider checks and secret reference resolution. The
+JSON report includes resolved workspace group/key names and group ownership,
+never values. Ownership does not establish each key's override origin. A ready
+source-only report does not establish credentials or runtime readiness.
 
 With --json, a versioned report is printed to stdout:
   {schema_version, workspace, workspace_dir, environment, environment_declared,
@@ -1693,11 +1747,21 @@ timeout. External provider
 binding checks add external_provider.* codes (bindings_unreadable,
 bindings_schema_unknown, and the per-binding validation codes).`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		report := workspaceReadiness(cmd.Context(), workspaceReadinessOptions{
-			env:     doctorWorkspaceEnv,
-			module:  doctorWorkspaceModule,
-			service: doctorWorkspaceService,
-			timeout: doctorWorkspaceTimeout,
+		ctx := cmd.Context()
+		if doctorWorkspaceJSON {
+			restore := cli.ProtectResultStream()
+			defer restore()
+			logger := wool.New(ctx, resources.CLI.AsResource())
+			logger.WithLogger(cli.GetLogger())
+			defer logger.Done()
+			ctx = logger.Inject(ctx)
+		}
+		report := workspaceReadiness(ctx, &workspaceReadinessOptions{
+			env:        doctorWorkspaceEnv,
+			sourceOnly: doctorWorkspaceSourceOnly,
+			module:     doctorWorkspaceModule,
+			service:    doctorWorkspaceService,
+			timeout:    doctorWorkspaceTimeout,
 		})
 
 		if doctorWorkspaceJSON {
@@ -1745,6 +1809,7 @@ func init() {
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceEnv, "env", "local", "Environment to validate against")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceModule, "module", "", "Restrict validation to one module's services and their declared configuration dependencies")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceService, "service", "", "Restrict validation to one service's declared configuration dependencies")
+	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceSourceOnly, "sources-only", false, "Report resolver group/key inventory without provider checks or secret resolution")
 	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceJSON, "json", false, "Print a machine-readable report to stdout")
 	DoctorWorkspaceCmd.Flags().DurationVar(&doctorWorkspaceTimeout, "timeout", 30*time.Second, "Overall bound; secret resolution is cancelled when it expires")
 	DoctorCmd.AddCommand(DoctorWorkspaceCmd)

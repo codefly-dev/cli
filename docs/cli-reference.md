@@ -2428,6 +2428,11 @@ Exit codes:
   0  the workspace is ready (warnings allowed)
   1  at least one check failed, or the command itself failed
 
+With --sources-only, skip provider checks and secret reference resolution. The
+JSON report includes resolved workspace group/key names and group ownership,
+never values. Ownership does not establish each key's override origin. A ready
+source-only report does not establish credentials or runtime readiness.
+
 With --json, a versioned report is printed to stdout:
   {schema_version, workspace, workspace_dir, environment, environment_declared,
    module?, service?, status: ready|not_ready, checks: [{code, name, status,
@@ -2466,6 +2471,7 @@ Flags:
       --json               Print a machine-readable report to stdout
       --module string      Restrict validation to one module's services and their declared configuration dependencies
       --service string     Restrict validation to one service's declared configuration dependencies
+      --sources-only       Report resolver group/key inventory without provider checks or secret resolution
       --timeout duration   Overall bound; secret resolution is cancelled when it expires (default 30s)
 ```
 
@@ -4597,6 +4603,7 @@ Subcommands:
 - [`codefly show fixtures`](#codefly-show-fixtures)
 - [`codefly show network`](#codefly-show-network)
 - [`codefly show runnable`](#codefly-show-runnable)
+- [`codefly show selection`](#codefly-show-selection)
 
 ## `codefly show dependencies`
 
@@ -4711,6 +4718,31 @@ Flags:
 ```
       --json             Emit machine-readable JSON
       --version string   Select one release when a name is declared at several versions
+```
+
+## `codefly show selection`
+
+Export composed module selections and their declaration owners as JSON
+
+```
+Resolve the current workspace through Core and export module references,
+declaration-owner directories and product-owned environment names as JSON.
+Local workspace imports and already-cached exact release imports are supported.
+Missing releases and floating versions fail explicitly; inspection never downloads
+imports or updates the module cache. No module services, configuration values or runtime
+observations are collected. This is a point-in-time source report, not deployment
+or complete input-identity evidence. Standard workspace loading rules apply.
+```
+
+```
+codefly show selection [flags]
+```
+
+Flags:
+
+```
+      --import-revision stringArray   Pin an imported workspace as absolute-directory=commit (repeatable; requires revision)
+      --revision string               Inspect an immutable product commit instead of working-tree declarations
 ```
 
 ## `codefly status`
