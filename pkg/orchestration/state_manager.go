@@ -238,7 +238,15 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 	}
 	s.mu.RLock()
 	var candidates []*basev0.NetworkMapping
+	// Several dependencies can name one producer (three interfaces one
+	// endpoint implements bind to the same service), and its mappings are
+	// that producer's once: core judges each dependency against them.
+	producers := make(map[string]struct{}, len(service.ServiceDependencies))
 	for _, req := range service.ServiceDependencies {
+		if _, seen := producers[req.Unique()]; seen {
+			continue
+		}
+		producers[req.Unique()] = struct{}{}
 		for _, mapping := range s.networkMappings[req.Unique()] {
 			if mapping == nil {
 				continue
