@@ -434,27 +434,22 @@ func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
 	}}}, nil
 }
 
-// frontendBundle archives the bundle a component's frontend build wrote
-// beside its entry service, in core's canonical form, and retains it in the
-// workspace's artifact cache under its digest — the read-only source the
-// host's native adapter reads bundles from — so the manifest names the bytes
-// the host verifies. A component that declares a page and built no bundle is
-// refused by name, with what to build: a host admits no new frontend without
-// its signed payload, and a mutable fallback is never delivered in its place.
-// A headless component needs no bundle, and a leftover one is not its page.
+// frontendBundle builds a declared page through the owner's npm workflow, then
+// retains its canonical archive in the existing artifact cache for host delivery.
+// Headless components need no build; a leftover dist is never a serving claim.
 func (cluster *launcher) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
 	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
 	if err != nil || frontend == nil {
 		return nil, err
 	}
-	root, built, err := solutionrun.FrontendBundle(module)
+	scratch, err := os.MkdirTemp("", "codefly-run-frontend-")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare the frontend build of %s: %w", module.Name, err)
 	}
-	if !built {
-		source := filepath.Join(module.ServicesDir(), "fe-remote")
-		return nil, fmt.Errorf("module %s declares a frontend (%s beside its service-entry) and its bundle is not built: %s holds no %s; a host admits no frontend without its signed bundle, so build the frontend from %s with its own build workflow and start the run again",
-			module.Name, solutionrun.FrontendFileName, filepath.Join(module.ServicesDir(), filepath.FromSlash(solutionrun.FrontendBundleDir)), solutionrun.FrontendBundleManifest, source)
+	defer func() { _ = os.RemoveAll(scratch) }()
+	root := filepath.Join(scratch, "bundle")
+	if err = solutionrun.BuildLocalFrontendBundle(ctx, module, root); err != nil {
+		return nil, err
 	}
 	digest, _, err := composition.RetainCanonicalArchive(ctx, cluster.composed().Dir(), root)
 	if err != nil {

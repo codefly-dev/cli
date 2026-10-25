@@ -200,6 +200,16 @@ signed manifest is delivered to the host once it runs, and the module is
 offered for installation in the host's own registry. See
 [module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
 
+A component declaring `solution.frontend.codefly.yaml` has its remote built
+before native delivery. Codefly reuses the deployed frontend builder to run
+`npm ci && npm run build` from the remote's own npm project (or the module root),
+with the pinned Node image. Local edits and nonignored new files are included;
+the frontend's `dist` and `node_modules` are excluded. BuildKit caches by input
+content, so an unchanged build is reused. Failure names the component and includes the build's
+output; an old dist is never delivered instead. The complete generated bundle
+is retained by digest in the existing artifact cache. See
+[module manifests](module-manifests.md) for source and cache semantics.
+
 ### `codefly run service [name...]`
 
 Run one or more services locally with their dependency graph.

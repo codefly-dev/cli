@@ -57,15 +57,9 @@ func FrontendProject(module *resources.Module) (string, error) {
 // repository does not track at HEAD is refused by name rather than built from
 // a tree that is not its own.
 func frontendBuildContext(ctx context.Context, module *resources.Module, scratch string) (string, string, error) {
-	repository := ""
-	for dir := module.Dir(); ; dir = filepath.Dir(dir) {
-		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-			repository = dir
-			break
-		}
-		if filepath.Dir(dir) == dir {
-			return module.Dir(), ".", nil
-		}
+	repository := frontendRepository(module.Dir())
+	if repository == "" {
+		return module.Dir(), ".", nil
 	}
 	component, err := filepath.Rel(repository, module.Dir())
 	if err != nil {
@@ -89,6 +83,19 @@ func frontendBuildContext(ctx context.Context, module *resources.Module, scratch
 	return source, filepath.ToSlash(component), nil
 }
 
+// frontendRepository keeps deployed and local builds rooted in the same tree,
+// so relative dependencies on sibling packages resolve identically.
+func frontendRepository(directory string) string {
+	for dir := directory; ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		if filepath.Dir(dir) == dir {
+			return ""
+		}
+	}
+}
+
 // buildPath is what a generated Dockerfile may name: plain path segments,
 // never a quote, a space, a variable or a line break.
 var buildPath = regexp.MustCompile(`^[A-Za-z0-9._@/-]+$`)
@@ -101,6 +108,18 @@ var buildPath = regexp.MustCompile(`^[A-Za-z0-9._@/-]+$`)
 // immutable module cache. The builder sees no variable from this process, so
 // an ASSET_PREFIX left in the shell cannot bake an origin into the remote.
 func BuildFrontendBundle(ctx context.Context, module *resources.Module, destination string) error {
+	return buildFrontendBundle(ctx, module, destination, frontendBuildContext)
+}
+
+// BuildLocalFrontendBundle uses the same owner-declared npm build as deployment,
+// but snapshots the working tree, including local edits and nonignored new files.
+// BuildKit's content cache reuses the build layer for unchanged inputs; no local
+// dist, timestamp or committed revision is treated as evidence of a current build.
+func BuildLocalFrontendBundle(ctx context.Context, module *resources.Module, destination string) error {
+	return buildFrontendBundle(ctx, module, destination, localFrontendBuildContext)
+}
+
+func buildFrontendBundle(ctx context.Context, module *resources.Module, destination string, stage func(context.Context, *resources.Module, string) (string, string, error)) error {
 	project, err := FrontendProject(module)
 	if err != nil {
 		return err
@@ -117,9 +136,9 @@ func BuildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 		return err
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
-	root, component, err := frontendBuildContext(ctx, module, scratch)
+	root, component, err := stage(ctx, module, scratch)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare frontend sources for %s: %w", module.Name, err)
 	}
 	workdir := path.Join("/source", component, project)
 	bundle := path.Join("/source", component, filepath.ToSlash(services), FrontendBundleDir)
@@ -129,15 +148,16 @@ func BuildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 	dockerfile := fmt.Sprintf("FROM %s AS build\nWORKDIR /source\nCOPY [\".\", \".\"]\nWORKDIR %s\nRUN [\"sh\", \"-c\", \"npm ci && npm run build\"]\nFROM scratch\nCOPY --from=build [\"%s/\", \"/\"]\n",
 		FrontendBuilderImage, workdir, bundle)
 	//nolint:gosec // G204: fixed docker executable, separate arguments, no shell; the Dockerfile arrives on stdin.
-	command := exec.CommandContext(ctx, "docker", "build", "--file", "-", "--output", "type=local,dest="+destination, root)
+	command := exec.CommandContext(ctx, "docker", "build", "--progress=plain", "--file", "-", "--output", "type=local,dest="+destination, root)
 	command.Stdin = strings.NewReader(dockerfile)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err = command.Run(); err != nil {
 		return fmt.Errorf("build the frontend of %s in %s (npm ci && npm run build in %s): %w\n%s", module.Name, FrontendBuilderImage, path.Join(component, project), err, tail(output.String(), 40))
 	}
-	if _, err = os.Stat(filepath.Join(destination, FrontendBundleManifest)); err != nil {
-		return fmt.Errorf("the frontend build of %s wrote no %s at the root of %s", module.Name, FrontendBundleManifest, bundle)
+	manifest, err := os.Stat(filepath.Join(destination, FrontendBundleManifest))
+	if err != nil || !manifest.Mode().IsRegular() {
+		return fmt.Errorf("the frontend build of %s wrote no regular %s at the root of %s\n%s", module.Name, FrontendBundleManifest, bundle, tail(output.String(), 40))
 	}
 	return nil
 }

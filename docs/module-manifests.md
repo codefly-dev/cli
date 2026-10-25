@@ -102,11 +102,26 @@ collection and read back), and stamps that artifact as the payload. The same
 render hands every service declaring the `artifact-cache` workspace
 configuration `REPOSITORY`, that repository, which a host reads bundles from by
 the digest it admits. A local render and a local k3d cluster's publish and
-project nothing. A native run delivers what runs: the bundle its frontend
-build wrote (`services/fe-remote/dist`, with `mf-manifest.json` at its root),
-archived in core's canonical form, retained in the workspace's artifact cache
-under its digest, and named as the payload; a declared page without a built
-bundle is refused by name.
+project nothing. Before native delivery, Codefly builds every declared page
+through this same frontend builder and the owner's `package.json` build script
+(`npm ci && npm run build`); no manual bundle build is required. Native builds
+snapshot the current repository files selected by Git, including uncommitted
+edits and nonignored new files, so sibling package dependencies remain available.
+Without a repository, the component directory is the build context. `.git`,
+`.codefly`, `node_modules` and this frontend's `dist` are excluded from local
+snapshots, even if tracked. Shipped sibling package artifacts remain inputs. The
+source tree is never modified and an old local dist is never used as proof of a
+successful build.
+
+Docker BuildKit's existing content cache reuses the build layer for unchanged
+source, recipe and pinned builder image. Changed selected input (including a
+lockfile or sibling package) invalidates it; clearing the builder cache also
+requires a build. Each delivery exports the resulting bundle to a fresh temporary
+directory, verifies a regular `mf-manifest.json`, archives it in Core's canonical
+form and retains it in `.codefly/selection-artifacts` under its digest. The
+manifest names those exact bytes. A build failure refuses delivery with the
+component name, build command and final 40 lines of build output; it never
+falls back to a previous bundle. Headless components perform no frontend build.
 
 ## Declaring the host
 

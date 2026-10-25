@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/composition"
@@ -44,26 +45,63 @@ func TestArtifactCacheGroupCreatesTheCacheRoot(t *testing.T) {
 	require.True(t, info.IsDir())
 }
 
-// A component that declares a page and built no bundle is refused by name,
-// with what to build; a headless component needs none, and a leftover dist
-// is not its page.
-func TestANativeRunRefusesADeclaredPageWithoutItsBuiltBundle(t *testing.T) {
+// A declared frontend is built before delivery, even with a leftover dist.
+// The controlled Docker peer exercises the CLI process boundary without a
+// released agent, npm registry or provider toolchain in this gate.
+func TestANativeRunBuildsItsDeclaredPageBeforeRetainingIt(t *testing.T) {
 	ctx := context.Background()
 	module := &resources.Module{Name: "wiki", ServiceEntry: "api"}
 	module.WithDir(t.TempDir())
 	entry := filepath.Join(module.ServicesDir(), "api")
 	require.NoError(t, os.MkdirAll(entry, 0o755))
-	cluster := &launcher{workspace: &resources.Workspace{Name: "acme"}}
+	workspace := &resources.Workspace{Name: "acme"}
+	workspace.WithDir(t.TempDir())
+	cluster := &launcher{workspace: workspace}
 
 	bundle, err := cluster.frontendBundle(ctx, module)
-	require.NoError(t, err, "headless: no page, no bundle needed")
+	require.NoError(t, err, "headless: no build needed")
 	require.Nil(t, bundle)
 
 	require.NoError(t, os.WriteFile(filepath.Join(entry, solutionrun.FrontendFileName), []byte("title: Wiki\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
-	_, err = cluster.frontendBundle(ctx, module)
-	require.ErrorContains(t, err, "its bundle is not built")
-	require.ErrorContains(t, err, filepath.Join(module.ServicesDir(), "fe-remote"), "the source to build is named")
-	require.ErrorContains(t, err, solutionrun.FrontendBundleManifest)
+	remote := filepath.Join(module.ServicesDir(), "fe-remote")
+	require.NoError(t, os.MkdirAll(remote, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "package.json"), []byte(`{"scripts":{"build":"owner-build"}}`), 0o600))
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tool := filepath.Join(bin, "docker")
+	writeTool := func(body string) { require.NoError(t, os.WriteFile(tool, []byte("#!/bin/sh\nset -eu\n"+body), 0o700)) }
+	writeTool(`recipe=$(cat)
+case "$recipe" in *'npm ci && npm run build'*) ;; *) echo 'missing owner build' >&2; exit 2;; esac
+for arg in "$@"; do
+ case "$arg" in type=local,dest=*) destination=${arg#type=local,dest=};; esac
+ source=$arg
+done
+[ ! -d "$source/services/fe-remote/dist" ]
+mkdir -p "$destination"
+echo '{"name":"built-wiki"}' > "$destination/mf-manifest.json"
+`)
+	bundle, err = cluster.frontendBundle(ctx, module)
+	require.NoError(t, err)
+	require.NotNil(t, bundle)
+	archive := filepath.Join(composition.ArtifactCacheDir(workspace.Dir()), strings.TrimPrefix(string(bundle.Digest), "sha256:"))
+	contents, err := os.ReadFile(archive)
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "built-wiki")
+	require.NotContains(t, string(contents), "stale")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(remote, "dist"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "dist", solutionrun.FrontendBundleManifest), []byte("stale"), 0o600))
+	writeTool("cat >/dev/null\necho 'owner bundler: Page.tsx failed' >&2\nexit 7\n")
+	bundle, err = cluster.frontendBundle(ctx, module)
+	require.Nil(t, bundle, "a failed build never delivers the old dist or cached payload")
+	require.ErrorContains(t, err, "frontend of wiki")
+	require.ErrorContains(t, err, "owner bundler: Page.tsx failed")
+
+	writeTool("cat >/dev/null\necho 'owner build returned without artifacts'\n")
+	bundle, err = cluster.frontendBundle(ctx, module)
+	require.Nil(t, bundle)
+	require.ErrorContains(t, err, "frontend build of wiki wrote no regular mf-manifest.json")
+	require.ErrorContains(t, err, "owner build returned without artifacts")
 }
 
 // Forgetting a stopped workload drops what this run kept for it, and only
