@@ -102,9 +102,12 @@ type NativeWorkload struct {
 
 // NativeDeliverer renders, signs and delivers a native run's manifests.
 type NativeDeliverer struct {
-	Workspace *resources.Workspace
-	Env       *environments.Environment
-	Signer    solutionhost.Signer
+	// CloseTransport releases a transport owned by this delivery attempt.
+	// HTTP delivery using the shared default client leaves it nil.
+	CloseTransport func()
+	Workspace      *resources.Workspace
+	Env            *environments.Environment
+	Signer         solutionhost.Signer
 	// StateDir keeps the generations reserved so far: changed content is the
 	// next generation, unchanged content is replayed.
 	StateDir string

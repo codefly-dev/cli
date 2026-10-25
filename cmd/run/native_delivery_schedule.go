@@ -33,6 +33,8 @@ type launcherFlow interface {
 	ServiceFromUnique(unique string) (*resources.Service, error)
 	GetAddressForEndpoint(ctx context.Context, module, service, endpoint string) (string, error)
 	EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error)
+	ReadyEndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess, services []string) (map[string]string, error)
+	LocalRuntimeServices() []string
 	ServiceReadiness(ctx context.Context, service string) *orchestration.ReadinessFailure
 }
 
@@ -206,7 +208,11 @@ func (d hostDelivery) run(parent context.Context) (result error) {
 // the gateway the envelope is written through, then the service whose
 // delivery endpoint receives the documents.
 func (cluster *launcher) hostReady(ctx context.Context) error {
-	for _, unique := range []string{cluster.env.Host.Gateway, cluster.hostModule + "/" + cluster.hostService} {
+	hosts, err := nativeHostServices(ctx, cluster.composed(), cluster.env)
+	if err != nil {
+		return err
+	}
+	for _, unique := range hosts {
 		if unique == "" {
 			continue
 		}

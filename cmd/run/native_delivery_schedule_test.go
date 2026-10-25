@@ -200,6 +200,10 @@ func (f *fakeLauncherFlow) GetAddressForEndpoint(context.Context, string, string
 func (f *fakeLauncherFlow) EndpointCarriers(context.Context, string, *basev0.NetworkAccess) (map[string]string, error) {
 	return nil, errors.New("no endpoints in this test")
 }
+func (f *fakeLauncherFlow) ReadyEndpointCarriers(context.Context, string, *basev0.NetworkAccess, []string) (map[string]string, error) {
+	return nil, errors.New("no endpoints in this test")
+}
+func (f *fakeLauncherFlow) LocalRuntimeServices() []string { return []string{"model/api"} }
 func (f *fakeLauncherFlow) ServiceReadiness(_ context.Context, service string) *orchestration.ReadinessFailure {
 	if f.ready(service) {
 		return nil
@@ -302,4 +306,35 @@ func TestARestartedWorkloadSupersedesItsWaitingDelivery(t *testing.T) {
 	delivery := testDelivery(func(context.Context) error { return errors.New("not ready") }, hostAlwaysReady)
 	delivery.stop = stop
 	require.ErrorIs(t, delivery.run(context.Background()), errRunStopped)
+}
+
+// These helpers drive a completed attempt through runReadyDelivery without
+// starting an agent. Production completion is wired at Runner.Start.
+func (cluster *launcher) registerRunningHook(ctx context.Context, register func(func(string, int))) {
+	register(func(service string, _ int) {
+		if deliver := cluster.runningDelivery(service); deliver != nil {
+			go deliver(ctx)
+		}
+	})
+}
+
+func (cluster *launcher) onRunning(ctx context.Context, unique string) {
+	if deliver := cluster.runningDelivery(unique); deliver != nil {
+		deliver(ctx)
+	}
+}
+
+// Capture readiness synchronously with the lifecycle notification, before the
+// delivery goroutine. A restart can then invalidate it without an old queued
+// callback marking the replacement process ready.
+func (cluster *launcher) runningDelivery(unique string) func(context.Context) {
+	identity, ok := cluster.identity(unique)
+	if !ok || !cluster.delivers(identity) {
+		return nil
+	}
+	cluster.mu.Lock()
+	cluster.running[unique] = true
+	waiter := cluster.waitFor(unique)
+	cluster.mu.Unlock()
+	return func(ctx context.Context) { cluster.runReadyDelivery(ctx, unique, identity, waiter, false) }
 }

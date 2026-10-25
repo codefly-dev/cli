@@ -18,6 +18,21 @@ import (
 // none. The same routes, visibility and address derivation as the gateway's
 // own startup carriers, never a second rule.
 func (flow *Flow) EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error) {
+	return flow.endpointCarriers(ctx, module, access, nil)
+}
+
+// ReadyEndpointCarriers resolves only services already ready to receive traffic.
+// Filtering precedes address resolution, so admission of an unstarted service
+// never needs or advertises its allocated endpoint address.
+func (flow *Flow) ReadyEndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess, services []string) (map[string]string, error) {
+	ready := make(map[string]bool, len(services))
+	for _, service := range services {
+		ready[service] = true
+	}
+	return flow.endpointCarriers(ctx, module, access, ready)
+}
+
+func (flow *Flow) endpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess, ready map[string]bool) (map[string]string, error) {
 	if flow == nil || flow.world == nil || flow.world.Env == nil || flow.world.Env.Host == nil || flow.world.Env.Host.Gateway == "" {
 		return nil, nil
 	}
@@ -37,6 +52,9 @@ func (flow *Flow) EndpointCarriers(ctx context.Context, module string, access *b
 	carriers := map[string]string{}
 	for _, route := range routes {
 		if route.module != module {
+			continue
+		}
+		if ready != nil && !ready[resources.ServiceUnique(route.module, route.service)] {
 			continue
 		}
 		key, value, err := world.hostRouteCarrier(ctx, gateway, hostModule, route, access)

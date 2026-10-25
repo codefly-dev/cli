@@ -267,7 +267,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return nil, w.Wrap(err)
 	}
 
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.TestMode)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.TestMode, run.NativeAuthorityPrerequisites(env, runtimeContext))
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -308,6 +308,9 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	err = flow.InitManagers(ctx)
 	if err != nil {
 		return flow, w.Wrap(err)
+	}
+	if attachErr := run.AttachNativeLauncher(ctx, flow, workspace, env, runtimeContext, selectedFixture); attachErr != nil {
+		return flow, w.Wrap(attachErr)
 	}
 	err = flow.Load(ctx)
 	if err != nil {
