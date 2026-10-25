@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/core/network"
 	corereadiness "github.com/codefly-dev/core/readiness"
 	"github.com/codefly-dev/core/resources"
+	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/standards"
 )
 
@@ -236,4 +237,23 @@ func AnnounceDashboardWhenReady(ctx context.Context, dashboardURL string, open b
 			}
 		}
 	}()
+}
+
+// ResolveRunnableHarness is the address a served runnable's harness answers
+// on locally: the endpoint core names for every generated harness
+// (corerunnable.GeneratedServiceEndpoint, HTTP), port-hashed for the
+// runnable's module and name in the run's naming scope exactly as a service
+// endpoint is. `codefly run runnable` listens there and `codefly generate
+// runnable-bindings` prepares calls to it, so the two agree without either
+// recording the other's choice.
+func ResolveRunnableHarness(ctx context.Context, workspace, module, name, namingScope string) (ResolvedEndpoint, error) {
+	resolved, err := ResolveNative(ctx, workspace, module, name, namingScope,
+		&resources.Endpoint{Name: corerunnable.GeneratedServiceEndpoint, API: standards.HTTP})
+	if err != nil {
+		return ResolvedEndpoint{}, err
+	}
+	if resolved.Address == "" {
+		return ResolvedEndpoint{}, fmt.Errorf("runnable %s/%s resolves no local harness address", module, name)
+	}
+	return resolved, nil
 }

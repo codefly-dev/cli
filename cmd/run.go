@@ -18,4 +18,5 @@ func init() {
 	RunCmd.AddCommand(run.JobCmd)
 	RunCmd.AddCommand(run.CommandCmd)
 	RunCmd.AddCommand(run.ClusterCmd)
+	RunCmd.AddCommand(run.RunnableCmd)
 }

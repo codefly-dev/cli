@@ -21,6 +21,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
 | `codefly generate runnable-bindings [--env=<env>] [--naming-scope=<scope>] [--call-endpoint=<module>/<service>/<endpoint>] [--check]` | Resolve the environment's scope selections, owner endpoints and declared `runnable-call-endpoint` into prepared bindings |
+| `codefly run runnable <name> [--env=<env>] [--naming-scope=<scope>]` | Build the harness image through the agent and serve it locally with no network, at the address its prepared binding names |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -410,10 +411,65 @@ served equivalent — `RunnableServedOutcome`, `runnable.ClassifyServed` and
 `runnable.ServedOutcomeIsCertain` — was written in core **before** any of this
 was deleted, not after.
 
-What the CLI still owes, and does not yet have, is the command that unpacks a
-`generated-service` binding's archive and runs its harness. Until that lands,
-`codefly build runnable` produces and verifies the archive and nothing in the
-CLI starts it.
+`codefly run runnable` is the command that runs a harness locally; see
+[serving an authored tool](#serving-an-authored-tool). It runs the agent's
+Linux image of the harness rather than unpacking the host archive, because the
+unit it runs in is a container that cannot reach a network.
+
+## Serving an authored tool
+
+An authored runnable — a handler someone wrote once, such as a PDF table
+reader — is offered to a caller as a tool by the `operation` block of its
+declaration (core's `runnable.AuthoredOperation`: audience, scopes, and the
+`tool` exposure). Its documents are `file` fields: the caller stages their
+bytes, and the runnable never sees a path or a URL.
+
+**Binding.** `codefly generate runnable-bindings` binds it beside the derived
+operations, under `<MODULE>__<NAME>` in the `runnable-bindings` group, as the
+same `codefly.runnable-prepared/v3` value (core's
+`runnable.PrepareGeneratedService`): the harness's address, the Connect
+procedure `/codefly.runnable.v0.Runnable/Invoke`, the contract with its digest,
+and the policy carrying the tool. A service that installs prepared bindings
+receives it with no change, and the module authority request a composition
+derives from the group asks for it as for any other binding. A runnable with no
+operation block is bound to no one; a block that does not validate fails
+generation naming the runnable. Scope selections and declines apply by key
+exactly as they do to a derived operation.
+
+**Address.** The harness's address is port-hashed for the runnable's module and
+name on the fixed endpoint `runnable` (HTTP), in the run's naming scope, exactly
+as a service endpoint is (`common.ResolveRunnableHarness`). Generation and
+`codefly run runnable` compute it the same way, so neither records the other's
+choice. An environment's `runnable-call-endpoint` moves the address to the hop
+in front of it, as it does for derived operations. A non-local environment is
+refused by name: the harness has no cluster placement yet — the per-call
+invocation Job behind a gVisor runtime class is module-runtime's KUBERNETES
+facility.
+
+**The unit.** `codefly run runnable` asks the agent for the release's image
+recipe (`Builder.Build`, a `DockerBuildPlan` whose context the agent assembled
+in its output directory), verifies the plan against the files on disk and
+builds it for this host with core's builder. It then runs two containers on a
+network of their own:
+
+| | Harness | Relay |
+| --- | --- | --- |
+| Image | the runnable's own, `codefly.local/runnables/<module>/<name>:<version>` | BusyBox 1.38.0, pinned by digest |
+| Network | the unit's internal network only: no IPv4, so no route out, no DNS beyond the relay, no host | the unit's network and the default bridge |
+| Published | nothing | one port on `127.0.0.1`, the harness address |
+| Root | read-only, private `/tmp` | read-only |
+| User, capabilities | the image's unprivileged user, all dropped, `no-new-privileges` | 65532, all dropped, `no-new-privileges` |
+| Bounds | 1 GiB memory, 256 processes | — |
+
+The relay carries bytes and nothing else; the harness still requires a Work
+Context on every call and holds every file value to the contract. Interrupting
+the command removes both containers and the network. A second serve of the same
+runnable in the same naming scope replaces the first.
+
+This placement is for local development and demonstration: one long-running
+harness serves every call. The security target for a deployment is one
+invocation per call in its own gVisor sandbox, which isolates one person's
+documents from the next call.
 
 MCP create/build tools are deferred until the installation and execution surface
 is qualified. The CLI commands are available for unattended authoring now.

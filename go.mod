@@ -14,14 +14,16 @@ require (
 	github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261024211423-39f45e9d69af
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261025010902-dc41de4126ae
 	github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261023192826-bc4d12956a06
-	github.com/codefly-dev/core v0.19.7-0.20261025175252-88f4434c68c7
+	github.com/codefly-dev/core v0.19.7-0.20261025190440-55b2b9060d80
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
 	github.com/compose-spec/compose-go v1.20.2
+	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/docker/go-connections v0.8.2
 	github.com/fatih/color v1.19.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/gofrs/flock v0.13.1
@@ -102,7 +104,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
 	github.com/codefly-dev/gortk v0.2.0 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
 	github.com/creativeprojects/go-selfupdate v1.6.0 // indirect
@@ -111,7 +112,6 @@ require (
 	github.com/davidmz/go-pageant v1.0.2 // indirect
 	github.com/dekobon/tree-sitter-groovy v0.3.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.7.1 // indirect
-	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect

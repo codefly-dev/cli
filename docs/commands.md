@@ -672,6 +672,26 @@ codefly run job db-migration --module=backend
 codefly run job db-migration --module=backend --with-services  # Start service dependencies first
 ```
 
+### `codefly run runnable <name>`
+
+Serve one Runnable's generated harness locally, as a unit that cannot reach a
+network, until interrupted. The harness is built into the Linux image its agent
+describes (`Builder.Build`'s image recipe, verified and built for this host),
+then run on an internal IPv6-only network of its own — no route out, no name
+resolution beyond its one peer, no way to the host — with a read-only root, an
+unprivileged user, every capability dropped, no privilege escalation and bounded
+memory and processes. Its one peer is a pinned BusyBox relay listening on the
+host's loopback at the address `generate runnable-bindings` prepares calls to,
+so a caller that installed the binding reaches it. When the Runnable declares an
+`operation` block the command prints the binding key and the prepared value.
+
+```bash
+codefly run runnable pdf-extract-tables
+codefly run runnable workbench/pdf-extract-tables --naming-scope demo
+```
+
+See [Runnables: serving an authored tool](runnable.md#serving-an-authored-tool).
+
 ### `codefly delivery key`
 
 Create or load this machine's developer delivery key and print its key ID and

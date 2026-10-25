@@ -212,7 +212,12 @@ func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runn
 	if err != nil {
 		return nil, nil, err
 	}
-	connection, err := manager.Load(ctx, r.Agent, manager.WithoutSandbox(), manager.WithoutPrincipal(), manager.WithLogWriter(logs))
+	// The agent connection closes the log writer it was handed when it is
+	// closed (manager.AgentConn.closeLogWriter). The caller's writer is
+	// usually the process's stderr, which must outlive the agent: closing it
+	// there silenced every later message, an error included. The agent gets
+	// a view of the writer it cannot close.
+	connection, err := manager.Load(ctx, r.Agent, manager.WithoutSandbox(), manager.WithoutPrincipal(), manager.WithLogWriter(struct{ io.Writer }{logs}))
 	if err != nil {
 		return nil, nil, fmt.Errorf("start Runnable agent: %w", err)
 	}

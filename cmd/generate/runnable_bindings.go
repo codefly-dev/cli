@@ -177,7 +177,7 @@ Examples:
 			if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			cli.Info("runnable-bindings: no module derives an operation; nothing to bind")
+			cli.Info("runnable-bindings: no module derives or authors an operation; nothing to bind")
 			return nil
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -317,6 +317,33 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 			}
 			lines[key] = string(value)
 		}
+		authored, err := loadAuthoredOperations(ctx, module)
+		if err != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		for _, operation := range authored {
+			key := operation.key()
+			if derivedKeys[key] {
+				return nil, fmt.Errorf("two operations bind under key %s", key)
+			}
+			derivedKeys[key] = true
+			if env.DeclinesRunnableBinding(key) {
+				if err := declinableAuthored(env, operation); err != nil {
+					return nil, err
+				}
+				declined = append(declined, key)
+				continue
+			}
+			prepared, err := prepareAuthored(ctx, operation, resolver)
+			if err != nil {
+				return nil, err
+			}
+			value, err := corerunnable.EncodePrepared(prepared)
+			if err != nil {
+				return nil, fmt.Errorf("runnable %s/%s: %w", module.Name, operation.runnable.Name, err)
+			}
+			lines[key] = string(value)
+		}
 	}
 	for _, key := range sortedKeys(env.RunnableScopeSelections) {
 		if !derivedKeys[key] {
@@ -427,6 +454,19 @@ func SelectRunnableBindings(ctx context.Context, workspace *resources.Workspace,
 			derivedKeys[key] = true
 			if env.DeclinesRunnableBinding(key) {
 				refusals[key] = declinableOperation(env, key, module.Name, operation)
+				continue
+			}
+			selection.Selected = append(selection.Selected, key)
+		}
+		authored, err := loadAuthoredOperations(ctx, module)
+		if err != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		for _, operation := range authored {
+			key := operation.key()
+			derivedKeys[key] = true
+			if env.DeclinesRunnableBinding(key) {
+				refusals[key] = declinableAuthored(env, operation)
 				continue
 			}
 			selection.Selected = append(selection.Selected, key)

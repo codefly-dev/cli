@@ -4138,6 +4138,7 @@ Subcommands:
 - [`codefly run cluster`](#codefly-run-cluster)
 - [`codefly run command`](#codefly-run-command)
 - [`codefly run job`](#codefly-run-job)
+- [`codefly run runnable`](#codefly-run-runnable)
 - [`codefly run service`](#codefly-run-service)
 - [`codefly run solution`](#codefly-run-solution)
 - [`codefly run workspace`](#codefly-run-workspace)
@@ -4244,6 +4245,45 @@ Flags:
 ```
       --module string   Module name
       --with-services   Start service dependencies before running job
+```
+
+## `codefly run runnable`
+
+Serve a Runnable's generated harness locally, with no network
+
+```
+Build the Runnable's harness into the Linux image its agent describes, and serve
+it as one unit that cannot reach a network, until interrupted.
+
+The harness runs on an internal network of its own with no IPv4 route, no name
+resolution beyond its one peer and no way to the host; its root is read-only,
+it runs unprivileged with every capability dropped, and its memory and process
+count are bounded. Its one peer is a pinned relay listening on the host's
+loopback at the address the composition resolves for the runnable — the same
+address `codefly generate runnable-bindings` prepares calls to — so a caller that
+installed the binding reaches it. The harness still requires a Work Context on
+every call. A file field reaches it as staged bytes; it never sees a path or a
+URL.
+
+The Runnable must declare the generated-service facility. When it declares an
+operation block, the command prints the binding key and the prepared value
+generation writes for it, which carries its contract and its tool exposure.
+The environment must be local: the harness has no cluster placement yet.
+
+Examples:
+  codefly run runnable pdf-extract-tables
+  codefly run runnable workbench/pdf-extract-tables --naming-scope demo
+```
+
+```
+codefly run runnable <name>
+```
+
+Flags:
+
+```
+      --env string           local environment whose naming scope and runnable-call-endpoint the binding is prepared with (default "local")
+      --naming-scope scope   scope the harness address resolves in, as codefly run reads it: omitted keeps the environment's, empty clears it
 ```
 
 ## `codefly run service`
