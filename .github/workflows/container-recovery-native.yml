@@ -14,12 +14,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # The CLI requires codefly-dev/authority's libraries, and that repository is
-  # private: fetched from GitHub with the existing organization GH_PAT, never via the
-  # module proxy or the checksum database (go.yml says how).
-  GOPRIVATE: github.com/codefly-dev/authority
-
 concurrency:
   group: container-recovery-native-${{ github.ref }}
   cancel-in-progress: true
@@ -59,14 +53,6 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # Reading the CLI's Core pin and the qualification test below resolve
-      # the CLI's modules from the cache this fills; only this step has the
-      # token.
-      - name: Download the CLI's modules
-        env:
-          GOWORK: 'off'
-          AUTHORITY_TOKEN: ${{ secrets.GH_PAT }}
-        run: .github/scripts/download-go-modules.sh
       - name: Check out the ${{ matrix.agent }} agent source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

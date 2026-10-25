@@ -1,18 +1,6 @@
 name: Install Codefly
 description: Install the Codefly CLI version pinned by this action reference
 
-inputs:
-  authority-token:
-    description: >-
-      A token with contents read access to codefly-dev/authority, which is private and whose
-      interface client, hop and delivery libraries the CLI requires. The CLI
-      workflows use the existing organization GH_PAT secret. It reaches git
-      for the build step alone. Without it the build resolves from the module
-      cache only, so a workflow that has not downloaded the CLI's modules
-      already cannot install it.
-    required: false
-    default: ""
-
 runs:
   using: composite
   steps:
@@ -26,20 +14,13 @@ runs:
       shell: bash
       env:
         CODEFLY_REPOSITORY_ROOT: ${{ github.action_path }}/../../..
-        AUTHORITY_TOKEN: ${{ inputs.authority-token }}
-        GOPRIVATE: github.com/codefly-dev/authority
       run: |
         set -euo pipefail
         install_root="${RUNNER_TEMP}/codefly-action/bin"
         mkdir -p "${install_root}"
         (
           cd "${CODEFLY_REPOSITORY_ROOT}"
-          export GOWORK=off
-          if [ -n "${AUTHORITY_TOKEN}" ]; then
-            .github/scripts/download-go-modules.sh
-          fi
-          unset AUTHORITY_TOKEN
-          GOBIN="${install_root}" go install ./cmd/codefly
+          GOWORK=off GOBIN="${install_root}" go install ./cmd/codefly
         )
         test -x "${install_root}/codefly"
         echo "${install_root}" >> "${GITHUB_PATH}"

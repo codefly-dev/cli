@@ -5,6 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -25,8 +26,10 @@ import (
 type FlowOption func(*flowOptions)
 
 type flowOptions struct {
-	moduleClosureSeeds []string
-	compositionCheck   CompositionCheck
+	moduleClosureSeeds   []string
+	compositionCheck     CompositionCheck
+	runtimePrerequisites RuntimePrerequisiteProvider
+	retainedModules      []string
 }
 
 // WithRunModuleClosure derives the flow's dependency graph from the modules its
@@ -53,12 +56,18 @@ func WithRunModuleClosure(seeds ...string) FlowOption {
 // The narrowed workspace serves the dependency graph alone. Workspace
 // configurations and run profiles are declared by the composition and stay
 // resolved against all of it.
-func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds []string) (*resources.Workspace, error) {
+func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds []string, provided ...*configurations.WorkspaceConfigurations) (*resources.Workspace, error) {
 	w := wool.Get(ctx).In("orchestration.runModuleClosure", wool.NameField(workspace.Name))
 	if len(seeds) == 0 {
 		return workspace, nil
 	}
-	closure, err := workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds)
+	var options []resources.ModuleClosureOption
+	for _, config := range provided {
+		if config != nil {
+			options = append(options, resources.WithModuleConfigurationReferences(configurations.EndpointProducers(config.Infos)))
+		}
+	}
+	closure, err := workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds, options...)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -106,9 +115,29 @@ func (flow *Flow) CheckComposition(ctx context.Context, workspace *resources.Wor
 			seeds = append(seeds, info.Module)
 		}
 	}
-	closure, err := runModuleClosure(ctx, workspace, seeds)
+	closure, err := runModuleClosure(ctx, workspace, retainedSeeds(seeds, flow.retainedModules), flow.providedWorkspaceConfigurations)
 	if err != nil {
 		return err
 	}
 	return flow.compositionCheck(ctx, closure, flow.Environment())
+}
+
+// RuntimePrerequisiteProvider derives ordering from the graph's current module
+// closure. Core owns validating the edges and applying them only at run stage.
+type RuntimePrerequisiteProvider func(context.Context, *resources.Workspace) (map[string][]string, error)
+
+// WithRuntimePrerequisites retains the prerequisite modules through closure
+// pruning and recomputes their edges whenever the composition changes.
+func WithRuntimePrerequisites(modules []string, provider RuntimePrerequisiteProvider) FlowOption {
+	return func(options *flowOptions) {
+		options.retainedModules = append([]string(nil), modules...)
+		options.runtimePrerequisites = provider
+	}
+}
+
+func retainedSeeds(seeds, retained []string) []string {
+	if len(seeds) == 0 {
+		return nil
+	} // no closure restriction
+	return append(append([]string(nil), seeds...), retained...)
 }

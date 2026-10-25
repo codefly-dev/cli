@@ -111,14 +111,6 @@ func BuildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 	return buildFrontendBundle(ctx, module, destination, frontendBuildContext)
 }
 
-// BuildLocalFrontendBundle uses the same owner-declared npm build as deployment,
-// but snapshots the working tree, including local edits and nonignored new files.
-// BuildKit's content cache reuses the build layer for unchanged inputs; no local
-// dist, timestamp or committed revision is treated as evidence of a current build.
-func BuildLocalFrontendBundle(ctx context.Context, module *resources.Module, destination string) error {
-	return buildFrontendBundle(ctx, module, destination, localFrontendBuildContext)
-}
-
 func buildFrontendBundle(ctx context.Context, module *resources.Module, destination string, stage func(context.Context, *resources.Module, string) (string, string, error)) error {
 	project, err := FrontendProject(module)
 	if err != nil {

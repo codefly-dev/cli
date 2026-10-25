@@ -17,7 +17,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
@@ -666,7 +665,7 @@ type configuredReference struct{ source, reference string }
 // reading one dials that endpoint, so it is a consumer of it exactly as a
 // service dependency makes it one.
 func configuredEndpointReferences(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string][]configuredReference, error) {
-	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	reader, err := orchestration.NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}

@@ -81,11 +81,18 @@ func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv0.AgentI
 	switch os.Getenv("CODEFLY_TEST_PEER_VALIDATION") {
 	case "unsupported":
 		info.Validation = &agentv0.ValidationCapabilities{}
-	case "supported":
+	case "supported", "dependencies", "stack":
+		dependencyMode := agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
+		switch os.Getenv("CODEFLY_TEST_PEER_VALIDATION") {
+		case "dependencies":
+			dependencyMode = agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES
+		case "stack":
+			dependencyMode = agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK
+		}
 		info.Validation = &agentv0.ValidationCapabilities{
 			Lint:    &agentv0.ValidationOperationCapability{Supported: true},
 			Compile: &agentv0.ValidationOperationCapability{Supported: true},
-			Test:    &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "unit", DefaultSuite: true, DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}}},
+			Test:    &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "unit", DefaultSuite: true, DependencyMode: dependencyMode}}},
 		}
 	}
 	return info, nil

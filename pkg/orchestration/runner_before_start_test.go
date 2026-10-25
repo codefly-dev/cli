@@ -21,6 +21,7 @@ type beforeStartPeer struct {
 	realAgent
 	starts     atomic.Int32
 	admissions atomic.Int32
+	fail       atomic.Bool
 }
 
 func (peer *beforeStartPeer) Start(context.Context, *runtimev0.StartRequest) (*runtimev0.StartResponse, error) {
@@ -28,7 +29,42 @@ func (peer *beforeStartPeer) Start(context.Context, *runtimev0.StartRequest) (*r
 	if peer.admissions.Load() < count {
 		return nil, errors.New("Start arrived without its preceding admission")
 	}
+	if peer.fail.Load() {
+		return nil, errors.New("controlled start failure")
+	}
 	return &runtimev0.StartResponse{Status: &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED}}, nil
+}
+
+func TestRuntimeStartCompletionReportsActualSuccess(t *testing.T) {
+	for _, scenario := range []string{"success", "agent failure", "admission failure", "cancel after admission"} {
+		t.Run(scenario, func(t *testing.T) {
+			runner, world, peer := beforeStartRunner(t)
+			peer.fail.Store(scenario == "agent failure")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var outcomes []bool
+			world.BeginRuntimeStart = func(context.Context, *resources.Service) (*RuntimeStartAttempt, error) {
+				finish := func(started bool) { outcomes = append(outcomes, started) }
+				if scenario == "admission failure" {
+					return &RuntimeStartAttempt{Complete: finish, Admit: func(context.Context) error { return errors.New("not applied") }}, nil
+				}
+				return &RuntimeStartAttempt{Complete: finish, Admit: func(context.Context) error {
+					peer.admissions.Add(1)
+					if scenario == "cancel after admission" {
+						cancel()
+					}
+					return nil
+				}}, nil
+			}
+			_, err := runner.Start(ctx)
+			if scenario == "success" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			require.Equal(t, []bool{scenario == "success"}, outcomes)
+		})
+	}
 }
 
 func beforeStartRunner(t *testing.T) (*Runner, *World, *beforeStartPeer) {
@@ -51,11 +87,10 @@ func beforeStartRunner(t *testing.T) (*Runner, *World, *beforeStartPeer) {
 
 func TestBeforeRuntimeStartPrecedesEveryAgentStart(t *testing.T) {
 	runner, world, peer := beforeStartRunner(t)
-	world.BeforeRuntimeStart = func(ctx context.Context, service *resources.Service) error {
+	world.BeginRuntimeStart = func(ctx context.Context, service *resources.Service) (*RuntimeStartAttempt, error) {
 		require.Same(t, runner.instance.Service, service)
 		require.NoError(t, ctx.Err())
-		peer.admissions.Add(1)
-		return nil
+		return &RuntimeStartAttempt{Admit: func(context.Context) error { peer.admissions.Add(1); return nil }}, nil
 	}
 	for range 2 {
 		output, err := runner.Start(context.Background())
@@ -74,13 +109,13 @@ func TestBeforeRuntimeStartRefusalAndCancellationPreventAgentStart(t *testing.T)
 			defer cancel()
 			refusal := errors.New("manifest was not applied")
 			calls := 0
-			world.BeforeRuntimeStart = func(context.Context, *resources.Service) error {
+			world.BeginRuntimeStart = func(context.Context, *resources.Service) (*RuntimeStartAttempt, error) {
 				calls++
 				if scenario == "refused" {
-					return refusal
+					return &RuntimeStartAttempt{Admit: func(context.Context) error { return refusal }}, nil
 				}
 				cancel()
-				return nil
+				return nil, nil
 			}
 			if scenario == "cancelled before hook" {
 				cancel()
@@ -91,13 +126,39 @@ func TestBeforeRuntimeStartRefusalAndCancellationPreventAgentStart(t *testing.T)
 			} else {
 				require.ErrorIs(t, err, context.Canceled)
 			}
-			if scenario == "cancelled before hook" {
-				require.Zero(t, calls)
-			} else {
-				require.Equal(t, 1, calls)
-			}
+			require.Equal(t, 1, calls)
 			require.Zero(t, peer.starts.Load())
 			require.False(t, runner.isStarted.Load())
+		})
+	}
+}
+
+func TestRuntimeStartPreparationFailureCompletesAttempt(t *testing.T) {
+	for _, scenario := range []string{"output environment", "cancel during overrides"} {
+		t.Run(scenario, func(t *testing.T) {
+			runner, world, peer := beforeStartRunner(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var outcomes []bool
+			world.BeginRuntimeStart = func(context.Context, *resources.Service) (*RuntimeStartAttempt, error) {
+				return &RuntimeStartAttempt{
+					Complete: func(started bool) { outcomes = append(outcomes, started) },
+					Admit:    func(context.Context) error { peer.admissions.Add(1); return nil },
+				}, nil
+			}
+			if scenario == "output environment" {
+				runner.outputEnv = t.TempDir() // A directory cannot be an output file.
+			} else {
+				world.RuntimeOverrides = func(*resources.Service) map[string]string {
+					cancel()
+					return nil
+				}
+			}
+			_, err := runner.Start(ctx)
+			require.Error(t, err)
+			require.Equal(t, []bool{false}, outcomes)
+			require.Zero(t, peer.admissions.Load())
+			require.Zero(t, peer.starts.Load())
 		})
 	}
 }

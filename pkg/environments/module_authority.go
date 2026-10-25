@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/runnables"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -120,4 +121,30 @@ func ValidateHostComposition(ctx context.Context, workspace *resources.Workspace
 		}
 	}
 	return nil
+}
+
+// NativeHostFederation derives only the delivery host's public federation keys.
+// Registration secrets remain authored configuration. A container or cell render
+// does not use this native projection.
+func NativeHostFederation(host *EnvironmentHost, service *resources.Service) (*basev0.Configuration, error) {
+	if host == nil || service == nil || !slices.Contains(service.WorkspaceConfigurationDependencies, FederationConfiguration) {
+		return nil, nil
+	}
+	if !deliveryPattern.MatchString(host.Delivery) {
+		return nil, fmt.Errorf("host.delivery %q is not <module>/<service>/<endpoint>", host.Delivery)
+	}
+	module, name, _ := host.DeliveryEndpoint()
+	if resources.WithUnique(service).Unique() != resources.ServiceUnique(module, name) {
+		return nil, nil
+	}
+	if host.Coordinate == "" || host.Domain == "" {
+		return nil, fmt.Errorf("the delivery host requires host.coordinate and host.domain")
+	}
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+		Name: FederationConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
+			{Key: FederationHostCoordinateKey, Value: host.Coordinate},
+			{Key: FederationHostOwnershipDomainsKey, Value: host.Domain},
+			{Key: FederationHostTrustPolicyKey, Value: FederationHostTrustPolicyKeys},
+		},
+	}}}, nil
 }

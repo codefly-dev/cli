@@ -90,19 +90,46 @@ func composeCompositionHost(t *testing.T, workspace *resources.Workspace) *resou
 	return reloaded
 }
 
-// A host that does not consume method policies — the saas host every released
-// composition delivers to — never receives them, so an unmarked method passes
-// the preflight of render, run cluster and CI deploy exactly as MethodPolicies
-// lists it: declaring nothing, for the hop to refuse per call. A contradictory
-// policy is malformed wherever it is read, and still refuses.
+// composePlainHost adds the environment's host module to the workspace with a
+// delivery endpoint that implements no Codefly interface.
+func composePlainHost(t *testing.T, workspace *resources.Workspace) *resources.Workspace {
+	t.Helper()
+	config := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(config)
+	require.NoError(t, err)
+	composed := strings.Replace(string(data), "  - name: billing\n", "  - name: billing\n  - name: platform\n", 1)
+	require.NotEqual(t, string(data), composed)
+	require.NoError(t, os.WriteFile(config, []byte(composed), 0o644))
+	files := map[string]string{
+		filepath.Join("modules", "platform", resources.ModuleConfigurationName):                          "kind: module\nname: platform\nservices:\n  - name: accounts\n",
+		filepath.Join("modules", "platform", "services", "accounts", resources.ServiceConfigurationName): hostedServiceYAML("accounts", "platform"),
+	}
+	for rel, content := range files {
+		full := filepath.Join(workspace.Dir(), rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+	require.NoError(t, err)
+	return reloaded
+}
+
+// A host that does not consume method policies never receives them, so an
+// unmarked method passes the preflight of render, run cluster and CI deploy
+// exactly as MethodPolicies lists it: declaring nothing, for the hop to refuse
+// per call. A contradictory policy is malformed wherever it is read, and still
+// refuses.
 func TestAnUnmarkedMethodPassesTowardAHostThatDoesNotConsumePolicies(t *testing.T) {
 	workspace, module := unmarkedPolicyWorkspace(t)
+	workspace = composePlainHost(t, workspace)
+	module, err := workspace.LoadModuleFromName(t.Context(), module.Name)
+	require.NoError(t, err)
 	env := selectedEnvironment(t, workspace, "staging")
 	require.NoError(t, ValidateModulePermissions(t.Context(), workspace, module, env))
 	require.NoError(t, CheckCompositionPermissions(t.Context(), workspace, env, true, "shop"))
 
 	markPlain(t, module.Dir(), &hopv1.Policy{AnyCheckedCaller: true, Requires: []*hopv1.Requirement{{ResourceKind: "console.identity", Actions: []string{"read"}}}})
-	err := CheckCompositionPermissions(t.Context(), workspace, env, true, "shop")
+	err = CheckCompositionPermissions(t.Context(), workspace, env, true, "shop")
 	require.ErrorContains(t, err, "/api.ApiService/Plain declares both requirements and any_checked_caller")
 	markPlain(t, module.Dir(), &hopv1.Policy{Requires: []*hopv1.Requirement{{ResourceKind: "Console", Actions: []string{"read"}}}})
 	require.ErrorContains(t, ValidateModulePermissions(t.Context(), workspace, module, env), "invalid permission")
@@ -153,12 +180,35 @@ func TestCompositionOnAnotherEndpointThanDeliveryConsumesNoPolicy(t *testing.T) 
 // method toward a host that would have passed it.
 func TestAModuleContractRequiresAPolicyOnEveryMethodWhereverDelivered(t *testing.T) {
 	workspace, module := unmarkedPolicyWorkspace(t)
+	workspace = composePlainHost(t, workspace)
+	module, err := workspace.LoadModuleFromName(t.Context(), module.Name)
+	require.NoError(t, err)
 	env := selectedEnvironment(t, workspace, "staging")
 	require.NoError(t, ValidateModulePermissions(t.Context(), workspace, module, env))
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(authorityContract+"require_method_policies: true\n"), 0o644))
-	err := ValidateModulePermissions(t.Context(), workspace, module, env)
+	err = ValidateModulePermissions(t.Context(), workspace, module, env)
 	require.ErrorContains(t, err, "/api.ApiService/Plain declares no permission policy")
 	require.ErrorContains(t, err, "sets require_method_policies")
+}
+
+// A host that cannot be read never drops the requirement: one the workspace
+// does not compose is held to receive every policy, by name, and one whose
+// module does not load is an error naming why, never a silent "no".
+func TestAnUnreadableHostNeverDropsThePolicyRequirement(t *testing.T) {
+	workspace, module := unmarkedPolicyWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	err := ValidateModulePermissions(t.Context(), workspace, module, env)
+	require.ErrorContains(t, err, "/api.ApiService/Plain declares no permission policy")
+	require.ErrorContains(t, err, "host platform/accounts is not composed in this workspace")
+
+	workspace = composePlainHost(t, workspace)
+	module, err = workspace.LoadModuleFromName(t.Context(), module.Name)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "modules", "platform", resources.ModuleConfigurationName), []byte("kind: module\nname: platform\nservices: {not: a list}\n"), 0o644))
+	err = ValidateModulePermissions(t.Context(), workspace, module, env)
+	require.ErrorContains(t, err, "cannot tell whether host platform/accounts implements "+CompositionInterface)
+	_, err = HostImplements(t.Context(), workspace, "platform", "accounts", "rest", CompositionInterface)
+	require.ErrorContains(t, err, "its module does not load")
 }
 
 // composeSaasHost composes saas as the host, the way platform compositions
