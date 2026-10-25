@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
 	"github.com/codefly-dev/cli/pkg/cli"
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
@@ -302,6 +303,7 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		Module:      moduleName,
 		Services:    entry.Services,
 		Facade:      facade,
+		GoRequires:  linkedGoBindings(),
 	}
 	var set descriptorpb.FileDescriptorSet
 	if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
@@ -500,8 +502,21 @@ func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang lang
 	return data, marked, nil
 }
 
-// upstreamModulesIn is the set of upstream proto modules set's files belong
-// to, once each.
+// linkedGoBindings are the Go packages a generated Go library imports rather
+// than owns because a Go module publishes them: the hop's policy option, whose
+// bindings this CLI links to read method policies. A contract file declaring
+// that go_package is the hop's own file, vendored to compile, so the library
+// imports it from there instead of registering a second copy (core's
+// ClientRequest.GoRequires). Read from the linked descriptor, never retyped.
+func linkedGoBindings() []string {
+	options, _ := hopv1.File_authority_hop_v1_policy_proto.Options().(*descriptorpb.FileOptions)
+	importPath, _, _ := strings.Cut(options.GetGoPackage(), ";")
+	if importPath == "" {
+		return nil
+	}
+	return []string{importPath}
+}
+
 // vendorsUpstreamModules is whether any of sources is a file of an upstream
 // proto module (by its path and package in set): a vendored copy, which must
 // be generated as an import, never as the library's own file.
@@ -514,7 +529,7 @@ func vendorsUpstreamModules(sources []coreproto.Source, set *descriptorpb.FileDe
 		if !own[file.GetName()] {
 			continue
 		}
-		if coreproto.IsForeignFile(file, lang) {
+		if coreproto.IsForeignFile(file, lang, linkedGoBindings()...) {
 			return true
 		}
 		if _, found := upstreamModuleFor(file, lang); found {
@@ -524,6 +539,8 @@ func vendorsUpstreamModules(sources []coreproto.Source, set *descriptorpb.FileDe
 	return false
 }
 
+// upstreamModulesIn is the set of upstream proto modules set's files belong
+// to, once each.
 func upstreamModulesIn(set *descriptorpb.FileDescriptorSet, lang languages.Language) []upstreamProtoModule {
 	var modules []upstreamProtoModule
 	seen := map[string]bool{}
