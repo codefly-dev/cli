@@ -468,6 +468,22 @@ func TestGenerateClientPreservesHandEditedFiles(t *testing.T) {
 	if afterFields["private"] != true {
 		t.Fatalf("hand-edited package.json was overwritten: %s", afterPackageJSON)
 	}
+	// The client is published under the library's version, the producer's
+	// own, never the scaffold's 0.0.1.
+	libraryManifest, err := os.ReadFile(filepath.Join(output, resources.LibraryConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var library struct {
+		Version string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(libraryManifest, &library); err != nil {
+		t.Fatal(err)
+	}
+	if library.Version == "" || library.Version == "0.0.1" || afterFields["version"] != library.Version {
+		t.Fatalf("package.json version = %v, library.codefly.yaml version = %q: the client must carry the library's version",
+			afterFields["version"], library.Version)
+	}
 }
 
 // TestGenerateClientPartialLanguageRerunKeepsManifest guards against

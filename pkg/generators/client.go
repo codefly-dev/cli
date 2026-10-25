@@ -165,6 +165,7 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 	}
 
 	pyPackage := strings.ReplaceAll(req.Name, "-", "_")
+	version := libraryVersion(req.Output, req.Entries)
 
 	var langExports []generatedLanguageExport
 	for _, lang := range req.Languages {
@@ -175,13 +176,16 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		if genErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
 		}
+		if err := stampPackageVersion(lang, filepath.Join(req.Output, string(lang)), version); err != nil {
+			return fmt.Errorf("cannot set the %s client's version: %w", lang, err)
+		}
 		langExports = append(langExports, export)
 		cli.Info("generated %s client at %s", lang, filepath.Join(req.Output, string(lang)))
 	}
 
 	langExports = mergeLanguageExports(existingLanguages, langExports, req.Languages)
 
-	if err := writeLibraryManifest(ctx, req.Output, req.Name, req.Entries, langExports, !req.NoFacade); err != nil {
+	if err := writeLibraryManifest(ctx, req.Output, req.Name, version, req.Entries, langExports, !req.NoFacade); err != nil {
 		return fmt.Errorf("cannot write %s: %w", resources.LibraryConfigurationName, err)
 	}
 
@@ -650,6 +654,18 @@ func readExistingLanguageExports(outputDir string) ([]generatedLanguageExport, e
 	return doc.Languages, nil
 }
 
+// libraryVersion is the version a generated library carries, in its
+// library.codefly.yaml and in every language's package manifest: the
+// producer's own declared version for a single contract (the composed module
+// package's, or the local service's), and an aggregated library's existing
+// top-level version, since no one producer's version is its own.
+func libraryVersion(outputDir string, entries []ContractEntry) string {
+	if len(entries) > 1 {
+		return existingTopVersion(outputDir)
+	}
+	return entries[0].PackageVersion
+}
+
 // existingTopVersion reads an existing manifest's top-level version:, or
 // "0.1.0" when there is none to read — the seed for a brand new aggregated
 // library, which (unlike a single-entry generate client library) has no one
@@ -763,7 +779,7 @@ func writeOneContractDir(ctx context.Context, contractDir string, entry *Contrac
 // so the sources: and generated-by: provenance survives; resources.Library
 // still loads the file fine, since a plain YAML decode ignores fields it does
 // not declare.
-func writeLibraryManifest(ctx context.Context, outputDir, name string, entries []ContractEntry, langExports []generatedLanguageExport, facade bool) error {
+func writeLibraryManifest(ctx context.Context, outputDir, name, version string, entries []ContractEntry, langExports []generatedLanguageExport, facade bool) error {
 	type languageEntry struct {
 		Name    string   `yaml:"name"`
 		Path    string   `yaml:"path"`
@@ -805,11 +821,6 @@ func writeLibraryManifest(ctx context.Context, outputDir, name string, entries [
 			Services:       protobufServiceNames(entry.Endpoint.Services),
 			As:             entry.As,
 		})
-	}
-
-	version := entries[0].PackageVersion
-	if len(entries) > 1 {
-		version = existingTopVersion(outputDir)
 	}
 
 	codeflyVersion, _ := cli.GetCurrentVersion()
