@@ -14,7 +14,7 @@ import (
 
 func (cluster *launcher) declaredIdentities(module string) []gitops.NativeIdentity {
 	var declared []gitops.NativeIdentity
-	for _, unique := range cluster.flow.LocalRuntimeServices() {
+	for _, unique := range cluster.flow.LocalAuthorityServices() {
 		if identity, ok := cluster.identity(unique); ok && identity.Module == module {
 			declared = append(declared, identity)
 		}
@@ -87,7 +87,7 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 	// One snapshot of the selection decides both what is admitted and which
 	// binding targets are part of the run.
 	modules, selected := map[string]bool{}, map[string]bool{}
-	for _, unique := range cluster.flow.LocalRuntimeServices() {
+	for _, unique := range cluster.flow.LocalAuthorityServices() {
 		if ref, err := resources.ParseServiceWithOptionalModule(unique); err == nil {
 			selected[ref.Module] = true
 		}
@@ -163,4 +163,27 @@ func (cluster *launcher) checkBindingTargets(ctx context.Context, module string,
 			wool.Field("module", module), wool.Field("binding", binding.ID), wool.Field("target", binding.Audience))
 	}
 	return nil
+}
+
+// The dependency SDK drives this process itself. Admit its declared workload,
+// but leave it unready: the launcher neither starts it nor observes a listener.
+func (cluster *launcher) prepareExternalWorkload(ctx context.Context, service *resources.Service) (func(), error) {
+	unique, declared, ok := cluster.identityOf(service)
+	if !ok {
+		return nil, fmt.Errorf("excluded root has no declared workload identity")
+	}
+	if _, err := cluster.project(unique, declared); err != nil {
+		return nil, err
+	}
+	abandon := func() { cluster.vouch.Forget(unique) }
+	err := hostDelivery{
+		schedule: cluster.schedule, stop: cluster.stop,
+		ready: cluster.hostReady, deliver: cluster.admitSelected,
+		log: wool.Get(ctx).In("launcher.external"),
+	}.run(ctx)
+	if err != nil {
+		abandon()
+		return nil, err
+	}
+	return abandon, nil
 }

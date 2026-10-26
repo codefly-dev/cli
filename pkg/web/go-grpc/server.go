@@ -192,7 +192,16 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	variables := []*basev0.ConfigurationValue{{Key: resources.EnvironmentPrefix, Value: environment.Name}}
+	variables := []*basev0.ConfigurationValue{}
+	runtime := flow.DependencyProcessVariables(svc)
+	keys := make([]string, 0, len(runtime))
+	for key := range runtime {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		variables = append(variables, &basev0.ConfigurationValue{Key: key, Value: runtime[key]})
+	}
 	for _, group := range workspace {
 		for _, secret := range []bool{false, true} {
 			resolved, err := resources.ConfigurationAsEnvironmentVariables(group, environment.Name, secret)

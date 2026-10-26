@@ -115,3 +115,51 @@ func TestExcludedRootExportCarriesOnlyItsOwnOverrides(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(body), "not-the-roots")
 }
+
+func TestExcludedIdentityRootIsDeclaredWithoutStartingOrReadyEndpoints(t *testing.T) {
+	ctx := t.Context()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                             excludedRootExportWorkspace,
+		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
+	})
+	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	require.NoError(t, err)
+	service, err := module.LoadServiceFromName(ctx, "backend")
+	require.NoError(t, err)
+	service.ModuleIdentity = true
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode)
+	require.NoError(t, err)
+	flow.WithExcludeRoot(true)
+	flow.publishRuntimeServices()
+	require.Empty(t, flow.LocalRuntimeServices())
+	require.Equal(t, []string{"wiki/backend"}, flow.LocalAuthorityServices())
+	require.ErrorContains(t, flow.prepareExcludedOrigin(ctx), "no workload authority")
+	calls := 0
+	flow.world.PrepareExternalWorkload = func(_ context.Context, selected *resources.Service) (func(), error) {
+		require.Same(t, service, selected)
+		calls++
+		return func() {}, nil
+	}
+	require.NoError(t, flow.prepareExcludedOrigin(ctx))
+	require.Equal(t, 1, calls)
+	require.Empty(t, flow.LocalRuntimeServices(), "admission is not an agent Start")
+	service.ModuleIdentity = false
+	flow.publishRuntimeServices()
+	require.Empty(t, flow.LocalAuthorityServices())
+	require.NoError(t, flow.prepareExcludedOrigin(ctx))
+	require.Equal(t, 1, calls, "plain excluded roots acquire no authority")
+	service.ModuleIdentity = true
+	abandoned := false
+	flow.world.PrepareExternalWorkload = func(context.Context, *resources.Service) (func(), error) {
+		return func() { abandoned = true }, nil
+	}
+	flow.WithRuntimeContext(resources.RuntimeContextNative)
+	require.NoError(t, flow.ConfigurationManager.Load(ctx, env.Runtime()))
+	flow.WithOutputEnv(t.TempDir()) // a directory cannot receive the environment file
+	require.Error(t, flow.prepareExcludedOrigin(ctx))
+	require.True(t, abandoned, "an environment export failure abandons the prepared projection")
+	require.False(t, flow.externalPrepared.Load())
+}

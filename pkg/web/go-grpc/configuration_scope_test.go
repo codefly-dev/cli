@@ -85,3 +85,28 @@ func TestConfigurationRPCDeliversResolvedWorkspaceGroups(t *testing.T) {
 	require.Equal(t, "inherited", values["CODEFLY__WORKSPACE_CONFIGURATION__ROOT__SETTING"])
 	require.NotContains(t, values, "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__ROOT__CREDENTIAL")
 }
+
+func TestConfigurationRPCDeliversOnlyTheSelectedWorkloadCarriers(t *testing.T) {
+	ctx := t.Context()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, filepath.Join("..", "..", "orchestration", "testdata", "module-layout"))
+	require.NoError(t, err)
+	flow, err := orchestration.NewFlow(ctx, workspace, nil, nil, &environments.Environment{Name: "local"}, orchestration.RunMode)
+	require.NoError(t, err)
+	flow.WithRuntimeContext(resources.RuntimeContextNative)
+	projected := filepath.Join(t.TempDir(), "organization")
+	flow.World().RuntimeOverrides = func(service *resources.Service) map[string]string {
+		require.Equal(t, "organization", service.Name)
+		return map[string]string{"CODEFLY__WORKLOAD_TOKEN_FILE": projected}
+	}
+	flows := engine.NewFlowManager()
+	require.NoError(t, flows.Register("configuration", flow))
+	server, err := NewServer(&Configuration{}, workspace, flows)
+	require.NoError(t, err)
+	response, err := server.GetConfiguration(ctx, &cli.GetConfigurationRequest{Module: "management", Service: "organization"})
+	require.NoError(t, err)
+	values := map[string]string{}
+	for _, variable := range response.ProcessVariables {
+		values[variable.Key] = variable.Value
+	}
+	require.Equal(t, map[string]string{resources.EnvironmentPrefix: "local", "CODEFLY__WORKLOAD_TOKEN_FILE": projected}, values)
+}

@@ -1554,3 +1554,10 @@ installation, consent, provider availability or a successful runtime call.
 Packaged solution publications without a source module and rollback of old
 rendered artifacts still need artifact-level permission qualification; source
 preflight alone does not validate those paths.
+
+A dependency-only native run may declare its excluded root's workload identity
+when that root opts into `module-identity`. The dependency client drives that
+process outside the launcher. Admission still uses the signed manifest and must
+complete before the SDK environment is ready; it does not mark the root started
+or publish any of its endpoints. Credential projection and refresh belong to the
+run, including normal teardown. See [orchestration](orchestration.md#identity-for-dependency-clients).

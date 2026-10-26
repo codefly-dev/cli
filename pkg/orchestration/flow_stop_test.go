@@ -220,3 +220,12 @@ func TestFlowStartPropagatesPlaybookPanicToCaller(t *testing.T) {
 
 	require.Equal(t, "playbook panic", recovered)
 }
+
+func TestShutdownEndsAuthorityEvenBeforeManagersExist(t *testing.T) {
+	called := false
+	flow := &Flow{world: &World{BeforeRuntimeStop: func() { called = true }}}
+	flow.externalPrepared.Store(true)
+	require.NoError(t, flow.Shutdown())
+	require.True(t, called, "DestroyFlow uses Shutdown directly")
+	require.False(t, flow.externalPrepared.Load())
+}
