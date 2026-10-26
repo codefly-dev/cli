@@ -4,7 +4,8 @@
 #
 # The row comes from CODEFLY_CONFORMANCE_REQUIRED, the claim the job already
 # makes. Its build tag and packages come from pkg/conformance/matrix.json and
-# the tagged sources, never from a list kept here: `--list` prints them.
+# the tagged sources, never from a list kept here: `--list` prints the compile
+# command and the packages.
 set -euo pipefail
 
 row=${CODEFLY_CONFORMANCE_REQUIRED:-}
@@ -24,16 +25,18 @@ if (( ${#packages[@]} == 0 )); then
   echo "row $row derived no packages" >&2
   exit 1
 fi
-tags=()
+# The one compile command every package uses. --list prints it, then walks
+# the same loop as a run and prints each package it would compile, so a
+# repository test holds what actually runs to the matrix.
+compile=(go test)
 if [[ -n "$tag" ]]; then
-  tags=(-tags "$tag")
+  compile+=(-tags "$tag")
 fi
-# --list walks the same loop as a run and prints what it would compile, so a
-# repository test can hold the loop itself to the matrix.
+compile+=(-c)
 list=0
 if [[ "${1:-}" == "--list" ]]; then
   list=1
-  echo "$tag"
+  echo "${compile[*]}"
 else
   shard=${1:-0}
   shards=${2:-1}
@@ -59,7 +62,7 @@ for package in "${packages[@]}"; do
   fi
   name=${package//\//-}
   binary="$work/$name.test"
-  go test ${tags[@]+"${tags[@]}"} -c -o "$binary" "./$package"
+  "${compile[@]}" -o "$binary" "./$package"
   # Do not hide discovery failures behind process substitution. A package
   # with no tests must fail instead of silently claiming qualification.
   "$binary" -test.list '^Test' > "$work/tests"

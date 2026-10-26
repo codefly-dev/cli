@@ -46,18 +46,7 @@ jobs:
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "$BASE"
-          changed=$(git diff --name-only "$BASE" HEAD)
-          relevant=false
-          while IFS= read -r path; do
-            case "$path" in
-              '') ;;
-              # Fixtures can be Markdown; only prose is exempt.
-              testdata/*|*/testdata/*) relevant=true ;;
-              docs/*|*.md) ;;
-              *) relevant=true ;;
-            esac
-          done <<<"$changed"
-          echo "relevant=$relevant" | tee -a "$GITHUB_OUTPUT"
+          ./scripts/generate-qualification-scope.sh "$BASE" | tee -a "$GITHUB_OUTPUT"
 
   generate:
     needs: changes

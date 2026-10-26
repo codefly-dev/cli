@@ -104,6 +104,9 @@ receipts of all shards together prove the row. A change touching only
 documentation (`docs/` or Markdown outside `testdata/`) cannot alter what
 generation compiles or reads, so there the shards are skipped and
 `docker-generate` passes without them; every other change runs them.
+[`scripts/generate-qualification-scope.sh`](../scripts/generate-qualification-scope.sh)
+decides, with rename detection off: a file moved into `docs/` or renamed to
+`.md` counts by its old path too.
 
 ### Qualification gaps
 
