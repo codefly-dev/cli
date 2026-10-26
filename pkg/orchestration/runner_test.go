@@ -79,7 +79,7 @@ func TestBoundNativePortsDetectsHeldPort(t *testing.T) {
 	reported := boundNativePorts(context.Background(), []*basev0.NetworkMapping{
 		nativeMapping("grpc", uint16(held)),
 		nativeMapping("free", uint16(free)),
-	})
+	}, nil)
 	require.Len(t, reported, 1)
 	require.Contains(t, reported[0], fmt.Sprintf("%d (grpc)", held))
 	// The holder is this test process, so the report must name its pid —
@@ -123,7 +123,7 @@ func TestBoundNativePortsDegradesWhenHolderLookupFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan []string, 1)
-	go func() { done <- boundNativePorts(ctx, mappings) }()
+	go func() { done <- boundNativePorts(ctx, mappings, nil) }()
 	select {
 	case reported := <-done:
 		require.Len(t, reported, 1)
@@ -139,7 +139,7 @@ func TestBoundNativePortsDegradesWhenHolderLookupFails(t *testing.T) {
 // codefly binary — and never by argv, which routinely carries secrets.
 func TestPortHolderSuffixNamesExecutableNotCommandLine(t *testing.T) {
 	self := int32(os.Getpid())
-	suffix := portHolderSuffix(context.Background(), map[uint32]int32{30093: self}, 30093)
+	suffix := portHolderSuffix(context.Background(), self)
 	require.Contains(t, suffix, fmt.Sprintf("held by pid %d", self))
 
 	executable, err := os.Executable()
@@ -156,7 +156,18 @@ func TestPortHolderSuffixNamesExecutableNotCommandLine(t *testing.T) {
 // TestPortHolderSuffixOmitsUnknownHolder keeps an unidentifiable listener from
 // costing us the port report itself: socket ownership is not always readable.
 func TestPortHolderSuffixOmitsUnknownHolder(t *testing.T) {
-	require.Empty(t, portHolderSuffix(context.Background(), map[uint32]int32{}, 30093))
+	require.Empty(t, portHolderSuffix(context.Background(), 0))
+}
+
+// The holder named is the one on the address that answered: a squatter on
+// [::1]:P beside another process on 127.0.0.1:P is the one reported.
+func TestHolderPIDNamesTheListenerOnTheAddressThatAnswered(t *testing.T) {
+	sockets := []listeningSocket{{ip: "127.0.0.1", port: 5432, pid: 10}, {ip: "::1", port: 5432, pid: 20}, {ip: "*", port: 6000, pid: 30}}
+	require.Equal(t, int32(20), holderPID(sockets, "[::1]:5432", 5432))
+	require.Equal(t, int32(10), holderPID(sockets, "127.0.0.1:5432", 5432))
+	require.Equal(t, int32(30), holderPID(sockets, "[::1]:6000", 6000), "a wildcard listener holds both families")
+	require.Equal(t, int32(10), holderPID(sockets, "db.internal:5432", 5432), "an unattributable address falls back to the port")
+	require.Zero(t, holderPID(sockets, "127.0.0.1:7000", 7000))
 }
 
 func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
@@ -164,7 +175,7 @@ func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
 		nil,
 		{Endpoint: nil},
 		{Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: nil},
-	}))
+	}, nil))
 }
 
 // A port is held whichever loopback family the holder bound, even when the
@@ -183,7 +194,7 @@ func TestBoundNativePortsProbesBothLoopbackFamilies(t *testing.T) {
 			instance.Access = resources.NewNativeNetworkAccess()
 			reported := boundNativePorts(context.Background(), []*basev0.NetworkMapping{{
 				Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: []*basev0.NetworkInstance{instance},
-			}})
+			}}, nil)
 			require.Len(t, reported, 1, "a holder on %s is missed when the instance names %s", tc.squatter, tc.named)
 		})
 	}

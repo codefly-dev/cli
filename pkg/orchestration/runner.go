@@ -1107,6 +1107,10 @@ const portHolderLookupTimeout = 3 * time.Second
 type portCollision struct {
 	port     uint32
 	endpoint string
+	// address is the host:port the holder answered on, so the holder named is
+	// the one on that address — a squatter on [::1]:P beside another process
+	// on 127.0.0.1:P is the one reported.
+	address string
 }
 
 // boundNativePorts returns "<port> (<endpoint>)" descriptions for each native
@@ -1120,7 +1124,11 @@ type portCollision struct {
 // macOS a service that later binds the wildcard :P coexists with a squatter on
 // 127.0.0.1:P, which keeps receiving every dial to 127.0.0.1:P. Only a probe
 // of both families before the service binds sees either squatter.
-func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []string {
+//
+// adopted excuses an address whose listener is the service's own: the
+// container its agent will adopt (Runner.adoptedContainerAddresses). nil
+// excuses nothing.
+func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, adopted func(address string) bool) []string {
 	var collisions []portCollision
 	for _, mapping := range mappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
@@ -1132,8 +1140,11 @@ func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []
 		if instance == nil {
 			continue
 		}
-		if slices.ContainsFunc(nativeProbeAddresses(instance), listening) {
-			collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name})
+		for _, address := range nativeProbeAddresses(instance) {
+			if listening(address) && (adopted == nil || !adopted(address)) {
+				collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name, address: address})
+				break
+			}
 		}
 	}
 	if len(collisions) == 0 {
@@ -1141,23 +1152,28 @@ func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []
 	}
 	lookupCtx, cancel := holderLookupContext(ctx)
 	defer cancel()
-	listeners := listeningPorts(lookupCtx)
+	sockets := listeningSockets(lookupCtx)
 	held := make([]string, 0, len(collisions))
 	for _, collision := range collisions {
-		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, listeners, collision.port)))
+		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, holderPID(sockets, collision.address, collision.port))))
 	}
 	return held
 }
 
 // nativeProbeAddresses is every address a native instance's port can be
-// held at: its own host, and the port on each loopback family.
+// held at: the port on each loopback family, and the instance's own host when
+// it is not a loopback name those two already cover. A loopback host is
+// probed per family only, so a holder is always attributed to one family.
 func nativeProbeAddresses(instance *basev0.NetworkInstance) []string {
-	addresses := []string{instance.GetHost()}
+	var addresses []string
+	if host := instance.GetHost(); host != "" && !isLoopbackHostname(instance.GetHostname()) {
+		addresses = append(addresses, host)
+	}
 	if instance.GetPort() > 0 {
 		port := strconv.FormatUint(uint64(instance.GetPort()), 10)
-		addresses = append(addresses, net.JoinHostPort("127.0.0.1", port), net.JoinHostPort("::1", port))
+		addresses = append(addresses, net.JoinHostPort(loopbackIPv4, port), net.JoinHostPort(loopbackIPv6, port))
 	}
-	return slices.DeleteFunc(addresses, func(address string) bool { return address == "" })
+	return addresses
 }
 
 func listening(address string) bool {
@@ -1178,29 +1194,58 @@ func holderLookupContext(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeout(ctx, portHolderLookupTimeout)
 }
 
-// listeningPorts maps each locally LISTENing TCP port to the pid that holds it.
-// Building the whole map once per probe keeps a stack-wide collision from
-// re-enumerating the machine's sockets for every clashing endpoint.
-func listeningPorts(ctx context.Context) map[uint32]int32 {
+// listeningSocket is one locally LISTENing TCP socket and the pid holding it.
+type listeningSocket struct {
+	ip   string
+	port uint32
+	pid  int32
+}
+
+// listeningSockets enumerates the machine's listening TCP sockets once per
+// probe, so a stack-wide collision does not re-enumerate them for every
+// clashing endpoint.
+func listeningSockets(ctx context.Context) []listeningSocket {
 	connections, err := gopsnet.ConnectionsWithContext(ctx, "tcp")
 	if err != nil {
-		return map[uint32]int32{}
+		return nil
 	}
-	ports := make(map[uint32]int32, len(connections))
+	var sockets []listeningSocket
 	for _, connection := range connections {
 		if connection.Status != "LISTEN" || connection.Pid <= 0 {
 			continue
 		}
-		// A port bound on several addresses (v4 + v6, or per-interface) yields
-		// one connection each; they belong to the same listener, so first wins.
-		if _, seen := ports[connection.Laddr.Port]; !seen {
-			ports[connection.Laddr.Port] = connection.Pid
-		}
+		sockets = append(sockets, listeningSocket{ip: connection.Laddr.IP, port: connection.Laddr.Port, pid: connection.Pid})
 	}
-	return ports
+	return sockets
 }
 
-// portHolderSuffix names the process squatting on port, so an "already in use"
+// holderPID is the pid listening where address answered: a socket on that
+// exact IP first, then a wildcard socket of its family, then any socket on the
+// port. Zero when none is readable.
+func holderPID(sockets []listeningSocket, address string, port uint32) int32 {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = ""
+	}
+	wildcards := []string{wildcardIPv4, "*", ""}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		wildcards = []string{wildcardIPv6, "*", ""}
+	}
+	for _, matches := range []func(string) bool{
+		func(ip string) bool { return host != "" && ip == host },
+		func(ip string) bool { return slices.Contains(wildcards, ip) },
+		func(string) bool { return true },
+	} {
+		for _, socket := range sockets {
+			if socket.port == port && matches(socket.ip) {
+				return socket.pid
+			}
+		}
+	}
+	return 0
+}
+
+// portHolderSuffix names the process holding a port, so an "already in use"
 // failure says which pid to look at instead of leaving the user to run lsof.
 //
 // It reports the holder's executable PATH and never its command line: the path
@@ -1212,9 +1257,8 @@ func listeningPorts(ctx context.Context) map[uint32]int32 {
 // It returns "" when the holder cannot be identified: socket ownership is not
 // always readable (a listener owned by another user, a lookup that ran past
 // the deadline), and a missing name must not cost us the port report itself.
-func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint32) string {
-	pid, ok := listeners[port]
-	if !ok {
+func portHolderSuffix(ctx context.Context, pid int32) string {
+	if pid <= 0 {
 		return ""
 	}
 	proc, err := process.NewProcessWithContext(ctx, pid)
@@ -1237,7 +1281,9 @@ func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed
 	if runner.isStarted.Load() || runner.everStarted.Load() {
 		return nil
 	}
-	if held := boundNativePorts(ctx, proposed); len(held) > 0 {
+	// A listener that is the service's own kept container is not a ghost: its
+	// agent adopts it (keep-running), and 'codefly clear' would delete it.
+	if held := boundNativePorts(ctx, proposed, runner.adoptedContainerAddresses(ctx)); len(held) > 0 {
 		// The holder is whoever bound the port first — it may be a leftover
 		// codefly run, but it may equally be the user's own server, so the
 		// remedy is stated conditionally rather than asserting a provenance

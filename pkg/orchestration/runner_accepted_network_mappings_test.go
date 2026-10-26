@@ -525,7 +525,8 @@ func TestInitRejectsAStalePortBeforeTheFirstStart(t *testing.T) {
 	ctx := context.Background()
 	runner, _ := gatewayRunner(t, startRealAgent(t, realAgentEcho))
 
-	// The guard probes the addresses a previous Init accepted, so run one first.
+	// A second Init before the first Start: its proposal is the accepted set
+	// the first Init pinned, and the guard still refuses a ghost on it.
 	_, err := runner.Init(ctx)
 	require.NoError(t, err)
 

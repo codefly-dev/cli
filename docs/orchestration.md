@@ -1248,7 +1248,15 @@ every native port the Init proposes on 127.0.0.1 and on ::1 and, if anything
 answers, refuses the Init naming the port and its holder, so the run does not
 come up with the hop routing to a squatter. Each loopback family is probed
 because on macOS a squatter on 127.0.0.1:P and a service listening on the
-wildcard :P both bind. Not covered: a process that binds a loopback address on
-the port after that probe, and a routed module that crashes or is withdrawn
-mid-run, whose port the hop keeps routing to. `--temporary-ports` derives no
+wildcard :P both bind. The one listener that is not a squatter is the
+service's own kept container: a Docker store with `keep-running` leaves its
+container up for the next run to adopt, still publishing the service's port.
+An address is let through only when the container listening there is the one
+the service's agent will adopt — its name in this run's workspace and naming
+scope, codefly-owned, labelled with this run's recovery scope, running, not
+ephemeral, and publishing that port on that loopback family; any other holder,
+including one on the other family beside it, is refused. Not covered: a
+process that binds a loopback address on the port after that probe, and a
+routed module that crashes or is withdrawn mid-run, whose port the hop keeps
+routing to. `--temporary-ports` derives no
 address, so a reference that needs one is refused before the hop starts.
