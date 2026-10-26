@@ -33,6 +33,32 @@ var GitOpsCmd = &cobra.Command{
 	Short: "Render, publish, observe, and recover reviewed GitOps promotions",
 }
 
+var gitOpsCellCmd = &cobra.Command{
+	Use:   "cell",
+	Short: "Derive the cell file from published module trees without rebuilding images",
+	Args:  cobra.NoArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		ctx, done := common.NewContext()
+		defer done()
+		if err := common.ResolvePinnedModules(ctx); err != nil {
+			return err
+		}
+		workspace, err := common.LoadWorkspace(ctx)
+		if err != nil {
+			return err
+		}
+		env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
+		if err != nil {
+			return err
+		}
+		cell, err := gitops.RenderPublishedCell(ctx, workspace, env)
+		if err == nil {
+			printCell(&cell)
+		}
+		return err
+	},
+}
+
 var gitOpsRenderCmd = &cobra.Command{
 	Use:   "render [module]",
 	Short: "Render and validate a module-owned manifest tree",
@@ -605,8 +631,8 @@ var (
 )
 
 func init() {
-	GitOpsCmd.AddCommand(gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd)
-	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd} {
+	GitOpsCmd.AddCommand(gitOpsCellCmd, gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd)
+	for _, command := range []*cobra.Command{gitOpsCellCmd, gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsEnv, "env", "local", "Environment to promote")
 	}
 	// The delivery verbs — the ones that render a manifest tree from the

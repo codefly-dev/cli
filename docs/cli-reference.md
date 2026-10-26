@@ -2047,6 +2047,7 @@ codefly deploy gitops <subcommand>
 
 Subcommands:
 
+- [`codefly deploy gitops cell`](#codefly-deploy-gitops-cell)
 - [`codefly deploy gitops observe`](#codefly-deploy-gitops-observe)
 - [`codefly deploy gitops plan`](#codefly-deploy-gitops-plan)
 - [`codefly deploy gitops publish`](#codefly-deploy-gitops-publish)
@@ -2054,6 +2055,20 @@ Subcommands:
 - [`codefly deploy gitops render`](#codefly-deploy-gitops-render)
 - [`codefly deploy gitops rollback`](#codefly-deploy-gitops-rollback)
 - [`codefly deploy gitops snapshot`](#codefly-deploy-gitops-snapshot)
+
+## `codefly deploy gitops cell`
+
+Derive the cell file from published module trees without rebuilding images
+
+```
+codefly deploy gitops cell [flags]
+```
+
+Flags:
+
+```
+      --env string   Environment to promote (default "local")
+```
 
 ## `codefly deploy gitops observe`
 

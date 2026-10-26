@@ -210,6 +210,30 @@ func renderCellTreeWith(t *testing.T, options *RenderOptions, service, environme
 // container port the mesh authorizes and the Service port an edge route uses,
 // who the composition says calls them, the ingress into them, the bindings
 // the environment declares, and the egress a service is granted.
+func TestPublishedCellUsesPublishedTreesAndRefusesMissingModules(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	env.Gitops = &environments.EnvironmentGitops{RepoURL: "https://github.com/example/product", Branch: "deploy", Path: "deployments/published"}
+	publication := filepath.Join(workspace.Dir(), env.Gitops.Path)
+	require.NoError(t, os.MkdirAll(publication, 0o755))
+	require.NoError(t, os.Rename(filepath.Join(workspace.Dir(), "deployments/modules"), filepath.Join(publication, "modules")))
+	result, err := RenderPublishedCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "shop"}, result.Modules)
+	before, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "no module has been rendered")
+	require.NoError(t, os.RemoveAll(filepath.Join(publication, "modules/billing")))
+	_, err = RenderPublishedCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "billing")
+	after, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "incomplete publication must leave the last complete cell unchanged")
+}
+
 func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	workspace := writeCellWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
