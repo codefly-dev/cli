@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -77,7 +76,7 @@ contracts directory on disk (--from contracts:<dir>).
 func init() {
 	ClientCmd.Flags().StringVar(&clientFrom, "from", "", "contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>")
 	ClientCmd.Flags().StringSliceVar(&clientLanguages, "language", nil, "languages to generate: go,typescript,python")
-	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the facade to these protobuf services (protobuf contracts only)")
+	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)")
 	ClientCmd.Flags().StringVar(&clientName, "name", "", "library name (default: <module>-<service>-client)")
 	ClientCmd.Flags().StringVar(&clientModuleName, "module-name", "", "facade entry-point name (default: derived from the contract)")
 	ClientCmd.Flags().BoolVar(&clientNoFacade, "no-facade", false, "generate bindings only, no facade")
@@ -244,16 +243,10 @@ type resolvedContractSource struct {
 	facadeModuleDefault string
 
 	// protoSources, when set (the local module/service source only), carries
-	// the service's own .proto files. proto.GenerateClient's DescriptorSet
-	// path mishandles a --services subset once more than one file is present
-	// (core bug: a facade plugin invoked over a multi-file descriptor set —
-	// unavoidable once the module's proto imports anything, e.g. a REST
-	// gateway's google/api/annotations.proto — reports the target service as
-	// undeclared, even though the same content generates fine as Sources).
-	// The local source has the original files on hand, so it is generated
-	// from Sources instead, sidestepping the bug; contracts:/package:
-	// sources only ever have the persisted descriptor bytes and remain
-	// exposed to it (see docs/commands.md).
+	// the service's own .proto files, which a library binding the whole
+	// contract is generated from. A --services library is generated from its
+	// narrowed descriptor set instead, since the sources declare every
+	// service (see generators.ContractEntry.ProtoSources).
 	protoSources []coreproto.Source
 }
 
@@ -376,17 +369,16 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 			return nil, nil, nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
 		}
-		descriptorSet, err := buildDescriptorSet(ctx, protoDir)
+		// buf compiles the descriptor set and names its own source set in the
+		// same companion run, so Sources are exactly the files and import names
+		// the descriptor set was built from.
+		descriptorSet, protoSources, err := compileProtoDir(ctx, protoDir, true)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot build descriptor set: %w", err)
 		}
 		var set descriptorpb.FileDescriptorSet
 		if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
-		}
-		protoSources, err := collectProtoSources(protoDir)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot read proto sources: %w", err)
 		}
 		// The contract's package is the one the service's own protos declare
 		// their services in, as `generate contracts` settles it; an endpoint
@@ -429,36 +421,6 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		}, nil, nil
 	}
 	return nil, nil, nil, fmt.Errorf("endpoint %s reports neither a grpc nor a rest contract", endpoint.Name)
-}
-
-// collectProtoSources reads every .proto file directly (and doubly) under
-// protoDir into proto.GenerateClient's Sources form, path relative to
-// protoDir — the same files buildDescriptorSet compiled, so generation from
-// Sources produces the same code the persisted descriptor set describes.
-func collectProtoSources(protoDir string) ([]coreproto.Source, error) {
-	var sources []coreproto.Source
-	err := filepath.WalkDir(protoDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".proto") {
-			return err
-		}
-		rel, err := filepath.Rel(protoDir, p)
-		if err != nil {
-			return err
-		}
-		content, err := os.ReadFile(p) //nolint:gosec // p is walked from a service's own committed proto directory
-		if err != nil {
-			return err
-		}
-		sources = append(sources, coreproto.Source{Path: filepath.ToSlash(rel), Content: content})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(sources) == 0 {
-		return nil, fmt.Errorf("no .proto files under %s", protoDir)
-	}
-	return sources, nil
 }
 
 // resolvePackageSource handles --from package:<id>@<version>: it finds the

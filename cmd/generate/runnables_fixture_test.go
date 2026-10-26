@@ -50,11 +50,12 @@ func int64Field(name string, number int32) *descriptorpb.FieldDescriptorProto {
 	return field
 }
 
-// uint64Field is outside the bounded profile: its range exceeds the signed
-// 64-bit integer the profile carries.
-func uint64Field(name string, number int32) *descriptorpb.FieldDescriptorProto {
+// selfField is outside the bounded profile: a message reaching itself has no
+// bounded shape, whatever proto3 JSON would spell its scalars as.
+func selfField(name string, number int32, message string) *descriptorpb.FieldDescriptorProto {
 	field := stringField(name, number)
-	field.Type = descriptorpb.FieldDescriptorProto_TYPE_UINT64.Enum()
+	field.Type = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
+	field.TypeName = googleproto.String(message)
 	return field
 }
 
@@ -130,7 +131,7 @@ func ingestionFile(declared *runnablev0.Operation, extra ...*descriptorpb.Method
 			),
 			descriptorMessage("LookupTextRequest", stringField("effect_digest", 1)),
 			// CountRequest is deliberately out of the bounded profile.
-			descriptorMessage("CountRequest", uint64Field("total", 1)),
+			descriptorMessage("CountRequest", selfField("total", 1, ".documents.ingest.v1.CountRequest")),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{{
 			Name:   googleproto.String("IngestionService"),
@@ -139,8 +140,8 @@ func ingestionFile(declared *runnablev0.Operation, extra ...*descriptorpb.Method
 	}
 }
 
-// outOfProfileMethod takes a uint64 the bounded profile has no type for. It is
-// marked, so it is refused rather than skipped.
+// outOfProfileMethod takes a recursive message the bounded profile has no
+// shape for. It is marked, so it is refused rather than skipped.
 func outOfProfileMethod() *descriptorpb.MethodDescriptorProto {
 	return markedMethod("CountText", ".documents.ingest.v1.CountRequest", ".documents.ingest.v1.ApplyTextResponse", conformingOperation())
 }

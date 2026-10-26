@@ -51,6 +51,9 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	// (binding-names-calls): each declares what its calls require in its own
 	// published contract, a protobuf one and an OpenAPI one.
 	writeCalleePackages(t, workspace.Dir())
+	// roles-grant-bindings holds a role's spelled-out scope at the one
+	// audience that underwrites it: its documents and replica bindings both
+	// resolve to documents.
 	for rel, content := range map[string]string{
 		filepath.Join("modules", "assistant", resources.ModuleConfigurationName):                     "kind: module\nname: assistant\nservices:\n  - name: api\n",
 		filepath.Join("modules", "assistant", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "assistant") + "module-identity: true\n",

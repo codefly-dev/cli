@@ -1,10 +1,12 @@
 package generators
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/languages"
 	"github.com/stretchr/testify/require"
@@ -147,9 +149,8 @@ func TestBuildModuleClientEntryUsesCommittedPackageArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	contract := []byte("descriptor bytes")
 	contractPath := filepath.Join(dir, "contracts", "api", "accounts", "connect", "contract.binpb")
-	require.NoError(t, os.MkdirAll(filepath.Join(filepath.Dir(contractPath), "proto", "accounts", "v1"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(contractPath), 0o755))
 	require.NoError(t, os.WriteFile(contractPath, contract, 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(contractPath), "proto", "accounts", "v1", "accounts.proto"), []byte("syntax = \"proto3\";"), 0o644))
 	catalog := &composition.APIContractCatalog{Package: "codefly/saas-starter", Version: "0.1.0"}
 	plan := &ModuleClientPlan{
 		Endpoint: composition.APIContractEndpoint{
@@ -158,9 +159,17 @@ func TestBuildModuleClientEntryUsesCommittedPackageArtifacts(t *testing.T) {
 		},
 		Services: []string{"AccountsService"},
 	}
-	entry, err := BuildModuleClientEntry(t.Context(), dir, "saas-starter", catalog, plan)
+	// The sources are what the lister names over the proto tree published
+	// beside the contract; nothing here walks that tree itself.
+	listed := []coreproto.Source{{Path: "accounts/v1/accounts.proto", Content: []byte("syntax = \"proto3\";")}}
+	var listedDir string
+	entry, err := BuildModuleClientEntry(t.Context(), dir, "saas-starter", catalog, plan, func(_ context.Context, protoDir string) ([]coreproto.Source, error) {
+		listedDir = protoDir
+		return listed, nil
+	})
 	require.NoError(t, err)
+	require.Equal(t, filepath.Join(filepath.Dir(contractPath), "proto"), listedDir)
 	require.Equal(t, contract, entry.ContractBytes)
-	require.Equal(t, "accounts/v1/accounts.proto", entry.ProtoSources[0].Path)
+	require.Equal(t, listed, entry.ProtoSources)
 	require.Equal(t, []string{"AccountsService"}, entry.Services)
 }

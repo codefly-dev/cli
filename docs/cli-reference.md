@@ -2762,7 +2762,7 @@ Flags:
       --no-facade            generate bindings only, no facade
       --npm-scope string     npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
       --output string        output directory (default: <workspace>/libraries/<name>)
-      --services strings     restrict the facade to these protobuf services (protobuf contracts only)
+      --services strings     restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)
 ```
 
 ## `codefly generate contracts`
@@ -2950,8 +2950,9 @@ owner must still serve it.
 In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
 binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
 and lookup. Every required slot needs exact resource kinds, actions and ids;
-missing selections, wildcards and overlapping kinds are refused. Tool exposure
-is carried from the owner. See docs/runnable.md for the selection YAML.
+missing selections, wildcards and overlapping kinds are refused. Every
+operation is a tool; its presentation and effect are carried from the derived
+policy. See docs/runnable.md for the selection YAML.
 
 An environment that installs an operation for no resource answers its key with
 an explicitly empty list, KEY: []. That operation is declined: its key is absent
@@ -2995,21 +2996,25 @@ Flags:
 
 ## `codefly generate runnables`
 
-Derive SERVICE-facility Runnable packages from the methods a module's contracts mark
+Derive SERVICE-facility Runnable packages, and so tools, from a module's served methods
 
 ```
 Derive a Runnable package for every gRPC method a module's published contracts
-mark with the codefly.runnable.v0.operation option.
+serve behind the authority hop. Every Runnable is a tool.
 
-A unary, idempotent method an owner service already publishes becomes a
-Runnable by derivation, not by authoring: the method option says which methods
-are operations and under what execution policy, and the message descriptors say
-what the contract is. Nothing is written twice.
+A method that declares its authority policy (authority.hop.v1.policy) is an
+operation with nothing added: a policy requiring only "read" derives a
+read-only tool that is safe to re-run and carries no receipt; anything else
+derives a mutation resolved by its effect receipt through the SDK's generic
+lookup. The codefly.runnable.v0.operation option overrides those defaults, and
+codefly.runnable.v0.exclude keeps a method from every agent. The message
+descriptors say what the contract is, by their proto3 JSON. Nothing is written
+twice.
 
 The input is what `codefly generate contracts` already wrote — each endpoint's
 served procedures in the API catalog and its serialized FileDescriptorSet.
-Run that first. Only served methods carrying the option are derived; their
-paired Lookup must be served on the same endpoint. No flag names a method.
+Run that first. Only served methods are derived; a declared Lookup must be
+served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 
@@ -3017,12 +3022,13 @@ For each marked method this writes, under contracts/runnables:
   <service>/<endpoint>/<Method>/operation.json          its execution policy and authority
   index.json                                            one row per operation
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. A module with no marked method writes an empty index, not an error.
+The tree is fully owned: a method that is no longer an operation loses its
+directory. A module with no operation writes an empty index, not an error.
 
-A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named and skipped, and the command exits non-zero after
-reporting every one of them.
+A method derived by default that cannot be one — a stream, a policy requiring
+nothing, a payload proto3 JSON cannot carry — is listed and left a plain call.
+A method carrying the option that core refuses is named and skipped, and the
+command exits non-zero after reporting every one of them.
 
 --check is the CI drift gate: it regenerates into a temporary directory and
 prints a unified diff of what differs, without writing anything.
@@ -4926,6 +4932,7 @@ Flags:
 ```
       --apply-dependencies   add missing service-dependencies entries for every bound consume entry
       --check                do not write; exit 1 if the library or service-dependencies are out of date
+      --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
 ```
 

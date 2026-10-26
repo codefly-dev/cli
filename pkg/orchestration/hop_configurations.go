@@ -52,7 +52,7 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	}
 	snapshot := hopRoutingSnapshot(group)
 	if r.frozen && r.snapshot != snapshot {
-		return routingRestartRequired()
+		return routingRestartRequired("the published API catalogs differ from the ones this run started with")
 	}
 	r.snapshot, r.frozen = snapshot, true
 	r.combined = slices.Clone(configs)
@@ -62,8 +62,8 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	return nil
 }
 
-func routingRestartRequired() error {
-	return fmt.Errorf("published hop routes changed: stop and restart this Codefly run to adopt them; incremental refresh cannot replace its routing snapshot")
+func routingRestartRequired(reason string) error {
+	return fmt.Errorf("published hop routes changed: stop and restart this Codefly run to adopt them; incremental refresh cannot replace its routing snapshot (%s)", reason)
 }
 
 func hopRoutingSnapshot(config *basev0.Configuration) string {
@@ -254,13 +254,33 @@ func (flow *Flow) CheckRoutingSnapshot(ctx context.Context, workspace *resources
 		current = hopRoutingSnapshotOf(provided.Infos)
 	}
 	if previous != current {
-		return routingRestartRequired()
+		return routingRestartRequired("the published API catalogs differ from the ones this run started with")
 	}
 	return nil
 }
 
 // freezeHopAddresses fences accepted endpoint replacement while an immutable
 // hop snapshot can still use it. Ordinary reload reuses the accepted mappings.
+//
+// A routed service that has initialized must still be at the address it
+// recorded. One that has loaded but not initialized yet — a fresh run starts
+// the hop before every module ordered after it, and a module that calls
+// through the hop is — is routed at the address its own Init will be
+// proposed, the one the hop's resolution derived. Freezing that address makes
+// the routed service's Init the check (RecordNetworkMappings): the same
+// address is accepted, any other is refused naming the route. A service that
+// never loaded has no mapping at all and is refused here by name.
+//
+// Until that Init, the hop routes to a derived loopback port nothing holds
+// yet, so a local process that binds it first receives what the hop forwards
+// until then. That Init ends it: before calling the agent, the routed
+// service's first Init dials the port it is proposed on 127.0.0.1 and ::1 and
+// refuses, naming the holder, if anything answers
+// (Runner.checkInitialPortAvailability), so the run never comes up with the
+// hop routing to a squatter. --temporary-ports never derives an address at
+// all. A process that binds a loopback address on the same port after that
+// probe, or a routed service that crashes or is withdrawn mid-run, is not
+// covered.
 func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.NetworkMapping) error {
 	routes, err := routing.DecodeRouting(raw)
 	if err != nil {
@@ -268,7 +288,7 @@ func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.Network
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pending := map[string]string{}
+	pending := map[string]frozenRoute{}
 	for i := range routes.Endpoints {
 		route := &routes.Endpoints[i]
 		unique := route.Audience + "/" + route.Service
@@ -284,28 +304,111 @@ func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.Network
 			return fmt.Errorf("hop route %s/%s has no resolved mapping", unique, route.Endpoint)
 		}
 		key, hash := resources.EndpointDestination(selected.GetEndpoint()), resources.NetworkMappingHash(selected)
-		current := false
-		for _, mapping := range s.networkMappings[unique] {
-			if resources.EndpointDestination(mapping.GetEndpoint()) == key && resources.NetworkMappingHash(mapping) == hash {
-				current = true
-				break
+		if recorded, initialized := s.networkMappings[unique]; initialized && !carriesMapping(recorded, key, hash) {
+			// One record means the hop resolved the address that first Init
+			// was proposed: a restart proposes it again.
+			if s.networkMappingRecords[unique] == 1 {
+				return proposedAddressRefused(key, mappingAddresses(selected), unique, addressesOf(recorded, key))
 			}
+			return routingRestartRequired(fmt.Sprintf("hop route %s was resolved at %s, but %s initialized at %s while the routes were being resolved",
+				key, mappingAddresses(selected), unique, addressesOf(recorded, key)))
 		}
-		if !current {
-			return routingRestartRequired()
+		if previous, ok := s.routingMappings[key]; ok && previous.hash != hash {
+			return routingRestartRequired(fmt.Sprintf("hop route %s moved from %s, the address this run's hop snapshot holds, to %s",
+				key, mappingAddresses(previous.mapping), mappingAddresses(selected)))
 		}
-		if previous, ok := s.routingMappings[key]; ok && previous != hash {
-			return routingRestartRequired()
-		}
-		pending[key] = hash
+		pending[key] = frozenRoute{owner: unique, hash: hash, mapping: selected}
 	}
 	if s.routingMappings == nil {
-		s.routingMappings = map[string]string{}
+		s.routingMappings = map[string]frozenRoute{}
 	}
-	for key, hash := range pending {
-		s.routingMappings[key] = hash
+	for key, frozen := range pending {
+		s.routingMappings[key] = frozen
 	}
 	return nil
+}
+
+// frozenRoute is one address a hop snapshot holds: the service that serves it,
+// the mapping the snapshot was built with, and that mapping's hash.
+type frozenRoute struct {
+	owner   string
+	hash    string
+	mapping *basev0.NetworkMapping
+}
+
+// checkFrozenRoutes refuses mappings for unique that drop or move an address a
+// hop snapshot holds. The caller holds s.mu and has not recorded them yet.
+//
+// A service recording for the first time was frozen at the address its Init
+// was proposed, and that address is derived from the workspace, the service
+// and the naming scope: a restart derives it again and is refused the same
+// way, so the refusal says what does help instead of asking for one.
+func (s *StateManager) checkFrozenRoutes(unique string, mappings []*basev0.NetworkMapping) error {
+	_, initialized := s.networkMappings[unique]
+	for key, frozen := range s.routingMappings {
+		if frozen.owner != unique || carriesMapping(mappings, key, frozen.hash) {
+			continue
+		}
+		routed, offered := mappingAddresses(frozen.mapping), addressesOf(mappings, key)
+		if initialized {
+			return routingRestartRequired(fmt.Sprintf("hop route %s is routed at %s, but %s now offers %s", key, routed, unique, offered))
+		}
+		return proposedAddressRefused(key, routed, unique, offered)
+	}
+	return nil
+}
+
+// proposedAddressRefused is the refusal of a first Init that accepted another
+// address than the one it was proposed, which the hop routes. A restart
+// proposes the same derived address again, so it is not offered as a remedy.
+func proposedAddressRefused(key, routed, unique, offered string) error {
+	return fmt.Errorf("hop route %s is routed at %s, the address %s was proposed, but its Init accepted %s: "+
+		"the proposed address is derived from the workspace, the service and the naming scope, so restarting this run derives it again and is refused the same way; "+
+		"have %s's agent serve the proposed address, or, if %s does not call through the hop, order it before the hop", key, routed, unique, offered, unique, unique)
+}
+
+// carriesMapping reports whether mappings hold the endpoint key, and hold it
+// only at the mapping hashed as hash.
+func carriesMapping(mappings []*basev0.NetworkMapping, key, hash string) bool {
+	found := false
+	for _, mapping := range mappings {
+		if resources.EndpointDestination(mapping.GetEndpoint()) != key {
+			continue
+		}
+		if resources.NetworkMappingHash(mapping) != hash {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// addressesOf spells where mappings reach the endpoint key.
+func addressesOf(mappings []*basev0.NetworkMapping, key string) string {
+	var matching []*basev0.NetworkMapping
+	for _, mapping := range mappings {
+		if resources.EndpointDestination(mapping.GetEndpoint()) == key {
+			matching = append(matching, mapping)
+		}
+	}
+	if len(matching) == 0 {
+		return "no address for it"
+	}
+	return mappingAddresses(matching...)
+}
+
+// mappingAddresses spells each instance of mappings as its access and address.
+func mappingAddresses(mappings ...*basev0.NetworkMapping) string {
+	var parts []string
+	for _, mapping := range mappings {
+		for _, instance := range mapping.GetInstances() {
+			parts = append(parts, instance.GetAccess().GetKind()+" "+instance.GetAddress())
+		}
+	}
+	if len(parts) == 0 {
+		return "no address"
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func (world *World) freezeDeliveredHopAddresses(configs []*basev0.Configuration, mappings []*basev0.NetworkMapping) error {

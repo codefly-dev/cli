@@ -27,6 +27,7 @@ var (
 	solutionSDKLanguages []string
 	solutionSDKCheck     bool
 	solutionSDKApply     bool
+	solutionSDKForce     bool
 
 	// skipGenerateForTests short-circuits the actual codegen call
 	// (generators.GenerateClientLibrary), so a test can exercise resolution,
@@ -60,6 +61,7 @@ func init() {
 	SolutionSDKCmd.Flags().StringSliceVar(&solutionSDKLanguages, "language", nil, "languages to generate: go,typescript,python")
 	SolutionSDKCmd.Flags().BoolVar(&solutionSDKCheck, "check", false, "do not write; exit 1 if the library or service-dependencies are out of date")
 	SolutionSDKCmd.Flags().BoolVar(&solutionSDKApply, "apply-dependencies", false, "add missing service-dependencies entries for every bound consume entry")
+	SolutionSDKCmd.Flags().BoolVar(&solutionSDKForce, "force", false, "overwrite a library generated from a different version of a consumed contract")
 }
 
 func runSyncSolutionSDK(ctx context.Context) error {
@@ -401,6 +403,7 @@ func generateSolutionSDKInto(ctx context.Context, name, outputDir string, entrie
 		Output:     outputDir,
 		Languages:  langs,
 		Entries:    entries,
+		Force:      solutionSDKForce,
 		GoModule:   "github.com/codefly-dev/" + name + "-go",
 		NpmPackage: "@codefly-dev/" + name,
 	})

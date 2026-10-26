@@ -2434,6 +2434,7 @@ lodestar derives from the manifest.
 | `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
 | `--check` | Do not write; exit 1 if the library or `service-dependencies` are out of date |
 | `--apply-dependencies` | Add any `service-dependencies` entry missing for a bound consume entry to the entry service's `service.codefly.yaml`; without it, missing entries are printed as a warning. Existing entries are never removed. |
+| `--force` | Overwrite a library generated from a different version of a consumed contract (its recorded `sources[].contract-digest` differs) |
 
 Each bound entry is resolved against the workspace's own composition: the
 composed module named by `module` (workspace `add module` first), its
@@ -3247,7 +3248,7 @@ codefly generate client --from contracts:module-saas-starter/contracts/api --lan
 codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files, in the proto companion
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
-codefly generate runnables documents                                                     # Derive a Runnable package per method carrying the operation option
+codefly generate runnables documents                                                     # Derive a Runnable package, and so a tool, per method served behind the hop
 codefly generate runnables documents --check                                             # CI drift gate: fail if the derived packages are stale
 codefly generate runnable-bindings --env staging                                         # Bind every derived operation to its owner endpoint as the environment resolves it
 ```
@@ -3407,7 +3408,7 @@ with no caller and no way to detect drift.
 |------|-------------|
 | `--from` | Required. Contract source: `module/service[/endpoint]` (a local workspace service), `package:<id>@<version>` (a composed module package), or `contracts:<dir>` (a `generate contracts` export) |
 | `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
-| `--services` | Restrict the facade to these protobuf services (protobuf contracts only; not supported when `--from` resolves through a descriptor set — see below) |
+| `--services` | Restrict the library to these protobuf services and the declarations they need (protobuf contracts only; see below) |
 | `--endpoint` | Select an endpoint when `--from package:`/`contracts:` resolves to more than one: `service/endpoint` |
 | `--name` | Library name (default `<module>-<service>-client`) |
 | `--module-name` | Facade entry-point name (default: derived from the contract's proto package) |
@@ -3425,14 +3426,65 @@ from. `library.codefly.yaml` always carries a `sources:` list (one element for
 `generate client`, one per aggregated contract for `sync solution-sdk` below) so
 both commands share one schema.
 
+Every requested language is generated into scratch directories before anything
+under the library is written. A run that fails in the proto companion (a
+contract that does not compile, a buf dependency that does not resolve) leaves
+the library exactly as it was: its contract, its generated tree and the files
+written by hand beside them. Once every language has generated, the command
+replaces only what it owns: `gen/`, `src/` and `_gen/`, and each facade (a Python
+facade is recognised by its generated-code notice). Scaffold files are written
+only when missing, except that a Python `pyproject.toml` gains any dependency its
+bindings now need. A Go library is compiled after it is written, so a library
+that generates but does not build is left in place with the build error reported.
+
 `--from module/service[/endpoint]` loads the service's Builder to build a
 one-entry contract in memory (the same way `generate contracts` does) and
 generates from the service's own proto sources. `--from package:`/`contracts:`
 read an already-persisted contract (a `contract.binpb`/`openapi.json` plus
-catalog entry) and generate from its descriptor bytes — a known upstream
-limitation in the facade plugin currently means `--services` filtering does not
-work over a multi-file descriptor set from these two sources; use the local
-source, or omit `--services` to generate the full contract's facade.
+catalog entry) and generate from its descriptor bytes.
+
+`--services` narrows the whole library, from any source, before anything is
+generated. The contract it persists under `contract/` keeps the named services
+and the declarations they reach: their methods' messages and, transitively,
+every message and enum those name (a nested type keeps the top-level message
+holding it), and every extension of a kept message. A file defining a custom
+option those declarations set — on any element, extension ranges included, or
+nested inside another option's value — is kept whole, as is a shared upstream
+file (`google/protobuf`, `google/api`, `google/rpc`, `google/type`,
+`buf/validate`). No other service is declared anywhere, so the catalog, the
+manifest's `sources[].services`, the bindings and the facade of every language
+carry the named services alone. The catalog's digest is the persisted
+(narrowed) contract's; `sources[].contract-digest` stays the producer's, the
+same digest `publish clients` records, so it keeps identifying the contract the
+library was generated from: changing `--services` regenerates in place, and only
+a new producer contract needs `--force`. A name the contract does not declare is
+refused, naming the services it does declare. Narrowing is deterministic, so
+regenerating a library reproduces it byte for byte. A library generated from a
+local source with `--services` is generated from the narrowed descriptor set
+rather than the proto sources. When `sync solution-sdk` aggregates several
+contracts into one library, each entry persists its own narrowed contract, while
+the bindings are generated from the closure of every entry at once, so a file
+two entries carry is generated the same for both; an entry naming no services
+keeps its whole contract, and two entries carrying different versions of one
+file are refused, naming the file and both entries.
+
+TypeScript's generated entry point (`src/index.ts`) has three parts. Each facade
+is re-exported flat under the name its plugin gives it (`accounts`,
+`AccountsClient`). Each proto package is one namespace named from the package —
+its components joined by `_`, an underscore inside a component doubled, and
+`_pb` appended — so `saas.accounts.v1` is `saas_accounts_v1_pb` and `a_b.v1`
+(`a__b_v1_pb`) stays distinct from `a.b_v1` (`a_b__v1_pb`); moving a message
+between files of one package renames nothing. Every name only one package
+declares is also re-exported flat, so `import { Installation, AuditService }`
+keeps working. A name two packages declare (protobuf keeps names unique within a
+package, not across the dependency graph) is not exported flat: a comment at the
+top of the entry point lists it with each namespace that reaches it, for example
+`codefly_base_v0_pb.WorkContextV1` and `host_authority_v1_pb.WorkContextV1`.
+Generation refuses, naming both, when two facades or package-less files would
+claim one name, since nothing else would reach either. The package barrels live
+in `src/packages/<package>.ts`. The scaffolded `package.json` exports only `.`,
+so the entry point is a package consumer's only way in; paths under `src/gen/`
+are reachable only from inside the library.
 
 ##### Library layout
 
@@ -3440,20 +3492,21 @@ source, or omit `--services` to generate the full contract's facade.
 libraries/saas-starter-accounts-client/
   library.codefly.yaml
   contract/
-    catalog.codefly.json         # the endpoint's catalog entry (subset if --services)
+    catalog.codefly.json         # the endpoint's catalog entry (narrowed with --services)
     contract.binpb | openapi.json
   go/        go.mod, gen/…, accounts_facade.pb.go
-  typescript/ package.json, tsconfig.json, src/index.ts, src/gen/…, src/accounts_facade.ts
+  typescript/ package.json, tsconfig.json, src/index.ts, src/packages/…, src/gen/…, src/accounts_facade.ts
   python/    pyproject.toml, <pkg>/_gen/…, <pkg>/accounts.py
 ```
 
 The TypeScript library is an ESM package whose root resolves to `dist/index.js`
 (types `dist/index.d.ts`). `src/index.ts` is generated output, rewritten on
-every run: a barrel re-exporting every facade and every generated binding, so
-the package name alone reaches every client and message schema. The scaffold
-(`package.json`, `tsconfig.json`) is written once and declares a `typescript`
-dev dependency and a `build` script (`tsc -p tsconfig.json`) that produces
-`dist/` — the only directory, with the README, that the package ships.
+every run: a barrel re-exporting every facade and every generated binding
+(shaped as above), so the package name alone reaches every client and message
+schema. The scaffold (`package.json`, `tsconfig.json`) is written once and
+declares a `typescript` dev dependency and a `build` script (`tsc -p
+tsconfig.json`) that produces `dist/` — the only directory, with the README,
+that the package ships.
 
 The Python package root is not a purely generated directory either. A run
 replaces `<pkg>/_gen/` whole and, at the root, only the files a protoc plugin's
@@ -3579,17 +3632,37 @@ is the CI drift gate.
 #### generate runnables
 
 `codefly generate runnables [module]` derives a **SERVICE-facility Runnable
-package** for every gRPC method a module's published contracts mark with the
-`codefly.runnable.v0.operation` method option. A unary, idempotent method an
-owner service already publishes becomes a Runnable by derivation, not by
-authoring: the option says which methods are operations and under what
-execution policy, and the message descriptors say what the contract is.
+package** for every unary gRPC method a module's published contracts serve
+behind the authority hop, and every Runnable is a tool. A method that declares
+its authority policy (`authority.hop.v1.policy`) needs nothing else: a policy
+requiring only `read` derives a read-only tool that is safe to re-run and
+carries no receipt (`recovery: RECOVERY_RECOMPUTE`); anything else derives a
+mutation with `RECOVERY_RECEIPT`, attempted once — at-most-once until the SDK's
+receipt guard follows the derivation, an uncertain outcome surfaced as
+unknown. A receipt lookup (another operation's `lookup_method`, or
+`Lookup<Op>` beside `<Op>`) is never derived. The tool's name and description are the method's name and
+leading doc comment. The `codefly.runnable.v0.operation` option overrides
+those defaults, and `codefly.runnable.v0.exclude` keeps a method from every
+agent. Every operation is a tool, and who reaches it is a matter of grants: a
+caller offers a person only the tools whose binding the person's grants cover,
+so a runtime-only or administrative operation derives and never reaches a
+person without the grant. The message descriptors say what the contract is,
+spelled as the Connect wire carries it — JSON member names, 64-bit integers as
+strings (core docs/runnable.md).
+
+The run reports each operation with its origin (`option` or `default`) and
+effect, lists the methods left plain calls and why, and — when any operation
+was derived by default — counts them, names the mutations, and points at
+`codefly.runnable.v0.exclude`. A release name longer than 50 characters is
+shortened deterministically to a stable prefix and an eight-digit digest, so
+a long method name never fails generation.
 
 The input is what `generate contracts` already wrote — each gRPC/connect
 endpoint's served `services[].procedures` in the API catalog and its
 `contract.binpb` — so run that first. A method is derived only when that endpoint
-serves it and its descriptor carries the option. Its paired Lookup must also be
-served there; descriptor availability alone is insufficient. Catalog procedures
+serves it and its descriptor declares an authority policy or carries the option.
+A declared Lookup must also be served there; descriptor availability alone is
+insufficient. Catalog procedures
 absent from the endpoint's descriptor package are refused. No flag names a method.
 
 ```
@@ -3603,13 +3676,13 @@ contracts/runnables/
 digest over, so what a composition reads and what was hashed are the same
 bytes. `operation.json` is kept beside it rather than inside it: policy and
 authority are installed with a binding, and two installations of one contract
-may differ in both. Required scope slots and optional tool exposure are preserved
-in `operation.json`; generation does not select resource IDs. `index.json` is
+may differ in both. Required scope slots, the tool presentation and the recovery
+are preserved in `operation.json`; generation does not select resource IDs. `index.json` is
 what a composition reads to prepare bindings — identity, digest, full method,
 input and output message names and
 endpoint coordinates per row.
 
-The tree is fully owned: a method that no longer carries the option or is no
+The tree is fully owned: a method that is no longer an operation or is no
 longer served on an endpoint loses that endpoint's directory. Only the three
 file names a generation produces are removed, and
 only the directories that empties, so pointing `--output` at a directory this
@@ -3619,8 +3692,11 @@ module that declares no `interface:` and so exports no endpoint at all, both
 write an empty index rather than an error; a module that *does* declare an
 interface but has no catalog is told to run `generate contracts` first.
 
-A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named with its field path; the walk continues so an owner
+A method derived by default that cannot be one — a stream, a policy requiring
+nothing (`any_checked_caller`), a payload proto3 JSON cannot carry (`Any`, a
+recursive message) — is listed as "not an operation" and stays a plain call; it
+never fails the command. A method carrying the option that is a stream, has a
+payload outside the profile, or that core refuses is named with its field path; the walk continues so an owner
 fixing a contract sees the whole list, and the command then exits non-zero
 **having written nothing**. A failing run leaves the tree exactly as it found
 it: writing the methods that did derive would delete the refused one's
