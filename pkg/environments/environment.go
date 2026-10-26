@@ -1108,35 +1108,16 @@ type SecretScope struct {
 	Service   string
 }
 
-// MappingFor overlays a module-qualified declaration on the bare service mapping,
-// matching ValuesFor without changing either declaration.
+// MappingFor selects a module-qualified declaration before the unqualified fallback,
+// matching service configuration and identity selection.
 func (s *EnvironmentServiceSecrets) MappingFor(module, service string) EnvironmentServiceSecretMapping {
 	if s == nil {
 		return EnvironmentServiceSecretMapping{}
 	}
-	mapping := s.Services[service]
-	if module == "" {
+	if mapping, ok := s.Services[module+"/"+service]; module != "" && ok {
 		return mapping
 	}
-	qualified := s.Services[module+"/"+service]
-	if len(qualified.RemoteKeys) != 0 {
-		mapping.RemoteKeys = make(map[string]EnvironmentSecretRemoteRef, len(mapping.RemoteKeys)+len(qualified.RemoteKeys))
-		maps.Copy(mapping.RemoteKeys, s.Services[service].RemoteKeys)
-		maps.Copy(mapping.RemoteKeys, qualified.RemoteKeys)
-	}
-	if qualified.SecretStore != nil {
-		mapping.SecretStore = qualified.SecretStore
-	}
-	if qualified.Defaults != nil {
-		mapping.Defaults = qualified.Defaults
-	}
-	if qualified.Template != nil {
-		mapping.Template = qualified.Template
-	}
-	if qualified.RefreshInterval != "" {
-		mapping.RefreshInterval = qualified.RefreshInterval
-	}
-	return mapping
+	return s.Services[service]
 }
 
 // RemoteRef locates one secret key of a service in the remote store. An explicit
