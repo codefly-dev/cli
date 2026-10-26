@@ -76,12 +76,10 @@ func TestBoundNativePortsDetectsHeldPort(t *testing.T) {
 	free := freeLn.Addr().(*net.TCPAddr).Port
 	require.NoError(t, freeLn.Close())
 
-	runner := &Runner{networkMappings: []*basev0.NetworkMapping{
+	reported := boundNativePorts(context.Background(), []*basev0.NetworkMapping{
 		nativeMapping("grpc", uint16(held)),
 		nativeMapping("free", uint16(free)),
-	}}
-
-	reported := runner.boundNativePorts(context.Background())
+	}, nil)
 	require.Len(t, reported, 1)
 	require.Contains(t, reported[0], fmt.Sprintf("%d (grpc)", held))
 	// The holder is this test process, so the report must name its pid —
@@ -120,12 +118,12 @@ func TestBoundNativePortsDegradesWhenHolderLookupFails(t *testing.T) {
 	defer ln.Close()
 	held := ln.Addr().(*net.TCPAddr).Port
 
-	runner := &Runner{networkMappings: []*basev0.NetworkMapping{nativeMapping("grpc", uint16(held))}}
+	mappings := []*basev0.NetworkMapping{nativeMapping("grpc", uint16(held))}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan []string, 1)
-	go func() { done <- runner.boundNativePorts(ctx) }()
+	go func() { done <- boundNativePorts(ctx, mappings, nil) }()
 	select {
 	case reported := <-done:
 		require.Len(t, reported, 1)
@@ -141,7 +139,7 @@ func TestBoundNativePortsDegradesWhenHolderLookupFails(t *testing.T) {
 // codefly binary — and never by argv, which routinely carries secrets.
 func TestPortHolderSuffixNamesExecutableNotCommandLine(t *testing.T) {
 	self := int32(os.Getpid())
-	suffix := portHolderSuffix(context.Background(), map[uint32]int32{30093: self}, 30093)
+	suffix := portHolderSuffix(context.Background(), self)
 	require.Contains(t, suffix, fmt.Sprintf("held by pid %d", self))
 
 	executable, err := os.Executable()
@@ -158,16 +156,48 @@ func TestPortHolderSuffixNamesExecutableNotCommandLine(t *testing.T) {
 // TestPortHolderSuffixOmitsUnknownHolder keeps an unidentifiable listener from
 // costing us the port report itself: socket ownership is not always readable.
 func TestPortHolderSuffixOmitsUnknownHolder(t *testing.T) {
-	require.Empty(t, portHolderSuffix(context.Background(), map[uint32]int32{}, 30093))
+	require.Empty(t, portHolderSuffix(context.Background(), 0))
+}
+
+// The holder named is the one on the address that answered: a squatter on
+// [::1]:P beside another process on 127.0.0.1:P is the one reported.
+func TestHolderPIDNamesTheListenerOnTheAddressThatAnswered(t *testing.T) {
+	sockets := []listeningSocket{{ip: "127.0.0.1", port: 5432, pid: 10}, {ip: "::1", port: 5432, pid: 20}, {ip: "*", port: 6000, pid: 30}}
+	require.Equal(t, int32(20), holderPID(sockets, "[::1]:5432", 5432))
+	require.Equal(t, int32(10), holderPID(sockets, "127.0.0.1:5432", 5432))
+	require.Equal(t, int32(30), holderPID(sockets, "[::1]:6000", 6000), "a wildcard listener holds both families")
+	require.Equal(t, int32(10), holderPID(sockets, "db.internal:5432", 5432), "an unattributable address falls back to the port")
+	require.Zero(t, holderPID(sockets, "127.0.0.1:7000", 7000))
 }
 
 func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
-	runner := &Runner{networkMappings: []*basev0.NetworkMapping{
+	require.Empty(t, boundNativePorts(context.Background(), []*basev0.NetworkMapping{
 		nil,
 		{Endpoint: nil},
 		{Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: nil},
-	}}
-	require.Empty(t, runner.boundNativePorts(context.Background()))
+	}, nil))
+}
+
+// A port is held whichever loopback family the holder bound, even when the
+// instance names the other one: each family is a separate socket, and on
+// macOS a squatter on one coexists with the service's later wildcard bind.
+func TestBoundNativePortsProbesBothLoopbackFamilies(t *testing.T) {
+	for _, tc := range []struct{ squatter, named string }{{"::1", "127.0.0.1"}, {"127.0.0.1", "::1"}} {
+		t.Run(tc.squatter, func(t *testing.T) {
+			ln, err := net.Listen("tcp", net.JoinHostPort(tc.squatter, "0"))
+			if err != nil {
+				t.Skipf("no %s loopback here: %v", tc.squatter, err)
+			}
+			defer ln.Close()
+			held := ln.Addr().(*net.TCPAddr).Port
+			instance := resources.NewNetworkInstance(tc.named, uint16(held))
+			instance.Access = resources.NewNativeNetworkAccess()
+			reported := boundNativePorts(context.Background(), []*basev0.NetworkMapping{{
+				Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: []*basev0.NetworkInstance{instance},
+			}}, nil)
+			require.Len(t, reported, 1, "a holder on %s is missed when the instance names %s", tc.squatter, tc.named)
+		})
+	}
 }
 
 func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
@@ -176,11 +206,10 @@ func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
 	defer ln.Close()
 	held := ln.Addr().(*net.TCPAddr).Port
 
-	runner := &Runner{networkMappings: []*basev0.NetworkMapping{
-		nativeMapping("http", uint16(held)),
-	}}
+	runner := &Runner{}
+	proposed := []*basev0.NetworkMapping{nativeMapping("http", uint16(held))}
 
-	err = runner.checkInitialPortAvailability(context.Background())
+	err = runner.checkInitialPortAvailability(context.Background(), proposed)
 	require.ErrorContains(t, err, fmt.Sprintf("port %d (http)", held))
 	require.ErrorContains(t, err, "already in use")
 	// The holder here is this test process, not a leftover codefly run, so the
@@ -191,7 +220,7 @@ func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
 	// the time Start is called. Once the service is marked running, reloads
 	// must not classify its own port as stale.
 	runner.isStarted.Store(true)
-	require.NoError(t, runner.checkInitialPortAvailability(context.Background()))
+	require.NoError(t, runner.checkInitialPortAvailability(context.Background(), proposed))
 }
 
 func TestStatusDiagnosticPreservesAgentMessage(t *testing.T) {

@@ -1230,3 +1230,33 @@ agent's process effects. This is an explicit restart
 boundary, not live route reconfiguration. Existing hop versions that do not
 declare `hop-routes` keep their existing configuration mode; a new hop requires
 both the CLI projection and the generated group.
+
+A routed module ordered after the hop — one that calls through it is — has
+loaded but not initialized when the hop starts. The snapshot routes it at the
+address its own Init will be proposed, derived from the workspace, the service
+and the naming scope, and that Init is the check: the proposed address is
+accepted; an Init that accepts another address, or drops the routed endpoint,
+is refused naming the route, the address the snapshot holds and the one
+offered. A restart derives the same address again, so the remedy is the
+module's agent serving the proposed address or, for a module that does not
+call through the hop, ordering it before the hop.
+
+Until that Init, the hop routes to a loopback port nothing holds yet, and a
+local process that binds it first receives what the hop forwards until then.
+The module's first Init ends that: before the agent's Init, the run dials
+every native port the Init proposes on 127.0.0.1 and on ::1 and, if anything
+answers, refuses the Init naming the port and its holder, so the run does not
+come up with the hop routing to a squatter. Each loopback family is probed
+because on macOS a squatter on 127.0.0.1:P and a service listening on the
+wildcard :P both bind. The one listener that is not a squatter is the
+service's own kept container: a Docker store with `keep-running` leaves its
+container up for the next run to adopt, still publishing the service's port.
+An address is let through only when the container listening there is the one
+the service's agent will adopt — its name in this run's workspace and naming
+scope, codefly-owned, labelled with this run's recovery scope, running, not
+ephemeral, and publishing that port on that loopback family; any other holder,
+including one on the other family beside it, is refused. Not covered: a
+process that binds a loopback address on the port after that probe, and a
+routed module that crashes or is withdrawn mid-run, whose port the hop keeps
+routing to. `--temporary-ports` derives no
+address, so a reference that needs one is refused before the hop starts.
