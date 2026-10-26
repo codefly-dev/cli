@@ -3584,12 +3584,25 @@ behind the authority hop, and every Runnable is a tool. A method that declares
 its authority policy (`authority.hop.v1.policy`) needs nothing else: a policy
 requiring only `read` derives a read-only tool that is safe to re-run and
 carries no receipt (`recovery: RECOVERY_RECOMPUTE`); anything else derives a
-mutation resolved by its effect receipt through the SDK's generic lookup,
-attempted once. The tool's name and description are the method's name and
+mutation with `RECOVERY_RECEIPT`, attempted once — at-most-once until the SDK's
+receipt guard follows the derivation, an uncertain outcome surfaced as
+unknown. A receipt lookup (another operation's `lookup_method`, or
+`Lookup<Op>` beside `<Op>`) is never derived. The tool's name and description are the method's name and
 leading doc comment. The `codefly.runnable.v0.operation` option overrides
 those defaults, and `codefly.runnable.v0.exclude` keeps a method from every
-agent. The message descriptors say what the contract is, projected by their
-proto3 JSON (core docs/runnable.md).
+agent. Every operation is a tool, and who reaches it is a matter of grants: a
+caller offers a person only the tools whose binding the person's grants cover,
+so a runtime-only or administrative operation derives and never reaches a
+person without the grant. The message descriptors say what the contract is,
+spelled as the Connect wire carries it — JSON member names, 64-bit integers as
+strings (core docs/runnable.md).
+
+The run reports each operation with its origin (`option` or `default`) and
+effect, lists the methods left plain calls and why, and — when any operation
+was derived by default — counts them, names the mutations, and points at
+`codefly.runnable.v0.exclude`. A release name longer than 50 characters is
+shortened deterministically to a stable prefix and an eight-digit digest, so
+a long method name never fails generation.
 
 The input is what `generate contracts` already wrote — each gRPC/connect
 endpoint's served `services[].procedures` in the API catalog and its

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
@@ -77,8 +78,16 @@ func TestGenerateRunnablesDerivesEveryMethodBehindTheHop(t *testing.T) {
 	ctx := context.Background()
 	streaming := hopPolicyMethod("StreamText", "documents", "read")
 	streaming.ServerStreaming = googleproto.Bool(true)
+	// exclude carried as the unknown bytes a contract on disk holds (51004 = true).
+	excluded := hopPolicyMethod("PurgeText", "documents", "write")
+	raw := excluded.Options.ProtoReflect().GetUnknown()
+	raw = protowire.AppendTag(raw, 51004, protowire.VarintType)
+	raw = protowire.AppendVarint(raw, 1)
+	excluded.Options.ProtoReflect().SetUnknown(raw)
+	// A method whose derived release name exceeds 50 characters.
+	long := hopPolicyMethod("GetDocumentTransformationReceipt", "documents", "read")
 	file := ingestionFile(conformingOperation(), hopPolicyMethod("CountText", "documents", "read"),
-		hopPolicyMethod("WriteText", "documents", "write"), streaming)
+		hopPolicyMethod("WriteText", "documents", "write"), streaming, excluded, long)
 	root, moduleDir := saveRunnableFixture(t, ctx, withHopPolicy(t, descriptorSet(t, file)), "0.1.0")
 	t.Chdir(root)
 	resetRunnablesFlags(t)
@@ -112,5 +121,13 @@ func TestGenerateRunnablesDerivesEveryMethodBehindTheHop(t *testing.T) {
 	require.Equal(t, "ApplyText", apply["tool"].(map[string]any)["name"])
 
 	index := readIndex(t, moduleDir)
-	require.Len(t, index.Operations, 3, "the stream is a call, not an operation")
+	require.Len(t, index.Operations, 4, "the stream and the excluded method are calls, not operations")
+	for _, entry := range index.Operations {
+		require.LessOrEqual(t, len(entry.Name), 50, entry.Name)
+		require.NotContains(t, entry.Method, "PurgeText")
+		if strings.HasSuffix(entry.Method, "/GetDocumentTransformationReceipt") {
+			require.Equal(t, derivedName("runtime-worker", "grpc", "GetDocumentTransformationReceipt"), entry.Name)
+			require.Regexp(t, `^runtime-worker-grpc-get-document-transf.*-[0-9a-f]{8}$`, entry.Name)
+		}
+	}
 }

@@ -517,14 +517,14 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 				{Name: "path", Type: basev0.RunnableField_STRING},
 				{Name: "revision", Type: basev0.RunnableField_STRING},
 				{Name: "commit", Type: basev0.RunnableField_STRING},
-				{Name: "cursor", Type: basev0.RunnableField_INTEGER},
-				{Name: "content_type", Type: basev0.RunnableField_STRING},
+				{Name: "cursor", Type: basev0.RunnableField_STRING, Format: corerunnable.FormatInt64},
+				{Name: "contentType", Type: basev0.RunnableField_STRING},
 				{Name: "text", Type: basev0.RunnableField_STRING},
 			}},
 			Output: &basev0.RunnableSchema{Fields: []*basev0.RunnableField{
 				{Name: "reference", Type: basev0.RunnableField_STRING},
-				{Name: "content_hash", Type: basev0.RunnableField_STRING},
-				{Name: "effect_digest", Type: basev0.RunnableField_STRING},
+				{Name: "contentHash", Type: basev0.RunnableField_STRING},
+				{Name: "effectDigest", Type: basev0.RunnableField_STRING},
 				{Name: "minted", Type: basev0.RunnableField_BOOLEAN},
 				{Name: "skipped", Type: basev0.RunnableField_BOOLEAN},
 				{Name: "quarantined", Type: basev0.RunnableField_BOOLEAN},
@@ -564,10 +564,12 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 	// The digest is over the canonical package, so a field added to
 	// RunnableExecution moves it for every package in the fleet. This one moved
 	// with the completion mode (codefly-dev/core#678); it had been
-	// 4c26fb95a0236b94107b30f34783cd893f2be36e0d157340c247013fd93a9a1f. The
+	// 4c26fb95a0236b94107b30f34783cd893f2be36e0d157340c247013fd93a9a1f, then
+	// ee460290f91e2cad2d9e7efe6d740ba35ff5ec89b4395bbde1e8bd19bd8291a0 until the
+	// contract was spelled as the Connect wire carries it (core#843). The
 	// equality check above is what proves the derivation still matches what
 	// document-store publishes — this line only pins the number.
-	if asOracle.GetDigest() != "ee460290f91e2cad2d9e7efe6d740ba35ff5ec89b4395bbde1e8bd19bd8291a0" {
+	if asOracle.GetDigest() != "fdfc6ac25ae0eb138d4f51dc255343de093ce3048c3262f8d5e0e61035027b19" {
 		t.Fatalf("digest = %s, want the published oracle's", asOracle.GetDigest())
 	}
 }
