@@ -555,3 +555,50 @@ func TestReadinessProbesBoltAndHTTPByDeclaredAPI(t *testing.T) {
 	require.NotNil(t, failure)
 	require.Equal(t, "bolt", failure.Endpoint)
 }
+
+func TestExternalIdentityReadinessWaitsForAdmissionWithoutRunning(t *testing.T) {
+	stack := newReadinessStack(t)
+	flow := stack.flow
+	flow.world.Mode = RunMode
+	flow.originService.ModuleIdentity = true
+	entered, release := make(chan struct{}), make(chan struct{})
+	flow.world.PrepareExternalWorkload = func(ctx context.Context, _ *resources.Service) (func(), error) {
+		close(entered)
+		select {
+		case <-release:
+			return func() {}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- flow.prepareExcludedOrigin(t.Context()) }()
+	<-entered
+	failure := flow.Readiness(t.Context())
+	require.NotNil(t, failure)
+	require.Equal(t, PredicateExternalIdentity, failure.Predicate)
+	close(release)
+	require.NoError(t, <-done)
+	flow.emitState("app/api", tui.StateRunning, 0)
+	require.False(t, flow.startedRun("app/api"))
+	require.True(t, flow.Ready(t.Context()))
+	flow.world.PrepareExternalWorkload = func(context.Context, *resources.Service) (func(), error) { return nil, context.Canceled }
+	require.ErrorIs(t, flow.prepareExcludedOrigin(t.Context()), context.Canceled)
+	require.False(t, flow.Ready(t.Context()), "failed preparation cannot retain a prior ready result")
+}
+
+func TestExcludedIdentityPolicyNeverEmitsRunning(t *testing.T) {
+	stack := newReadinessStack(t)
+	flow := stack.flow
+	flow.world.Mode = RunMode
+	flow.originService.ModuleIdentity = true
+	flow.world.PrepareExternalWorkload = func(context.Context, *resources.Service) (func(), error) { return func() {}, nil }
+	flow.hub = &Hub{managers: []IManager{&environmentOnlyManager{
+		NoOpManager: NoOpManager{service: flow.originService}, export: flow.prepareExcludedOrigin,
+	}}}
+	policy, err := NewRuntimeStartPolicy(t.Context(), flow.world.Dependencies, flow)
+	require.NoError(t, err)
+	_, err = policy.Execute(t.Context(), Action{Type: RuntimeStart, Service: "app/api"})
+	require.NoError(t, err)
+	require.False(t, flow.startedRun("app/api"), "excluded root must not be reported as an agent-started process")
+}

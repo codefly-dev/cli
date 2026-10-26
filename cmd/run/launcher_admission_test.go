@@ -36,7 +36,7 @@ type admissionFlow struct {
 	selected []string
 }
 
-func (f *admissionFlow) LocalRuntimeServices() []string { return f.selected }
+func (f *admissionFlow) LocalAuthorityServices() []string { return f.selected }
 func (f *admissionFlow) ReadyEndpointCarriers(_ context.Context, module string, _ *basev0.NetworkAccess, ready []string) (map[string]string, error) {
 	carriers := map[string]string{}
 	for _, unique := range ready {
@@ -456,4 +456,37 @@ func TestAdmissionAndDeliveryRefuseAMovedRoutingSnapshot(t *testing.T) {
 	cluster.running["alpha/api"] = true
 	require.ErrorContains(t, cluster.deliverReadiness(t.Context(), "alpha", true), "stop and restart")
 	require.Empty(t, peer.snapshots(), "nothing is sent behind moved routes")
+}
+
+func TestExternalWorkloadIsAdmittedWithoutPublishingReadiness(t *testing.T) {
+	cluster, peer := admissionLauncher(t)
+	service, err := cluster.workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: "alpha", Name: "api"})
+	require.NoError(t, err)
+	abandon, err := cluster.prepareExternalWorkload(t.Context(), service)
+	require.NoError(t, err)
+	t.Cleanup(abandon)
+	require.Empty(t, cluster.startedIdentities("alpha"))
+	require.NotEmpty(t, cluster.runtimeOverrides(service)[workloadTokenFileVariable])
+	found := false
+	for _, manifest := range peer.snapshots() {
+		if manifest.Alias != "alpha" {
+			continue
+		}
+		found = true
+		require.NotEmpty(t, manifest.Workloads)
+		require.Empty(t, manifest.Endpoints, "externally driven root has no observed listener")
+	}
+	require.True(t, found)
+}
+
+func TestFailedExternalPreparationReleasesRefresh(t *testing.T) {
+	cluster, _ := admissionLauncher(t)
+	service, err := cluster.workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: "alpha", Name: "api"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = cluster.prepareExternalWorkload(ctx, service)
+	require.Error(t, err)
+	_, projected := cluster.vouch.Projected("alpha/api")
+	require.False(t, projected, "failed preparation removes refresh membership")
 }

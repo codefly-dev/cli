@@ -1240,3 +1240,20 @@ agent's process effects. This is an explicit restart
 boundary, not live route reconfiguration. Existing hop versions that do not
 declare `hop-routes` keep their existing configuration mode; a new hop requires
 both the CLI projection and the generated group.
+
+### Identity for dependency clients
+
+A native dependency run using `--exclude-root` keeps a root declaring
+`module-identity: true` in the authority declaration set. After the dependency
+barrier, the launcher prepares that root's own credential and waits for the
+ordinary signed admission to apply. The root is not started by an agent, is not
+marked Running, and contributes no ready endpoint. Its credential refresh belongs to the
+flow lifetime and ends on Stop or Destroy. Already-issued bytes retain their
+ordinary expiry; teardown makes no immediate-revocation claim.
+
+The dependency SDK receives the prepared workload projection through
+`GetConfiguration.ProcessVariables`, alongside the active environment and
+service-scoped overrides. The same carriers reach `--output-env`. Reading
+configuration never creates or restores a credential, and no dependency's token
+is substituted for the root's. A root requesting identity in a run with no
+workload authority fails before its dependency environment is reported ready.

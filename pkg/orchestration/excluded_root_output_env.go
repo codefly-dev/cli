@@ -89,14 +89,7 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 		WorkspacePath:       identity.WorkspacePath,
 		RelativeToWorkspace: identity.RelativeToWorkspace,
 	}
-	originOverrides := flow.overridesFor(flow.originService)
-	overrides := make(map[string]string, len(originOverrides)+1)
-	for key, value := range originOverrides {
-		overrides[key] = value
-	}
-	if flow.world.Env != nil && flow.world.Env.NamingScope != "" {
-		overrides[resources.NamingScopePrefix] = flow.world.Env.NamingScope
-	}
+	overrides := flow.DependencyProcessVariables(flow.originService)
 	if err := AppendRuntimeEnvironmentToFile(
 		ctx,
 		flow.outputEnvPath,
@@ -109,4 +102,55 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 		return fmt.Errorf("write excluded root runtime environment: %w", err)
 	}
 	return nil
+}
+
+// prepareExcludedOrigin runs at the dependency barrier without loading an agent.
+func (flow *Flow) prepareExcludedOrigin(ctx context.Context) error {
+	flow.externalPrepared.Store(false)
+	var abandon func()
+	handed := false
+	defer func() {
+		if !handed && abandon != nil {
+			abandon()
+		}
+	}()
+	if flow.externalIdentityOrigin() {
+		if flow.world.PrepareExternalWorkload == nil {
+			return fmt.Errorf("excluded root declares module-identity but this run supplies no workload authority")
+		}
+		var err error
+		abandon, err = flow.world.PrepareExternalWorkload(ctx, flow.originService)
+		if err != nil {
+			return err
+		}
+	}
+	if err := flow.exportExcludedOriginEnvironment(ctx); err != nil {
+		return err
+	}
+	handed = true
+	flow.externalPrepared.Store(true)
+	return nil
+}
+
+// DependencyProcessVariables carries the same per-service overrides as a native
+// process to the dependency SDK. It exports no other service's values.
+func (flow *Flow) DependencyProcessVariables(service *resources.Service) map[string]string {
+	out := map[string]string{}
+	for key, value := range flow.overridesFor(service) {
+		out[key] = value
+	}
+	if flow.world != nil {
+		if flow.world.RuntimeOverrides != nil {
+			for key, value := range flow.world.RuntimeOverrides(service) {
+				out[key] = value
+			}
+		}
+		if flow.world.Env != nil {
+			out[resources.EnvironmentPrefix] = flow.world.Env.Name
+			if flow.world.Env.NamingScope != "" {
+				out[resources.NamingScopePrefix] = flow.world.Env.NamingScope
+			}
+		}
+	}
+	return out
 }

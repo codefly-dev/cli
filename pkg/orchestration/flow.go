@@ -36,7 +36,9 @@ import (
 )
 
 type Flow struct {
-	runtimeParticipants atomic.Pointer[[]string]
+	runtimeParticipants   atomic.Pointer[[]string]
+	authorityParticipants atomic.Pointer[[]string]
+	externalPrepared      atomic.Bool
 
 	compositionCheck CompositionCheck
 	// configurationReferences orders a consumer after the producers its
@@ -241,6 +243,12 @@ type RuntimeStartAttempt struct {
 }
 
 type World struct {
+	// PrepareExternalWorkload admits the excluded root's declared identity for
+	// the process driving its dependencies. It does not claim an agent started
+	// that process or publish any endpoint as ready. The returned abandon callback
+	// releases refresh membership if the environment handoff fails.
+	PrepareExternalWorkload func(context.Context, *resources.Service) (abandon func(), err error)
+
 	// beforeSourceRestart validates the accepted route inventory before stopping a service.
 	beforeSourceRestart func(context.Context) error
 
@@ -938,7 +946,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	// its own and workspace configuration must still be admitted to the same
 	// configuration manager as a real Runner would use. This loads configuration
 	// authority only; it does not load the root agent or project process.
-	if flow.exportsExcludedOriginEnvironment() {
+	if flow.exportsExcludedOriginEnvironment() || flow.externalIdentityOrigin() {
 		id, err := flow.originService.Identity()
 		if err != nil {
 			return w.Wrap(err)
@@ -1429,7 +1437,9 @@ func (flow *Flow) WithAnswerProvider(provider AnswerProvider) *Flow {
 // stateEmitter interface so the runtime policy can report without knowing the
 // flow concretely.
 func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
-	if flow == nil {
+	// The excluded root's playbook node is a dependency barrier, never a
+	// process lifecycle. Its preparation has its own readiness predicate.
+	if flow == nil || (flow.excludeRoot && flow.originService != nil && service == resources.WithUnique(flow.originService).Unique()) {
 		return
 	}
 	// Record that THIS run has begun driving this service's runtime, so a later
@@ -1687,10 +1697,18 @@ func (flow *Flow) newTeardownContext() (context.Context, func()) {
 	}
 }
 
-func (flow *Flow) Stop() error {
-	if flow != nil && flow.world != nil && flow.world.BeforeRuntimeStop != nil {
+func (flow *Flow) endRuntimeAuthority() {
+	if flow == nil {
+		return
+	}
+	flow.externalPrepared.Store(false)
+	if flow.world != nil && flow.world.BeforeRuntimeStop != nil {
 		flow.world.BeforeRuntimeStop()
 	}
+}
+
+func (flow *Flow) Stop() error {
+	flow.endRuntimeAuthority()
 	if flow == nil || flow.hub == nil || flow.validationSkipped {
 		return nil
 	}
@@ -1711,6 +1729,7 @@ func (flow *Flow) Stop() error {
 }
 
 func (flow *Flow) Shutdown() error {
+	flow.endRuntimeAuthority()
 	if flow == nil || flow.hub == nil || flow.validationSkipped {
 		return nil
 	}
@@ -2067,10 +2086,10 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		// the same without loading its agent. If its SDK environment was requested,
 		// the environment-only manager publishes it after dependency startup.
 		noOp := NoOpManager{service: flow.originService}
-		if flow.exportsExcludedOriginEnvironment() {
+		if flow.exportsExcludedOriginEnvironment() || flow.externalIdentityOrigin() {
 			flow.hub.managers = append(flow.hub.managers, &environmentOnlyManager{
 				NoOpManager: noOp,
-				export:      flow.exportExcludedOriginEnvironment,
+				export:      flow.prepareExcludedOrigin,
 			})
 		} else {
 			flow.hub.managers = append(flow.hub.managers, &noOp)
