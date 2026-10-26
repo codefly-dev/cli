@@ -3247,7 +3247,7 @@ codefly generate client --from contracts:module-saas-starter/contracts/api --lan
 codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files, in the proto companion
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
-codefly generate runnables documents                                                     # Derive a Runnable package per method carrying the operation option
+codefly generate runnables documents                                                     # Derive a Runnable package, and so a tool, per method served behind the hop
 codefly generate runnables documents --check                                             # CI drift gate: fail if the derived packages are stale
 codefly generate runnable-bindings --env staging                                         # Bind every derived operation to its owner endpoint as the environment resolves it
 ```
@@ -3624,17 +3624,37 @@ is the CI drift gate.
 #### generate runnables
 
 `codefly generate runnables [module]` derives a **SERVICE-facility Runnable
-package** for every gRPC method a module's published contracts mark with the
-`codefly.runnable.v0.operation` method option. A unary, idempotent method an
-owner service already publishes becomes a Runnable by derivation, not by
-authoring: the option says which methods are operations and under what
-execution policy, and the message descriptors say what the contract is.
+package** for every unary gRPC method a module's published contracts serve
+behind the authority hop, and every Runnable is a tool. A method that declares
+its authority policy (`authority.hop.v1.policy`) needs nothing else: a policy
+requiring only `read` derives a read-only tool that is safe to re-run and
+carries no receipt (`recovery: RECOVERY_RECOMPUTE`); anything else derives a
+mutation with `RECOVERY_RECEIPT`, attempted once — at-most-once until the SDK's
+receipt guard follows the derivation, an uncertain outcome surfaced as
+unknown. A receipt lookup (another operation's `lookup_method`, or
+`Lookup<Op>` beside `<Op>`) is never derived. The tool's name and description are the method's name and
+leading doc comment. The `codefly.runnable.v0.operation` option overrides
+those defaults, and `codefly.runnable.v0.exclude` keeps a method from every
+agent. Every operation is a tool, and who reaches it is a matter of grants: a
+caller offers a person only the tools whose binding the person's grants cover,
+so a runtime-only or administrative operation derives and never reaches a
+person without the grant. The message descriptors say what the contract is,
+spelled as the Connect wire carries it — JSON member names, 64-bit integers as
+strings (core docs/runnable.md).
+
+The run reports each operation with its origin (`option` or `default`) and
+effect, lists the methods left plain calls and why, and — when any operation
+was derived by default — counts them, names the mutations, and points at
+`codefly.runnable.v0.exclude`. A release name longer than 50 characters is
+shortened deterministically to a stable prefix and an eight-digit digest, so
+a long method name never fails generation.
 
 The input is what `generate contracts` already wrote — each gRPC/connect
 endpoint's served `services[].procedures` in the API catalog and its
 `contract.binpb` — so run that first. A method is derived only when that endpoint
-serves it and its descriptor carries the option. Its paired Lookup must also be
-served there; descriptor availability alone is insufficient. Catalog procedures
+serves it and its descriptor declares an authority policy or carries the option.
+A declared Lookup must also be served there; descriptor availability alone is
+insufficient. Catalog procedures
 absent from the endpoint's descriptor package are refused. No flag names a method.
 
 ```
@@ -3648,13 +3668,13 @@ contracts/runnables/
 digest over, so what a composition reads and what was hashed are the same
 bytes. `operation.json` is kept beside it rather than inside it: policy and
 authority are installed with a binding, and two installations of one contract
-may differ in both. Required scope slots and optional tool exposure are preserved
-in `operation.json`; generation does not select resource IDs. `index.json` is
+may differ in both. Required scope slots, the tool presentation and the recovery
+are preserved in `operation.json`; generation does not select resource IDs. `index.json` is
 what a composition reads to prepare bindings — identity, digest, full method,
 input and output message names and
 endpoint coordinates per row.
 
-The tree is fully owned: a method that no longer carries the option or is no
+The tree is fully owned: a method that is no longer an operation or is no
 longer served on an endpoint loses that endpoint's directory. Only the three
 file names a generation produces are removed, and
 only the directories that empties, so pointing `--output` at a directory this
@@ -3664,8 +3684,11 @@ module that declares no `interface:` and so exports no endpoint at all, both
 write an empty index rather than an error; a module that *does* declare an
 interface but has no catalog is told to run `generate contracts` first.
 
-A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named with its field path; the walk continues so an owner
+A method derived by default that cannot be one — a stream, a policy requiring
+nothing (`any_checked_caller`), a payload proto3 JSON cannot carry (`Any`, a
+recursive message) — is listed as "not an operation" and stays a plain call; it
+never fails the command. A method carrying the option that is a stream, has a
+payload outside the profile, or that core refuses is named with its field path; the walk continues so an owner
 fixing a contract sees the whole list, and the command then exits non-zero
 **having written nothing**. A failing run leaves the tree exactly as it found
 it: writing the methods that did derive would delete the refused one's
