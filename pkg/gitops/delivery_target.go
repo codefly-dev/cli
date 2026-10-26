@@ -20,6 +20,9 @@ import (
 // declares, which is the pod's and may differ), and the scheme follows the
 // endpoint's secured flag. A host block naming an endpoint the composition
 // does not have is refused here, before anything is rendered against it.
+// httpScheme is plain HTTP, the in-cluster hop the mesh carries over mTLS.
+const httpScheme = "http"
+
 func resolveDeliveryTarget(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*DeliveryTarget, error) {
 	if env == nil || env.Host == nil {
 		return nil, nil
@@ -59,7 +62,7 @@ func resolveDeliveryTarget(ctx context.Context, workspace *resources.Workspace, 
 	// Job's pod and the host's, and the bearer token never leaves that
 	// tunnel. An endpoint the host serves over TLS itself is marked secured
 	// and dialled with https.
-	scheme := "http"
+	scheme := httpScheme
 	if endpoint.Secured {
 		scheme = httpsScheme
 	}

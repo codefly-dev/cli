@@ -31,9 +31,46 @@ func TestSecretsRefusesMetadataOnlyWithoutDryRun(t *testing.T) {
 	}
 }
 
-// One plan writes one store. Two stores in one render is a composition this verb
-// cannot seed, and it says which two rather than seeding whichever it saw first.
-func TestResolveSecretStoreRefusesTwoStores(t *testing.T) {
+// One plan writes one store. A render reading through two stores is split into
+// one group per store, each carrying the render's module lists, so each store
+// is planned and written on its own rather than the render being refused.
+func TestRenderedByStoreSplitsOneGroupPerStore(t *testing.T) {
+	cell := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
+	identity := environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}
+	rendered := gitops.RenderedEnvironment{
+		Modules: []string{"saas", "documents"},
+		Secrets: []gitops.RenderedServiceSecret{
+			{Store: cell, RemoteKey: "a"},
+			{Store: identity, RemoteKey: "b"},
+			{Store: cell, RemoteKey: "c"},
+		},
+	}
+	groups := renderedByStore(rendered)
+	if len(groups) != 2 {
+		t.Fatalf("renderedByStore = %d groups, want 2", len(groups))
+	}
+	if groups[0].Secrets[0].Store != cell || len(groups[0].Secrets) != 2 || groups[1].Secrets[0].Store != identity || len(groups[1].Secrets) != 1 {
+		t.Fatalf("renderedByStore groups = %+v, want cell-secrets (a, c) then platform-identity (b)", groups)
+	}
+	for _, group := range groups {
+		if strings.Join(group.Modules, ",") != "saas,documents" {
+			t.Fatalf("group modules = %v, want the render's", group.Modules)
+		}
+	}
+	// A namespaced SecretStore is one store per namespace.
+	namespaced := environments.EnvironmentSecretStoreReference{Name: "local", Kind: "SecretStore"}
+	perNamespace := renderedByStore(gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
+		{Store: namespaced, Namespace: "saas", RemoteKey: "a"},
+		{Store: namespaced, Namespace: "documents", RemoteKey: "b"},
+	}})
+	if len(perNamespace) != 2 {
+		t.Fatalf("renderedByStore(namespaced) = %d groups, want 2", len(perNamespace))
+	}
+}
+
+// A mixed group never reaches a store: resolveSecretStore names both stores
+// rather than seeding whichever it saw first.
+func TestResolveSecretStoreRefusesAMixedGroup(t *testing.T) {
 	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
 		{Store: environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}, RemoteKey: "a"},
 		{Store: environments.EnvironmentSecretStoreReference{Name: "other-secrets", Kind: "ClusterSecretStore"}, RemoteKey: "b"},
@@ -88,9 +125,9 @@ func (store *outputSafetyStore) Describe(context.Context, string) (deploysecrets
 func (store *outputSafetyStore) Read(context.Context, string) (map[string]string, error) {
 	return store.document, nil
 }
-func (store *outputSafetyStore) Write(context.Context, string, map[string]string, bool) error {
+func (store *outputSafetyStore) Write(context.Context, string, map[string]string, bool) (string, error) {
 	store.writes++
-	return nil
+	return "1", nil
 }
 
 func TestSecretsCommandRefusesMissingNoOpBeforeConfirmation(t *testing.T) {
@@ -113,5 +150,24 @@ func TestSecretsCommandRefusesMissingNoOpBeforeConfirmation(t *testing.T) {
 	}
 	if err = finishSecretsPlan(context.Background(), plan, store, false, true, confirm); err != nil {
 		t.Fatal("explicit allow-missing should permit a no-op")
+	}
+}
+
+// A --rotate selector resolves to the key a rendered ExternalSecret reads, is
+// refused when none reads it, and reaches only the store group reading it.
+func TestRotationKeysResolveAgainstTheRender(t *testing.T) {
+	const key = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__PASSWORD"
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{RemoteKey: "evidence", Services: []string{"tracing/evidence"},
+		Properties: []gitops.RenderedSecretProperty{{Property: key, Keys: []string{key}}}}}}
+	groups := renderedByStore(rendered)
+	keys, err := rotationKeys(rendered, groups, []string{"tracing/evidence/clickhouse:PASSWORD"})
+	if err != nil || len(keys) != 1 || keys[0] != key {
+		t.Fatalf("rotationKeys = %v, %v; want %s", keys, err, key)
+	}
+	if got := readBy(gitops.RenderedEnvironment{}, keys); len(got) != 0 {
+		t.Errorf("a group reading nothing was handed %v", got)
+	}
+	if _, err = rotationKeys(rendered, groups, []string{"tracing/evidence/clickhouse:USER"}); err == nil || !strings.Contains(err.Error(), "no rendered ExternalSecret reads") {
+		t.Errorf("an unread key = %v, want a refusal", err)
 	}
 }

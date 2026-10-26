@@ -62,6 +62,14 @@ func TestResolveSolutionEntryBreaksATieOnTheWorkspacesOwnModule(t *testing.T) {
 			t.Errorf("error %q does not name the competing root %s", err, unique)
 		}
 	}
+	// The refusal has to name the command that runs the whole composition.
+	// Advising only `run service` sends the reader off to hand-assemble a
+	// service list that the workspace already declares, and a service reached
+	// only by a configuration reference is in nobody's dependency closure, so
+	// that list is silently short.
+	if !strings.Contains(err.Error(), "codefly run workspace") {
+		t.Errorf("error %q does not offer `codefly run workspace` for the whole composition", err)
+	}
 
 	workspace.Name = "wiki"
 	entry, err := ResolveSolutionEntry(context.Background(), workspace)

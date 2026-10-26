@@ -4,20 +4,20 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
-// What the presence document reads off a rendered unit: every pod-producing
-// workload of its overlay, the account each runs as, and every container's
-// pinned image — read, never declared, so the document names the build the
-// render pinned and the account the pod template names.
+// What a module manifest reads off a rendered unit: every pod-producing
+// workload of its overlay, the account each runs as and its containers — read,
+// never declared, so the manifest names the account the pod template names.
 
 const (
 	// defaultServiceAccount is the account a pod template naming none runs as:
-	// shared by every such pod of the namespace, so never one presence names.
+	// shared by every such pod of the namespace, so never one a manifest names.
 	defaultServiceAccount = "default"
 )
 
@@ -39,15 +39,13 @@ type renderedWorkload struct {
 	templateAnnotations map[string]any
 }
 
-// renderedContainer is one container of a pod template and its pinned image.
+// renderedContainer is one container of a pod template. Its image is pinned
+// by digest — the render refuses one that is not — and nothing else of it is
+// read: no build is approved from it.
 type renderedContainer struct {
-	Name  string
-	Image renderedImage
-}
-
-// renderedImage is an image reference pinned by digest: the repository as
-// written, without tag, and the digest.
-type renderedImage struct {
+	Name string
+	// Repository and Digest are the pinned image, split: the cell file carries
+	// the two halves so no reader parses them back out of one string.
 	Repository string
 	Digest     string
 }
@@ -142,7 +140,7 @@ func workloadsFromManifests(manifests []manifest) ([]renderedWorkload, error) {
 // token the ServiceAccount admission plugin injects (kube-api-access-…) is a
 // projected token volume too, mounted into every container, and names no
 // audience — keying on the audience is what tells the two apart, and it is
-// what the presence document's refusal keys on (refuseSharedTokens).
+// what the render's refusal keys on (refuseSharedTokens).
 func audienceTokenVolumes(raw []any) map[string][]tokenSource {
 	audiences := map[string][]tokenSource{}
 	for _, entry := range raw {
@@ -161,24 +159,39 @@ func audienceTokenVolumes(raw []any) map[string][]tokenSource {
 	return audiences
 }
 
-// renderedContainers reads a pod template's containers, their pinned images
-// and the audience-bearing token volumes each mounts.
+// pinnedImageDigest is the one digest form an image is pinned by: an
+// image-manifest sha256, as the registry and a running pod's status spell it.
+var pinnedImageDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// splitPinnedImage splits an image reference pinned by digest into the
+// repository (its tag dropped: the digest is the identity) and the digest. An
+// image that is not pinned by a sha256 digest is refused: a policy compares
+// that digest with a running pod's, and anything else after an `@` is a digest
+// no pod reports.
+func splitPinnedImage(image string) (repository, digest string, err error) {
+	repository, digest, found := strings.Cut(image, "@")
+	if !found || repository == "" || !pinnedImageDigest.MatchString(digest) {
+		return "", "", fmt.Errorf("image %q is not pinned by digest (`@sha256:` and 64 lowercase hex characters)", image)
+	}
+	if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
+		repository = repository[:at]
+	}
+	return repository, digest, nil
+}
+
+// renderedContainers reads a pod template's containers, refusing an image not
+// pinned by digest, and the audience-bearing token volumes each mounts.
 func renderedContainers(workload string, raw []any, tokens map[string][]tokenSource, mounts map[string][]tokenMount, paths map[string][]containerMount) ([]renderedContainer, error) {
 	var containers []renderedContainer
 	for _, entry := range raw {
 		container, _ := entry.(map[string]any)
 		name, _ := container["name"].(string)
 		image, _ := container["image"].(string)
-		repository, digest, pinned := strings.Cut(image, "@")
-		if !pinned {
-			return nil, fmt.Errorf("workload %s container %s image %q is not pinned by digest", workload, name, image)
+		repository, digest, err := splitPinnedImage(image)
+		if err != nil {
+			return nil, fmt.Errorf("workload %s container %s: %w", workload, name, err)
 		}
-		// The repository is the name only: a tag beside a digest would give one
-		// container two answers about what it runs.
-		if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
-			repository = repository[:at]
-		}
-		rendered := renderedContainer{Name: name, Image: renderedImage{Repository: repository, Digest: digest}}
+		rendered := renderedContainer{Name: name, Repository: repository, Digest: digest}
 		for _, raw := range sliceField(container, "volumeMounts") {
 			mount, _ := raw.(map[string]any)
 			volume, _ := mount["name"].(string)

@@ -51,10 +51,21 @@ func CheckConfigurationReferences(
 	// Two calls, because the two halves of the effective set must be judged
 	// against different producer sets.
 	//
-	// A group the consumer DECLARES is judged against the plan's graph, exactly
-	// as it always was: a producer the caller excluded is absent from that graph,
-	// and withExcludedProducerReasons restates the refusal to name the exclusion
-	// rather than send the reader hunting for a missing composition.
+	// A group the consumer DECLARES is judged against the plan's graph and,
+	// beyond it, the rest of the workspace — every service except one the caller
+	// excluded. A producer the caller excluded is refused, and
+	// withExcludedProducerReasons restates the refusal to name the exclusion
+	// rather than send the reader hunting for a missing composition: the
+	// exclusion and the group are coupled, and a reference is never silently
+	// dropped because of one. A producer the workspace composes but this run
+	// simply does not contain — a module-closure run's graph holds the seeds'
+	// modules and their service dependencies, never a module only a
+	// configuration value names — is not a plan-time fault. The resolution drops
+	// that value at WARN, naming the consumer, the value and the producer
+	// (judgeDroppedValue), which is what a run of fewer services than the
+	// composition owes; refusing it here reported a real producer as "not a
+	// service of this workspace". The endpoint and its visibility are still
+	// judged, against the producer's manifest, so only membership is relaxed.
 	//
 	// A group only the composition root provides is judged against the WHOLE
 	// workspace. It has to be: a root group reaches every service of every run,
@@ -72,16 +83,18 @@ func CheckConfigurationReferences(
 	// different list and names the wrong producer. Binding them to one name is
 	// what stops that being reintroduced by an edit.
 	checkedInfos := provided.Infos
-	declaredProblems := configurations.CheckEndpointReferences(checkedInfos, consumers, profile,
-		func(unique string) (*resources.Service, bool) {
-			service, err := dependencies.ServiceFromUnique(unique)
-			return service, err == nil
-		})
-	err := withExcludedProducerReasons(declaredProblems, excludedProducers, checkedInfos)
 	lookup, lookupErr := workspaceProducerLookup(ctx, workspace)
 	if lookupErr != nil {
-		return errors.Join(err, lookupErr)
+		return lookupErr
 	}
+	// A service the ENVIRONMENT excludes is no producer anywhere in it, root
+	// groups included: unlike a run's narrower closure, it has no address in
+	// this environment at all. (A run profile's exclusions stay visible here:
+	// those are a local run's trim, not the environment's composition.)
+	lookup = withoutEnvironmentExclusions(env, lookup)
+	declaredProblems := configurations.CheckEndpointReferences(checkedInfos, consumers, profile,
+		declaredProducerLookup(dependencies, lookup, excludedProducers))
+	err := withExcludedProducerReasons(declaredProblems, excludedProducers, checkedInfos)
 	rootConsumers := consumersWithRootGroupsOnly(consumers, rootGroups, profile)
 	if len(rootConsumers) == 0 {
 		if err != nil {
@@ -104,7 +117,9 @@ func CheckConfigurationReferences(
 		rootOnly[group] = true
 	}
 	rootInfos := credentialsOf(provided.Infos, rootOnly).received(provided.Infos)
-	rootProblems := configurations.CheckEndpointReferences(rootInfos, rootConsumers, profile, lookup)
+	rootProblems := withExcludedProducerReasons(
+		configurations.CheckEndpointReferences(rootInfos, rootConsumers, profile, lookup),
+		environmentExclusions(env), rootInfos)
 	if merged := mergeUnresolvedReferences(err, rootProblems); merged != nil {
 		return merged
 	}
@@ -211,6 +226,27 @@ func consumersWithRootGroupsOnly(consumers []*resources.Service, rootGroups []st
 	return out
 }
 
+// declaredProducerLookup is the producer set a DECLARED group is judged
+// against: the plan's graph first, then any other service of the workspace the
+// caller did not exclude. An excluded producer answers "absent", so its
+// reference is refused and restated as the exclusion; a typo answers "absent"
+// from both, so it is refused as "not a service of this workspace". What it
+// admits beyond the graph is a producer this run does not contain, whose value
+// the resolution drops at WARN rather than refusing the run.
+func declaredProducerLookup(
+	dependencies *architecture.ServiceDependencies, workspace configurations.ProducerLookup, excludedProducers map[string]bool,
+) configurations.ProducerLookup {
+	return func(unique string) (*resources.Service, bool) {
+		if service, err := dependencies.ServiceFromUnique(unique); err == nil {
+			return service, true
+		}
+		if excludedProducers[unique] || workspace == nil {
+			return nil, false
+		}
+		return workspace(unique)
+	}
+}
+
 // workspaceProducerLookup resolves <module>/<service> over the whole workspace.
 // It fails closed: an unreadable workspace means no reference can be checked,
 // and a reference delivered unchecked is how a private endpoint's address
@@ -307,7 +343,7 @@ func WorkspaceConfigurationsForChecking(
 	if workspace == nil || env == nil {
 		return nil, nil, nil
 	}
-	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	reader, err := NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot build a configuration reader, so the workspace configurations this invocation resolves cannot be checked: %w", err)
 	}
@@ -317,6 +353,30 @@ func WorkspaceConfigurationsForChecking(
 	return &configurations.WorkspaceConfigurations{
 		Infos: workspaceConfigurationInfos(reader.Configurations()),
 	}, reader.CompositionRootWorkspaceConfigurationNames(), nil
+}
+
+// environmentExclusions is the environment's exclude-services as a set.
+func environmentExclusions(env *environments.Environment) map[string]bool {
+	excluded := map[string]bool{}
+	for _, unique := range env.ExcludedServiceUniques() {
+		excluded[unique] = true
+	}
+	return excluded
+}
+
+// withoutEnvironmentExclusions answers "absent" for a service the environment
+// excludes, and as lookup does for every other.
+func withoutEnvironmentExclusions(env *environments.Environment, lookup configurations.ProducerLookup) configurations.ProducerLookup {
+	excluded := environmentExclusions(env)
+	if len(excluded) == 0 || lookup == nil {
+		return lookup
+	}
+	return func(unique string) (*resources.Service, bool) {
+		if excluded[unique] {
+			return nil, false
+		}
+		return lookup(unique)
+	}
 }
 
 // withExcludedProducerReasons restates every unresolved reference whose producer
@@ -349,7 +409,7 @@ func withExcludedProducerReasons(err error, excludedProducers map[string]bool, i
 			continue
 		}
 		reference.Reason = fmt.Sprintf(
-			"the producer is excluded from this run (--exclude-dependency or a run profile); exclude the %q workspace configuration too, or stop excluding %s",
+			"the producer is excluded from this run (--exclude-dependency or a run profile: exclude the %q workspace configuration too) or from this environment (exclude-services: drop the reference from that configuration in this environment); or stop excluding %s",
 			reference.Group, producer)
 	}
 	return err
@@ -424,6 +484,14 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 	if option := configurationReferenceOptionFrom(provided); option != nil {
 		options = append(options, option)
 	}
+	excluded := env.ExcludedServiceUniques()
+	excludedProducers := make(map[string]bool, len(excluded))
+	for _, unique := range excluded {
+		excludedProducers[unique] = true
+	}
+	if len(excluded) > 0 {
+		options = append(options, architecture.ExcludeServices(excluded...))
+	}
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, options...)
 	if err != nil {
 		return err
@@ -454,7 +522,7 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 		}
 	}
 	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers,
-		resources.RunProfile{}, nil, rootGroups)
+		resources.RunProfile{}, excludedProducers, rootGroups)
 }
 
 // checkConfigurationReferences runs the plan-time check for a flow whose run

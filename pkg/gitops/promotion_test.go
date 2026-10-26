@@ -64,10 +64,8 @@ func (f fakeManifestProducer) Produce(ctx context.Context, request ProduceReques
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: f.module, Environment: f.environment,
 		AppProject: f.appProject, Promotable: true,
-		OwnedPath: filepath.ToSlash(filepath.Join(
-			defaults.Path, "deployments", "modules", f.module,
-		)),
-		Units: promotableServiceGraph(f.module, f.services),
+		OwnedPath: deliveryModulePath(defaults.Path, f.module),
+		Units:     promotableServiceGraph(f.module, f.services),
 	}, func(_ context.Context, stage string) error {
 		for _, service := range f.services {
 			overlay := filepath.Join(stage, "services", service, "overlays", f.environment)

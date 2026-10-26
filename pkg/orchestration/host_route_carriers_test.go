@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,8 +84,12 @@ func TestTheHostGatewayIsHandedTheAddressOfWhatSolutionsConsume(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, problems)
 	key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
-	require.Len(t, carriers, 1, "the host's own endpoint is not a route: %v", carriers)
+	backend := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "wiki", Service: "backend", Name: "http", API: "http"})
+	require.Len(t, carriers, 2, "the host's own endpoint is not a route: %v", carriers)
 	require.Contains(t, carriers, key)
+	require.Contains(t, carriers, backend, "the solution's backend is routed like a consumed module")
+	require.Contains(t, carriers[backend], "wiki", "the solution's own in-cluster address: %s", carriers[backend])
+	require.NotContains(t, carriers[backend], "https://", "plain HTTP: a solution serves no certificate, the mesh carries its identity")
 
 	producer, err := world.producerNetworkMappings(ctx, "docs/documents")
 	require.NoError(t, err)
@@ -189,21 +194,27 @@ func TestALocalRunHandsTheGatewayTheRunsAddress(t *testing.T) {
 	none, problems, err := world.hostRouteCarriers(ctx, gateway, access)
 	require.NoError(t, err, "a producer this run has not addressed is not a fault of the composition")
 	require.Nil(t, none)
-	require.Len(t, problems, 1)
+	require.Len(t, problems, 2, "neither the consumed module nor the solution's backend is addressed yet")
 	require.Contains(t, problems[0].Error(), "has not allocated")
+	require.Contains(t, problems[1].Error(), "the host fronts component wiki at its backend endpoint wiki/backend/http")
 
-	documents := parityService(t, workspace, "docs", "documents")
-	identity, err := documents.Identity()
-	require.NoError(t, err)
-	endpoints, err := documents.LoadEndpoints(ctx)
-	require.NoError(t, err)
-	require.NoError(t, world.SharedState.RecordEndpoints(ctx, identity, endpoints))
+	for _, unique := range []string{"docs/documents", "wiki/backend"} {
+		producer := parityService(t, workspace, strings.Split(unique, "/")[0], strings.Split(unique, "/")[1])
+		identity, err := producer.Identity()
+		require.NoError(t, err)
+		endpoints, err := producer.LoadEndpoints(ctx)
+		require.NoError(t, err)
+		require.NoError(t, world.SharedState.RecordEndpoints(ctx, identity, endpoints))
+	}
 
 	carriers, problems, err := world.hostRouteCarriers(ctx, gateway, access)
 	require.NoError(t, err)
 	require.Empty(t, problems)
 	key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
 	require.Contains(t, carriers, key)
+	backend := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "wiki", Service: "backend", Name: "http", API: "http"})
+	require.Contains(t, carriers, backend, "the solution's backend, at the run's address")
+	require.Contains(t, carriers[backend], "localhost")
 	// The run's own address for the producer's web endpoint, derived over all
 	// its endpoints as its Init proposes it — not rest's port.
 	mappings, err := world.producerNetworkMappings(ctx, "docs/documents")
@@ -248,4 +259,88 @@ func TestOneUnroutableConsumeLeavesTheOtherRoutes(t *testing.T) {
 	require.Len(t, problems, 1)
 	require.Contains(t, problems[0].Error(), "archive/vault/rest")
 	require.Contains(t, carriers, resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"}))
+}
+
+// A composed solution's backend is one HTTP endpoint of its entry service: an
+// entry that declares none, or several, leaves the host with no single
+// endpoint to forward /<alias>/ to, and the composition is refused naming it
+// rather than one being chosen.
+func TestASolutionBackendIsOneHTTPEndpointOfItsEntry(t *testing.T) {
+	for _, tc := range []struct{ name, endpoints, want string }{
+		{"none", "endpoints:\n    - name: grpc\n      api: grpc\n", "declares no http or rest endpoint"},
+		{"several", "endpoints:\n    - name: http\n      api: http\n    - name: rest\n      api: rest\n", "several http or rest endpoints (http, rest)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world, workspace := hostRoutesWorld(t, SnapshotMode, func(dir string) {
+				path := filepath.Join(dir, "modules", "wiki", "services", "backend", "service.codefly.yaml")
+				raw, err := os.ReadFile(path)
+				require.NoError(t, err)
+				head, _, found := strings.Cut(string(raw), "endpoints:\n")
+				require.True(t, found)
+				require.NoError(t, os.WriteFile(path, []byte(head+tc.endpoints), 0o600))
+			})
+			gateway := parityService(t, workspace, "host", "gateway")
+			_, _, err := world.hostRouteCarriers(context.Background(), gateway, resources.NewContainerNetworkAccess())
+			require.ErrorContains(t, err, tc.want)
+			require.ErrorContains(t, err, "wiki")
+		})
+	}
+}
+
+// A shared module's page is a route independently of any solution's API needs.
+func TestModulePageGetsACarrierWithoutASolutionConsumer(t *testing.T) {
+	for _, mode := range []Mode{SnapshotMode, RunMode} {
+		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+			world, workspace := hostRoutesWorld(t, mode, func(dir string) {
+				writeWikiConsumes(t, dir, "")
+				module := filepath.Join(dir, "modules", "docs")
+				path := filepath.Join(module, "module.codefly.yaml")
+				raw, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, append(raw, []byte("service-entry: documents\n")...), 0o600))
+				entry := filepath.Join(module, "services", "documents")
+				require.NoError(t, os.WriteFile(filepath.Join(entry, "solution.frontend.codefly.yaml"), []byte("title: Documents\norder: 0\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+				path = filepath.Join(entry, "service.codefly.yaml")
+				raw, err = os.ReadFile(path)
+				require.NoError(t, err)
+				head, _, found := strings.Cut(string(raw), "endpoints:\n")
+				require.True(t, found)
+				require.NoError(t, os.WriteFile(path, []byte(head+"endpoints:\n    - name: web\n      api: http\n      visibility: internal\n"), 0o600))
+			})
+			gateway := parityService(t, workspace, "host", "gateway")
+			access := resources.NewContainerNetworkAccess()
+			if mode == RunMode {
+				access = resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+				for _, pair := range [][2]string{{"docs", "documents"}, {"wiki", "backend"}} {
+					service := parityService(t, workspace, pair[0], pair[1])
+					identity, err := service.Identity()
+					require.NoError(t, err)
+					endpoints, err := service.LoadEndpoints(t.Context())
+					require.NoError(t, err)
+					require.NoError(t, world.SharedState.RecordEndpoints(t.Context(), identity, endpoints))
+				}
+			}
+			carriers, problems, err := world.hostRouteCarriers(t.Context(), gateway, access)
+			require.NoError(t, err)
+			require.Empty(t, problems)
+			key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
+			require.NotEmpty(t, carriers[key], "the module page needs its own route without a solution consumer")
+		})
+	}
+}
+
+// A local run tells an endpoint the producer does not declare from one it has
+// not addressed yet: the first is named as missing, never as waiting on an
+// address no allocation will ever give it.
+func TestALocalRunNamesAnUndeclaredEndpointAsMissing(t *testing.T) {
+	consumes := "    - id: docs\n      protocol: connect\n      module: docs\n      service: documents\n      endpoint: connect\n      as: docs\n"
+	world, workspace := hostRoutesWorld(t, RunMode, func(dir string) { writeWikiConsumes(t, dir, consumes) })
+	gateway := parityService(t, workspace, "host", "gateway")
+	access := resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+
+	_, problems, err := world.hostRouteCarriers(context.Background(), gateway, access)
+	require.NoError(t, err)
+	require.NotEmpty(t, problems)
+	require.Contains(t, problems[0].Error(), `docs/documents declares no endpoint named "connect"`)
+	require.NotContains(t, problems[0].Error(), "has not allocated")
 }

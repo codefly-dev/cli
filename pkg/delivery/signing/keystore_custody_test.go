@@ -81,14 +81,14 @@ esac
 // A cleartext Vault request never goes through a proxy and dials only
 // loopback, whatever the host name's case.
 func TestCleartextVaultTransportStaysOnLoopback(t *testing.T) {
-	transport, ok := vaultTransport(true).(*http.Transport)
+	transport, ok := custodyTransport(true).(*http.Transport)
 	if !ok || transport.Proxy != nil {
 		t.Fatal("a cleartext Vault request may consult a proxy")
 	}
 	if _, err := transport.DialContext(context.Background(), "tcp", "192.0.2.1:8200"); err == nil {
 		t.Fatal("a cleartext Vault request dialed a non-loopback address")
 	}
-	if secure := vaultTransport(false).(*http.Transport); secure.DialContext == nil {
+	if secure := custodyTransport(false).(*http.Transport); secure.DialContext == nil {
 		t.Fatal("the HTTPS transport lost its dialer")
 	}
 }
@@ -145,7 +145,7 @@ func TestCleartextVaultTransportFallsBackAcrossLoopback(t *testing.T) {
 	}
 	defer listener.Close()
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
-	transport := vaultTransport(true).(*http.Transport)
+	transport := custodyTransport(true).(*http.Transport)
 	// localhost resolves to ::1 and 127.0.0.1 here; nothing listens on ::1.
 	conn, err := transport.DialContext(context.Background(), "tcp", net.JoinHostPort("localhost", port))
 	if err != nil {

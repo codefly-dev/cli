@@ -89,6 +89,21 @@ func TestGoogleSecretManagerDescribesAMissingKey(t *testing.T) {
 	}
 }
 
+func TestGoogleSecretManagerDescribesTheNewestEnabledVersion(t *testing.T) {
+	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
+		"gcloud secrets describe key":  func() ([]byte, error) { return []byte("projects/p/secrets/key\n"), nil },
+		"gcloud secrets versions list": func() ([]byte, error) { return []byte("projects/p/secrets/key/versions/12\n"), nil },
+	}}
+	store := &GoogleSecretManager{Project: "p", Run: runner.run}
+	description, err := store.Describe(context.Background(), "key")
+	if err != nil || !description.HasVersion || description.Version != "12" {
+		t.Fatalf("Describe = %+v, %v, want version 12", description, err)
+	}
+	if !slices.Contains(runner.calls[1].args, "--sort-by=~createTime") {
+		t.Error("the version listing is not newest first")
+	}
+}
+
 func TestGoogleSecretManagerDescribesAKeyWithoutReadingIt(t *testing.T) {
 	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
 		"gcloud secrets describe key":  func() ([]byte, error) { return []byte("projects/p/secrets/key\n"), nil },
@@ -111,11 +126,15 @@ func TestGoogleSecretManagerDescribesAKeyWithoutReadingIt(t *testing.T) {
 func TestGoogleSecretManagerWritesThroughStdin(t *testing.T) {
 	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
 		"gcloud secrets create key":   func() ([]byte, error) { return nil, nil },
-		"gcloud secrets versions add": func() ([]byte, error) { return nil, nil },
+		"gcloud secrets versions add": func() ([]byte, error) { return []byte("projects/p/secrets/key/versions/7\n"), nil },
 	}}
 	store := &GoogleSecretManager{Project: "p", Run: runner.run}
-	if err := store.Write(context.Background(), "key", map[string]string{"A": "value-a"}, true); err != nil {
+	version, err := store.Write(context.Background(), "key", map[string]string{"A": "value-a"}, true)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if version != "7" {
+		t.Errorf("version = %q, want the basename of the version gcloud reports", version)
 	}
 	if len(runner.calls) != 2 || runner.calls[0].args[1] != "create" {
 		t.Fatalf("calls = %+v, want create then versions add", runner.calls)
@@ -191,5 +210,23 @@ func TestStoreRefusesEmptyNullAndNonObjectDocuments(t *testing.T) {
 		if _, err := decodeDocument("remote", []byte(payload)); err == nil {
 			t.Fatal("invalid existing document was accepted")
 		}
+	}
+}
+
+// An expired gcloud login is the one backend failure an operator can only act
+// on by name. It is said in fixed words, with nothing of the backend's output.
+func TestExpiredBackendCredentialsAreNamedWithoutTheBackendOutput(t *testing.T) {
+	stderr := "ERROR: (gcloud.config.config-helper) There was a problem refreshing your current auth tokens: " +
+		"Reauthentication failed. cannot prompt during non-interactive execution. Please run: gcloud auth login (project=platform-obin-staging-saas-accounts)"
+	err := &CommandError{Command: "kubectl get clustersecretstore", stderr: stderr}
+	if !strings.Contains(err.Error(), "gcloud auth login") {
+		t.Fatalf("an expired login is not named: %s", err)
+	}
+	if strings.Contains(err.Error(), "platform-obin-staging") || strings.Contains(fmt.Sprintf("%+v", err), "project=") {
+		t.Fatalf("the backend's output leaked: %s", err)
+	}
+	other := &CommandError{Command: "gcloud secrets describe", stderr: "ERROR: NOT_FOUND: Secret [key] not found"}
+	if other.Error() != "gcloud secrets describe failed (backend output withheld)" {
+		t.Fatalf("an ordinary failure is still withheld: %s", other)
 	}
 }

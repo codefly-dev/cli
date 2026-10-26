@@ -100,6 +100,12 @@ func WorkspaceGitops(workspace *resources.Workspace) (*EnvironmentGitops, error)
 }
 
 func (env *Environment) Validate() error {
+	if err := env.admitCarried(); err != nil {
+		return err
+	}
+	if err := env.validateExcludedServices(); err != nil {
+		return err
+	}
 	if _, err := env.Proto(); err != nil {
 		return err
 	}
@@ -107,6 +113,9 @@ func (env *Environment) Validate() error {
 		return err
 	}
 	if err := env.validateRunnableScopeSelections(); err != nil {
+		return err
+	}
+	if err := env.validateRunnableCallEndpoint(); err != nil {
 		return err
 	}
 	if err := env.ServiceConfig.Validate(); err != nil {
@@ -118,6 +127,12 @@ func (env *Environment) Validate() error {
 	if err := env.Host.Validate(); err != nil {
 		return err
 	}
+	if err := env.Telemetry.Validate(); err != nil {
+		return fmt.Errorf("environment %s: %w", env.Name, err)
+	}
+	if err := env.Registry.Validate(); err != nil {
+		return err
+	}
 	// A developer identity is a local host's allowlist entry. A deployed host
 	// refuses it anyway, by its own allowlist; refusing it here keeps a
 	// developer's identity out of every manifest a hosted environment renders.
@@ -125,7 +140,7 @@ func (env *Environment) Validate() error {
 	// k3d-… context, written): the name "local" with no cluster declared is
 	// not one, whatever IsK3d's legacy reading says.
 	if env.Host != nil && len(env.Host.Developers) > 0 && !env.DeclaresLocalK3d() {
-		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
+		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a native run (codefly run service, solution or workspace) needs no entry, since its host reads a policy the run writes admitting the run's own delivery key — a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
 	}
 	// The trust anchor a deployed host reads is mounted by its cell's
 	// platform; only a local cluster run mounts one it provisioned.
@@ -133,6 +148,15 @@ func (env *Environment) Validate() error {
 		return fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host's trust anchor is its platform's", env.Name)
 	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
+		return err
+	}
+	if err := env.validateEgress(); err != nil {
+		return err
+	}
+	if err := env.validateCell(); err != nil {
+		return err
+	}
+	if err := env.validateServiceMesh(); err != nil {
 		return err
 	}
 	for name, managed := range env.ManagedServices {
@@ -180,9 +204,12 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		if env == nil {
 			continue
 		}
-		if _, wiErr := WorkloadIdentityServices(ctx, workspace, env); wiErr != nil {
-			return w.Wrap(wiErr)
+		if hostErr := ValidateHostComposition(ctx, workspace, env); hostErr != nil {
+			return w.Wrap(hostErr)
 		}
+	}
+	if excludedErr := ValidateExcludedServices(ctx, workspace); excludedErr != nil {
+		return w.Wrap(excludedErr)
 	}
 	needsGraph := false
 
@@ -208,7 +235,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 				// A module-qualified service-identity key names exactly one
 				// service of that module, or nothing (a typo that would leave
 				// the workload on the default identity with no report).
-				if _, service, qualified := strings.Cut(name, "/"); qualified && block == "service-identity" {
+				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config") {
 					if !slices.Contains(byName[service], name) {
 						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
 					}

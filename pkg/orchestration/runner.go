@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,11 +37,6 @@ Runner is a wrapper around a runtime service instance to fit the outputProperty 
 - collects events from the service instance observability
 */
 type Runner struct {
-	// hostRoutesOnce derives the host gateway's route carriers once per runner
-	// (hostRoutes); hostRouteCarriersDerived holds them.
-	hostRoutesOnce           sync.Once
-	hostRouteCarriersDerived map[string]string
-
 	instance *services.Instance
 
 	// API
@@ -67,12 +65,11 @@ type Runner struct {
 	// it before a hot reload re-enters Init.
 	everStarted atomic.Bool
 
-	// startedArtifact is what the agent reported it started on its last
-	// successful Start: the program it ran and the files that program was
-	// handed. Nil when the agent reports none, which is a refusal for a
-	// consumer that pins the build a process runs — never a cue to guess a
-	// path. A restart replaces it, so it always describes the process now.
-	startedArtifact atomic.Pointer[runtimev0.StartedArtifact]
+	// startedMappings is the hash of the addresses the running process was
+	// started with: a hot-reload agent keeps its process across a reload,
+	// which is right only while that process still serves where the shared
+	// state says it does (addressesMoved).
+	startedMappings string
 
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
@@ -272,18 +269,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, err
 	}
 
-	// Reject stale native listeners before calling the agent's Init hook.
-	// Infrastructure agents are allowed to bind their assigned endpoint during
-	// Init (for example Vault starts its Docker/Nix runtime there), so probing in
-	// Start is already too late and mistakes the service we just initialized for
-	// a stale process.
-	//
-	// A running service being hot-reloaded keeps its port and is marked started,
-	// so it must skip this first-start guard.
-	if err := runner.checkInitialPortAvailability(ctx); err != nil {
-		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
-	}
-
 	// Configuration reads can block on a stalled provider (e.g. a dependency
 	// service that failed to export its config). Bound each read with a
 	// timeout so a single bad provider doesn't stall the entire Init.
@@ -293,6 +278,21 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
 		return nil, err
+	}
+
+	// Reject stale native listeners before calling the agent's Init hook, on
+	// the addresses this Init proposes: on a first Init nothing has been
+	// accepted yet, and those are the ports the service is about to serve —
+	// and the ones a hop routing to it already holds. Infrastructure agents
+	// are allowed to bind their assigned endpoint during Init (for example
+	// Vault starts its Docker/Nix runtime there), so probing in Start is
+	// already too late and mistakes the service we just initialized for a
+	// stale process.
+	//
+	// A running service being hot-reloaded keeps its port and is marked started,
+	// so it must skip this first-start guard.
+	if err = runner.checkInitialPortAvailability(ctx, inputs.networkMappings); err != nil {
+		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
 	}
 	dependenciesEndpoints := inputs.dependenciesEndpoints
 	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
@@ -353,12 +353,12 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
 	}
-	runner.networkMappings = accepted
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = accepted
+	runner.pinAcceptedPorts(accepted)
 
 	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Identity, resp.RuntimeConfigurations...)
 	if err != nil {
@@ -891,12 +891,11 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
-	runner.networkMappings = networkMappings
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = networkMappings
 	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
@@ -911,6 +910,19 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	if runner.remoteEnvironment != nil {
 		return runner.StartRemote(ctx)
+	}
+
+	started := false
+	var attempt *RuntimeStartAttempt
+	if begin := runner.world.BeginRuntimeStart; begin != nil {
+		var err error
+		attempt, err = begin(ctx, runner.instance.Service)
+		if attempt != nil && attempt.Complete != nil {
+			defer func() { attempt.Complete(started) }()
+		}
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot prepare runtime start attempt")
+		}
 	}
 
 	err := runner.StopIfNeeded(ctx)
@@ -1003,6 +1015,17 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot validate start request")
 	}
 
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+	if attempt != nil && attempt.Admit != nil {
+		if admitErr := attempt.Admit(ctx); admitErr != nil {
+			return nil, w.Wrapf(admitErr, "cannot admit service before runtime start")
+		}
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	resp, err := runner.instance.Runtime.Start(ctx, req)
 
 	if err != nil {
@@ -1020,8 +1043,6 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot start %s: %s", runner.instance.Unique(), message)
 	}
 
-	runner.startedArtifact.Store(resp.Status.GetStartedArtifact())
-
 	err = runner.outputPropertyForStart.Set(ctx, &RunnerStartOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for start")
@@ -1033,21 +1054,14 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	runner.markStarted()
+	started = true
 	return outputProperty, nil
-}
-
-// StartedArtifact is what the agent reported it started, as of this runner's
-// last successful Start; nil when the agent reported none.
-func (runner *Runner) StartedArtifact() *runtimev0.StartedArtifact {
-	if runner == nil {
-		return nil
-	}
-	return runner.startedArtifact.Load()
 }
 
 func (runner *Runner) markStarted() {
 	runner.isStarted.Store(true)
 	runner.everStarted.Store(true)
+	runner.startedMappings = resources.NetworkMappingHash(runner.networkMappings...)
 	runner.restartMu.Lock()
 	runner.restartInFlight = false
 	runner.restartMu.Unlock()
@@ -1093,16 +1107,30 @@ const portHolderLookupTimeout = 3 * time.Second
 type portCollision struct {
 	port     uint32
 	endpoint string
+	// address is the host:port the holder answered on, so the holder named is
+	// the one on that address — a squatter on [::1]:P beside another process
+	// on 127.0.0.1:P is the one reported.
+	address string
 }
 
-// boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
-// runner's own native endpoint ports that another process is already listening
-// on, naming the process that holds each one when it can be identified. A
+// boundNativePorts returns "<port> (<endpoint>)" descriptions for each native
+// endpoint port in mappings that another process is already listening on,
+// naming the process that holds each one when it can be identified. A
 // successful TCP dial is the honest signal that the port is held: unlike a
 // listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
-func (runner *Runner) boundNativePorts(ctx context.Context) []string {
+//
+// Each loopback family is dialled explicitly, besides the instance's own host:
+// a listener on 127.0.0.1:P and one on [::1]:P are different sockets, and on
+// macOS a service that later binds the wildcard :P coexists with a squatter on
+// 127.0.0.1:P, which keeps receiving every dial to 127.0.0.1:P. Only a probe
+// of both families before the service binds sees either squatter.
+//
+// adopted excuses an address whose listener is the service's own: the
+// container its agent will adopt (Runner.adoptedContainerAddresses). nil
+// excuses nothing.
+func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, adopted func(address string) bool) []string {
 	var collisions []portCollision
-	for _, mapping := range runner.networkMappings {
+	for _, mapping := range mappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
 		// mapping or endpoint is possible at this boundary — skip rather than panic.
 		if mapping == nil || mapping.Endpoint == nil {
@@ -1112,24 +1140,49 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 		if instance == nil {
 			continue
 		}
-		conn, err := net.DialTimeout("tcp", instance.Host, 200*time.Millisecond)
-		if err != nil {
-			continue
+		for _, address := range nativeProbeAddresses(instance) {
+			if listening(address) && (adopted == nil || !adopted(address)) {
+				collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name, address: address})
+				break
+			}
 		}
-		_ = conn.Close()
-		collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name})
 	}
 	if len(collisions) == 0 {
 		return nil
 	}
 	lookupCtx, cancel := holderLookupContext(ctx)
 	defer cancel()
-	listeners := listeningPorts(lookupCtx)
+	sockets := listeningSockets(lookupCtx)
 	held := make([]string, 0, len(collisions))
 	for _, collision := range collisions {
-		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, listeners, collision.port)))
+		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, holderPID(sockets, collision.address, collision.port))))
 	}
 	return held
+}
+
+// nativeProbeAddresses is every address a native instance's port can be
+// held at: the port on each loopback family, and the instance's own host when
+// it is not a loopback name those two already cover. A loopback host is
+// probed per family only, so a holder is always attributed to one family.
+func nativeProbeAddresses(instance *basev0.NetworkInstance) []string {
+	var addresses []string
+	if host := instance.GetHost(); host != "" && !isLoopbackHostname(instance.GetHostname()) {
+		addresses = append(addresses, host)
+	}
+	if instance.GetPort() > 0 {
+		port := strconv.FormatUint(uint64(instance.GetPort()), 10)
+		addresses = append(addresses, net.JoinHostPort(loopbackIPv4, port), net.JoinHostPort(loopbackIPv6, port))
+	}
+	return addresses
+}
+
+func listening(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // holderLookupContext derives the deadline the holder attribution runs under.
@@ -1141,29 +1194,58 @@ func holderLookupContext(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeout(ctx, portHolderLookupTimeout)
 }
 
-// listeningPorts maps each locally LISTENing TCP port to the pid that holds it.
-// Building the whole map once per probe keeps a stack-wide collision from
-// re-enumerating the machine's sockets for every clashing endpoint.
-func listeningPorts(ctx context.Context) map[uint32]int32 {
+// listeningSocket is one locally LISTENing TCP socket and the pid holding it.
+type listeningSocket struct {
+	ip   string
+	port uint32
+	pid  int32
+}
+
+// listeningSockets enumerates the machine's listening TCP sockets once per
+// probe, so a stack-wide collision does not re-enumerate them for every
+// clashing endpoint.
+func listeningSockets(ctx context.Context) []listeningSocket {
 	connections, err := gopsnet.ConnectionsWithContext(ctx, "tcp")
 	if err != nil {
-		return map[uint32]int32{}
+		return nil
 	}
-	ports := make(map[uint32]int32, len(connections))
+	var sockets []listeningSocket
 	for _, connection := range connections {
 		if connection.Status != "LISTEN" || connection.Pid <= 0 {
 			continue
 		}
-		// A port bound on several addresses (v4 + v6, or per-interface) yields
-		// one connection each; they belong to the same listener, so first wins.
-		if _, seen := ports[connection.Laddr.Port]; !seen {
-			ports[connection.Laddr.Port] = connection.Pid
-		}
+		sockets = append(sockets, listeningSocket{ip: connection.Laddr.IP, port: connection.Laddr.Port, pid: connection.Pid})
 	}
-	return ports
+	return sockets
 }
 
-// portHolderSuffix names the process squatting on port, so an "already in use"
+// holderPID is the pid listening where address answered: a socket on that
+// exact IP first, then a wildcard socket of its family, then any socket on the
+// port. Zero when none is readable.
+func holderPID(sockets []listeningSocket, address string, port uint32) int32 {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = ""
+	}
+	wildcards := []string{wildcardIPv4, "*", ""}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		wildcards = []string{wildcardIPv6, "*", ""}
+	}
+	for _, matches := range []func(string) bool{
+		func(ip string) bool { return host != "" && ip == host },
+		func(ip string) bool { return slices.Contains(wildcards, ip) },
+		func(string) bool { return true },
+	} {
+		for _, socket := range sockets {
+			if socket.port == port && matches(socket.ip) {
+				return socket.pid
+			}
+		}
+	}
+	return 0
+}
+
+// portHolderSuffix names the process holding a port, so an "already in use"
 // failure says which pid to look at instead of leaving the user to run lsof.
 //
 // It reports the holder's executable PATH and never its command line: the path
@@ -1175,9 +1257,8 @@ func listeningPorts(ctx context.Context) map[uint32]int32 {
 // It returns "" when the holder cannot be identified: socket ownership is not
 // always readable (a listener owned by another user, a lookup that ran past
 // the deadline), and a missing name must not cost us the port report itself.
-func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint32) string {
-	pid, ok := listeners[port]
-	if !ok {
+func portHolderSuffix(ctx context.Context, pid int32) string {
+	if pid <= 0 {
 		return ""
 	}
 	proc, err := process.NewProcessWithContext(ctx, pid)
@@ -1191,7 +1272,7 @@ func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint
 	return fmt.Sprintf(" held by pid %d (%s)", pid, executable)
 }
 
-func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
+func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed []*basev0.NetworkMapping) error {
 	// Only the very first Init can see a ghost: once this runner has started
 	// the service, a bound port is its own — either still running (hot reload)
 	// or still releasing after the Stop that precedes a restart. Testing
@@ -1200,7 +1281,9 @@ func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
 	if runner.isStarted.Load() || runner.everStarted.Load() {
 		return nil
 	}
-	if held := runner.boundNativePorts(ctx); len(held) > 0 {
+	// A listener that is the service's own kept container is not a ghost: its
+	// agent adopts it (keep-running), and 'codefly clear' would delete it.
+	if held := boundNativePorts(ctx, proposed, runner.adoptedContainerAddresses(ctx)); len(held) > 0 {
 		// The holder is whoever bound the port first — it may be a leftover
 		// codefly run, but it may equally be the user's own server, so the
 		// remedy is stated conditionally rather than asserting a provenance
@@ -1379,7 +1462,7 @@ func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 	if !runner.isStarted.Load() {
 		return nil
 	}
-	if runner.instance.Runtime.IsHotReloading {
+	if runner.instance.Runtime.IsHotReloading && !runner.addressesMoved() {
 		return nil
 	}
 
@@ -1478,6 +1561,13 @@ func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev0.De
 	if runner.callback == nil {
 		runner.cancelRestarts()
 		return errors.New("restart requested before the orchestration callback was initialized")
+	}
+
+	if runner.world != nil && runner.world.beforeSourceRestart != nil {
+		if err := runner.world.beforeSourceRestart(ctx); err != nil {
+			runner.cancelRestarts()
+			return err
+		}
 	}
 
 	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -1681,6 +1771,13 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 	for key, value := range runner.hostRoutes() {
 		overrides[key] = value
 	}
+	// Where the environment's services export operational telemetry: derived
+	// from the environment, layered beneath --set like the carriers above.
+	if runner.world != nil && runner.instance != nil && runner.instance.Module != nil && runner.instance.Service != nil {
+		for key, value := range runner.world.Env.TelemetryCarriers(runner.instance.Module.Name, runner.instance.Service.Name) {
+			overrides[key] = value
+		}
+	}
 	for key, value := range runner.overrides {
 		overrides[key] = value
 	}
@@ -1704,20 +1801,21 @@ func (runner *Runner) hostRoutes() map[string]string {
 	if runner == nil || runner.instance == nil || runner.world == nil {
 		return nil
 	}
-	runner.hostRoutesOnce.Do(func() {
-		ctx := context.Background()
-		w := wool.Get(ctx).In("Runner.hostRoutes")
-		carriers, problems, err := runner.world.hostRouteCarriers(ctx, runner.instance.Service, runner.selfNetworkAccess())
-		if err != nil {
-			w.Warn("the host gateway's routes are refused by the composition; every consumed module answers 503", wool.ErrField(err))
-			return
-		}
-		for _, problem := range problems {
-			w.Warn("the host gateway will not route this consumed endpoint; that module answers 503", wool.ErrField(problem))
-		}
-		runner.hostRouteCarriersDerived = carriers
-	})
-	return runner.hostRouteCarriersDerived
+	// Derived on every ask, never memoised: the carriers name the producers'
+	// addresses as the shared state holds them NOW, and a producer that was
+	// restarted on another port would otherwise be handed to the gateway at
+	// the address of its first start for the rest of the run.
+	ctx := context.Background()
+	w := wool.Get(ctx).In("Runner.hostRoutes")
+	carriers, problems, err := runner.world.hostRouteCarriers(ctx, runner.instance.Service, runner.selfNetworkAccess())
+	if err != nil {
+		w.Warn("the host gateway's routes are refused by the composition; every consumed module answers 503", wool.ErrField(err))
+		return nil
+	}
+	for _, problem := range problems {
+		w.Warn("the host gateway will not route this consumed endpoint; that module answers 503", wool.ErrField(problem))
+	}
+	return carriers
 }
 
 func (runner *Runner) WithOutputEnv(path string) {
@@ -1795,6 +1893,49 @@ func AppendServiceProcessConfigurationsToFile(
 // services.RuntimeInstance.Start makes on the request (with Instance.Workspace
 // as its provenance) — otherwise the narrower of the two carriers decides what
 // enforcement is worth.
+// pinAcceptedPorts anchors the host ports this service was accepted at, so
+// every later proposal for it offers the same ones. Under --temporary-ports
+// a proposal would otherwise ask the kernel for a fresh port, and a hot
+// reload re-enters Init, so the service would move on every reload and its
+// dependents would keep an address nothing serves; with named ports the
+// accepted set is the hashed one, or the one the agent chose instead, which
+// is the truth either way. Core's override seam is the one place a port is
+// pinned.
+func (runner *Runner) pinAcceptedPorts(accepted []*basev0.NetworkMapping) {
+	if runner.world == nil || runner.world.LocalNetworkManager == nil {
+		return
+	}
+	if overrides := acceptedPortOverrides(accepted); len(overrides) > 0 {
+		runner.world.LocalNetworkManager.WithPortOverrides(overrides)
+	}
+}
+
+// acceptedPortOverrides is the host port each accepted mapping serves on, by
+// the endpoint destination core keys a port override on.
+func acceptedPortOverrides(accepted []*basev0.NetworkMapping) map[string]uint16 {
+	overrides := map[string]uint16{}
+	for _, mapping := range accepted {
+		if mapping.GetEndpoint() == nil {
+			continue
+		}
+		for _, instance := range mapping.GetInstances() {
+			if port := instance.GetPort(); port > 0 && port <= math.MaxUint16 {
+				overrides[resources.EndpointDestination(mapping.GetEndpoint())] = uint16(port)
+				break
+			}
+		}
+	}
+	return overrides
+}
+
+// addressesMoved reports whether the addresses accepted at the last Init
+// differ from the ones the running process was started with. A hot-reload
+// agent is spared a restart only while they agree: a process kept on its old
+// port after the shared state moved would be reachable by nobody.
+func (runner *Runner) addressesMoved() bool {
+	return runner.startedMappings != "" && runner.startedMappings != resources.NetworkMappingHash(runner.networkMappings...)
+}
+
 func outputEnvNetworkMappings(
 	provenance resources.Provenance,
 	consumerModule string,
@@ -1859,7 +2000,7 @@ func appendEnvironmentVariablesToFile(
 		return w.NewError("output environment file path is required")
 	}
 	// The output may contain secret service configuration. Refuse symlinks and
-	// force owner-only permissions even when appending to a pre-existing file.
+	// force owner-only permissions.
 	if info, statErr := os.Lstat(filePath); statErr == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return w.NewError("output environment file must not be a symbolic link")
@@ -1867,21 +2008,55 @@ func appendEnvironmentVariablesToFile(
 	} else if !os.IsNotExist(statErr) {
 		return w.Wrapf(statErr, "cannot inspect environment variables file")
 	}
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return w.Wrapf(err, "cannot open file")
+	// The file is a map of the run's current environment, rewritten whole: a
+	// key written again (a reload moved an address, a dependency re-exposed a
+	// value) replaces its line in place, so a reader never meets two values
+	// for one key and the latest is the true one.
+	existing, err := os.ReadFile(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		return w.Wrapf(err, "cannot read environment variables file")
 	}
-	defer file.Close()
-	if err := file.Chmod(0600); err != nil {
+	var order []string
+	values := map[string]string{}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if line == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(line, "=")
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
+		}
+		values[key] = line
+	}
+	for _, env := range environments {
+		if _, seen := values[env.Key]; !seen {
+			order = append(order, env.Key)
+		}
+		values[env.Key] = fmt.Sprintf("%s=%v", env.Key, env.Value)
+	}
+	var content strings.Builder
+	for _, key := range order {
+		content.WriteString(values[key])
+		content.WriteString("\n")
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(filePath), "."+filepath.Base(filePath)+".*")
+	if err != nil {
+		return w.Wrapf(err, "cannot create environment variables file")
+	}
+	defer os.Remove(temporary.Name())
+	if _, err = temporary.WriteString(content.String()); err != nil {
+		temporary.Close()
+		return w.Wrapf(err, "cannot write to file")
+	}
+	if err = temporary.Chmod(0600); err != nil {
+		temporary.Close()
 		return w.Wrapf(err, "cannot secure environment variables file")
 	}
-
-	// Write each environment variable to the file
-	for _, env := range environments {
-		_, err := fmt.Fprintf(file, "%s=%v\n", env.Key, env.Value)
-		if err != nil {
-			return w.Wrapf(err, "cannot write to file")
-		}
+	if err = temporary.Close(); err != nil {
+		return w.Wrapf(err, "cannot close environment variables file")
+	}
+	if err = os.Rename(temporary.Name(), filePath); err != nil {
+		return w.Wrapf(err, "cannot replace environment variables file")
 	}
 	return nil
 }

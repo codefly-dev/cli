@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -104,7 +105,13 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 		key := RunnableBindingKey("saas-starter", operation.Entry.Name)
 		value := values[key]
 		prepared := verifyResolvedBinding(t, value, nil)
-		require.True(t, proto.Equal(published[operation.Entry.Method].Contract, prepared.Contract), "prepared contract matches the producer's committed runnable package")
+		// The producer's committed package predates the wire spelling (core
+		// #843: JSON names, 64-bit integers as strings); module-saas-starter
+		// regenerates to it. Until then the two agree field for field once the
+		// committed one is re-spelled, which is what this holds.
+		require.True(t, proto.Equal(operation.Package.GetContract(), prepared.Contract), "prepared contract is the derived one")
+		requireSameModuloWireSpelling(t, published[operation.Entry.Method].GetContract().GetInput().GetFields(), prepared.Contract.GetInput().GetFields())
+		requireSameModuloWireSpelling(t, published[operation.Entry.Method].GetContract().GetOutput().GetFields(), prepared.Contract.GetOutput().GetFields())
 		require.Equal(t, "connect", prepared.Operation.Endpoint)
 		require.Len(t, prepared.Policy.InvokeScopes, 1)
 		require.True(t, proto.Equal(sourceSelection().Invoke[0], prepared.Policy.InvokeScopes[0]))
@@ -114,4 +121,43 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	runnablesCheck, runnableBindingsCheck = true, true
 	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"saas-starter"}))
 	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+}
+
+// requireSameModuloWireSpelling holds a contract committed before the wire
+// spelling to the one derived now: the same members in the same order, each
+// named by its JSON name, a 64-bit integer as a STRING of format int64 or
+// uint64 and nothing else, every non-required key optional, array items held
+// the same way. A stopgap: it goes when module-saas-starter regenerates.
+func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev0.RunnableField) {
+	t.Helper()
+	require.Len(t, derived, len(committed))
+	for i, before := range committed {
+		requireFieldModuloWireSpelling(t, before, derived[i], true)
+	}
+}
+
+func requireFieldModuloWireSpelling(t *testing.T, before, after *basev0.RunnableField, member bool) {
+	t.Helper()
+	if member {
+		parts := strings.Split(before.GetName(), "_")
+		for j := 1; j < len(parts); j++ {
+			if parts[j] != "" {
+				parts[j] = strings.ToUpper(parts[j][:1]) + parts[j][1:]
+			}
+		}
+		require.Equal(t, strings.Join(parts, ""), after.GetName())
+		require.True(t, after.GetOptional(), "%s: proto3 JSON may omit every non-required key", after.GetName())
+	}
+	if before.GetType() == after.GetType() {
+		require.Equal(t, before.GetFormat(), after.GetFormat(), "%s", after.GetName())
+	} else {
+		require.Equal(t, basev0.RunnableField_INTEGER, before.GetType(), "%s", before.GetName())
+		require.Equal(t, basev0.RunnableField_STRING, after.GetType(), "%s", before.GetName())
+		require.Contains(t, []string{corerunnable.FormatInt64, corerunnable.FormatUint64}, after.GetFormat(), "%s", before.GetName())
+	}
+	requireSameModuloWireSpelling(t, before.GetFields(), after.GetFields())
+	require.Equal(t, before.GetItems() == nil, after.GetItems() == nil, "%s items", after.GetName())
+	if before.GetItems() != nil {
+		requireFieldModuloWireSpelling(t, before.GetItems(), after.GetItems(), false)
+	}
 }

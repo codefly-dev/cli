@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/modulecache"
+
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -16,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"gopkg.in/yaml.v3"
 )
 
 // dockerStub stands in for the container engine at the only boundary an image
@@ -41,6 +45,7 @@ record() { printf '%s\n' "$1" >> "$STATE/calls"; }
 case "$1 $2" in
 "buildx build")
   record build
+  printf '%s\n' "$*" >> "$STATE/build-args"
   count=0
   if [ -f "$STATE/count" ]; then read -r count < "$STATE/count"; fi
   count=$((count+1))
@@ -110,13 +115,21 @@ func (stub *dockerStub) editDuringBuild(t *testing.T, path, content string) {
 // in the workspace moved, not because the agent re-rendered differently.
 type imageCachePeer struct {
 	builderv0.UnimplementedBuilderServer
+	// goModules makes the recipe declare its Go module graph for prefetching.
+	goModules bool
+	// image is the recipe's image; empty means example.test/app:v1.
+	image string
+	// gitSources makes the recipe declare a locked git commit for prefetching:
+	// commitOne, or gitCommit when set.
+	gitSources bool
+	gitCommit  string
 }
 
 func (*imageCachePeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
 	return &builderv0.BuildCapabilitiesResponse{BuildxSelection: true}, nil
 }
 
-func (*imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (peer *imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
 	output := request.GetOutputDirectory()
 	if err := os.MkdirAll(output, 0o755); err != nil {
 		return nil, err
@@ -129,7 +142,18 @@ func (*imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest)
 			return nil, err
 		}
 	}
-	plan, err := coreservices.SingleImageBuildPlan(output, "example.test/app:v1", coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"})
+	var options []coreservices.RecipeOption
+	if peer.goModules {
+		options = append(options, coreservices.WithGoModuleDownloads(&builderv0.GoModuleDownload{ModuleRoot: "code", ProxyContext: "gomodproxy"}))
+	}
+	if peer.gitSources {
+		commit := peer.gitCommit
+		if commit == "" {
+			commit = commitOne
+		}
+		options = append(options, coreservices.WithGitSourceDownloads(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commit, MirrorContext: "gitsources"}))
+	}
+	plan, err := coreservices.SingleImageBuildPlan(output, peer.imageName(), coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"}, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -143,18 +167,31 @@ func (*imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest)
 // through the real Builder against the docker stub.
 type imageCacheHarness struct {
 	docker       *dockerStub
+	peer         *imageCachePeer
 	workspaceDir string
 	serviceDir   string
 	client       *coreservices.BuilderAgent
 	push         bool
 	rebuild      bool
+	// env is the environment the build targets, nil for none.
+	env *environments.Environment
+	// agentOverride, when set, is the version the workspace's agent-overrides
+	// moves the service's agent to, away from the 0.1.0 its own file pins.
+	agentOverride string
+	// noCapture builds without asking for the pushed digest, as a deploy does.
+	noCapture bool
+	// goCalls records every go command the prefetch of each build runs.
+	goCalls []goCall
+	// gitCalls records every git command the git source prefetch runs.
+	gitCalls [][]string
 }
 
 func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHarness {
 	t.Helper()
 	stub := installDockerStub(t, registryServes)
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, &imageCachePeer{})
+	peer := &imageCachePeer{}
+	builderv0.RegisterBuilderServer(server, peer)
 	conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
@@ -163,18 +200,50 @@ func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHa
 	serviceDir := filepath.Join(workspaceDir, "modules", "saas", "services", "api")
 	harness := &imageCacheHarness{
 		docker:       stub,
+		peer:         peer,
 		workspaceDir: workspaceDir,
 		serviceDir:   serviceDir,
 		client:       &coreservices.BuilderAgent{BuilderClient: builderv0.NewBuilderClient(conn)},
 		push:         push,
 	}
-	harness.write(t, filepath.Join(serviceDir, "service.codefly.yaml"), "name: api\n")
+	harness.write(t, filepath.Join(serviceDir, "service.codefly.yaml"),
+		"name: api\nversion: 1.0.0\nagent:\n  kind: codefly:service\n  publisher: codefly.dev\n  name: go\n  version: 0.1.0\n")
 	harness.write(t, filepath.Join(serviceDir, "code", "main.go"), "package main\n\nfunc main() {}\n")
 	harness.write(t, filepath.Join(serviceDir, "code", "go.mod"), "module example.test/api\n\ngo 1.25\n")
 	harness.write(t, filepath.Join(serviceDir, "code", "go.sum"), "")
 	harness.write(t, filepath.Join(serviceDir, "notes.md"), "scratch\n")
 	harness.write(t, filepath.Join(workspaceDir, "configurations", "local.codefly.yaml"), "name: local\nvalue: one\n")
 	return harness
+}
+
+// composition is the workspace and the service as the module composes it: the
+// service's own file pins agent codefly.dev/go 0.1.0, and an agentOverride moves
+// the loaded service to another version the way core applies agent-overrides.
+func (harness *imageCacheHarness) composition(t *testing.T) (*resources.Workspace, *resources.Service) {
+	t.Helper()
+	workspace := &resources.Workspace{Name: "platform"}
+	workspace.WithDir(harness.workspaceDir)
+	agent := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "go", Version: "0.1.0"}
+	if harness.agentOverride != "" {
+		var node yaml.Node
+		require.NoError(t, yaml.Unmarshal([]byte("codefly.dev/go: "+harness.agentOverride+"\n"), &node))
+		workspace.Extensions = map[string]resources.YAMLValue{resources.AgentOverridesKey: {Node: *node.Content[0]}}
+		agent = &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "go", Version: harness.agentOverride}
+	}
+	service := &resources.Service{Name: "api", Version: "1.0.0", Agent: agent}
+	service.WithDir(harness.serviceDir)
+	return workspace, service
+}
+
+// buildArgs is the argv of every `buildx build` the stub ran, in order.
+func (stub *dockerStub) buildArgs(t *testing.T) []string {
+	t.Helper()
+	payload, err := os.ReadFile(filepath.Join(stub.dir, "build-args"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	require.NoError(t, err)
+	return strings.Split(strings.TrimSpace(string(payload)), "\n")
 }
 
 func (harness *imageCacheHarness) write(t *testing.T, path, content string) {
@@ -198,26 +267,26 @@ func (harness *imageCacheHarness) build(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
-	workspace := &resources.Workspace{Name: "platform"}
-	workspace.WithDir(harness.workspaceDir)
-	service := &resources.Service{
-		Name:    "api",
-		Version: "1.0.0",
-		Agent:   &resources.Agent{Publisher: "codefly.dev", Name: "go", Version: "0.1.0"},
-	}
-	service.WithDir(harness.serviceDir)
+	workspace, service := harness.composition(t)
 	instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "saas"}}
 	instance.Builder = &services.BuilderInstance{Instance: instance, Builder: harness.client}
 	world := &World{
 		Workspace:          workspace,
+		Env:                harness.env,
 		Push:               harness.push,
-		CaptureImageDigest: harness.push,
+		CaptureImageDigest: harness.push && !harness.noCapture,
 		BuildxBuilder:      "stub",
 		RebuildImages:      harness.rebuild,
 	}
-	build, err := NewBuilder(ctx, instance, world)
-	require.NoError(t, err)
-	_, err = build.Build(ctx)
+	prefetch := newGoModulePrefetch()
+	prefetch.run = recordingGo(&harness.goCalls, nil)
+	world.goModulePrefetch = prefetch
+	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
+	gitPrefetch := newGitSourcePrefetch()
+	gitPrefetch.run = recordingGit(&harness.gitCalls, "")
+	world.gitSourcePrefetch = gitPrefetch
+	t.Cleanup(func() { require.NoError(t, gitPrefetch.Close()) })
+	build, err := harness.run(ctx, instance, world)
 	require.NoError(t, err)
 	if harness.push {
 		require.NotEmpty(t, build.ImageDigest())
@@ -347,6 +416,79 @@ func TestAVanishedImageIsRebuiltRatherThanReused(t *testing.T) {
 	require.Equal(t, 2, harness.docker.calls(t, "build"))
 }
 
+// A render whose images are up to date used to download every Go service's
+// module graph into a fresh cache and only then find that no image input had
+// changed — minutes per service for nothing. The decision now precedes the
+// fetch: the second build fetches nothing and builds nothing, and an edit to
+// the source fetches again before it builds.
+func TestAnUpToDateImageFetchesNoGoModules(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.goModules = true
+	first := harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.goCalls, 2, "the first build fetches the declared module graph")
+
+	require.Equal(t, first, harness.build(t))
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.goCalls, 2, "an image built from these inputs needs no fetch")
+
+	harness.write(t, filepath.Join(harness.serviceDir, "code", "main.go"), "package main\n\nfunc main() { println() }\n")
+	require.NotEqual(t, first, harness.build(t))
+	require.Equal(t, 2, harness.docker.calls(t, "build"))
+	require.Len(t, harness.goCalls, 4, "a changed input is fetched before it is built")
+}
+
+// TestAnUpToDateImageFetchesNoGitSources is the same plan phase for a declared
+// git source: fetched before the first build and handed to it as the mirror
+// context, not fetched for an image already built from these inputs, and a
+// changed commit is a new identity, fetched and built.
+func TestAnUpToDateImageFetchesNoGitSources(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.gitSources = true
+	require.NoError(t, os.WriteFile(filepath.Join(harness.docker.dir, "hook"), []byte(`printf '%s\n' "$@" > "$STATE/args"`+"\n"), 0o644))
+	first := harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.gitCalls, 3, "the first build fetches the declared commit")
+	args, err := os.ReadFile(filepath.Join(harness.docker.dir, "args"))
+	require.NoError(t, err)
+	require.Contains(t, string(args), "--build-context\ngitsources=")
+
+	require.Equal(t, first, harness.build(t))
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.gitCalls, 3, "an image built from these inputs needs no fetch")
+
+	harness.peer.gitCommit = commitTwo
+	require.NotEqual(t, first, harness.build(t))
+	require.Equal(t, 2, harness.docker.calls(t, "build"))
+	require.Len(t, harness.gitCalls, 6, "a changed commit is fetched before it is built")
+	require.Contains(t, harness.gitCalls[4], "+"+commitTwo+":"+coreservices.GitSourceMirrorRef(commitTwo))
+}
+
+// TestPlaceholderProxiesNormalizeLikeFetchedPaths pins what lets the reuse
+// decision precede the fetch: an identity reads a declared proxy as one
+// placeholder whether or not its path exists yet, so the key a build recorded
+// over fetched paths is the key a later plan phase computes before fetching.
+func TestPlaceholderProxiesNormalizeLikeFetchedPaths(t *testing.T) {
+	recipe := &builderv0.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{
+		{ModuleRoot: "code", ProxyContext: "gomodproxy"},
+		{ModuleRoot: "lib", ProxyContext: "libproxy"},
+	}}
+	fetched := map[string]string{
+		"gomodproxy": "/tmp/codefly-go-modules-1/modcache/cache/download",
+		"libproxy":   "/tmp/codefly-go-modules-1/modcache/cache/download",
+	}
+	placeholders := placeholderProxies(recipe)
+	require.Equal(t, map[string]string{"gomodproxy": proxyPlaceholder, "libproxy": proxyPlaceholder}, placeholders)
+	none := resolvePrivateModuleBuild(func(string) (string, bool) { return "", false })
+	normalized := func(proxies map[string]string) []string {
+		args := append([]string{"buildx", "build", "-f", "/ws/api/Dockerfile"}, none.withProxies(proxies).buildxArgs(nil)...)
+		return normalizedBuildxArgs(append(args, "/ws/api"), "/ws/api", "/ws/api/Dockerfile", proxies)
+	}
+	require.Equal(t, normalized(fetched), normalized(placeholders))
+	require.Contains(t, normalized(placeholders), "gomodproxy="+proxyPlaceholder)
+	require.Nil(t, placeholderProxies(&builderv0.DockerBuildRecipe{Name: "plain"}))
+}
+
 func TestNormalizedBuildxArgsBindsTheBuildAndNotWhereItRan(t *testing.T) {
 	proxies := map[string]string{"proxy": "/tmp/codefly-go-modules-123/modcache/cache/download"}
 	args := []string{
@@ -395,6 +537,9 @@ type identityFixture struct {
 	service string
 	output  string
 	scope   imageBuildScope
+	// mirrors is the environment's declared registry mirrors, read by the
+	// base-image resolution. Nil for every fixture that is not about them.
+	mirrors map[string]string
 }
 
 func newIdentityFixture(t *testing.T, dockerfile string, emitted ...string) *identityFixture {
@@ -439,7 +584,7 @@ func (fixture *identityFixture) key(t *testing.T, emitted []string, options ...f
 	}
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
 	args := []string{"buildx", "build", "-t", recipe.GetImage(), "-f", dockerfilePath, fixture.scope.ContextDir}
-	identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil)
+	identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil, fixture.mirrors)
 	require.NoError(t, err)
 	require.NotEmpty(t, identity.Key)
 	return identity.Key
@@ -480,7 +625,7 @@ func TestDeclaredGoModuleRootOutsideTheContextRefusesToCache(t *testing.T) {
 	recipe := plan.GetRecipes()[0]
 	recipe.GoModuleDownloads = []*builderv0.GoModuleDownload{{ModuleRoot: "../elsewhere", ProxyContext: "proxy"}}
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
-	_, err = imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil)
+	_, err = imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil, nil)
 	require.ErrorContains(t, err, "outside its build context")
 }
 
@@ -517,7 +662,7 @@ func TestUnresolvableBaseImageRefusesToCache(t *testing.T) {
 	plan, err := coreservices.SingleImageBuildPlan(fixture.output, "example.test/app:v1", []string{"linux/amd64"}, []string{"Dockerfile"})
 	require.NoError(t, err)
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
-	_, err = imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil)
+	_, err = imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil, nil)
 	require.ErrorContains(t, err, "resolve base image example.test/base:stable")
 }
 
@@ -610,7 +755,7 @@ func TestTreeScopeAssembledContextIsHashedAsTheContext(t *testing.T) {
 		plan, scope := assemble(t)
 		dockerfilePath := filepath.Join(output, "Dockerfile")
 		args := []string{"buildx", "build", "-t", "example.test/app:v1", "-f", dockerfilePath, scope.ContextDir}
-		identity, err := imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, scope, dockerfilePath, "", args, nil)
+		identity, err := imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, scope, dockerfilePath, "", args, nil, nil)
 		require.NoError(t, err)
 		return identity.Key
 	}
@@ -645,7 +790,7 @@ func TestMaterializedServiceKeepsAStableIdentity(t *testing.T) {
 		require.NoError(t, err)
 		dockerfilePath := filepath.Join(output, "Dockerfile")
 		identity, err := imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, scope, dockerfilePath, "",
-			[]string{"buildx", "build", "-t", "example.test/store:v1", "-f", dockerfilePath, scope.ContextDir}, nil)
+			[]string{"buildx", "build", "-t", "example.test/store:v1", "-f", dockerfilePath, scope.ContextDir}, nil, nil)
 		require.NoError(t, err)
 		return identity.Key
 	}
@@ -678,10 +823,146 @@ func TestTwoRecipesOfOnePlanGetDistinctIdentities(t *testing.T) {
 	for _, recipe := range plan.GetRecipes() {
 		dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
 		args := []string{"buildx", "build", "--target", recipe.GetTarget(), "-t", recipe.GetImage(), "-f", dockerfilePath, fixture.scope.ContextDir}
-		identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil)
+		identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil, fixture.mirrors)
 		require.NoError(t, err)
 		keys[recipe.GetName()] = identity.Key
 	}
 	require.Len(t, keys, 2)
 	require.NotEqual(t, keys["api"], keys["worker"], "two images of one service share a context but not an identity")
+}
+
+func (peer *imageCachePeer) imageName() string {
+	if peer.image != "" {
+		return peer.image
+	}
+	return "example.test/app:v1"
+}
+
+// A released version is built once: a render whose registry already holds this
+// service at this version, built from these exact inputs, adopts that image and
+// builds nothing, whichever checkout pushed it.
+func TestAPublishedVersionFromTheSameInputsIsAdoptedNotRebuilt(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	restore := stubPublishedImage(t, "", "")
+	harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	key := harness.key(t)
+	require.NoError(t, os.RemoveAll(filepath.Join(harness.workspaceDir, filepath.FromSlash(imageCacheDir))),
+		"another checkout: nothing local to reuse")
+	restore()
+	published := "sha256:" + strings.Repeat("d", 64)
+	stubPublishedImage(t, published, key)
+	require.Equal(t, published, harness.build(t))
+	require.Equal(t, 1, harness.docker.calls(t, "build"), "the published version is adopted, not rebuilt")
+}
+
+// An image labelled before builds recorded their input classes carries only the
+// aggregate, which cannot say whether its code is this build's. Built from the
+// pinned release the CLI materialized, the code is the release's by
+// construction, so the image is adopted, not rebuilt over and not refused.
+func TestAPublishedVersionLabelledBeforeClassesIsAdoptedFromAPinnedRelease(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	// The clone root is <CODEFLY_HOME>/modules, which holds the service.
+	t.Setenv(resources.CodeflyHomeEnv, harness.workspaceDir)
+	t.Setenv(modulecache.Env, "")
+	harness.peer.image = "example.test/app:1.2.3"
+	published := "sha256:" + strings.Repeat("d", 64)
+	stubPublishedImage(t, published, "sha256:"+strings.Repeat("e", 64))
+	require.Equal(t, published, harness.build(t))
+	require.Equal(t, 0, harness.docker.calls(t, "build"))
+}
+
+// From a checkout, the same image is refused: an edited service whose version
+// did not move would otherwise be handed the earlier release's image with
+// nothing compared.
+func TestAPublishedVersionLabelledBeforeClassesIsRefusedFromACheckout(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	stubPublishedImage(t, "sha256:"+strings.Repeat("d", 64), "sha256:"+strings.Repeat("e", 64))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	require.ErrorContains(t, harness.tryBuild(ctx, t), "cannot be compared with this build's")
+	require.Equal(t, 0, harness.docker.calls(t, "build"), "a published release is never rebuilt")
+}
+
+// An image published before builds recorded their inputs proves nothing either
+// way, so it is built again, as it always was.
+func TestAPublishedVersionWithNoInputRecordIsBuiltAgain(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	stubPublishedImage(t, "sha256:"+strings.Repeat("d", 64), "")
+	harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+}
+
+func TestBuildInputsAreReadFromEveryPlatform(t *testing.T) {
+	key := "sha256:" + strings.Repeat("a", 64)
+	single := []byte(`{"config":{"Labels":{"` + buildInputsLabel + `":"` + key + `"}}}`)
+	require.Equal(t, key, buildLabelsFromImageConfig(single)[buildInputsLabel])
+	both := []byte(`{"linux/amd64":{"config":{"Labels":{"` + buildInputsLabel + `":"` + key + `"}}},"linux/arm64":{"config":{"Labels":{"` + buildInputsLabel + `":"` + key + `"}}}}`)
+	require.Equal(t, key, buildLabelsFromImageConfig(both)[buildInputsLabel])
+	disagree := []byte(`{"linux/amd64":{"config":{"Labels":{"` + buildInputsLabel + `":"` + key + `"}}},"linux/arm64":{"config":{"Labels":{}}}}`)
+	require.Equal(t, "", buildLabelsFromImageConfig(disagree)[buildInputsLabel], "platforms that disagree prove nothing")
+	require.Equal(t, []string{"buildx", "build", "--label", buildInputsLabel + "=" + key, "--push", "."},
+		withBuildInputsLabel([]string{"buildx", "build", "--push", "."}, imageIdentity{Key: key}))
+	classes := &buildClasses{Code: "sha256:c", Recipe: "sha256:r", Bases: "sha256:b"}
+	require.Equal(t, []string{"buildx", "build", "--label", buildInputsLabel + "=" + key,
+		"--label", buildCodeLabel + "=sha256:c", "--label", buildRecipeLabel + "=sha256:r", "--label", buildBasesLabel + "=sha256:b", "."},
+		withBuildInputsLabel([]string{"buildx", "build", "."}, imageIdentity{Key: key, Classes: classes}))
+	labelled := []byte(`{"config":{"Labels":{"` + buildCodeLabel + `":"sha256:c","` + buildBasesLabel + `":"sha256:b"}}}`)
+	require.Equal(t, map[string]string{buildCodeLabel: "sha256:c", buildBasesLabel: "sha256:b"}, buildLabelsFromImageConfig(labelled))
+}
+
+// stubPublishedImage makes the registry answer that the reference exists at
+// digest (empty: it does not) and records inputs (empty: none). It returns a
+// restore for a test that needs the real seams back mid-way.
+func stubPublishedImage(t *testing.T, digest, inputs string) func() {
+	t.Helper()
+	previousDigest, previousInputs := resolveImageManifestDigest, resolveImageBuildLabels
+	restore := func() { resolveImageManifestDigest, resolveImageBuildLabels = previousDigest, previousInputs }
+	t.Cleanup(restore)
+	resolveImageManifestDigest = func(ctx context.Context, reference, builder string) (string, error) {
+		if strings.HasSuffix(reference, ":1.2.3") {
+			if digest == "" {
+				return "", fmt.Errorf("%w: not published", errImageNotFound)
+			}
+			return digest, nil
+		}
+		return previousDigest(ctx, reference, builder)
+	}
+	resolveImageBuildLabels = func(context.Context, string, string) (map[string]string, error) {
+		return map[string]string{buildInputsLabel: inputs}, nil
+	}
+	return restore
+}
+
+// run takes the two phases a snapshot takes — Plan for every service, then Build —
+// and returns the first refusal, so a test can assert one.
+func (harness *imageCacheHarness) run(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
+	build, err := NewBuilder(ctx, instance, world)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = build.Plan(ctx); err != nil {
+		return build, err
+	}
+	_, err = build.Build(ctx)
+	return build, err
+}
+
+// tryBuild is build for a test that expects a refusal: the same world, the error
+// returned rather than required away.
+func (harness *imageCacheHarness) tryBuild(ctx context.Context, t *testing.T) error {
+	t.Helper()
+	workspace, service := harness.composition(t)
+	instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "saas"}}
+	instance.Builder = &services.BuilderInstance{Instance: instance, Builder: harness.client}
+	world := &World{Workspace: workspace, Env: harness.env, Push: harness.push, CaptureImageDigest: harness.push && !harness.noCapture, BuildxBuilder: "stub"}
+	prefetch := newGoModulePrefetch()
+	prefetch.run = recordingGo(&harness.goCalls, nil)
+	world.goModulePrefetch = prefetch
+	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
+	_, err := harness.run(ctx, instance, world)
+	return err
 }

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -35,10 +36,15 @@ import (
 )
 
 type Flow struct {
+	runtimeParticipants atomic.Pointer[[]string]
+
+	compositionCheck CompositionCheck
 	// configurationReferences orders a consumer after the producers its
 	// workspace configurations reference (configurationReferenceOption); every
 	// rebuild of the graph carries it.
 	configurationReferences architecture.DependencyOption
+	runtimePrerequisites    RuntimePrerequisiteProvider
+	retainedModules         []string
 
 	// providedWorkspaceConfigurations is the configurations this invocation will
 	// RESOLVE — overrides included — read once at NewFlow and used for three
@@ -81,6 +87,15 @@ type Flow struct {
 	// collide on ports and on container-recovery scope. The origin stays the
 	// service the run is named and reported by.
 	coRoots []string
+	// moduleSeeds are the modules the run's closure was resolved from, kept
+	// so an extension resolves it again with the modules it adds.
+	moduleSeeds []string
+	// extendMu serialises Extend, which rewrites the composition every
+	// runner reads.
+	extendMu sync.Mutex
+	// spawn creates a run manager for a service; a test replaces it to
+	// start no agent. Nil spawns through New.
+	spawn func(ctx context.Context, module *resources.Module, service *resources.Service) (IManager, error)
 
 	// The world
 	world *World
@@ -171,6 +186,9 @@ type Flow struct {
 	remoteServices []*Remote
 
 	excludedDependencyServices []string
+	// excludedByEnvironment is the environment's exclude-services, kept
+	// apart so a run profile's exclusions add to it rather than replace it.
+	excludedByEnvironment []string
 	// runProfile is the run profile WithRunProfile applied, as resolved; the
 	// plan-time reference check hands it to core unchanged. Zero when none was.
 	runProfile resources.RunProfile
@@ -180,7 +198,7 @@ type Flow struct {
 	// per-service status.
 	stateListener StateListener
 	// runningHook is told each service that reached Running, after the state
-	// listener: a native run delivers that service's presence then.
+	// listener: a native run delivers that service's module manifest then.
 	runningHook func(service string, port int)
 
 	// beganMu guards states. states records the last runtime lifecycle state
@@ -215,12 +233,30 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 	return values
 }
 
+// RuntimeStartAttempt separates setup/cleanup from admission. Complete receives
+// false on every failure, including request preparation and cancellation.
+type RuntimeStartAttempt struct {
+	Admit    func(context.Context) error
+	Complete func(started bool)
+}
+
 type World struct {
+	// beforeSourceRestart validates the accepted route inventory before stopping a service.
+	beforeSourceRestart func(context.Context) error
+
+	// BeforeRuntimeStop ends run-owned admission and credential refresh even
+	// when manager initialization failed before a runtime was created.
+	BeforeRuntimeStop func()
+
+	// BeginRuntimeStart owns a local attempt from before stop/preparation through
+	// its outcome. Admission remains immediately before the Start RPC.
+	BeginRuntimeStart func(context.Context, *resources.Service) (*RuntimeStartAttempt, error)
+
 	// RenderOwnedGroups supplies the render-owned workspace configuration
-	// groups (workload-identity, module-authority) to one service of a NATIVE
-	// run. A render projects them per workload; a laptop run has no render,
-	// so the CLI issues the identities itself and hands the groups out here,
-	// to a service that declares them and to nobody else. Nil outside such a run.
+	// group (module-authority) to one service of a NATIVE run. A render
+	// projects it per workload; a laptop run has no render, so the CLI hands
+	// the group out here, to a service that declares it and to nobody else.
+	// Nil outside such a run.
 	RenderOwnedGroups func(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error)
 
 	// RuntimeOverrides supplies per-service process environment a NATIVE run
@@ -262,6 +298,9 @@ type World struct {
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
 	goModulePrefetch *goModulePrefetch
+	// gitSourcePrefetch holds the git source mirrors this flow's recipes
+	// declared, fetched the same way (see gitSourcePrefetch).
+	gitSourcePrefetch *gitSourcePrefetch
 
 	// hostArchitecture reads the container engine's architecture, which a
 	// local cluster's nodes run; nil selects `docker info`.
@@ -335,6 +374,13 @@ type World struct {
 	// (checkEffectiveWorkspaceConfigurationReferences). A function for the same
 	// reason as compositionRootGroups: the read happens after the World exists.
 	providedWorkspaceConfigurationInfos func() []*basev0.ConfigurationInformation
+
+	// ambiguousWorkspaceConfigurations names the groups two composed modules
+	// define differently, from the same loader. Such a group is absent from
+	// providedWorkspaceConfigurationInfos, and an optional group in it must
+	// still reach core, which refuses it naming both providers, rather than
+	// read as unprovided (unprovidedOptionalGroup).
+	ambiguousWorkspaceConfigurations func() map[string]error
 
 	// workspaceProducerLookup answers "is this <module>/<service> a service of
 	// the workspace", which the dependency graph cannot: an excluded producer is
@@ -432,9 +478,11 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
 		return nil, w.Wrap(err)
 	}
-	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
-	if err != nil {
+	if err := environments.ValidateEnvironmentExclusions(ctx, workspace, env); err != nil {
 		return nil, w.Wrap(err)
+	}
+	if service != nil && module != nil && env.Excludes(module.Name, service.Name) {
+		return nil, w.NewError("environment %q excludes %s (exclude-services), so it has nothing to run, build or deploy there", env.Name, resources.ServiceUnique(module.Name, service.Name))
 	}
 
 	// Get dependency graph. A service reaching a producer only through a
@@ -464,10 +512,35 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		w.Debug("ordering the run with no workspace configuration reference edges: the configurations this invocation resolves could not be read",
 			wool.ErrField(providedErr))
 	}
+	graphWorkspace, err := runModuleClosure(ctx, workspace, retainedSeeds(options.moduleClosureSeeds, options.retainedModules), providedWorkspaceConfigurations)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+
+	if options.compositionCheck != nil {
+		if err = options.compositionCheck(ctx, graphWorkspace, env); err != nil {
+			return nil, w.Wrap(err)
+		}
+	}
+
 	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
 	var graphOptions []architecture.DependencyOption
+	if options.runtimePrerequisites != nil {
+		prerequisites, prerequisiteErr := options.runtimePrerequisites(ctx, graphWorkspace)
+		if prerequisiteErr != nil {
+			return nil, prerequisiteErr
+		}
+		graphOptions = append(graphOptions, architecture.WithRuntimePrerequisites(prerequisites))
+	}
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
+	}
+	// A service the environment withdraws is not in the graph at all, and
+	// neither is a consumer's edge to it (ValidateExcludedServices admitted
+	// only declared withdrawals).
+	excludedByEnvironment := env.ExcludedServiceUniques()
+	if len(excludedByEnvironment) > 0 {
+		graphOptions = append(graphOptions, architecture.ExcludeServices(excludedByEnvironment...))
 	}
 	dependencies, err := architecture.NewServiceDependencies(ctx, graphWorkspace, graphOptions...)
 	if err != nil {
@@ -488,9 +561,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
-	localReader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	localReader, err := NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+	if providedErr == nil && providedWorkspaceConfigurations != nil {
+		localReader.snapshot = hopRoutingSnapshotOf(providedWorkspaceConfigurations.Infos)
+		localReader.frozen = true
 	}
 	configurationManager.WithLoader(localReader)
 	// Bound here, with the loader: the resolution plans producer discovery
@@ -509,6 +586,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
 		return workspaceConfigurationInfos(localReader.Configurations())
 	}
+	world.ambiguousWorkspaceConfigurations = localReader.AmbiguousWorkspaceConfigurations
 
 	// A GitOps snapshot render is value-free: it emits secret references derived
 	// from the committed declarations and discards every secret value. Resolving
@@ -544,10 +622,14 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	flow := &Flow{
-		workspace:      workspace,
-		graphWorkspace: graphWorkspace,
-		originService:  service,
-		originModule:   module,
+		workspace:            workspace,
+		graphWorkspace:       graphWorkspace,
+		compositionCheck:     options.compositionCheck,
+		moduleSeeds:          options.moduleClosureSeeds,
+		runtimePrerequisites: options.runtimePrerequisites,
+		retainedModules:      options.retainedModules,
+		originService:        service,
+		originModule:         module,
 
 		world: world,
 
@@ -562,6 +644,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
+
+		excludedByEnvironment:      excludedByEnvironment,
+		excludedDependencyServices: excludedByEnvironment,
+	}
+	world.beforeSourceRestart = func(ctx context.Context) error {
+		return flow.CheckRoutingSnapshot(ctx, flow.workspace)
 	}
 	world.runtimeContextFor = flow.runtimeContextFor
 	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
@@ -624,6 +712,24 @@ func (flow *Flow) runtimeContextFor(svc *resources.Service) string {
 		serviceName = svc.Name
 	}
 	return flow.preferences.RuntimeContextFor(serviceName, agentName, flow.runtimeContext)
+}
+
+// ServiceRuntimeContext is the runtime context a service runs in, as this run
+// resolved it — a "free" agent's chosen backend included — or, for a service
+// the run holds no runner for, the context its preferences select.
+func (flow *Flow) ServiceRuntimeContext(unique string) string {
+	if flow.hub != nil {
+		for _, m := range flow.hub.all() {
+			if manager, ok := m.(*Manager); ok && manager.Runner != nil && manager.Runner.Unique() == unique {
+				return manager.Runner.runtimeContext
+			}
+		}
+	}
+	service, err := flow.ServiceFromUnique(unique)
+	if err != nil {
+		service = nil
+	}
+	return flow.runtimeContextFor(service)
 }
 
 // DockerStatus captures whether the Docker engine is reachable and, for
@@ -706,7 +812,7 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 func (flow *Flow) classifyFreeBackends() ([]runtimeResolution, bool) {
 	var resolutions []runtimeResolution
 	needsDocker := false
-	for _, m := range flow.hub.managers {
+	for _, m := range flow.hub.all() {
 		manager, ok := m.(*Manager)
 		if !ok || manager.Runner == nil {
 			continue
@@ -860,7 +966,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	flow.playbook = playbook
 
 	// Fix the callback
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		manager.DoSetCallback(flow.playbook.Seed)
 		// Wire post-start crashes into the flow so Start cancels the playbook.
 		manager.DoSetFailureSink(flow.reportFailure)
@@ -939,7 +1045,7 @@ func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil {
 			continue
 		}
@@ -961,7 +1067,7 @@ func (flow *Flow) OriginTestSkipped() bool {
 		return false
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil || manager.Unique() != origin {
 			continue
 		}
@@ -1002,7 +1108,7 @@ func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil || manager.Unique() != origin {
 			continue
 		}
@@ -1025,7 +1131,7 @@ func (flow *Flow) OriginSyncSkipped() bool {
 		return false
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil || manager.Unique() != origin {
 			continue
 		}
@@ -1044,7 +1150,7 @@ func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
 	if flow == nil || flow.hub == nil {
 		return outputs
 	}
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
 			BuilderDeploymentOutput() *builderv0.DeploymentOutput
 		})
@@ -1066,7 +1172,7 @@ func (flow *Flow) DeployedConfigurations() map[string]*basev0.Configuration {
 	if flow == nil || flow.hub == nil {
 		return configurations
 	}
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
 			BuilderDeployedConfiguration() *basev0.Configuration
 		})
@@ -1090,7 +1196,7 @@ func (flow *Flow) DeployedSecretKeys() map[string][]string {
 	if flow == nil || flow.hub == nil {
 		return keys
 	}
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
 			BuilderDeployedSecretKeys() []string
 		})
@@ -1135,7 +1241,7 @@ func (flow *Flow) OriginImageDigest() string {
 		return ""
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager.Unique() != origin {
 			continue
 		}
@@ -1156,7 +1262,7 @@ func (flow *Flow) OriginImageEvidence() []*builderv0.ImageSBOM {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager.Unique() != origin {
 			continue
 		}
@@ -1344,28 +1450,15 @@ func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
 	if flow.runningHook != nil && state == tui.StateRunning {
 		flow.runningHook(service, port)
 	}
+	if state == tui.StateRunning {
+		flow.checkLoopback(service)
+	}
 }
 
 // WithRunningHook registers a function told each service that reaches
 // Running, with its port. Chainable with the state listener: both are told.
 func (flow *Flow) WithRunningHook(hook func(service string, port int)) {
 	flow.runningHook = hook
-}
-
-// StartedArtifact is what the agent running a service reported it started on
-// its last successful Start — the program it ran and the files that program
-// was handed — or nil when the agent reported none. A consumer that pins the
-// build a process is at reads it here instead of deriving a path from one
-// agent family's layout; nil is a refusal to make, not a path to guess.
-func (flow *Flow) StartedArtifact(unique string) *runtimev0.StartedArtifact {
-	if flow == nil || flow.hub == nil {
-		return nil
-	}
-	manager, err := flow.hub.NewManager(unique)
-	if err != nil {
-		return nil
-	}
-	return manager.RunnerStartedArtifact()
 }
 
 // World is the run's world: its environment, workspace and shared state.
@@ -1450,6 +1543,26 @@ func (flow *Flow) ServiceReachable(ctx context.Context, service string) bool {
 	return evaluateReadinessProbes(ctx, requirements) == nil
 }
 
+// ServiceReadiness is the readiness the run gates on (Readiness), for one
+// service: its runtime Start completed, and every endpoint its consumers need
+// answers its declared predicate. It returns the requirement that does not
+// hold, or nil when the service is ready, so a caller that must act only once
+// a service it depends on is serving can say why it is still waiting, rather
+// than probing the service a second way.
+func (flow *Flow) ServiceReadiness(ctx context.Context, service string) *ReadinessFailure {
+	if flow == nil {
+		return &ReadinessFailure{Service: service, Predicate: PredicateRequirements, Reason: "flow has not started"}
+	}
+	if !flow.startedRun(service) {
+		return &ReadinessFailure{Service: service, Predicate: PredicateLifecycle, Reason: "runtime start has not completed"}
+	}
+	requirements, err := flow.serviceEndpointRequirements(ctx, service)
+	if err != nil {
+		return &ReadinessFailure{Service: service, Predicate: PredicateRequirements, Reason: err.Error()}
+	}
+	return evaluateReadinessProbes(ctx, requirements)
+}
+
 // PromoteReachable invokes onReady once for each managed dependency (origin
 // excluded) that this run launched and is now accepting connections. It exists
 // because the action loop emits a dependency's StateRunning only when its
@@ -1509,8 +1622,8 @@ func (flow *Flow) AgentCacheKeys() []string {
 		return nil
 	}
 	seen := map[string]bool{}
-	keys := make([]string, 0, len(flow.hub.managers))
-	for _, manager := range flow.hub.managers {
+	keys := make([]string, 0, len(flow.hub.all()))
+	for _, manager := range flow.hub.all() {
 		if manager == nil {
 			continue
 		}
@@ -1575,12 +1688,18 @@ func (flow *Flow) newTeardownContext() (context.Context, func()) {
 }
 
 func (flow *Flow) Stop() error {
+	if flow != nil && flow.world != nil && flow.world.BeforeRuntimeStop != nil {
+		flow.world.BeforeRuntimeStop()
+	}
 	if flow == nil || flow.hub == nil || flow.validationSkipped {
 		return nil
 	}
 	if flow.world != nil {
 		if err := flow.world.goModulePrefetch.Close(); err != nil {
 			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the Go module prefetch", wool.ErrField(err))
+		}
+		if err := flow.world.gitSourcePrefetch.Close(); err != nil {
+			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the git source prefetch", wool.ErrField(err))
 		}
 	}
 	// Builder-only flows have no Runtime runner to stop. Their service-scoped
@@ -1848,11 +1967,14 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if _, err := flow.projectContainerRecovery(); err != nil {
 		w.Warn("cannot project container recovery ownership; operations requiring recovery will be refused", wool.Field("error", err.Error()))
 	}
-	remotes, dependencyOptions := flow.dependencyGraphOptions()
-	if err := flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
+	remotes, dependencyOptions, err := flow.dependencyGraphOptions(ctx)
+	if err != nil {
+		return err
+	}
+	if err = flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
 		return w.Wrap(err)
 	}
-	if err := flow.selectDependencyStage(); err != nil {
+	if err = flow.selectDependencyStage(); err != nil {
 		return w.Wrap(err)
 	}
 
@@ -1913,38 +2035,8 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// already-spawned runner reachable by flow.Stop() — otherwise a partial
 	// init orphans those agents (and any process group they hold) until the
 	// next run's reaper sweeps them.
-	for _, unique := range required {
-		flow.output().RegisterLoggingResource(unique)
-		// Register source to handle "pretty" logging
-
-		info, err := resources.ParseServiceWithOptionalModule(unique)
-		w.Debug("creating run manager", wool.Field("for", unique))
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		mod, err := flow.workspace.LoadModuleFromName(ctx, info.Module)
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		svc, err := mod.LoadServiceFromName(ctx, info.Name)
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		flow.services = append(flow.services, svc)
-
-		manager, err := New(ctx, mod, svc, flow.world)
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		flow.configureRunner(manager.Runner, svc)
-		if remote, ok := remotes[unique]; ok {
-			manager.Runner.WithRemote(remote.Environment)
-		}
-		flow.hub.managers = append(flow.hub.managers, manager)
+	if _, _, err := flow.createManagers(ctx, required, remotes); err != nil {
+		return w.Wrap(err)
 	}
 
 	// Now add the current one
@@ -1992,6 +2084,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.resolveDockerFallback(ctx); err != nil {
 		return w.Wrap(err)
 	}
+	flow.publishRuntimeServices()
 	return nil
 }
 
@@ -1999,9 +2092,16 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 // with, and the remote services keyed by unique for the callers that need them:
 // the reference-ordering option, the cutoffs for remote-bound services, and the
 // caller's exclusions.
-func (flow *Flow) dependencyGraphOptions() (map[string]*Remote, []architecture.DependencyOption) {
+func (flow *Flow) dependencyGraphOptions(ctx context.Context) (map[string]*Remote, []architecture.DependencyOption, error) {
 	remotes := make(map[string]*Remote)
 	var options []architecture.DependencyOption
+	if flow.runtimePrerequisites != nil {
+		prerequisites, err := flow.runtimePrerequisites(ctx, flow.dependencyWorkspace())
+		if err != nil {
+			return nil, nil, err
+		}
+		options = append(options, architecture.WithRuntimePrerequisites(prerequisites))
+	}
 	if flow.configurationReferences != nil {
 		options = append(options, flow.configurationReferences)
 	}
@@ -2016,7 +2116,7 @@ func (flow *Flow) dependencyGraphOptions() (map[string]*Remote, []architecture.D
 	if len(flow.excludedDependencyServices) > 0 {
 		options = append(options, architecture.ExcludeServices(flow.excludedDependencyServices...))
 	}
-	return remotes, options
+	return remotes, options, nil
 }
 
 // rebuildDependencyGraph rebuilds the graph when this run narrows it, and keeps
@@ -2539,7 +2639,7 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 		return fmt.Errorf("run profiles can only be applied to run or test flows")
 	}
 	flow.runProfile = profile
-	flow.excludedDependencyServices = append([]string(nil), profile.ExcludeDependencies...)
+	flow.excludedDependencyServices = append(slices.Clone(flow.excludedByEnvironment), profile.ExcludeDependencies...)
 	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
 	for _, configuration := range profile.ExcludeWorkspaceConfigurations {
 		flow.world.excludedWorkspaceConfigurations[configuration] = true
@@ -2555,6 +2655,14 @@ func (world *World) goModules() *goModulePrefetch {
 		world.goModulePrefetch = newGoModulePrefetch()
 	}
 	return world.goModulePrefetch
+}
+
+// gitSources is the flow's git source prefetch, created on first use.
+func (world *World) gitSources() *gitSourcePrefetch {
+	if world.gitSourcePrefetch == nil {
+		world.gitSourcePrefetch = newGitSourcePrefetch()
+	}
+	return world.gitSourcePrefetch
 }
 
 // imagePlatforms is the environment's image platforms, resolved once per flow.

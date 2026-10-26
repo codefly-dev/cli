@@ -40,7 +40,7 @@ const syncStarted = "2026-10-10T12:00:00Z"
 // attempt older than the sync.
 func TestARunReadsOnlyItsOwnDeliveryAttempt(t *testing.T) {
 	started, _ := time.Parse(time.RFC3339, syncStarted)
-	key := "payments/deliver-presence-payments-local-abc"
+	key := "payments/deliver-manifest-payments-local-abc"
 	answers := []string{
 		jobsAnswer("old", "2026-10-10T11:00:00Z", "Complete"),
 		jobsAnswer("stray", "2026-10-10T11:59:00Z", "Complete"), // another UID, but older than this run's sync
@@ -65,7 +65,7 @@ func TestARunReadsOnlyItsOwnDeliveryAttempt(t *testing.T) {
 			return "refused payments.local.payments.json with 401: token review refused\n", nil
 		},
 	}
-	delivery, err := driver.Await(context.Background(), &gitops.DeliveryJob{Name: "deliver-presence-payments-local-abc", Namespace: "payments"})
+	delivery, err := driver.Await(context.Background(), &gitops.DeliveryJob{Name: "deliver-manifest-payments-local-abc", Namespace: "payments"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +107,9 @@ type fakeArgo struct {
 
 func newFakeArgo(server string) *fakeArgo {
 	return &fakeArgo{app: map[string]any{
-		"metadata": map[string]any{"name": "in-cluster-payments-solution-host-bindings", "resourceVersion": "1", "ownerReferences": []any{map[string]any{"apiVersion": "argoproj.io/v1alpha1", "kind": "ApplicationSet", "name": "payments-local", "uid": "applied-set", "controller": true}}},
+		"metadata": map[string]any{"name": "in-cluster-payments-module-manifests", "resourceVersion": "1", "ownerReferences": []any{map[string]any{"apiVersion": "argoproj.io/v1alpha1", "kind": "ApplicationSet", "name": "payments-local", "uid": "applied-set", "controller": true}}},
 		"spec": map[string]any{
-			"source":      map[string]any{"repoURL": "https://fetch.example.test/repo.git", "targetRevision": "abc", "path": "env/payments/solution-host-bindings/overlays/local"},
+			"source":      map[string]any{"repoURL": "https://fetch.example.test/repo.git", "targetRevision": "abc", "path": "env/payments/module-manifests/overlays/local"},
 			"destination": map[string]any{"server": server, "namespace": "payments"},
 		},
 		"status": map[string]any{},
@@ -157,8 +157,8 @@ func (argo *fakeArgo) run(_ context.Context, _ string, args ...string) (string, 
 
 func deliveryApplication() gitops.DeliveryApplication {
 	return gitops.DeliveryApplication{
-		Name: "in-cluster-payments-solution-host-bindings", RepoURL: "https://fetch.example.test/repo.git",
-		TargetRevision: "abc", Path: "env/payments/solution-host-bindings/overlays/local",
+		Name: "in-cluster-payments-module-manifests", RepoURL: "https://fetch.example.test/repo.git",
+		TargetRevision: "abc", Path: "env/payments/module-manifests/overlays/local",
 		Server: "https://kubernetes.default.svc", Namespace: "payments",
 		Owner: gitops.ApplicationSetIdentity{APIVersion: "argoproj.io/v1alpha1", Kind: "ApplicationSet", Name: "payments-local", Namespace: "argocd", UID: "applied-set"},
 	}
@@ -175,11 +175,11 @@ func TestARunAcquiresAFreshSyncDeterministically(t *testing.T) {
 	argo.running, argo.consume, argo.conflicts = 2, 1, 1
 	driver := &ClusterDriver{AwaitTimeout: time.Minute, Poll: time.Millisecond, nonce: "run", Kubectl: argo.run}
 	application := deliveryApplication()
-	jobs := []gitops.DeliveryJob{{Name: "deliver-presence-x", Namespace: "payments", Application: application}}
+	jobs := []gitops.DeliveryJob{{Name: "deliver-manifest-x", Namespace: "payments", Application: application}}
 	if err := driver.acquireAttempts(context.Background(), jobs); err != nil {
 		t.Fatal(err)
 	}
-	if got := driver.attemptStarts["payments/deliver-presence-x"].Format(time.RFC3339); got != syncStarted {
+	if got := driver.attemptStarts["payments/deliver-manifest-x"].Format(time.RFC3339); got != syncStarted {
 		t.Fatalf("the attempt is anchored at %s, want this run's accepted sync %s", got, syncStarted)
 	}
 	if argo.busyPatches != 0 {
@@ -189,7 +189,7 @@ func TestARunAcquiresAFreshSyncDeterministically(t *testing.T) {
 		t.Fatalf("requested %d syncs, want 3 (one refused as stale, one consumed, one accepted): %v", len(argo.patches), argo.patches)
 	}
 	for _, patch := range argo.patches {
-		if !strings.Contains(patch, `"resourceVersion":"1"`) || !strings.Contains(patch, `"value":"run-in-cluster-payments-solution-host-bindings"`) || !strings.Contains(patch, `"revision":"abc"`) {
+		if !strings.Contains(patch, `"resourceVersion":"1"`) || !strings.Contains(patch, `"value":"run-in-cluster-payments-module-manifests"`) || !strings.Contains(patch, `"revision":"abc"`) {
 			t.Fatalf("the sync request is not conditional, identified and at the revision: %s", patch)
 		}
 	}

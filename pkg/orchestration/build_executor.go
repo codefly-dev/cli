@@ -62,7 +62,7 @@ func NewBuildExecutor(ctx context.Context, hub *Hub) (*BuildExecutor, error) {
 		return nil, w.NewError("hub cannot be nil")
 	}
 	var builders []*BuildExecutorHelper
-	for _, manager := range hub.managers {
+	for _, manager := range hub.all() {
 		builders = append(builders, &BuildExecutorHelper{manager: manager})
 	}
 	return &BuildExecutor{hub: hub, builders: builders}, nil

@@ -90,9 +90,10 @@ func serviceIdentityDeclaration(serviceName string) string {
 // service passes the graph check.
 func TestValidateEnvironmentsAllowsKnownService(t *testing.T) {
 	for name, declaration := range map[string]string{
-		"service-secrets":  serviceSecretsDeclaration("accounts"),
-		"service-config":   serviceConfigDeclaration("accounts"),
-		"service-identity": serviceIdentityDeclaration("accounts"),
+		"service-secrets":          serviceSecretsDeclaration("accounts"),
+		"service-config":           serviceConfigDeclaration("accounts"),
+		"qualified service-config": serviceConfigDeclaration("saas/accounts"),
+		"service-identity":         serviceIdentityDeclaration("accounts"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -112,9 +113,10 @@ func TestValidateEnvironmentsAllowsKnownService(t *testing.T) {
 // projection time; the graph check must reject it.
 func TestValidateEnvironmentsRejectsUnknownService(t *testing.T) {
 	for name, declaration := range map[string]string{
-		"service-secrets":  serviceSecretsDeclaration("accunts"),
-		"service-config":   serviceConfigDeclaration("accunts"),
-		"service-identity": serviceIdentityDeclaration("accunts"),
+		"service-secrets":          serviceSecretsDeclaration("accunts"),
+		"service-config":           serviceConfigDeclaration("accunts"),
+		"qualified service-config": serviceConfigDeclaration("wrong/accounts"),
+		"service-identity":         serviceIdentityDeclaration("accunts"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -126,7 +128,7 @@ func TestValidateEnvironmentsRejectsUnknownService(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected ValidateEnvironments to reject unknown service")
 			}
-			if !strings.Contains(err.Error(), "accunts") || !strings.Contains(err.Error(), name) {
+			if !strings.Contains(err.Error(), strings.TrimPrefix(name, "qualified ")) || (!strings.Contains(err.Error(), "accunts") && !strings.Contains(err.Error(), "wrong/accounts")) {
 				t.Fatalf("error = %v, want it to name the block and the unknown service", err)
 			}
 		})
@@ -241,6 +243,12 @@ environments:
             kind: SecretStore
           remote-keys:
             stripe-key: stripe/prod/key
+            identity-client-secret:
+              key: workos-app
+              property: client_secret
+              secret-store:
+                name: platform-identity
+                kind: ClusterSecretStore
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
 		t.Fatal(err)
@@ -274,6 +282,45 @@ environments:
 	}
 	if billing.Name != "aws-secrets-billing" || billing.Kind != "SecretStore" {
 		t.Fatalf("billing secret store override = %+v", billing)
+	}
+	// One key of billing is read through a store of its own, the way a cell keeps
+	// its identity provider's secrets apart; the service's other keys are not.
+	identity := secrets.Services["billing"].RemoteKeys["identity-client-secret"]
+	if identity.Key != "workos-app" || identity.Property != "client_secret" || identity.SecretStore == nil ||
+		*identity.SecretStore != (environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}) {
+		t.Fatalf("per-key secret store = %+v", identity)
+	}
+	if stripe := secrets.Services["billing"].RemoteKeys["stripe-key"]; stripe.SecretStore != nil {
+		t.Fatalf("a key without its own store = %+v", stripe)
+	}
+}
+
+// A per-key secret-store is a reference an ExternalSecret can resolve, or it is
+// refused where it is declared rather than rendered into a data item External
+// Secrets rejects.
+func TestEnvironmentSecretRemoteRefRefusesAnUnresolvableStore(t *testing.T) {
+	for name, declaration := range map[string]string{
+		"no kind":       "key: workos-app\nsecret-store:\n  name: platform-identity\n",
+		"backend kind":  "key: workos-app\nsecret-store:\n  name: platform-identity\n  kind: gcp-secret-manager\n",
+		"unknown field": "key: workos-app\nstore: platform-identity\n",
+	} {
+		var ref environments.EnvironmentSecretRemoteRef
+		if err := yaml.Unmarshal([]byte(declaration), &ref); err == nil {
+			t.Errorf("%s: declaration %q loaded as %+v", name, declaration, ref)
+		}
+	}
+	var ref environments.EnvironmentSecretRemoteRef
+	if err := yaml.Unmarshal([]byte("key: workos-app\nproperty: client_secret\nsecret-store:\n  name: platform-identity\n  kind: ClusterSecretStore\n"), &ref); err != nil {
+		t.Fatal(err)
+	}
+	// The round trip keeps the store: `environment import` rewrites the workspace.
+	out, err := yaml.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again environments.EnvironmentSecretRemoteRef
+	if err := yaml.Unmarshal(out, &again); err != nil || !again.Equal(ref) {
+		t.Fatalf("round trip %q -> %+v (%v)", out, again, err)
 	}
 }
 
@@ -745,16 +792,18 @@ environments:
             DATABASE_HOST: accounts/prod/host
 `
 	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspaceWith("accounts")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := loadDeploymentWorkspace(context.Background(), root)
-	if err == nil {
-		t.Fatal("expected load to refuse a key declared as both a value and a secret")
-	}
-	if !strings.Contains(err.Error(), "DATABASE_HOST") || !strings.Contains(err.Error(), "accounts") {
-		t.Fatalf("error = %v, want it to name the service and the key", err)
+	for _, name := range []string{"accounts", "saas/accounts"} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspaceWith(name)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := loadDeploymentWorkspace(context.Background(), root)
+		if err == nil {
+			t.Fatal("expected load to refuse a key declared as both a value and a secret")
+		}
+		if !strings.Contains(err.Error(), "DATABASE_HOST") || !strings.Contains(err.Error(), name) {
+			t.Fatalf("error = %v, want it to name the service and the key", err)
+		}
 	}
 
 	other := t.TempDir()
@@ -872,4 +921,42 @@ func loadDeploymentWorkspace(ctx context.Context, dir string) (*deploymentWorksp
 		return nil, err
 	}
 	return &deploymentWorkspace{Workspace: w, Environments: envs}, nil
+}
+
+// A local environment declares the secrets its run generates the way a cell's
+// does, under service-secrets.generate, and names no store: its keys live in
+// the workspace's own secret configurations. A block declaring neither a store
+// nor a generator is refused.
+func TestEnvironmentServiceSecretsGeneratorsAloneNameNoStore(t *testing.T) {
+	root := t.TempDir()
+	workspace := `name: platform
+layout: modules
+environments:
+  - name: local
+    service-secrets:
+      generate:
+        - scope: workspace
+          configuration: hop
+          keys: [PROOF]
+`
+	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadDeploymentWorkspace(context.Background(), root)
+	if err != nil {
+		t.Fatalf("generators alone: %v", err)
+	}
+	secrets := loaded.Environments[0].ServiceSecrets
+	if secrets.Stored() || len(secrets.Generate) != 1 {
+		t.Fatalf("loaded %+v", secrets)
+	}
+	if format, size := secrets.Generate[0].Encoding(); format != "hex" || size != 32 {
+		t.Fatalf("default encoding %s/%d", format, size)
+	}
+	if err := (&environments.EnvironmentServiceSecrets{}).Validate(); err == nil || !strings.Contains(err.Error(), "neither a secret-store nor a generator") {
+		t.Fatalf("an empty block: %v", err)
+	}
+	if !(&environments.EnvironmentServiceSecrets{SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell", Kind: "ClusterSecretStore"}}).Stored() {
+		t.Fatal("a named store is stored")
+	}
 }

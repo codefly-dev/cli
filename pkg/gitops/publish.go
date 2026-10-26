@@ -203,7 +203,7 @@ func preparePublish(
 	if err != nil {
 		return nil, err
 	}
-	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, source, baseBranch, promotionBranch, selfPromotes, bound)
+	repo, cleanup, baseRevision, branchRevision, replacesRevision, err := clonePromotionRepository(ctx, source, baseBranch, promotionBranch, selfPromotes, bound)
 	if err != nil {
 		return nil, err
 	}
@@ -211,15 +211,15 @@ func preparePublish(
 		cleanup()
 		return nil, err
 	}
-	targetPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
+	targetPath := deliveryModulePath(pathRoot, request.Module)
 	target, err := confinedJoin(repo, targetPath)
 	if err != nil {
 		return fail(err)
 	}
-	if branchRevision != "" {
-		if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, branchRevision, promotionBranch, targetPath); err != nil {
-			return fail(err)
-		}
+	// A stale branch about to be replaced is held to the module path too: one
+	// carrying someone else's change is refused, never overwritten.
+	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, targetPath, branchRevision, replacesRevision); err != nil {
+		return fail(err)
 	}
 	startRevision := baseRevision
 	if branchRevision != "" {
@@ -251,6 +251,10 @@ func preparePublish(
 		return fail(err)
 	}
 	staleConsumers := describeStaleConsumers(staleOnBase)
+	allowedRemovals, err := holdCellToBase(ctx, workspace, env, repo, baseBranch, baseRevision, pathRoot, request.AllowCellRemovals)
+	if err != nil {
+		return fail(err)
+	}
 	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
 	if err != nil {
 		return fail(err)
@@ -268,12 +272,13 @@ func preparePublish(
 		Repository: config.RepoURL, RepositorySlug: repositorySlug,
 		Path: targetPath, BaseBranch: baseBranch, BaseRevision: baseRevision,
 		PromotionBranch: promotionBranch, BranchRevision: branchRevision,
-		ExistingCommit: branchRevision,
-		Module:         request.Module, Environment: request.Environment,
+		ExistingCommit: branchRevision, ReplacesBranchRevision: replacesRevision,
+		Module: request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
 		Delivery:        inventory.Delivery,
 		StaleConsumers:  staleConsumers,
+		CellRemovals:    allowedRemovals,
 		Carriers:        publication.options.Carriers,
 		SelfPromotes:    selfPromotes,
 		LocalRepository: bound,
@@ -399,7 +404,7 @@ func (p *deliveryPublication) selfPromotes(env *environments.Environment) bool {
 }
 
 // addressHost points the publication at the environment's host: the delivery
-// API its Jobs post to, and the envelope revision and the domain its
+// API its Jobs post to, and the host and the domain its
 // documents must declare.
 func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) error {
 	// Hosted delivery is what needs the release identity; a publication with
@@ -423,12 +428,9 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 	}
 	p.options.Target = target
 	if env.Host != nil {
-		p.options.EnvelopeRevision = env.Host.EnvelopeRevision
 		p.options.Domain = env.Host.Domain
 		p.options.Coordinate = env.Host.Coordinate
-		p.options.Component = env.Host.Component
 		p.options.TrustDomain = env.Host.TrustDomain
-		p.options.Audience = env.Host.Audience
 	}
 	return nil
 }
@@ -448,10 +450,28 @@ func loadRenderedPublication(
 	if err != nil {
 		return Inventory{}, err
 	}
+	if err = validatePublicationPermissions(ctx, workspace, request.Module, env, inventory.Units); err != nil {
+		return Inventory{}, err
+	}
 	if err = holdRenderedGroups(ctx, workspace, request, env, &inventory); err != nil {
 		return Inventory{}, err
 	}
 	return inventory, nil
+}
+
+// validatePublicationPermissions checks the permissions of the module a
+// publication carries, when the workspace holds it; a module it does not hold
+// is a solution's render, whose units must all be that solution's. Each
+// refusal names its own reason.
+func validatePublicationPermissions(ctx context.Context, workspace *resources.Workspace, moduleName string, env *environments.Environment, units []InventoryUnit) error {
+	module, err := workspace.LoadModuleFromName(ctx, moduleName)
+	switch {
+	case err == nil:
+		return ValidateModulePermissions(ctx, workspace, module, env)
+	case !isModuleNotFound(err):
+		return err
+	}
+	return validateSolutionUnits(moduleName, units)
 }
 
 // isModuleNotFound tells a workspace that holds no module of the name from a
@@ -530,17 +550,23 @@ func refuseSharedDeliveryPath(workspace *resources.Workspace, environment string
 	return nil
 }
 
-// refuseUnrelatedPromotionChanges holds an existing promotion branch to the
-// module's own path and its cell: anything else on it is someone else's work,
-// which this publish must neither carry nor overwrite.
-func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, branchRevision, promotionBranch, targetPath string) error {
-	existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
-	if err != nil {
-		return err
-	}
-	for _, changed := range existing {
-		if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") {
-			return fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed)
+// refuseUnrelatedPromotionChanges holds an existing promotion branch — the
+// tip a publish continues, or the stale tip it replaces — to the module's own
+// path and its cell: anything else on it is someone else's work, which this
+// publish must neither carry nor overwrite. An empty revision is no branch.
+func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, promotionBranch, targetPath string, branchRevisions ...string) error {
+	for _, branchRevision := range branchRevisions {
+		if branchRevision == "" {
+			continue
+		}
+		existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
+		if err != nil {
+			return err
+		}
+		for _, changed := range existing {
+			if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") {
+				return fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed)
+			}
 		}
 	}
 	return nil
@@ -646,11 +672,13 @@ func stageRollbackPublication(
 
 // resolveGitopsModuleInventory resolves a consumed contract's exposing module
 // against its rendered inventory at
-// <gitopsPath>/deployments/modules/<module>/.codefly-render.json, read from
+// <gitopsPath>/modules/<module>/.codefly-render.json (deliveryModulePath),
+// read from
 // the base branch (refs/remotes/origin/baseBranch) rather than repo's checked-
 // out working tree. The working tree is the promotion branch, which is
 // long-lived and reused across every publish for the module owning it
-// (clonePromotionRepository checks it out as-is when it already exists); only
+// (clonePromotionRepository checks it out as-is when it already exists and
+// contains the base); only
 // the one module path actively being republished ever gets refreshed from
 // history, so any *other* module's working-tree copy can be arbitrarily stale
 // relative to main. Reading the git blob directly from the base branch is the
@@ -667,7 +695,7 @@ func resolveGitopsModuleInventory(ctx context.Context, repo, baseBranch, gitopsP
 		if err := validatePathComponent("consumed contract module", module); err != nil {
 			return nil, err
 		}
-		relative := filepath.ToSlash(filepath.Join(gitopsPath, "deployments", "modules", module, InventoryFilename))
+		relative := filepath.ToSlash(filepath.Join(deliveryModulePath(gitopsPath, module), InventoryFilename))
 		blob := "refs/remotes/origin/" + baseBranch + ":" + relative
 		if _, err := gitCommand(ctx, repo, "cat-file", "-e", blob); err != nil {
 			return nil, fmt.Errorf("module %s has no inventory on %s: %w", module, baseBranch, os.ErrNotExist)
@@ -741,7 +769,8 @@ func checkContract(unitName string, contract *InventoryContract, resolve func(st
 		return check
 	}
 	var exposed *InventoryContract
-	for _, hostUnit := range host.Units {
+	for idx := range host.Units {
+		hostUnit := &host.Units[idx]
 		if hostUnit.Name != contract.Service {
 			continue
 		}
@@ -869,7 +898,7 @@ func loadPublicationInventory(
 			inventory.Unit,
 		)
 	}
-	expectedOwnedPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
+	expectedOwnedPath := deliveryModulePath(pathRoot, request.Module)
 	if inventory.OwnedPath != expectedOwnedPath {
 		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
 	}
@@ -895,7 +924,8 @@ func loadPublicationInventory(
 // A solution owns its own unit graph and Argo transport, so it is published
 // without a service-module resource to cross-check against.
 func inventoryHasSolutionUnits(inventory *Inventory) bool {
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Kind == UnitKindSolution {
 			return true
 		}
@@ -908,7 +938,8 @@ func inventoryHasSolutionUnits(inventory *Inventory) bool {
 // only invariants to enforce are that every rendered unit is a solution unit of
 // the published module — no service units smuggled in, no foreign module.
 func validateSolutionUnits(moduleName string, units []InventoryUnit) error {
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		if unit.Kind != UnitKindSolution {
 			return fmt.Errorf("solution publication contains non-solution unit %q of kind %q", unit.Name, unit.Kind)
 		}
@@ -951,13 +982,22 @@ func validateModuleUnits(
 	}
 	declared := make([]string, 0, len(module.ServiceReferences))
 	for _, reference := range module.ServiceReferences {
+		// An excluded service is rendered as no unit; a unit for it is the
+		// mismatch below.
+		if selectedEnvironment.Excludes(moduleName, reference.Name) {
+			continue
+		}
 		declared = append(declared, reference.Name)
 	}
 	sort.Strings(declared)
 	actual := make([]string, 0, len(rendered))
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		if unit.Module != moduleName {
 			return fmt.Errorf("rendered unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
+		}
+		if selectedEnvironment.Excludes(moduleName, unit.Name) {
+			return fmt.Errorf("rendered unit %q is a service environment %q excludes (exclude-services); render %s again", unit.Name, environment, moduleName)
 		}
 		_, expectedManaged := selectedEnvironment.ManagedService(moduleName, unit.Name)
 		if unit.Managed != expectedManaged {
@@ -1053,16 +1093,20 @@ func prepareServicePublication(
 		ModulePath:                    renderedInventory.ModulePath,
 		Units:                         renderedInventory.Units,
 		Package:                       renderedInventory.Package,
+		Pin:                           renderedInventory.Pin,
 		Environment:                   renderedInventory.Environment,
 		Namespace:                     renderedInventory.Namespace,
 		AppProject:                    renderedInventory.AppProject,
 		Promotable:                    true,
 		CheckUnitDirectories:          true,
-		SolutionHostBindingPath:       renderedInventory.SolutionHostBindingPath,
+		ModuleManifestPath:            renderedInventory.ModuleManifestPath,
 		HostsDelivery:                 renderedInventory.HostsDelivery,
-		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
+		// The mesh edges are the render's record of the composition's reach;
+		// a publication carries them unchanged, or the cell's applier reads
+		// an inventory that admits nothing.
+		MeshEdges: renderedInventory.MeshEdges,
 	}
 	if _, err = validateTree(target, options); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication: %w", err)
@@ -1148,20 +1192,21 @@ func prepareServiceSnapshot(
 	}
 	serviceNames := inventoryUnitNames(renderedInventory.Units)
 	snapshotOptions := &RenderOptions{
-		Module:                  renderedInventory.Module,
-		UnitNames:               serviceNames,
-		OwnedPath:               targetPath,
-		ModulePath:              renderedInventory.ModulePath,
-		Units:                   renderedInventory.Units,
-		Package:                 renderedInventory.Package,
-		Environment:             renderedInventory.Environment,
-		Namespace:               renderedInventory.Namespace,
-		AppProject:              renderedInventory.AppProject,
-		Promotable:              true,
-		SolutionHostBindingPath: renderedInventory.SolutionHostBindingPath,
-		HostsDelivery:           renderedInventory.HostsDelivery,
-		SolutionAuthorityPath:   renderedInventory.SolutionAuthorityPath,
-		Delivered:               delivery,
+		Module:             renderedInventory.Module,
+		UnitNames:          serviceNames,
+		OwnedPath:          targetPath,
+		ModulePath:         renderedInventory.ModulePath,
+		Units:              renderedInventory.Units,
+		Package:            renderedInventory.Package,
+		Pin:                renderedInventory.Pin,
+		Environment:        renderedInventory.Environment,
+		Namespace:          renderedInventory.Namespace,
+		AppProject:         renderedInventory.AppProject,
+		Promotable:         true,
+		ModuleManifestPath: renderedInventory.ModuleManifestPath,
+		HostsDelivery:      renderedInventory.HostsDelivery,
+		Delivered:          delivery,
+		MeshEdges:          renderedInventory.MeshEdges,
 	}
 	snapshotInventory, err := buildInventory(target, snapshotOptions)
 	if err != nil {
@@ -1249,7 +1294,8 @@ func canonicalInventory(inventory *Inventory) ([]byte, error) {
 
 func inventoryUnitNames(units []InventoryUnit) []string {
 	names := make([]string, 0, len(units))
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		if unit.Path != "" {
 			names = append(names, unit.Name)
 		}
@@ -1265,7 +1311,8 @@ func inventoryUnitNames(units []InventoryUnit) []string {
 // immutability check without further edits.
 func inventoryUnitDirectories(inventory *Inventory) ([]string, error) {
 	seen := make(map[string]struct{})
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}
@@ -1399,7 +1446,7 @@ func serviceSnapshotBranch(module, environment string) string {
 func removePublicationRemainder(target string, unitDirs []string) error {
 	// The delivery directories are kept whole: they hold every environment's
 	// delivered overlay, and a publish stages its own environment's only.
-	keep := map[string]struct{}{moduleBundleDir: {}, solutionHostBindingDir: {}, solutionAuthorityDir: {}}
+	keep := map[string]struct{}{moduleBundleDir: {}, moduleManifestDir: {}}
 	for _, directory := range unitDirs {
 		keep[directory] = struct{}{}
 	}
@@ -1448,18 +1495,16 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 		path := filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}
 		path := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	if inventory.SolutionHostBindingPath != "" {
-		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment))] = struct{}{}
-	}
-	if inventory.SolutionAuthorityPath != "" {
-		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment))] = struct{}{}
+	if inventory.ModuleManifestPath != "" {
+		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.ModuleManifestPath, "overlays", environment))] = struct{}{}
 	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {
@@ -1863,8 +1908,18 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 			return PublishResult{}, err
 		}
 	} else if len(prepared.plan.Changed) > 0 {
-		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
-		if _, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
+		branchRef := "refs/heads/" + prepared.plan.PromotionBranch
+		refspec := branchRef + ":" + branchRef
+		push := []string{"push", "--porcelain", "--set-upstream"}
+		if replaces := prepared.plan.ReplacesBranchRevision; replaces != "" {
+			// The reviewed plan replaces a stale branch: only the exact tip it
+			// reviewed is overwritten, and a branch that moved since refuses.
+			push = append(push, "--force-with-lease="+branchRef+":"+replaces)
+		}
+		if _, err = gitCommand(ctx, prepared.dir, append(push, "--", "origin", refspec)...); err != nil {
+			if prepared.plan.ReplacesBranchRevision != "" {
+				return PublishResult{}, fmt.Errorf("replace stale promotion branch %s (leased at %s): %w", prepared.plan.PromotionBranch, prepared.plan.ReplacesBranchRevision, err)
+			}
 			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
 		}
 	}
@@ -1901,10 +1956,15 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	return result, nil
 }
 
-func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool, bound *LocalRepositoryIdentity) (string, func(), string, string, error) {
+// clonePromotionRepository checks the promotion branch out of a fresh clone of
+// the delivery repository. It returns the clone, its cleanup, the base
+// revision, the revision of the promotion branch the publish continues (""
+// when it starts from the base), and the tip of a stale promotion branch the
+// publish replaces ("" when none).
+func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool, bound *LocalRepositoryIdentity) (string, func(), string, string, string, error) {
 	temp, err := os.MkdirTemp("", "codefly-gitops-publish-")
 	if err != nil {
-		return "", nil, "", "", fmt.Errorf("create publication checkout: %w", err)
+		return "", nil, "", "", "", fmt.Errorf("create publication checkout: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(temp) }
 	repo := filepath.Join(temp, "repo")
@@ -1915,25 +1975,26 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	}
 	if err != nil {
 		cleanup()
-		return "", nil, "", "", err
+		return "", nil, "", "", "", err
 	}
 	if _, err = gitCommand(ctx, repo, "check-ref-format", "--branch", baseBranch); err != nil {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("invalid configured GitOps branch %q: %w", baseBranch, err)
+		return "", nil, "", "", "", fmt.Errorf("invalid configured GitOps branch %q: %w", baseBranch, err)
 	}
 	baseRef := "refs/remotes/origin/" + baseBranch
 	baseRevision, err := gitCommand(ctx, repo, "rev-parse", baseRef+"^{commit}")
 	if err != nil {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("resolve configured GitOps branch %q: %w", baseBranch, err)
+		return "", nil, "", "", "", fmt.Errorf("resolve configured GitOps branch %q: %w", baseBranch, err)
 	}
 	if _, err = gitCommand(ctx, repo, "check-ref-format", "--branch", promotionBranch); err != nil {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("invalid promotion branch %q: %w", promotionBranch, err)
+		return "", nil, "", "", "", fmt.Errorf("invalid promotion branch %q: %w", promotionBranch, err)
 	}
 	remoteRef := "refs/remotes/origin/" + promotionBranch
 	branchRevision, branchErr := gitCommand(ctx, repo, "rev-parse", "--verify", remoteRef+"^{commit}")
-	if branchErr == nil && selfPromotes {
+	continues := branchErr == nil
+	if continues && selfPromotes {
 		// A local promotion continues from the last one: a promotion branch
 		// the base already contains (this module's, or one another module's
 		// promotion since moved past) starts again from the base, so the
@@ -1945,19 +2006,32 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 			remoteRef, branchRevision = baseRef, baseRevision
 		} else if !gitIsAncestor(ctx, repo, baseRevision, branchRevision) {
 			cleanup()
-			return "", nil, "", "", fmt.Errorf("local promotion branch %s carries commits the base branch %s does not, and %s has moved past it; a local promotion fast-forwards %s and never forces, so delete the stale branch in the local delivery repository and publish again", promotionBranch, baseBranch, baseBranch, baseBranch)
+			return "", nil, "", "", "", fmt.Errorf("local promotion branch %s carries commits the base branch %s does not, and %s has moved past it; a local promotion fast-forwards %s and never forces, so delete the stale branch in the local delivery repository and publish again", promotionBranch, baseBranch, baseBranch, baseBranch)
 		}
 	}
-	if branchErr == nil {
+	var replacesRevision string
+	if continues && !selfPromotes && !gitIsAncestor(ctx, repo, baseRevision, branchRevision) {
+		// A reviewed promotion continues its branch only while the branch
+		// contains the base. One that does not is stale — its pull request
+		// was squash-merged and the branch kept, or the base moved past it —
+		// and a commit on it would fork from an old base, so every file it
+		// shares with the base conflicts. The publish starts from the base
+		// and replaces the branch, leased on the tip it found
+		// (ReplacesBranchRevision); the caller still holds that tip to the
+		// module path, so someone else's change on it is refused, never
+		// overwritten.
+		replacesRevision, continues = branchRevision, false
+	}
+	if continues {
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
 			cleanup()
-			return "", nil, "", "", err
+			return "", nil, "", "", "", err
 		}
 	} else {
 		branchRevision = ""
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
 			cleanup()
-			return "", nil, "", "", err
+			return "", nil, "", "", "", err
 		}
 		// A local promotion with no branch yet starts from the last
 		// promotion, which is the base: nothing new is then "already
@@ -1969,13 +2043,13 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	status, err := gitCommand(ctx, repo, "status", "--porcelain=v1")
 	if err != nil {
 		cleanup()
-		return "", nil, "", "", err
+		return "", nil, "", "", "", err
 	}
 	if status != "" {
 		cleanup()
-		return "", nil, "", "", fmt.Errorf("publication checkout is unexpectedly dirty")
+		return "", nil, "", "", "", fmt.Errorf("publication checkout is unexpectedly dirty")
 	}
-	return repo, cleanup, baseRevision, branchRevision, nil
+	return repo, cleanup, baseRevision, branchRevision, replacesRevision, nil
 }
 
 // restoreDeliveredOverlays puts the delivery directories of a module path back
@@ -1985,7 +2059,7 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 // absent.
 func restoreDeliveredOverlays(ctx context.Context, repo, baseBranch, targetPath string) error {
 	ref := "refs/remotes/origin/" + baseBranch
-	for _, directory := range []string{solutionHostBindingDir, solutionAuthorityDir} {
+	for _, directory := range []string{moduleManifestDir} {
 		path := filepath.ToSlash(filepath.Join(targetPath, directory))
 		// The restore left the historical overlays staged; -f drops them
 		// whether staged or not.
@@ -2169,10 +2243,12 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 	if err != nil {
 		return nil, "", "", "", err
 	}
+	var selected *environments.Environment
 	for _, candidate := range declared {
 		if candidate.Name != environment || candidate.Gitops == nil {
 			continue
 		}
+		selected = candidate
 		config = repositoryConfig{
 			RepoURL:      candidate.Gitops.RepoURL,
 			FetchRepoURL: candidate.Gitops.FetchRepoURL,
@@ -2186,20 +2262,18 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		return nil, "", "", "", err
 	}
 	if config.RepoURL == "" && defaults != nil {
-		// An environment may override the path alone; the render lays its
-		// tree out under it (moduleOwnedPath), so the publish delivers there
-		// — in the workspace's repository, on its branch.
-		path := config.Path
+		// An environment may override the path alone — in the workspace's
+		// repository, on its branch.
 		config = repositoryConfig{
 			RepoURL:      defaults.RepoURL,
 			FetchRepoURL: defaults.FetchRepoURL,
-			Path:         defaults.Path,
 			Branch:       defaults.Branch,
 		}
-		if path != "" {
-			config.Path = path
-		}
 	}
+	// The path is selected exactly as the render selected it when it laid
+	// the tree out (moduleOwnedPath), so the publish delivers where the
+	// render said it would.
+	config.Path = gitopsPathOf(selected, defaults)
 	if config.RepoURL == "" {
 		return nil, "", "", "", fmt.Errorf("environment %q gitops.repo-url is required", environment)
 	}
@@ -2540,7 +2614,7 @@ func stageAndSettleDelivery(
 	// configuration included — keeps its generations and its tombstones. A
 	// render that declares none here clears its own overlay for the
 	// tombstones the settlement writes from the base branch's record.
-	for _, directory := range []string{solutionHostBindingDir, solutionAuthorityDir} {
+	for _, directory := range []string{moduleManifestDir} {
 		overlay := filepath.ToSlash(filepath.Join(directory, "overlays", environment))
 		source := filepath.Join(rendered, filepath.FromSlash(overlay))
 		switch _, err := os.Stat(source); {
@@ -2556,35 +2630,13 @@ func stageAndSettleDelivery(
 			return nil, fmt.Errorf("read the rendered delivery overlay: %w", err)
 		}
 	}
-	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
-	if err != nil {
+	if err := publication.declareEnvelope(inventory, environment); err != nil {
 		return nil, err
 	}
-	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, &publication.options)
-	if err != nil {
+	if err := publication.listPreparedBindings(ctx, environment); err != nil {
 		return nil, err
 	}
-	return mergeDeliveries(presence, authority), nil
-}
-
-// mergeDeliveries joins what the two settlements delivered into one inventory
-// record: signed only when both halves are.
-func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
-	var merged *InventoryDelivery
-	for _, part := range parts {
-		if part == nil {
-			continue
-		}
-		if merged == nil {
-			merged = &InventoryDelivery{Signed: true}
-		}
-		merged.Signed = merged.Signed && part.Signed
-		if merged.Identity == "" {
-			merged.Identity = part.Identity
-		}
-		merged.Documents = append(merged.Documents, part.Documents...)
-	}
-	return merged
+	return settleManifestDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
 }
 
 // gitSaysAbsent reports a git read that failed because the path or the ref

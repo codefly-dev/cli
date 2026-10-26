@@ -8,152 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
-
-func identityTreeFixture(t *testing.T) (string, *RenderOptions) {
-	t.Helper()
-	workspace, env := workloadIdentityComposition(t)
-	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
-	require.NoError(t, err)
-	scope := moduleScope(env, workspace, "app")
-	scope.WorkloadPeers = peers
-	root := t.TempDir()
-	options := &RenderOptions{Module: "app", Environment: env.Name, Namespace: scope.Namespace, Promotable: true, CheckUnitDirectories: true}
-	tree := testRenderRoot(t, root)
-	for _, name := range []string{"api", "sibling"} {
-		stage := t.TempDir()
-		body := strings.ReplaceAll(sidecarDeployment, "name: api", "name: "+name)
-		body = strings.ReplaceAll(body, "serviceAccountName: api", "serviceAccountName: "+name)
-		body = strings.Replace(body, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
-		require.NoError(t, kustomizedWorkload(body)(t.Context(), stage))
-		require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
-		unit := filepath.Join(root, "services", name)
-		require.NoError(t, os.Rename(filepath.Join(stage, "services", "api"), unit))
-		service := &resources.Service{Name: name}
-		if name == "api" {
-			service.WorkspaceConfigurationDependencies = []string{"workload-identity"}
-		}
-		require.NoError(t, projectServiceConfiguration(t.Context(), tree, unit, service, env, scope, serviceInjection{}))
-		options.Units = append(options.Units, InventoryUnit{Module: "app", Name: name, Kind: UnitKindService, Path: "services/" + name, Output: restrictedRenderEvidence()})
-		check := workloadIdentityCheck{path: "services/" + name, service: service, environment: env, scope: scope}
-		require.NoError(t, check.capture(tree, root))
-		options.workloadIdentityChecks = append(options.workloadIdentityChecks, check)
-	}
-	_, err = validateTree(root, options)
-	require.NoError(t, err)
-	return root, options
-}
-
-func assertIdentityTreeRefused(t *testing.T, root string, options *RenderOptions, paths ...string) {
-	t.Helper()
-	_, err := validateTree(root, options)
-	require.Error(t, err)
-	for _, path := range paths {
-		require.ErrorContains(t, err, path)
-	}
-	options.Destination = filepath.Join(t.TempDir(), "promoted")
-	_, err = RenderOwnedTree(t.Context(), options, func(_ context.Context, stage string) error { return copyTree(root, stage) })
-	require.Error(t, err)
-	for _, path := range paths {
-		require.ErrorContains(t, err, path)
-	}
-	_, err = os.Stat(options.Destination)
-	require.True(t, os.IsNotExist(err))
-}
-
-func TestPromotedTreeRefusesDefaultedPeerCollision(t *testing.T) {
-	for _, owner := range []string{"api", "sibling"} {
-		for _, spelling := range []string{"absent", "empty"} {
-			t.Run(owner+"/"+spelling, func(t *testing.T) {
-				root, options := identityTreeFixture(t)
-				metadata := map[string]any{keyName: "api-workload-peers"}
-				if spelling == "empty" {
-					metadata[keyNamespace] = ""
-				}
-				overlay := filepath.Join(root, "services", owner, "overlays", options.Environment)
-				require.NoError(t, writeOverlayResource(overlay, "collision.yaml", map[string]any{
-					keyAPIVersion: "v1", keyKind: kindConfigMap, keyMetadata: metadata,
-					dataKey: map[string]any{"gateway-peers": "spiffe://attacker\n"},
-				}))
-				assertIdentityTreeRefused(t, root, options, "ConfigMap "+options.Namespace+"/api-workload-peers", "services/api/", "services/"+owner+"/")
-			})
-		}
-	}
-}
-
-func TestPromotedTreeRefusesSiblingOwnedObjects(t *testing.T) {
-	for _, variant := range []string{"identical workload", "volume source", "mount path", "GATEWAY_PEERS_FILE", "ServiceAccount", "Role", "RoleBinding"} {
-		t.Run(variant, func(t *testing.T) {
-			root, options := identityTreeFixture(t)
-			kind := kindDeployment
-			if variant == "ServiceAccount" || variant == "Role" || variant == "RoleBinding" {
-				kind = variant
-			}
-			var object map[string]any
-			for _, doc := range options.workloadIdentityChecks[0].objects {
-				if doc.kind == kind {
-					// Copy the retained expectation rather than mutate it.
-					encoded, err := yaml.Marshal(doc.value)
-					require.NoError(t, err)
-					require.NoError(t, yaml.Unmarshal(encoded, &object))
-					break
-				}
-			}
-			require.NotNil(t, object)
-			spec, _ := podSpec(manifest{kind: kind, value: object})
-			switch variant {
-			case "volume source":
-				for _, raw := range sliceField(spec, "volumes") {
-					volume := raw.(map[string]any)
-					if volume[keyName] == peersVolume {
-						volume[keyConfigMap] = map[string]any{keyName: "attacker"}
-					}
-				}
-			case "mount path", "GATEWAY_PEERS_FILE":
-				for _, raw := range sliceField(spec, keyContainers) {
-					container := raw.(map[string]any)
-					for _, raw := range sliceField(container, "volumeMounts") {
-						mount := raw.(map[string]any)
-						if variant == "mount path" && mount[keyName] == peersVolume {
-							mount["mountPath"] = "/attacker"
-						}
-					}
-					for _, raw := range sliceField(container, "env") {
-						variable := raw.(map[string]any)
-						name, _ := variable[keyName].(string)
-						if variant == "GATEWAY_PEERS_FILE" && strings.HasSuffix(name, "GATEWAY_PEERS_FILE") {
-							variable["value"] = "/attacker"
-						}
-					}
-				}
-			}
-			overlay := filepath.Join(root, "services", "sibling", "overlays", options.Environment)
-			require.NoError(t, writeOverlayResource(overlay, "copy.yaml", object))
-			assertIdentityTreeRefused(t, root, options, kind+" "+options.Namespace+"/", "services/api/", "services/sibling/")
-		})
-	}
-}
-
-func TestPromotedTreeRetainsCompleteOwnedBytes(t *testing.T) {
-	for _, kind := range []string{kindDeployment, "ServiceAccount", "Role", "RoleBinding", kindConfigMap} {
-		t.Run(kind, func(t *testing.T) {
-			root, options := identityTreeFixture(t)
-			var name string
-			for _, doc := range options.workloadIdentityChecks[0].objects {
-				if doc.kind == kind {
-					name = metadataString(doc.value, keyName)
-					break
-				}
-			}
-			require.NotEmpty(t, name)
-			appendIdentityPatch(t, filepath.Join(root, "services", "api"), options.Environment, kind, name, "- op: add\n  path: /metadata/annotations\n  value: {changed: later}\n")
-			assertIdentityTreeRefused(t, root, options, "differs from its owning service render", "services/api/")
-		})
-	}
-}
 
 func TestPromotedTreeIdentitiesAfterKustomize(t *testing.T) {
 	for _, transform := range []string{"namePrefix: pre-", "nameSuffix: -post", "namespace: target"} {
@@ -186,13 +43,6 @@ func TestPromotedTreeIdentitiesAfterKustomize(t *testing.T) {
 			require.ErrorContains(t, err, "services/second/")
 		})
 	}
-}
-
-func TestPromotedIdentityTreeOrdinaryPasses(t *testing.T) {
-	root, options := identityTreeFixture(t)
-	options.Destination = filepath.Join(t.TempDir(), "promoted")
-	_, err := RenderOwnedTree(t.Context(), options, func(_ context.Context, stage string) error { return copyTree(root, stage) })
-	require.NoError(t, err)
 }
 
 func TestAppliedOverlayRemainsVisibleWhenAnotherOverlayReferencesIt(t *testing.T) {
@@ -236,12 +86,39 @@ func TestObjectIdentityComparesAPIGroupInsteadOfVersion(t *testing.T) {
 	}
 }
 
+// twoUnitTree stages two service units, api and sibling, each rendering its
+// own workload in the namespace the options name, and checks the tree is
+// promotable as it stands.
+func twoUnitTree(t *testing.T) (string, *RenderOptions) {
+	t.Helper()
+	root := t.TempDir()
+	options := &RenderOptions{Module: "app", Environment: "prod", Namespace: "example-app", Promotable: true, CheckUnitDirectories: true}
+	for _, name := range []string{"api", "sibling"} {
+		stage := t.TempDir()
+		body := strings.ReplaceAll(sidecarDeployment, "name: api", "name: "+name)
+		body = strings.ReplaceAll(body, "serviceAccountName: api", "serviceAccountName: "+name)
+		body = strings.Replace(body, "metadata:\n", "metadata:\n  namespace: "+options.Namespace+"\n", 1)
+		require.NoError(t, kustomizedWorkload(body)(t.Context(), stage))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
+		require.NoError(t, os.Rename(filepath.Join(stage, "services", "api"), filepath.Join(root, "services", name)))
+		options.Units = append(options.Units, InventoryUnit{Module: "app", Name: name, Kind: UnitKindService, Path: "services/" + name, Output: restrictedRenderEvidence()})
+	}
+	_, err := validateTree(root, options)
+	require.NoError(t, err)
+	return root, options
+}
+
+// A Kustomize transform that strips an object's namespace defaults it back to
+// the overlay's, so a sibling unit's copy of another unit's object collides
+// with it after the build, whatever the source file said.
 func TestPromotedTreeRefusesNamespaceRemovalAfterTransform(t *testing.T) {
 	for _, kind := range []string{kindConfigMap, kindDeployment} {
 		t.Run(kind, func(t *testing.T) {
-			root, options := identityTreeFixture(t)
+			root, options := twoUnitTree(t)
+			built, err := overlayManifests(filepath.Join(root, "services", "api", "overlays", options.Environment))
+			require.NoError(t, err)
 			var object map[string]any
-			for _, doc := range options.workloadIdentityChecks[0].objects {
+			for _, doc := range built {
 				if doc.kind == kind {
 					data, err := yaml.Marshal(doc.value)
 					require.NoError(t, err)
@@ -249,17 +126,13 @@ func TestPromotedTreeRefusesNamespaceRemovalAfterTransform(t *testing.T) {
 					break
 				}
 			}
-			require.NotNil(t, object)
-			if kind == kindConfigMap {
-				object[dataKey] = map[string]any{"gateway-peers": "spiffe://attacker\n"}
-			} else {
-				spec, _ := podSpec(manifest{kind: kind, value: object})
-				for _, raw := range sliceField(spec, "volumes") {
-					volume := raw.(map[string]any)
-					if volume[keyName] == peersVolume {
-						volume[keyConfigMap] = map[string]any{keyName: "attacker"}
-					}
-				}
+			if object == nil {
+				require.Equal(t, kindConfigMap, kind, "the fixture renders a Deployment")
+				object = map[string]any{keyAPIVersion: "v1", keyKind: kindConfigMap, keyMetadata: map[string]any{keyName: "api-settings", keyNamespace: options.Namespace}, dataKey: map[string]any{"mode": "prod"}}
+				apiOverlay := filepath.Join(root, "services", "api", "overlays", options.Environment)
+				require.NoError(t, writeOverlayResource(apiOverlay, "settings.yaml", object))
+				_, err = validateTree(root, options)
+				require.NoError(t, err)
 			}
 			overlay := filepath.Join(root, "services", "sibling", "overlays", options.Environment)
 			require.NoError(t, writeOverlayResource(overlay, "collision.yaml", object))
@@ -271,16 +144,38 @@ func TestPromotedTreeRefusesNamespaceRemovalAfterTransform(t *testing.T) {
 				data = []byte(strings.Replace(string(data), "    version: v1", "    group: apps\n    version: v1", 1))
 			}
 			require.NoError(t, os.WriteFile(filepath.Join(overlay, kustomizationFile), data, 0o600))
-			built, err := overlayManifests(overlay)
+			built, err = overlayManifests(overlay)
 			require.NoError(t, err)
 			for _, doc := range built {
 				if doc.kind == kind && metadataString(doc.value, keyName) == name {
 					require.Empty(t, metadataString(doc.value, keyNamespace))
 				}
 			}
-			assertIdentityTreeRefused(t, root, options, "must occur exactly once", kind+" "+options.Namespace+"/"+name)
+			_, err = validateTree(root, options)
+			require.ErrorContains(t, err, "must occur exactly once")
+			require.ErrorContains(t, err, kind+" "+options.Namespace+"/"+name)
 		})
 	}
+}
+
+// assertTreeRefused checks a tree is refused both by validation and by a
+// full owned-tree render, naming every path given, and that the refused
+// render left no destination behind.
+func assertTreeRefused(t *testing.T, root string, options *RenderOptions, paths ...string) {
+	t.Helper()
+	_, err := validateTree(root, options)
+	require.Error(t, err)
+	for _, path := range paths {
+		require.ErrorContains(t, err, path)
+	}
+	options.Destination = filepath.Join(t.TempDir(), "promoted")
+	_, err = RenderOwnedTree(t.Context(), options, func(_ context.Context, stage string) error { return copyTree(root, stage) })
+	require.Error(t, err)
+	for _, path := range paths {
+		require.ErrorContains(t, err, path)
+	}
+	_, err = os.Stat(options.Destination)
+	require.True(t, os.IsNotExist(err))
 }
 
 func TestPromotedTreeRefusesNamespaceFreeObjectsAcrossDestinations(t *testing.T) {
@@ -294,7 +189,7 @@ func TestPromotedTreeRefusesNamespaceFreeObjectsAcrossDestinations(t *testing.T)
 		options.Units = append(options.Units, InventoryUnit{Kind: UnitKindService, Name: namespace, Path: "services/" + namespace, Output: restrictedRenderEvidence()})
 		writeTestApplication(t, root, namespace, "services/"+namespace+"/overlays/prod", namespace)
 	}
-	assertIdentityTreeRefused(t, root, options, "ValidatingAdmissionPolicy /shared", "must occur exactly once")
+	assertTreeRefused(t, root, options, "ValidatingAdmissionPolicy /shared", "must occur exactly once")
 }
 
 func writeTestApplication(t *testing.T, root, name, source, namespace string) {
@@ -352,7 +247,7 @@ func TestApplicationAppliesReferencedDirectory(t *testing.T) {
 				writeTestApplication(t, root, "child", source, "destination")
 			}
 			options := &RenderOptions{Environment: "prod", Namespace: "destination", Promotable: true, CheckUnitDirectories: true, Units: []InventoryUnit{{Kind: UnitKindService, Name: "api", Path: "services/api", Output: restrictedRenderEvidence()}}}
-			assertIdentityTreeRefused(t, root, options, "must occur exactly once", "child")
+			assertTreeRefused(t, root, options, "must occur exactly once", "child")
 		})
 	}
 }

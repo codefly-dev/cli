@@ -19,6 +19,10 @@ import (
 const (
 	// IndexSchema versions the derived-operation index.
 	IndexSchema = "codefly/runnable-operations/v1"
+	// RunnableBindingsGroup is the workspace-configuration group a service
+	// declares to receive the bindings a composition prepared, and so the
+	// declaration that says it calls the owners those bindings name.
+	RunnableBindingsGroup = "runnable-bindings"
 	// IndexFileName is the index a composition reads to prepare bindings.
 	IndexFileName = "index.json"
 	// PackageFileName is the canonical package one derived operation carries.
@@ -163,6 +167,10 @@ type Operation struct {
 	// policy vocabulary. Slots remain unresolved until the composition binds.
 	Tool               *runnablev0.ToolExposure `json:"tool,omitempty"`
 	RequiredScopeSlots []*runnablev0.ScopeSlot  `json:"required_scope_slots,omitempty"`
+	// Recovery is how an uncertain outcome is resolved, spelled as the
+	// codefly.base.v0.RunnableExecution.Recovery enum name. RECOVERY_RECOMPUTE
+	// is a read, which carries no receipt; empty is RECOVERY_RECEIPT.
+	Recovery string `json:"recovery,omitempty"`
 }
 
 // operationJSON preserves the existing document's scalar spellings and order,

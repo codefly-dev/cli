@@ -164,6 +164,10 @@ type transportNeutralWorkspaceEnvironment struct {
 	Namespace             string                                            `yaml:"namespace,omitempty"`
 	Ingress               []environments.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
 	ManagedServices       map[string]environments.EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// Carried is the environment's module-owned keys (key-service, …), handed
+	// over verbatim: the generator is the agent that reads them. A managed
+	// service's own carried keys travel inside ManagedServices.
+	Carried environments.Carried `yaml:",inline"`
 }
 
 type transportNeutralModuleCluster struct {
@@ -198,6 +202,7 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, modul
 			Namespace:             environment.ModuleNamespace(workspace, module),
 			Ingress:               environment.Ingress,
 			ManagedServices:       moduleManagedServices(environment, module),
+			Carried:               environment.Carried,
 		}
 		if environment.Cluster != nil {
 			projected.Cluster = &transportNeutralModuleCluster{Kind: environment.Cluster.Kind}
@@ -342,7 +347,8 @@ func loadSelectedModuleBundle(
 
 	var expectedServices []string
 	var expectedManaged []string
-	for _, service := range graph {
+	for idx := range graph {
+		service := &graph[idx]
 		if service.Managed {
 			expectedManaged = append(expectedManaged, service.Name)
 		} else {

@@ -514,6 +514,9 @@ func TestInitLegacyAgentAdoptsTheProposalAndStaysReloadable(t *testing.T) {
 
 	_, err = runner.Init(ctx)
 	require.NoError(t, err, "hot reload rejected the service's own port as stale")
+	// The reload keeps the temporary port it was accepted at: a dependent
+	// that resolved this address keeps a true one, and nothing propagates.
+	require.Equal(t, adoptedREST, nativeAddressFor(t, runner.networkMappings, "rest"), "a reload under --temporary-ports moved the service")
 }
 
 // The guard still has to catch a real ghost: a process squatting the port
@@ -522,7 +525,8 @@ func TestInitRejectsAStalePortBeforeTheFirstStart(t *testing.T) {
 	ctx := context.Background()
 	runner, _ := gatewayRunner(t, startRealAgent(t, realAgentEcho))
 
-	// The guard probes the addresses a previous Init accepted, so run one first.
+	// A second Init before the first Start: its proposal is the accepted set
+	// the first Init pinned, and the guard still refuses a ghost on it.
 	_, err := runner.Init(ctx)
 	require.NoError(t, err)
 
@@ -532,4 +536,29 @@ func TestInitRejectsAStalePortBeforeTheFirstStart(t *testing.T) {
 
 	_, err = runner.Init(ctx)
 	require.ErrorContains(t, err, "already in use")
+}
+
+// A first Init probes the addresses it proposes, before the agent's Init: on a
+// Runner built as a run builds it nothing has been accepted yet, so probing
+// the accepted set probed nothing. Each loopback family is probed on its own,
+// since a squatter on one of them coexists with a later wildcard bind on macOS.
+func TestFirstInitRefusesAProposedPortAnotherProcessHolds(t *testing.T) {
+	for _, family := range []string{"127.0.0.1", "::1"} {
+		t.Run(family, func(t *testing.T) {
+			squatter, err := net.Listen("tcp", net.JoinHostPort(family, "0"))
+			if err != nil {
+				t.Skipf("no %s loopback here: %v", family, err)
+			}
+			defer squatter.Close()
+			held := squatter.Addr().(*net.TCPAddr).Port
+			runner, world := gatewayRunner(t, startRealAgent(t, realAgentEcho))
+			world.LocalNetworkManager.WithPortOverrides(map[string]uint16{"web/gateway/rest": uint16(held), "web/gateway/grpc": freePort(t)})
+
+			_, err = runner.Init(context.Background())
+			require.ErrorContains(t, err, fmt.Sprintf("port %d (rest)", held))
+			require.ErrorContains(t, err, "already in use")
+			recorded, found := world.SharedState.GetNetworkMappingsFromUnique(runner.instance.Identity.Unique())
+			require.False(t, found, "a refused first Init records nothing: %v", recorded)
+		})
+	}
 }

@@ -3,6 +3,8 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sync"
 
 	"github.com/codefly-dev/core/services"
 
@@ -52,10 +54,6 @@ type IManager interface {
 	// RunnerTestResponse returns the structured response from the last Test
 	// RPC dispatched by this manager's runner, or nil if untested.
 	RunnerTestResponse() *runtimev0.TestResponse
-
-	// RunnerStartedArtifact returns what the agent reported it started on the
-	// last successful Start, or nil when the agent reported none.
-	RunnerStartedArtifact() *runtimev0.StartedArtifact
 
 	DoSetCallback(seed func(ctx context.Context, action Action) error)
 	// DoSetFailureSink registers a callback that the Runner.Follow loop
@@ -192,13 +190,6 @@ func (manager *Manager) RunnerTestResponse() *runtimev0.TestResponse {
 	return manager.Runner.TestResponse()
 }
 
-func (manager *Manager) RunnerStartedArtifact() *runtimev0.StartedArtifact {
-	if manager.Runner == nil {
-		return nil
-	}
-	return manager.Runner.StartedArtifact()
-}
-
 func (manager *Manager) RunnerTestSkipped() bool {
 	if manager.Runner == nil {
 		return false
@@ -296,10 +287,36 @@ func (manager *Manager) DoSetFailureSink(sink func(unique, msg string)) {
 }
 
 type Hub struct {
+	// mu guards managers: a run extends the hub after Start (Flow.Extend)
+	// while the playbook's goroutine reads it for every action.
+	mu       sync.RWMutex
 	managers []IManager
 }
 
+// add registers managers in the hub, in order, the moment they are spawned.
+func (hub *Hub) add(managers ...IManager) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.managers = append(hub.managers, managers...)
+}
+
+// remove forgets the manager of one service, once the run withdrew it.
+func (hub *Hub) remove(unique string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.managers = slices.DeleteFunc(hub.managers, func(manager IManager) bool { return manager.Unique() == unique })
+}
+
+// all is a snapshot of the hub's managers, in registration order.
+func (hub *Hub) all() []IManager {
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	return slices.Clone(hub.managers)
+}
+
 func (hub *Hub) NewManager(unique string) (IManager, error) {
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
 	for _, manager := range hub.managers {
 		if manager.Unique() == unique {
 			return manager, nil
@@ -359,12 +376,6 @@ func (n NoOpManager) RunnerDoDestroy(_ context.Context) (*OutputProperty, error)
 }
 
 func (n NoOpManager) RunnerTestResponse() *runtimev0.TestResponse {
-	return nil
-}
-
-// RunnerStartedArtifact: a manager with no runner started no process, so it
-// reports no artifact — the same answer as an agent that reports none.
-func (n NoOpManager) RunnerStartedArtifact() *runtimev0.StartedArtifact {
 	return nil
 }
 
