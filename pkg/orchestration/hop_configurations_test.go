@@ -148,17 +148,87 @@ func TestHopRoutesFreezeAModuleThatInitializesAfterTheHop(t *testing.T) {
 	// name, and nothing is recorded in its place.
 	moved := endpointMapping("platform", "second", "web", "http", "public", nativeInstance("http://moved.native"))
 	err = world.SharedState.RecordNetworkMappings(ctx, second, []*basev0.NetworkMapping{moved})
-	require.ErrorContains(t, err, "stop and restart")
-	require.ErrorContains(t, err, "platform/second")
+	require.ErrorContains(t, err, "hop route platform/second/web::http is routed at "+mappingAddresses(proposed...))
+	require.ErrorContains(t, err, "its Init accepted [native http://moved.native]")
+	// The address is derived, so a restart cannot help and is not asked for.
+	require.ErrorContains(t, err, "restarting this run derives it again")
+	require.NotContains(t, err.Error(), "stop and restart")
 	_, recorded := world.SharedState.GetNetworkMappingsFromUnique("platform/second")
 	require.False(t, recorded, "a refused Init records nothing")
 	// An Init that drops the routed endpoint is refused the same way.
-	require.ErrorContains(t, world.SharedState.RecordNetworkMappings(ctx, second, nil), "stop and restart")
+	require.ErrorContains(t, world.SharedState.RecordNetworkMappings(ctx, second, nil), "its Init accepted no address for it")
 	// The address the hop froze is accepted.
 	require.NoError(t, world.SharedState.RecordNetworkMappings(ctx, second, proposed))
 	// And the hop's next delivery reads the same snapshot.
 	_, err = world.workspaceConfigurationsFor(ctx, flow.originService, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
+}
+
+// hopFenceState is a run's shared state over hopRouteWorkspace with
+// platform/second loaded but not initialized, and one hop route to its web
+// listener.
+func hopFenceState(t *testing.T) (*StateManager, *resources.Service, string) {
+	t.Helper()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	ctx := context.Background()
+	workspace := hopRouteWorkspace(t, "public")
+	state, err := NewStateManager(ctx, nil, nil, workspace)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	second, err := module.LoadServiceFromName(ctx, "second")
+	require.NoError(t, err)
+	raw, err := json.Marshal(routing.Routing{Schema: routing.RoutingSchema, Endpoints: []routing.RouteEndpoint{{
+		Audience: "platform", Service: "second", Endpoint: "web", Transport: "http", Address: "http://derived.native",
+		Package: "owner/platform", Version: "1.0.0", Digest: "test", Methods: []string{"GET /second"},
+	}}})
+	require.NoError(t, err)
+	return state, second, string(raw)
+}
+
+func secondAt(address string) *basev0.NetworkMapping {
+	return endpointMapping("platform", "second", "web", "http", "public", nativeInstance(address))
+}
+
+// The hop resolved second at the address it derived, and second's Init
+// recorded another one before the freeze ran: the freeze refuses, naming both.
+func TestHopFreezeRefusesARecordBetweenDerivationAndFreeze(t *testing.T) {
+	ctx := context.Background()
+	state, second, raw := hopFenceState(t)
+	require.NoError(t, state.RecordNetworkMappings(ctx, second, []*basev0.NetworkMapping{secondAt("http://moved.native")}))
+	err := state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://derived.native")})
+	require.ErrorContains(t, err, "hop route platform/second/web::http was resolved at [native http://derived.native], but platform/second initialized at [native http://moved.native]")
+	require.Empty(t, state.routingMappings, "a refused freeze holds nothing")
+}
+
+// A frozen route is carried only when every mapping for its endpoint is the
+// frozen one: a second, different mapping for the same endpoint is refused,
+// whichever comes first.
+func TestHopFrozenRouteRefusesADuplicateEndpointAtAnotherAddress(t *testing.T) {
+	ctx := context.Background()
+	derived, other := secondAt("http://derived.native"), secondAt("http://other.native")
+	key := resources.EndpointDestination(derived.GetEndpoint())
+	require.True(t, carriesMapping([]*basev0.NetworkMapping{derived}, key, resources.NetworkMappingHash(derived)))
+	for _, offered := range [][]*basev0.NetworkMapping{{derived, other}, {other, derived}} {
+		require.False(t, carriesMapping(offered, key, resources.NetworkMappingHash(derived)))
+		state, second, raw := hopFenceState(t)
+		require.NoError(t, state.freezeHopAddresses(raw, []*basev0.NetworkMapping{derived}))
+		err := state.RecordNetworkMappings(ctx, second, offered)
+		require.ErrorContains(t, err, "its Init accepted [native http://")
+		_, recorded := state.GetNetworkMappingsFromUnique("platform/second")
+		require.False(t, recorded)
+	}
+}
+
+// A later delivery that resolves a routed service, still not initialized, at
+// another address than the snapshot froze is refused as a move.
+func TestHopFreezeRefusesARouteThatMovedBeforeItsOwnerInitialized(t *testing.T) {
+	state, _, raw := hopFenceState(t)
+	require.NoError(t, state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://derived.native")}))
+	require.NoError(t, state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://derived.native")}), "the same address re-freezes")
+	err := state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://other.native")})
+	require.ErrorContains(t, err, "stop and restart")
+	require.ErrorContains(t, err, "hop route platform/second/web::http moved from [native http://derived.native], the address this run's hop snapshot holds, to [native http://other.native]")
 }
 
 func TestGeneratedHopRoutesRefusePrivatePublicationAndStaleArtifacts(t *testing.T) {

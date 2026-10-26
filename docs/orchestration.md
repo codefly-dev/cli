@@ -1230,3 +1230,17 @@ agent's process effects. This is an explicit restart
 boundary, not live route reconfiguration. Existing hop versions that do not
 declare `hop-routes` keep their existing configuration mode; a new hop requires
 both the CLI projection and the generated group.
+
+A routed module ordered after the hop — one that calls through it is — has
+loaded but not initialized when the hop starts. The snapshot routes it at the
+address its own Init will be proposed, derived from the workspace, the service
+and the naming scope, and that Init is the check: the proposed address is
+accepted; an Init that accepts another address, or drops the routed endpoint,
+is refused naming the route, the address the snapshot holds and the one
+offered. A restart derives the same address again, so the remedy is the
+module's agent serving the proposed address or the module ordered before the
+hop. Until that Init, the hop routes to a loopback port nothing holds yet: a
+local process that binds it first receives what the hop forwards, until the
+module's first Init finds the port held and fails the run naming the holder.
+`--temporary-ports` derives no address, so a reference that needs one is
+refused before the hop starts.
