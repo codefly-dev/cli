@@ -272,6 +272,20 @@ func TestCloudKMSCredentialRefusalsKeepStatusWithoutResponseBody(t *testing.T) {
 	}
 }
 
+func TestCloudKMSCredentialReasonsAreAllowlisted(t *testing.T) {
+	for _, reason := range []string{"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "IAM_PERMISSION_DENIED", "private-test-token"} {
+		body := `{"error":{"message":"private-test-token","details":[{"reason":"` + reason + `"}]}}`
+		credential := failedKMSCredential{errors.New("oauth2/google: status code 403: " + body)}
+		_, err := NewCloudKMS(kmsLookup("http://localhost"), credential)
+		if err == nil || strings.Contains(err.Error(), "private-test-token") || !strings.Contains(err.Error(), "HTTP 403") {
+			t.Fatalf("unsafe or unhelpful refusal: %v", err)
+		}
+		if reason != "private-test-token" && !strings.Contains(err.Error(), reason) {
+			t.Fatalf("known reason omitted: %v", err)
+		}
+	}
+}
+
 func TestCloudKMSRejectsUnsafeConfiguration(t *testing.T) {
 	for _, endpoint := range []string{"http://example.test", "http://192.0.2.1", "ftp://localhost", "https://private-test-token@example.test", "https://example.test?token=private-test-token",
 		// The bearer token belongs to Google's hosts only.
