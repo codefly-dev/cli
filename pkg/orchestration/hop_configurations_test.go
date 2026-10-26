@@ -97,6 +97,70 @@ func TestGeneratedHopRoutesUseTheNormalGraphAndAddressResolver(t *testing.T) {
 	require.NotContains(t, fmt.Sprint(previous), "moved.native", "rejected mapping never replaces accepted route")
 }
 
+// A fresh run initializes the hop before a routed module that is ordered after
+// it (a module that calls through the hop is). That module has loaded, so its
+// address is the one its own Init will be proposed; the hop's snapshot freezes
+// it, and the module's Init is then the check: the same address is accepted,
+// any other is refused naming the route. Before, the hop's own start was
+// refused as a routing change although nothing had changed.
+func TestHopRoutesFreezeAModuleThatInitializesAfterTheHop(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	ctx := context.Background()
+	workspace := hopRouteWorkspace(t, "public")
+	flow := declaredReferenceFlow(t, workspace)
+	require.NoError(t, flow.checkConfigurationReferences(ctx, nil))
+	deps, err := flow.managerDependencies(ctx)
+	require.NoError(t, err)
+	var uniques []string
+	for _, dep := range deps {
+		uniques = append(uniques, dep.Unique)
+	}
+	world := flow.world
+	world.setRunProducers(uniques, flow.originService)
+	require.NoError(t, flow.ConfigurationManager.Load(ctx, world.Env.Runtime()))
+	world.Mode = RunMode
+	world.runtimeContextFor = func(*resources.Service) string { return resources.RuntimeContextNative }
+	// Both loaded; only first has initialized.
+	recordParityEndpoints(t, world, "platform", "first")
+	recordParityEndpoints(t, world, "platform", "second")
+	recordMappings(t, world, "platform", "first", endpointMapping("platform", "first", "web", "http", "public", nativeInstance("http://first.native"), containerInstance("http://first.cell")))
+	proposed, err := world.producerNetworkMappings(ctx, "platform/second")
+	require.NoError(t, err)
+	require.Len(t, proposed, 1)
+
+	configs, err := world.workspaceConfigurationsFor(ctx, flow.originService, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err, "a fresh run never sees changed routes")
+	raw, delivered := groupValue(configs, hopRoutesGroup, "ROUTES")
+	require.True(t, delivered)
+	routes, err := routing.DecodeRouting(raw)
+	require.NoError(t, err)
+	route, err := routes.Find("platform", "http", "GET /second")
+	require.NoError(t, err)
+	native, err := resources.FindNetworkInstanceInNetworkMappings(ctx, proposed, proposed[0].GetEndpoint(), resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	require.Equal(t, native.GetAddress(), route.Address, "the hop routes second at the address its Init will be proposed")
+
+	module, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	second, err := module.LoadServiceFromName(ctx, "second")
+	require.NoError(t, err)
+	// An Init that accepts another address than the frozen one is refused by
+	// name, and nothing is recorded in its place.
+	moved := endpointMapping("platform", "second", "web", "http", "public", nativeInstance("http://moved.native"))
+	err = world.SharedState.RecordNetworkMappings(ctx, second, []*basev0.NetworkMapping{moved})
+	require.ErrorContains(t, err, "stop and restart")
+	require.ErrorContains(t, err, "platform/second")
+	_, recorded := world.SharedState.GetNetworkMappingsFromUnique("platform/second")
+	require.False(t, recorded, "a refused Init records nothing")
+	// An Init that drops the routed endpoint is refused the same way.
+	require.ErrorContains(t, world.SharedState.RecordNetworkMappings(ctx, second, nil), "stop and restart")
+	// The address the hop froze is accepted.
+	require.NoError(t, world.SharedState.RecordNetworkMappings(ctx, second, proposed))
+	// And the hop's next delivery reads the same snapshot.
+	_, err = world.workspaceConfigurationsFor(ctx, flow.originService, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+}
+
 func TestGeneratedHopRoutesRefusePrivatePublicationAndStaleArtifacts(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	t.Run("private", func(t *testing.T) {
