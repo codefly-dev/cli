@@ -35,6 +35,9 @@ type StateManager struct {
 	networkMappings map[string][]*basev0.NetworkMapping
 	// Generated hop snapshots retain these exact addresses until run restart.
 	routingMappings map[string]frozenRoute
+	// How many times each service has recorded its mappings: one means the
+	// recorded set is its first Init's.
+	networkMappingRecords map[string]int
 }
 
 // SetDependencies rebinds the dependency graph. Used by Flow when
@@ -301,5 +304,9 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *resou
 		return err
 	}
 	s.networkMappings[id.Unique()] = mappings
+	if s.networkMappingRecords == nil {
+		s.networkMappingRecords = map[string]int{}
+	}
+	s.networkMappingRecords[id.Unique()]++
 	return nil
 }

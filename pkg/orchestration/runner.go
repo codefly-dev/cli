@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -268,18 +269,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, err
 	}
 
-	// Reject stale native listeners before calling the agent's Init hook.
-	// Infrastructure agents are allowed to bind their assigned endpoint during
-	// Init (for example Vault starts its Docker/Nix runtime there), so probing in
-	// Start is already too late and mistakes the service we just initialized for
-	// a stale process.
-	//
-	// A running service being hot-reloaded keeps its port and is marked started,
-	// so it must skip this first-start guard.
-	if err := runner.checkInitialPortAvailability(ctx); err != nil {
-		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
-	}
-
 	// Configuration reads can block on a stalled provider (e.g. a dependency
 	// service that failed to export its config). Bound each read with a
 	// timeout so a single bad provider doesn't stall the entire Init.
@@ -289,6 +278,21 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
 		return nil, err
+	}
+
+	// Reject stale native listeners before calling the agent's Init hook, on
+	// the addresses this Init proposes: on a first Init nothing has been
+	// accepted yet, and those are the ports the service is about to serve —
+	// and the ones a hop routing to it already holds. Infrastructure agents
+	// are allowed to bind their assigned endpoint during Init (for example
+	// Vault starts its Docker/Nix runtime there), so probing in Start is
+	// already too late and mistakes the service we just initialized for a
+	// stale process.
+	//
+	// A running service being hot-reloaded keeps its port and is marked started,
+	// so it must skip this first-start guard.
+	if err = runner.checkInitialPortAvailability(ctx, inputs.networkMappings); err != nil {
+		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
 	}
 	dependenciesEndpoints := inputs.dependenciesEndpoints
 	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
@@ -1105,14 +1109,20 @@ type portCollision struct {
 	endpoint string
 }
 
-// boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
-// runner's own native endpoint ports that another process is already listening
-// on, naming the process that holds each one when it can be identified. A
+// boundNativePorts returns "<port> (<endpoint>)" descriptions for each native
+// endpoint port in mappings that another process is already listening on,
+// naming the process that holds each one when it can be identified. A
 // successful TCP dial is the honest signal that the port is held: unlike a
 // listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
-func (runner *Runner) boundNativePorts(ctx context.Context) []string {
+//
+// Each loopback family is dialled explicitly, besides the instance's own host:
+// a listener on 127.0.0.1:P and one on [::1]:P are different sockets, and on
+// macOS a service that later binds the wildcard :P coexists with a squatter on
+// 127.0.0.1:P, which keeps receiving every dial to 127.0.0.1:P. Only a probe
+// of both families before the service binds sees either squatter.
+func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []string {
 	var collisions []portCollision
-	for _, mapping := range runner.networkMappings {
+	for _, mapping := range mappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
 		// mapping or endpoint is possible at this boundary — skip rather than panic.
 		if mapping == nil || mapping.Endpoint == nil {
@@ -1122,12 +1132,9 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 		if instance == nil {
 			continue
 		}
-		conn, err := net.DialTimeout("tcp", instance.Host, 200*time.Millisecond)
-		if err != nil {
-			continue
+		if slices.ContainsFunc(nativeProbeAddresses(instance), listening) {
+			collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name})
 		}
-		_ = conn.Close()
-		collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name})
 	}
 	if len(collisions) == 0 {
 		return nil
@@ -1140,6 +1147,26 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, listeners, collision.port)))
 	}
 	return held
+}
+
+// nativeProbeAddresses is every address a native instance's port can be
+// held at: its own host, and the port on each loopback family.
+func nativeProbeAddresses(instance *basev0.NetworkInstance) []string {
+	addresses := []string{instance.GetHost()}
+	if instance.GetPort() > 0 {
+		port := strconv.FormatUint(uint64(instance.GetPort()), 10)
+		addresses = append(addresses, net.JoinHostPort("127.0.0.1", port), net.JoinHostPort("::1", port))
+	}
+	return slices.DeleteFunc(addresses, func(address string) bool { return address == "" })
+}
+
+func listening(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // holderLookupContext derives the deadline the holder attribution runs under.
@@ -1201,7 +1228,7 @@ func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint
 	return fmt.Sprintf(" held by pid %d (%s)", pid, executable)
 }
 
-func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
+func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed []*basev0.NetworkMapping) error {
 	// Only the very first Init can see a ghost: once this runner has started
 	// the service, a bound port is its own — either still running (hot reload)
 	// or still releasing after the Stop that precedes a restart. Testing
@@ -1210,7 +1237,7 @@ func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
 	if runner.isStarted.Load() || runner.everStarted.Load() {
 		return nil
 	}
-	if held := runner.boundNativePorts(ctx); len(held) > 0 {
+	if held := boundNativePorts(ctx, proposed); len(held) > 0 {
 		// The holder is whoever bound the port first — it may be a leftover
 		// codefly run, but it may equally be the user's own server, so the
 		// remedy is stated conditionally rather than asserting a provenance

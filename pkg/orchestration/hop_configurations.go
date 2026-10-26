@@ -272,13 +272,15 @@ func (flow *Flow) CheckRoutingSnapshot(ctx context.Context, workspace *resources
 // never loaded has no mapping at all and is refused here by name.
 //
 // Until that Init, the hop routes to a derived loopback port nothing holds
-// yet, so a local process that binds it first would receive what the hop
-// forwards. The window is bounded: the routed service's first Init finds the
-// port held and fails the run naming the holder
-// (Runner.checkInitialPortAvailability), and --temporary-ports never derives
-// an address at all. The hop cannot refuse a held port here instead: a routed
-// service whose Init starts its server before recording (a native store does)
-// holds its own port while that Init is in flight, and would be refused.
+// yet, so a local process that binds it first receives what the hop forwards
+// until then. That Init ends it: before calling the agent, the routed
+// service's first Init dials the port it is proposed on 127.0.0.1 and ::1 and
+// refuses, naming the holder, if anything answers
+// (Runner.checkInitialPortAvailability), so the run never comes up with the
+// hop routing to a squatter. --temporary-ports never derives an address at
+// all. A process that binds a loopback address on the same port after that
+// probe, or a routed service that crashes or is withdrawn mid-run, is not
+// covered.
 func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.NetworkMapping) error {
 	routes, err := routing.DecodeRouting(raw)
 	if err != nil {
@@ -303,6 +305,11 @@ func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.Network
 		}
 		key, hash := resources.EndpointDestination(selected.GetEndpoint()), resources.NetworkMappingHash(selected)
 		if recorded, initialized := s.networkMappings[unique]; initialized && !carriesMapping(recorded, key, hash) {
+			// One record means the hop resolved the address that first Init
+			// was proposed: a restart proposes it again.
+			if s.networkMappingRecords[unique] == 1 {
+				return proposedAddressRefused(key, mappingAddresses(selected), unique, addressesOf(recorded, key))
+			}
 			return routingRestartRequired(fmt.Sprintf("hop route %s was resolved at %s, but %s initialized at %s while the routes were being resolved",
 				key, mappingAddresses(selected), unique, addressesOf(recorded, key)))
 		}
@@ -346,11 +353,18 @@ func (s *StateManager) checkFrozenRoutes(unique string, mappings []*basev0.Netwo
 		if initialized {
 			return routingRestartRequired(fmt.Sprintf("hop route %s is routed at %s, but %s now offers %s", key, routed, unique, offered))
 		}
-		return fmt.Errorf("hop route %s is routed at %s, the address %s was proposed, but its Init accepted %s: "+
-			"the proposed address is derived from the workspace, the service and the naming scope, so restarting this run derives it again and is refused the same way; "+
-			"have %s's agent serve the proposed address, or order %s before the hop", key, routed, unique, offered, unique, unique)
+		return proposedAddressRefused(key, routed, unique, offered)
 	}
 	return nil
+}
+
+// proposedAddressRefused is the refusal of a first Init that accepted another
+// address than the one it was proposed, which the hop routes. A restart
+// proposes the same derived address again, so it is not offered as a remedy.
+func proposedAddressRefused(key, routed, unique, offered string) error {
+	return fmt.Errorf("hop route %s is routed at %s, the address %s was proposed, but its Init accepted %s: "+
+		"the proposed address is derived from the workspace, the service and the naming scope, so restarting this run derives it again and is refused the same way; "+
+		"have %s's agent serve the proposed address, or, if %s does not call through the hop, order it before the hop", key, routed, unique, offered, unique, unique)
 }
 
 // carriesMapping reports whether mappings hold the endpoint key, and hold it
