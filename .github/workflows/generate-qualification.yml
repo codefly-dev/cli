@@ -1,0 +1,89 @@
+name: Docker generate qualification
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/generate/**'
+      - 'cmd/publish/**'
+      - 'cmd/sync/**'
+      - 'cmd/companion/**'
+      - 'pkg/generators/**'
+      - 'companions/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'pkg/conformance/**'
+      - 'scripts/test-generate-isolated.sh'
+      - 'scripts/generate-companion-image/**'
+      - 'scripts/verify-conformance-receipts.sh'
+      - '.github/workflows/generate-qualification.yml'
+      - '.github/workflows/companions.yaml'
+  merge_group:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-generate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOWORK: 'off'
+      GOFLAGS: -mod=mod
+      CODEFLY_GENERATE_QUALIFY: '1'
+      CODEFLY_CONFORMANCE_REQUIRED: linux-amd64-docker-generate
+      CODEFLY_CONFORMANCE_RECEIPTS: ${{ github.workspace }}/conformance-receipts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+      - name: Restore Go build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/go-build
+          key: cli-go-build-generate-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            cli-go-build-generate-${{ runner.os }}-
+      - name: Pull the published companion once and provision its buf
+        run: |
+          set -euo pipefail
+          docker info
+          image=$(go run ./scripts/generate-companion-image)
+          docker pull "$image"
+          docker image inspect "$image" --format '{{json .RepoDigests}}'
+          # The SDK fixture needs host buf. Reuse the static binary shipped
+          # in the image under test, without another version or download.
+          container=$(docker create "$image" /bin/true)
+          trap 'docker rm "$container"' EXIT
+          mkdir -p "$RUNNER_TEMP/generate-bin"
+          docker cp "$container:/usr/local/bin/buf" "$RUNNER_TEMP/generate-bin/buf"
+          "$RUNNER_TEMP/generate-bin/buf" --version
+          echo "$RUNNER_TEMP/generate-bin" >> "$GITHUB_PATH"
+      - name: Run tagged and qualification tests in isolated processes
+        run: ./scripts/test-generate-isolated.sh
+      - name: Verify conformance receipts
+        if: always()
+        run: ./scripts/verify-conformance-receipts.sh
+      - name: Retain test output, timings and conformance receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-generate-evidence
+          path: |
+            generate-evidence/
+            conformance-receipts/
+          if-no-files-found: error
