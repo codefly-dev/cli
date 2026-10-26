@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -787,6 +789,90 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
 }
 `
 	return writeFileIfMissing(filepath.Join(langDir, "tsconfig.json"), []byte(tsconfig))
+}
+
+// pyprojectVersionRe matches pyproject.toml's project version line, the shape
+// writePythonScaffold writes.
+var pyprojectVersionRe = regexp.MustCompile(`(?m)^version = "[^"]*"$`)
+
+// stampPackageVersion sets the version a language's package manifest declares
+// to the library's own. The scaffold is written once and kept, so without this
+// every generated TypeScript and Python client stays at the scaffold's 0.0.1
+// while library.codefly.yaml says the producer's version, and is published
+// under the wrong one. Only the version member is edited; every hand-edit
+// around it stays. A Go module's version is its tag, which nothing here sets.
+func stampPackageVersion(lang languages.Language, langDir, version string) error {
+	if strings.TrimSpace(version) == "" {
+		return fmt.Errorf("the library declares no version")
+	}
+	switch lang {
+	case languages.TYPESCRIPT:
+		return stampPackageJSONVersion(filepath.Join(langDir, "package.json"), version)
+	case languages.PYTHON:
+		return replaceVersion(filepath.Join(langDir, "pyproject.toml"), pyprojectVersionRe, "version = "+strconv.Quote(version))
+	default:
+		return nil
+	}
+}
+
+// stampPackageJSONVersion replaces the value of package.json's top-level
+// "version" member in place, whatever the file's formatting: the member is
+// found by walking the document's tokens, so a nested "version" key or a
+// reformatted file never takes the edit.
+func stampPackageJSONVersion(path, version string) error {
+	data, err := os.ReadFile(path) //nolint:gosec // path is a file this command just wrote
+	if err != nil {
+		return err
+	}
+	quoted, err := json.Marshal(version)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return fmt.Errorf("%s is not a JSON object", path)
+	}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return fmt.Errorf("cannot parse %s: %w", path, err)
+		}
+		afterKey := decoder.InputOffset()
+		if key != "version" {
+			var skip json.RawMessage
+			if err := decoder.Decode(&skip); err != nil {
+				return fmt.Errorf("cannot parse %s: %w", path, err)
+			}
+			continue
+		}
+		var current string
+		if err := decoder.Decode(&current); err != nil {
+			return fmt.Errorf("%s: \"version\" is not a string: %w", path, err)
+		}
+		afterValue := decoder.InputOffset()
+		valueStart := afterKey + int64(bytes.IndexByte(data[afterKey:afterValue], '"'))
+		updated := append([]byte{}, data[:valueStart]...)
+		updated = append(updated, quoted...)
+		updated = append(updated, data[afterValue:]...)
+		return os.WriteFile(path, updated, 0o644) //nolint:gosec
+	}
+	return fmt.Errorf("cannot find a version in %s", path)
+}
+
+// replaceVersion replaces the first match of re in path with replacement, as is.
+func replaceVersion(path string, re *regexp.Regexp, replacement string) error {
+	data, err := os.ReadFile(path) //nolint:gosec // path is a file this command just wrote
+	if err != nil {
+		return err
+	}
+	match := re.FindIndex(data)
+	if match == nil {
+		return fmt.Errorf("cannot find a version in %s", path)
+	}
+	updated := append([]byte{}, data[:match[0]]...)
+	updated = append(updated, replacement...)
+	updated = append(updated, data[match[1]:]...)
+	return os.WriteFile(path, updated, 0o644) //nolint:gosec
 }
 
 func writePythonScaffold(langDir, pyPackage string) error {
