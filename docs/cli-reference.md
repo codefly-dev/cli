@@ -2760,7 +2760,7 @@ Flags:
 
 ```
       --endpoint string      select an endpoint when --from package:/contracts: resolves to more than one: service/endpoint (a local --from names its endpoint as its own third segment instead)
-      --force                overwrite an existing library with a different contract digest
+      --force                overwrite a different contract or rebuild a malformed single-contract library manifest
       --from string          contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>
       --go-module string     Go module path for the generated go/ library (default: github.com/codefly-dev/<name>-go)
       --language strings     languages to generate: go,typescript,python
