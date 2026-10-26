@@ -235,7 +235,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 				// A module-qualified service-identity key names exactly one
 				// service of that module, or nothing (a typo that would leave
 				// the workload on the default identity with no report).
-				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config") {
+				if _, service, qualified := strings.Cut(name, "/"); qualified {
 					if !slices.Contains(byName[service], name) {
 						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
 					}
