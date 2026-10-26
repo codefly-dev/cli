@@ -182,9 +182,10 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	checkDevAgents(scope, report)
 
-	toResolve, provided := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
+	checked, rootGroups, checkErr := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
+	toResolve, provided := checkConfigurationSources(ctx, ws, env, checked, opts.module != "" || opts.service != "", scope, requiredBy, report)
 
-	checkConfigurationReferences(ctx, ws, env, provided, scope, report)
+	checkConfigurationReferences(ctx, ws, env, provided, checked, rootGroups, checkErr, scope, report)
 
 	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
 
@@ -865,7 +866,7 @@ func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, servic
 //
 // Nothing here returns silently: a check that could not run says so, or the
 // report claims a clean bill the doctor never established.
-func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, provided *configurations.WorkspaceConfigurations, scope []*resources.Service, report *workspaceReadinessReport) {
+func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, provided, checked *configurations.WorkspaceConfigurations, rootGroups []string, checkErr error, scope []*resources.Service, report *workspaceReadinessReport) {
 	if len(scope) == 0 {
 		return
 	}
@@ -897,8 +898,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 	// a check that had not happened. One unsupplied ${profile} value in an
 	// unrelated group was enough to reach it, and the workspace was reported
 	// ready with a typo'd producer in a root group.
-	checked, rootGroups, err := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
-	if err != nil {
+	if checkErr != nil {
 		// A failure here is not only "the doctor could not look": the run
 		// resolves these configurations through the same loader, so a workspace
 		// whose configurations do not load has no working run either. It is a
@@ -906,7 +906,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		// where checkConfigurationSources has already reported the read failure
 		// and this is a note beside it.
 		report.add(codeConfigurationInvalid, "configuration references", "fail",
-			fmt.Sprintf("not checked: %v", err),
+			fmt.Sprintf("not checked: %v", checkErr),
 			"fix the workspace configurations named above, then run the doctor again")
 		return
 	}
@@ -1034,10 +1034,11 @@ type scopedConfiguration struct {
 // in its tree — through core's configurations.ReadWorkspaceConfigurations, the
 // one definition of that rule, so the doctor cannot disagree with `run` — and
 // then the per-service directories. It never creates a directory: a missing
-// workspace directory is a failure only for the groups no composed module
-// provides. It returns the configurations whose secret values are in scope for
+// workspace directory is a failure only for groups neither a composed module
+// nor the invocation supplies. checked is the orchestration inventory shared
+// with the reference check, including generated groups. It returns the configurations whose secret values are in scope for
 // reference resolution.
-func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
+func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, checked *configurations.WorkspaceConfigurations, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
 	required := make([]string, 0, len(requiredBy))
 	var renderOwned []string
 	for name := range requiredBy {
@@ -1091,6 +1092,25 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	if provided != nil {
 		declared := ownConfigurationNames(wsCfgDir)
 		byName, own, composed := classifyProvidedConfigurations(provided, declared)
+		// The authored inventory owns file diagnostics and provenance. A run can
+		// also supply groups without files (generated hop routes, invocation
+		// overrides). Judge their availability from the same resolved inventory
+		// whose references are checked below, never from a name exemption.
+		if checked != nil {
+			for _, info := range checked.Infos {
+				if _, authored := byName[info.Name]; authored {
+					continue
+				}
+				byName[info.Name] = info
+				if !serviceScoped {
+					toResolve = append(toResolve, scopedConfiguration{origin: "invocation", info: info})
+				}
+				if consumers := requiredBy[info.Name]; len(consumers) > 0 {
+					report.add("", "workspace configuration "+info.Name, "ok",
+						fmt.Sprintf("supplied by this invocation (required by %s)", strings.Join(consumers, ", ")), "")
+				}
+			}
+		}
 		// Doctor has no selected runtime. Report native-only supply as a warning,
 		// and exempt no other service that also requires the authored group.
 		if byName[environments.FederationConfiguration] == nil && provided.Ambiguous[environments.FederationConfiguration] == nil &&
@@ -1171,7 +1191,7 @@ func reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir string, required 
 			fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
 	case !dirExists(wsCfgDir) && len(required) > len(optional):
 		report.add("", "workspace configurations", "ok",
-			fmt.Sprintf("none present under %s (all %d required configuration(s) are provided by composed modules)", relCfgDir, len(required)-len(optional)), "")
+			fmt.Sprintf("none present under %s (all %d required configuration(s) are supplied by composed modules or this invocation)", relCfgDir, len(required)-len(optional)), "")
 	case !dirExists(wsCfgDir):
 		report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
 	case len(own) == 0:
