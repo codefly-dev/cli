@@ -1,12 +1,14 @@
 package generators
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/languages"
 )
 
@@ -118,4 +120,65 @@ func packageJSON(t *testing.T, langDir string) map[string]any {
 		t.Fatalf("package.json is not valid JSON: %v\n%s", err, data)
 	}
 	return doc
+}
+
+// A package manifest whose version cannot be set is refused before anything
+// is generated, so the library is left exactly as it was: never generated
+// and applied, then refused with its manifest half-written.
+func TestAnUnstampableManifestLeavesTheLibraryUntouched(t *testing.T) {
+	output := t.TempDir()
+	langDir := filepath.Join(output, "typescript")
+	if err := os.MkdirAll(filepath.Join(langDir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(langDir, "package.json"), []byte(`{"name":"@acme/billing-client","private":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(langDir, "src", "notes.ts"), []byte("// hand-written\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, output)
+
+	err := GenerateClientLibrary(context.Background(), &ClientLibraryRequest{
+		Name:       "billing-client",
+		Output:     output,
+		Languages:  []languages.Language{languages.TYPESCRIPT},
+		NpmPackage: "@acme/billing-client",
+		Entries: []ContractEntry{{
+			Endpoint: composition.APIContractEndpoint{
+				Service: "api", Endpoint: "grpc", Kind: composition.APIContractKindProtobuf, Package: "billing.v1",
+			},
+			PackageVersion: "0.1.14",
+			ModuleName:     "billing",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot find a version") {
+		t.Fatalf("err = %v, want a refusal naming the missing version", err)
+	}
+	if after := snapshotTree(t, output); after != before {
+		t.Fatalf("a refused generation changed the library:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestCheckPackageVersionStampable(t *testing.T) {
+	langDir := t.TempDir()
+	// Not written yet: the scaffold declares a version.
+	if err := checkPackageVersionStampable(languages.PYTHON, langDir); err != nil {
+		t.Fatalf("a missing pyproject.toml: %v", err)
+	}
+	if err := writePythonScaffold(langDir, "billing_client"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPackageVersionStampable(languages.PYTHON, langDir); err != nil {
+		t.Fatalf("the scaffold's pyproject.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(langDir, "pyproject.toml"), []byte("[project]\nname = \"billing\"\ndynamic = [\"version\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPackageVersionStampable(languages.PYTHON, langDir); err == nil {
+		t.Fatal("a pyproject.toml with no version line was accepted")
+	}
+	if err := checkPackageVersionStampable(languages.GO, langDir); err != nil {
+		t.Fatalf("go: %v", err)
+	}
 }

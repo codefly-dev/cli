@@ -793,7 +793,7 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
 
 // pyprojectVersionRe matches pyproject.toml's project version line, the shape
 // writePythonScaffold writes.
-var pyprojectVersionRe = regexp.MustCompile(`(?m)^version = "[^"]*"$`)
+var pyprojectVersionRe = regexp.MustCompile(`(?m)^version = ("[^"]*")$`)
 
 // stampPackageVersion sets the version a language's package manifest declares
 // to the library's own. The scaffold is written once and kept, so without this
@@ -805,74 +805,109 @@ func stampPackageVersion(lang languages.Language, langDir, version string) error
 	if strings.TrimSpace(version) == "" {
 		return fmt.Errorf("the library declares no version")
 	}
-	switch lang {
-	case languages.TYPESCRIPT:
-		return stampPackageJSONVersion(filepath.Join(langDir, "package.json"), version)
-	case languages.PYTHON:
-		return replaceVersion(filepath.Join(langDir, "pyproject.toml"), pyprojectVersionRe, "version = "+strconv.Quote(version))
-	default:
+	path, ok := packageManifest(lang, langDir)
+	if !ok {
 		return nil
 	}
-}
-
-// stampPackageJSONVersion replaces the value of package.json's top-level
-// "version" member in place, whatever the file's formatting: the member is
-// found by walking the document's tokens, so a nested "version" key or a
-// reformatted file never takes the edit.
-func stampPackageJSONVersion(path, version string) error {
 	data, err := os.ReadFile(path) //nolint:gosec // path is a file this command just wrote
 	if err != nil {
 		return err
 	}
-	quoted, err := json.Marshal(version)
+	start, end, err := locatePackageVersion(lang, path, data)
 	if err != nil {
 		return err
 	}
+	value := strconv.Quote(version)
+	if lang == languages.TYPESCRIPT {
+		quoted, err := json.Marshal(version)
+		if err != nil {
+			return err
+		}
+		value = string(quoted)
+	}
+	updated := append([]byte{}, data[:start]...)
+	updated = append(updated, value...)
+	updated = append(updated, data[end:]...)
+	return os.WriteFile(path, updated, 0o644) //nolint:gosec
+}
+
+// checkPackageVersionStampable refuses, before anything is generated, a package
+// manifest already in langDir whose version stampPackageVersion could not set,
+// so that refusal leaves the library exactly as it was. A manifest that does
+// not exist yet is written from the scaffold, which declares one.
+func checkPackageVersionStampable(lang languages.Language, langDir string) error {
+	path, ok := packageManifest(lang, langDir)
+	if !ok {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is the library's own package manifest
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, _, err = locatePackageVersion(lang, path, data)
+	return err
+}
+
+// packageManifest is the file in langDir that declares a language's package
+// version, and false for a language whose version is not in a file.
+func packageManifest(lang languages.Language, langDir string) (string, bool) {
+	switch lang {
+	case languages.TYPESCRIPT:
+		return filepath.Join(langDir, "package.json"), true
+	case languages.PYTHON:
+		return filepath.Join(langDir, "pyproject.toml"), true
+	default:
+		return "", false
+	}
+}
+
+// locatePackageVersion returns where in data the manifest's version value
+// lies, quotes included.
+func locatePackageVersion(lang languages.Language, path string, data []byte) (start, end int, err error) {
+	if lang == languages.TYPESCRIPT {
+		return locatePackageJSONVersion(path, data)
+	}
+	match := pyprojectVersionRe.FindSubmatchIndex(data)
+	if match == nil {
+		return 0, 0, fmt.Errorf("cannot find a version in %s", path)
+	}
+	return match[2], match[3], nil
+}
+
+// locatePackageJSONVersion finds the value of package.json's top-level
+// "version" member, whatever the file's formatting: the member is found by
+// walking the document's tokens, so a nested "version" key or a reformatted
+// file never takes the edit.
+func locatePackageJSONVersion(path string, data []byte) (start, end int, err error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		return fmt.Errorf("%s is not a JSON object", path)
+	if token, tokenErr := decoder.Token(); tokenErr != nil || token != json.Delim('{') {
+		return 0, 0, fmt.Errorf("%s is not a JSON object", path)
 	}
 	for decoder.More() {
-		key, err := decoder.Token()
-		if err != nil {
-			return fmt.Errorf("cannot parse %s: %w", path, err)
+		key, keyErr := decoder.Token()
+		if keyErr != nil {
+			return 0, 0, fmt.Errorf("cannot parse %s: %w", path, keyErr)
 		}
 		afterKey := decoder.InputOffset()
 		if key != "version" {
 			var skip json.RawMessage
-			if err := decoder.Decode(&skip); err != nil {
-				return fmt.Errorf("cannot parse %s: %w", path, err)
+			if skipErr := decoder.Decode(&skip); skipErr != nil {
+				return 0, 0, fmt.Errorf("cannot parse %s: %w", path, skipErr)
 			}
 			continue
 		}
 		var current string
-		if err := decoder.Decode(&current); err != nil {
-			return fmt.Errorf("%s: \"version\" is not a string: %w", path, err)
+		if valueErr := decoder.Decode(&current); valueErr != nil {
+			return 0, 0, fmt.Errorf("%s: \"version\" is not a string: %w", path, valueErr)
 		}
 		afterValue := decoder.InputOffset()
 		valueStart := afterKey + int64(bytes.IndexByte(data[afterKey:afterValue], '"'))
-		updated := append([]byte{}, data[:valueStart]...)
-		updated = append(updated, quoted...)
-		updated = append(updated, data[afterValue:]...)
-		return os.WriteFile(path, updated, 0o644) //nolint:gosec
+		return int(valueStart), int(afterValue), nil
 	}
-	return fmt.Errorf("cannot find a version in %s", path)
-}
-
-// replaceVersion replaces the first match of re in path with replacement, as is.
-func replaceVersion(path string, re *regexp.Regexp, replacement string) error {
-	data, err := os.ReadFile(path) //nolint:gosec // path is a file this command just wrote
-	if err != nil {
-		return err
-	}
-	match := re.FindIndex(data)
-	if match == nil {
-		return fmt.Errorf("cannot find a version in %s", path)
-	}
-	updated := append([]byte{}, data[:match[0]]...)
-	updated = append(updated, replacement...)
-	updated = append(updated, data[match[1]:]...)
-	return os.WriteFile(path, updated, 0o644) //nolint:gosec
+	return 0, 0, fmt.Errorf("cannot find a version in %s", path)
 }
 
 func writePythonScaffold(langDir, pyPackage string) error {
