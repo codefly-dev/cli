@@ -7,7 +7,7 @@
 
 ## Prerequisites
 
-- **Go 1.27.2+** (check with `go version`; `go.mod` is the source of truth — see [runbooks/bump-go-version.md](runbooks/bump-go-version.md))
+- **Go 1.27.3+** (check with `go version`; `go.mod` is the source of truth — see [runbooks/bump-go-version.md](runbooks/bump-go-version.md))
 - **Docker** (for container builds, agent processes, and infrastructure)
 - **codefly binary** (the CLI itself, for bootstrapping)
 

@@ -107,7 +107,7 @@ func TestReleaseWorkflowBuildsWithCGOCrossToolchain(t *testing.T) {
 	}
 	for _, name := range []string{"Qualify the clean tag", "Publish the immutable release and Homebrew cask"} {
 		step := steps[name]
-		if !strings.Contains(step.Run, "ghcr.io/goreleaser/goreleaser-cross:v1.26.4") ||
+		if !strings.Contains(step.Run, "ghcr.io/goreleaser/goreleaser-cross:v1.27.3") ||
 			!strings.Contains(step.Run, "docker run --rm") ||
 			strings.TrimSpace(step.Env["SYFT_PATH"]) == "" {
 			t.Fatalf("%s does not run the CGO-capable release toolchain with Syft: %#v", name, step)
