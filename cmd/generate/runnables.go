@@ -23,7 +23,6 @@ import (
 	"github.com/spf13/cobra"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -178,6 +177,10 @@ type derivedOperation struct {
 // its methods became tools without reading the tree: each operation with its
 // origin and effect, the methods left plain calls and why, and — when any
 // operation was derived by default — how to keep a method from every agent.
+//
+// One method published on several endpoints (gRPC and Connect) is several
+// operations but one method, so the summary counts and names methods, each
+// once, and a notice is printed once per method.
 func (d *derivation) report() {
 	var defaults, mutations []string
 	for i := range d.index.Operations {
@@ -186,20 +189,24 @@ func (d *derivation) report() {
 		origin := "option"
 		if !operation.explicit {
 			origin = "default"
-			defaults = append(defaults, entry.Method)
+			defaults = appendOnce(defaults, entry.Method)
 			if operation.effect == runnablev0.ToolExposure_EFFECT_MUTATION.String() {
-				mutations = append(mutations, entry.Method)
+				mutations = appendOnce(mutations, entry.Method)
 			}
 		}
 		cli.Info("runnables: %s  %s  %s  %s  %s", entry.Name, entry.Method, origin, strings.TrimPrefix(operation.effect, "EFFECT_"), entry.Digest)
 	}
+	var notices []string
 	for _, notice := range d.notices {
+		notices = appendOnce(notices, notice)
+	}
+	for _, notice := range notices {
 		cli.Info("runnables: not an operation: %s", notice)
 	}
 	if len(defaults) == 0 {
 		return
 	}
-	cli.Info("runnables: %d operation(s) derived by default from their authority policy, %d of them mutations: %s",
+	cli.Info("runnables: %d method(s) derived by default from their authority policy, %d of them mutations: %s",
 		len(defaults), len(mutations), strings.Join(mutations, ", "))
 	cli.Info("runnables: every operation is a tool, offered only to callers whose grants cover its binding; " +
 		"a method no agent may ever call declares `option (codefly.runnable.v0.exclude) = true;`")
@@ -386,7 +393,7 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 	derived.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.OperationFileName))] = operationBytes
 
 	operation := pkg.GetServiceOperations()[0]
-	derived.origins[pkg.GetIdentity().GetName()] = derivedOperation{explicit: declaresOperation(files, fullMethod), effect: spec.Tool.GetEffect().String()}
+	derived.origins[pkg.GetIdentity().GetName()] = derivedOperation{explicit: spec.Declared, effect: spec.Tool.GetEffect().String()}
 	derived.index.Operations = append(derived.index.Operations, runnablespkg.IndexEntry{
 		Name:          pkg.GetIdentity().GetName(),
 		Version:       pkg.GetIdentity().GetVersion(),
@@ -490,28 +497,16 @@ func derivedName(service, endpoint, method string) string {
 	return corerunnable.BoundedName(strings.Join([]string{service, endpoint, kebab(method)}, "-"), maxDerivedName, "-")
 }
 
+// appendOnce appends value unless the list already holds it.
+func appendOnce(list []string, value string) []string {
+	if slices.Contains(list, value) {
+		return list
+	}
+	return append(list, value)
+}
+
 // maxDerivedName is the longest release name a RunnableIdentity admits.
 const maxDerivedName = 50
-
-// declaresOperation reports a method carrying the codefly.runnable.v0.operation
-// option: an operation its owner declared, rather than one derived by default.
-func declaresOperation(files *protoregistry.Files, fullMethod string) bool {
-	service, name, _ := strings.Cut(strings.TrimPrefix(fullMethod, "/"), "/")
-	descriptor, err := files.FindDescriptorByName(protoreflect.FullName(service))
-	if err != nil {
-		return false
-	}
-	published, isService := descriptor.(protoreflect.ServiceDescriptor)
-	if !isService {
-		return false
-	}
-	method := published.Methods().ByName(protoreflect.Name(name))
-	if method == nil {
-		return false
-	}
-	options, isOptions := method.Options().(*descriptorpb.MethodOptions)
-	return isOptions && googleproto.HasExtension(options, runnablev0.E_Operation)
-}
 
 // kebab spells a method name the way a resource name is spelled. An acronym
 // stays one word: ApplyHTTPText is apply-http-text, not apply-h-t-t-p-text.

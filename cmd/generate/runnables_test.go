@@ -511,23 +511,23 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 		Contract: &basev0.RunnableContract{
 			Protocol: resources.RunnableServiceProtocolV1,
 			Input: &basev0.RunnableSchema{Fields: []*basev0.RunnableField{
-				{Name: "origin", Type: basev0.RunnableField_STRING},
-				{Name: "container", Type: basev0.RunnableField_STRING},
-				{Name: "ref", Type: basev0.RunnableField_STRING},
-				{Name: "path", Type: basev0.RunnableField_STRING},
-				{Name: "revision", Type: basev0.RunnableField_STRING},
-				{Name: "commit", Type: basev0.RunnableField_STRING},
-				{Name: "cursor", Type: basev0.RunnableField_STRING, Format: corerunnable.FormatInt64},
-				{Name: "contentType", Type: basev0.RunnableField_STRING},
-				{Name: "text", Type: basev0.RunnableField_STRING},
+				{Name: "origin", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "container", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "ref", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "path", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "revision", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "commit", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "cursor", Type: basev0.RunnableField_STRING, Format: corerunnable.FormatInt64, Optional: true},
+				{Name: "contentType", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "text", Type: basev0.RunnableField_STRING, Optional: true},
 			}},
 			Output: &basev0.RunnableSchema{Fields: []*basev0.RunnableField{
-				{Name: "reference", Type: basev0.RunnableField_STRING},
-				{Name: "contentHash", Type: basev0.RunnableField_STRING},
-				{Name: "effectDigest", Type: basev0.RunnableField_STRING},
-				{Name: "minted", Type: basev0.RunnableField_BOOLEAN},
-				{Name: "skipped", Type: basev0.RunnableField_BOOLEAN},
-				{Name: "quarantined", Type: basev0.RunnableField_BOOLEAN},
+				{Name: "reference", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "contentHash", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "effectDigest", Type: basev0.RunnableField_STRING, Optional: true},
+				{Name: "minted", Type: basev0.RunnableField_BOOLEAN, Optional: true},
+				{Name: "skipped", Type: basev0.RunnableField_BOOLEAN, Optional: true},
+				{Name: "quarantined", Type: basev0.RunnableField_BOOLEAN, Optional: true},
 			}},
 		},
 		Execution: &basev0.RunnableExecution{
@@ -566,10 +566,11 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 	// with the completion mode (codefly-dev/core#678); it had been
 	// 4c26fb95a0236b94107b30f34783cd893f2be36e0d157340c247013fd93a9a1f, then
 	// ee460290f91e2cad2d9e7efe6d740ba35ff5ec89b4395bbde1e8bd19bd8291a0 until the
-	// contract was spelled as the Connect wire carries it (core#843). The
+	// contract was spelled as the Connect wire carries it — JSON names, 64-bit
+	// integers as strings, every non-required key optional (core#843). The
 	// equality check above is what proves the derivation still matches what
 	// document-store publishes — this line only pins the number.
-	if asOracle.GetDigest() != "fdfc6ac25ae0eb138d4f51dc255343de093ce3048c3262f8d5e0e61035027b19" {
+	if asOracle.GetDigest() != "4b72d393b3fb25284036185968438f3c24be98780660c7f994de896358d4878c" {
 		t.Fatalf("digest = %s, want the published oracle's", asOracle.GetDigest())
 	}
 }

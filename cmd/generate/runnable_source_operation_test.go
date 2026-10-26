@@ -125,12 +125,20 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 
 // requireSameModuloWireSpelling holds a contract committed before the wire
 // spelling to the one derived now: the same members in the same order, each
-// named by its JSON name, a 64-bit integer as a STRING of format int64.
+// named by its JSON name, a 64-bit integer as a STRING of format int64 or
+// uint64 and nothing else, every non-required key optional, array items held
+// the same way. A stopgap: it goes when module-saas-starter regenerates.
 func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev0.RunnableField) {
 	t.Helper()
 	require.Len(t, derived, len(committed))
 	for i, before := range committed {
-		after := derived[i]
+		requireFieldModuloWireSpelling(t, before, derived[i], true)
+	}
+}
+
+func requireFieldModuloWireSpelling(t *testing.T, before, after *basev0.RunnableField, member bool) {
+	t.Helper()
+	if member {
 		parts := strings.Split(before.GetName(), "_")
 		for j := 1; j < len(parts); j++ {
 			if parts[j] != "" {
@@ -138,11 +146,18 @@ func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev0.Ru
 			}
 		}
 		require.Equal(t, strings.Join(parts, ""), after.GetName())
-		if before.GetType() != after.GetType() {
-			require.Equal(t, basev0.RunnableField_INTEGER, before.GetType(), "%s", before.GetName())
-			require.Equal(t, basev0.RunnableField_STRING, after.GetType(), "%s", before.GetName())
-		}
-		require.Equal(t, before.GetOptional(), after.GetOptional(), "%s", before.GetName())
-		requireSameModuloWireSpelling(t, before.GetFields(), after.GetFields())
+		require.True(t, after.GetOptional(), "%s: proto3 JSON may omit every non-required key", after.GetName())
+	}
+	if before.GetType() == after.GetType() {
+		require.Equal(t, before.GetFormat(), after.GetFormat(), "%s", after.GetName())
+	} else {
+		require.Equal(t, basev0.RunnableField_INTEGER, before.GetType(), "%s", before.GetName())
+		require.Equal(t, basev0.RunnableField_STRING, after.GetType(), "%s", before.GetName())
+		require.Contains(t, []string{corerunnable.FormatInt64, corerunnable.FormatUint64}, after.GetFormat(), "%s", before.GetName())
+	}
+	requireSameModuloWireSpelling(t, before.GetFields(), after.GetFields())
+	require.Equal(t, before.GetItems() == nil, after.GetItems() == nil, "%s items", after.GetName())
+	if before.GetItems() != nil {
+		requireFieldModuloWireSpelling(t, before.GetItems(), after.GetItems(), false)
 	}
 }
