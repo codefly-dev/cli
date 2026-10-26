@@ -140,7 +140,7 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 		return nil, nil
 	}
 	namespace := scope.Namespace
-	mapping := secrets.Services[service]
+	mapping := secrets.MappingFor(scope.Module, service)
 	// A service may resolve from a different store than the environment default,
 	// mirroring EnvironmentManagedSecretReference's per-reference store; without
 	// this the per-service secret-store declaration would load, validate, and then
