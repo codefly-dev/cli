@@ -3696,6 +3696,11 @@ read becomes a read-only Runnable whose query parameters are its input, and a
 mutation, which the runtime does not mark, becomes nothing. A marked route core
 refuses (a `GET` that would mutate, a payload outside the profile) is named and
 fails the command, as a method carrying the option does. No flag names a route.
+A document that marks **no** route although some declare a policy requiring only
+`read` is the signature of an artifact rendered by solution-runtime-go's
+`InterfaceDocument` instead of `Server.InterfaceArtifact`, or by a runtime from
+before the marker; each such read is listed as "not an operation", naming the
+fix, rather than leaving an empty index in silence.
 
 The run reports each operation with its origin (`option`, `default`, or
 `marker` for a route) and effect, lists the methods left plain calls and why, and — when any operation

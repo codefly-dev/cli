@@ -3025,7 +3025,10 @@ A solution publishes its routes as one OpenAPI document (Swagger 2.0 or
 OpenAPI 3), and every route marked x-codefly-operation derives the same way:
 solution-runtime-go marks each read the backend serves, so a GET read becomes a
 read-only tool whose query parameters are its input. Its directory is named by
-the route's operationId. No flag names a route.
+the route's operationId. No flag names a route. A document that marks no route
+although its routes declare read-only policies — rendered by the runtime's
+InterfaceDocument rather than Server.InterfaceArtifact, or by a runtime from
+before the marker — names each such read as not an operation.
 
 The input is what `codefly generate contracts` already wrote — each endpoint's
 served procedures in the API catalog and its serialized FileDescriptorSet, or

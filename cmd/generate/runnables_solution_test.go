@@ -13,6 +13,7 @@ import (
 	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
+	"github.com/codefly-dev/core/standards"
 	"github.com/stretchr/testify/require"
 )
 
@@ -262,4 +263,133 @@ func TestGenerateRunnableBindingsPreparesASolutionsReads(t *testing.T) {
 		require.Equal(t, runnablev0.ToolExposure_EFFECT_READ_ONLY, tool.GetEffect())
 		require.Equal(t, basev0.RunnableExecution_RECOVERY_RECOMPUTE, prepared.GetPolicy().GetRecovery())
 	}
+}
+
+// committedArtifact is testdata/solution-runnables/api.swagger.json: the
+// releases backend's interface artifact exactly as solution-runtime-go's
+// Server.InterfaceArtifact renders it (codefly-dev/solution-runtime-go#77) —
+// every operation core-solutions' releases solution serves, each with the
+// policy it declares on the authority runtime, and its MCP server — with no
+// edit. It is a snapshot of that shape; the runtime's own tests hold
+// InterfaceArtifact to deriving in core.
+func committedArtifact(t *testing.T) []byte {
+	t.Helper()
+	return mustRead(t, filepath.Join("testdata", "solution-runnables", "api.swagger.json"))
+}
+
+// saveCommittedSolution places the artifact where a solution backend commits
+// it (openapi/api.swagger.json beside its service.codefly.yaml), so the whole
+// chain runs on it: generate contracts publishes it as the http endpoint's
+// contract, extensions and all, and generate runnables reads what that wrote.
+func saveCommittedSolution(t *testing.T, ctx context.Context, artifact []byte) (root, moduleDir string) {
+	t.Helper()
+	root, moduleDir = saveFixtureWorkspace(t, ctx, "releases",
+		&resources.ModuleInterface{Endpoints: []*resources.InterfaceEndpoint{
+			{Service: "backend", Endpoint: "http", Visibility: resources.VisibilityPublic},
+		}},
+		&resources.Service{
+			Name:    "backend",
+			Version: "0.3.0",
+			Agent:   &resources.Agent{Kind: resources.ServiceAgent, Name: "go", Version: "0.0.70", Publisher: "codefly.dev"},
+			Endpoints: []*resources.Endpoint{
+				{Name: "http", API: "http", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
+			},
+		},
+	)
+	writeFixtureFile(t, filepath.Join(moduleDir, "services", "backend", filepath.FromSlash(standards.OpenAPIPath)), artifact)
+	writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(`schema: codefly/module-package/v2
+kind: module-package
+id: obin/releases
+version: 0.1.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - contracts
+  - services
+contracts:
+  composition: ">=2.0.0 <3.0.0"
+services:
+  - name: backend
+    endpoints: [http]
+`))
+	t.Chdir(root)
+	resetContractsFlags(t)
+	resetRunnablesFlags(t)
+	resetRunnableBindingsFlags(t)
+	if out, err := captureStdout(t, func() error { return ContractsCmd.RunE(ContractsCmd, []string{"releases"}) }); err != nil {
+		t.Fatalf("generate contracts: %v\n%s", err, out)
+	}
+	return root, moduleDir
+}
+
+// TestTheCommittedArtifactBecomesTools gates the seam end to end rather than
+// inferring it: the runtime's own artifact survives generate contracts with its
+// vendor extensions, and from what that published, generate runnables derives
+// exactly the two reads and generate runnable-bindings prepares exactly two GET
+// calls. The writes, the any-checked-caller routes, the datasource read
+// (datasource.sources:invoke, not read) and the MCP route become nothing.
+func TestTheCommittedArtifactBecomesTools(t *testing.T) {
+	ctx := context.Background()
+	artifact := committedArtifact(t)
+	root, moduleDir := saveCommittedSolution(t, ctx, artifact)
+
+	published := mustRead(t, filepath.Join(moduleDir, "contracts", "api", "backend", "http", "openapi.json"))
+	require.Equal(t, artifact, published, "generate contracts publishes the artifact byte for byte")
+
+	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"releases"}))
+	index := readIndex(t, moduleDir)
+	methods := make([]string, 0, len(index.Operations))
+	for _, entry := range index.Operations {
+		methods = append(methods, entry.Method)
+	}
+	require.Equal(t, []string{"GET /v1/releases/history", "GET /v1/releases/recorded"}, methods)
+
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+	raw := mustRead(t, filepath.Join(root, "configurations", "local", RunnableBindingsGroup+".env"))
+	var keys []string
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found || strings.HasPrefix(line, "#") {
+			continue
+		}
+		keys = append(keys, key)
+		prepared, err := corerunnable.DecodePrepared([]byte(value))
+		require.NoError(t, err)
+		require.Equal(t, "GET", prepared.GetCall().GetRest().GetVerb())
+		tool, err := corerunnable.ToolFromPrepared(prepared)
+		require.NoError(t, err)
+		require.Equal(t, runnablev0.ToolExposure_EFFECT_READ_ONLY, tool.GetEffect())
+	}
+	require.Equal(t, []string{
+		"RELEASES__BACKEND_HTTP_RELEASES_GET_V1_RELEASES_HISTORY",
+		"RELEASES__BACKEND_HTTP_RELEASES_GET_V1_RELEASES_RECORDED",
+	}, keys)
+}
+
+// TestAnArtifactThatMarksNothingNamesItsReads is the InterfaceDocument trap: an
+// artifact whose reads declare their policies but carry no marker — rendered by
+// InterfaceDocument rather than Server.InterfaceArtifact, or by a runtime from
+// before the marker — derives nothing, and the run says so read by read rather
+// than writing an empty index in silence. It is a notice, not a refusal: every
+// solution still on such a runtime is in exactly this state.
+func TestAnArtifactThatMarksNothingNamesItsReads(t *testing.T) {
+	ctx := context.Background()
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(committedArtifact(t), &doc))
+	for _, methods := range doc["paths"].(map[string]any) {
+		for _, operation := range methods.(map[string]any) {
+			delete(operation.(map[string]any), corerunnable.OpenAPIOperationMarker)
+		}
+	}
+	unmarked, err := json.Marshal(doc)
+	require.NoError(t, err)
+	_, moduleDir := saveCommittedSolution(t, ctx, unmarked)
+
+	out, err := captureStdout(t, func() error { return RunnablesCmd.RunE(RunnablesCmd, []string{"releases"}) })
+	require.NoError(t, err)
+	require.Empty(t, readIndex(t, moduleDir).Operations)
+	for _, read := range []string{"GET /v1/releases/history", "GET /v1/releases/recorded"} {
+		require.Contains(t, out, read+": backend/http requires only \"read\" but its document marks no route x-codefly-operation")
+	}
+	require.Contains(t, out, "Server.InterfaceArtifact")
+	require.NotContains(t, out, "POST /v1/releases/record:", "a write is not a read the trap lost")
 }

@@ -3,6 +3,7 @@ package generate
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -55,7 +56,10 @@ A solution publishes its routes as one OpenAPI document (Swagger 2.0 or
 OpenAPI 3), and every route marked x-codefly-operation derives the same way:
 solution-runtime-go marks each read the backend serves, so a GET read becomes a
 read-only tool whose query parameters are its input. Its directory is named by
-the route's operationId. No flag names a route.
+the route's operationId. No flag names a route. A document that marks no route
+although its routes declare read-only policies — rendered by the runtime's
+InterfaceDocument rather than Server.InterfaceArtifact, or by a runtime from
+before the marker — names each such read as not an operation.
 
 The input is what ` + "`codefly generate contracts`" + ` already wrote — each endpoint's
 served procedures in the API catalog and its serialized FileDescriptorSet, or
@@ -405,6 +409,7 @@ func deriveOpenAPIEndpoint(module *resources.Module, endpoint *composition.APICo
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
+	marked := 0
 	for _, path := range paths {
 		item := parsed.Paths[path]
 		if item == nil {
@@ -417,12 +422,54 @@ func deriveOpenAPIEndpoint(module *resources.Module, endpoint *composition.APICo
 			if route.operation == nil || len(route.operation.Marker) == 0 {
 				continue
 			}
+			marked++
 			if err = deriveRoute(module, endpoint, owner, document, route.method, path, route.operation.OperationID, derived); err != nil {
 				return err
 			}
 		}
 	}
+	if marked == 0 {
+		derived.notices = append(derived.notices, unmarkedReads(document, endpoint)...)
+	}
 	return nil
+}
+
+// unmarkedReads names the reads of a document that marks no route at all
+// although its routes declare policies requiring only read: the signature of
+// an artifact rendered by solution-runtime-go's InterfaceDocument rather than
+// Server.InterfaceArtifact, or by a runtime from before the marker existed.
+// Either way every read is silently no tool, so each is named. A document that
+// marks some routes and not others is the owner's choice (Operation.Exclude)
+// and says nothing.
+func unmarkedReads(document []byte, endpoint *composition.APIContractEndpoint) []string {
+	type requirement struct {
+		Actions []string `json:"actions"`
+	}
+	var parsed struct {
+		Paths map[string]map[string]struct {
+			Policy *struct {
+				Requires []requirement `json:"requires"`
+			} `json:"x-codefly-authority-policy"`
+		} `json:"paths"`
+	}
+	if json.Unmarshal(document, &parsed) != nil {
+		return nil
+	}
+	var notices []string
+	for path, methods := range parsed.Paths {
+		for method, operation := range methods {
+			if operation.Policy == nil || len(operation.Policy.Requires) == 0 ||
+				slices.ContainsFunc(operation.Policy.Requires, func(r requirement) bool {
+					return len(r.Actions) != 1 || r.Actions[0] != corerunnable.ReadOnlyScopeAction
+				}) {
+				continue
+			}
+			notices = append(notices, fmt.Sprintf("%s: %s/%s requires only %q but its document marks no route x-codefly-operation; render the artifact with solution-runtime-go's Server.InterfaceArtifact (InterfaceDocument, and a runtime before the marker, mark none)",
+				corerunnable.Route(method, path), endpoint.Service, endpoint.Endpoint, corerunnable.ReadOnlyScopeAction))
+		}
+	}
+	sort.Strings(notices)
+	return notices
 }
 
 // deriveRoute derives one marked route. Its directory is named by the route's
