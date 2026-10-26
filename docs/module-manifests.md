@@ -303,6 +303,15 @@ that is not a prepared binding fails the render by key. A module that asks for
 nothing — no contract, no scoped consumption — gains nothing: the host grants
 it its envelope whole, and a request would change that.
 
+**Owner-aware enforcement is declared, never inferred.** A module that checks
+resource-owner selectors declares `owner_aware: true` at the top level of its
+`module.contract.codefly.yaml`. The composition delivery carries exactly that
+boolean in the signed `AuthorityManifestV1.owner_aware` (field 7). An omitted or
+false declaration stays false, including for solutions with roles or
+`installation_owned_scopes`; authority refuses person issuance to such a
+solution by name. The declaration participates in delivery generation changes
+and is omitted from withdrawals together with other live policy.
+
 **A solution's roles are part of its contract.** A unit a person uses declares
 the roles a person may hold on an installation of it in the same
 `module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under
