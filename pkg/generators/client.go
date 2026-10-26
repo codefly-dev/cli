@@ -49,19 +49,25 @@ type ContractEntry struct {
 	// for this contract (the last non-version segment of its proto package).
 	FacadeModuleDefault string
 
-	// ProtoSources, when set, carries the endpoint's original .proto files
-	// instead of relying on the persisted descriptor set: proto.GenerateClient's
-	// DescriptorSet path mishandles a Services subset once more than one file is
-	// present (core bug: a facade plugin invoked over a multi-file descriptor
-	// set reports the target service as undeclared, even though the same
-	// content generates fine as Sources).
+	// ProtoSources, when set, carries the endpoint's original .proto files,
+	// which an entry binding its whole contract is generated from instead of
+	// the persisted descriptor set. An entry naming Services is generated from
+	// its narrowed descriptor set: the sources declare every service.
 	ProtoSources []coreproto.Source
 
-	// Services restricts this entry's facade to these protobuf service names.
+	// Services restricts this entry to these protobuf service names: the
+	// library's contract, catalog, manifest, bindings and facade carry them
+	// and the declarations they need, nothing else (see narrowEntries).
 	Services []string
 	// As overrides this entry's facade entry-point name (default:
 	// FacadeModuleDefault, else defaultFacadeModule).
 	As string
+
+	// generateFrom, when set, is the descriptor set this entry's bindings are
+	// generated from instead of ContractBytes: the library's narrowing, which
+	// in an aggregated library also holds what its other entries need from a
+	// file they share (see narrowEntries).
+	generateFrom []byte
 }
 
 // ClientLibraryRequest is one library-generation run: N contract entries
@@ -113,13 +119,20 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 	if err := checkContractDiamond(req.Entries); err != nil {
 		return err
 	}
+	// From here on the library is what its entries select: the contract it
+	// persists, its catalog, its manifest and its bindings all come from the
+	// narrowed entries.
+	entries, err := narrowEntries(req.Entries)
+	if err != nil {
+		return err
+	}
 	openAPICount := 0
-	for i := range req.Entries {
-		if req.Entries[i].Endpoint.Kind == composition.APIContractKindOpenAPI {
+	for i := range entries {
+		if entries[i].Endpoint.Kind == composition.APIContractKindOpenAPI {
 			openAPICount++
 		}
 	}
-	if openAPICount > 0 && len(req.Entries) > 1 {
+	if openAPICount > 0 && len(entries) > 1 {
 		return fmt.Errorf("cannot aggregate an OpenAPI contract with other entries in one library")
 	}
 
@@ -133,8 +146,8 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		existingByKey[[3]string{s.Module, s.Service, s.Endpoint}] = *s
 	}
 	anyDigestChanged := false
-	for i := range req.Entries {
-		entry := &req.Entries[i]
+	for i := range entries {
+		entry := &entries[i]
 		key := [3]string{entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint}
 		prior, ok := existingByKey[key]
 		if !ok || prior.ContractDigest == entry.Endpoint.Digest {
@@ -161,7 +174,7 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 	}
 
 	pyPackage := strings.ReplaceAll(req.Name, "-", "_")
-	version := libraryVersion(req.Output, req.Entries)
+	version := libraryVersion(req.Output, entries)
 	if strings.TrimSpace(version) == "" {
 		// Refused before anything is generated, so the library is untouched.
 		return fmt.Errorf("library %s declares no version: its producer's version is empty", req.Name)
@@ -190,14 +203,14 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		s, genErr := stageLanguage(ctx, lang, filepath.Join(req.Output, string(lang)), req.Entries, !req.NoFacade, req.GoModule)
+		s, genErr := stageLanguage(ctx, lang, filepath.Join(req.Output, string(lang)), entries, !req.NoFacade, req.GoModule)
 		if genErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
 		}
 		staged = append(staged, s)
 	}
 
-	if err := writeContractFiles(ctx, req.Output, req.Entries); err != nil {
+	if err := writeContractFiles(ctx, req.Output, entries); err != nil {
 		return fmt.Errorf("cannot write contract: %w", err)
 	}
 
@@ -216,7 +229,7 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 
 	langExports = mergeLanguageExports(existingLanguages, langExports, req.Languages)
 
-	if err := writeLibraryManifest(ctx, req.Output, req.Name, version, req.Entries, langExports, !req.NoFacade); err != nil {
+	if err := writeLibraryManifest(ctx, req.Output, req.Name, version, entries, langExports, !req.NoFacade); err != nil {
 		return fmt.Errorf("cannot write %s: %w", resources.LibraryConfigurationName, err)
 	}
 
@@ -379,8 +392,12 @@ func (s *stagedLanguage) apply(goModule, npmPackage, pyPackage string) (generate
 // stageProtobufEntry generates one contract entry into a scratch directory of
 // its own, which the caller owns once this returns without error.
 func stageProtobufEntry(ctx context.Context, lang languages.Language, entry *ContractEntry, facade bool) (_ stagedEntry, err error) {
+	contract := entry.ContractBytes
+	if entry.generateFrom != nil {
+		contract = entry.generateFrom
+	}
 	var set descriptorpb.FileDescriptorSet
-	if err = googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
+	if err = googleproto.Unmarshal(contract, &set); err != nil {
 		return stagedEntry{}, fmt.Errorf("cannot parse contract descriptor set: %w", err)
 	}
 	raw, err := os.MkdirTemp("", "codefly-client-raw")
@@ -629,11 +646,21 @@ func upstreamModulesIn(set *descriptorpb.FileDescriptorSet, lang languages.Langu
 	return modules
 }
 
+// upstreamModuleFor is the upstream module file belongs to when lang resolves
+// that module from its distribution (TypeScript keeps local copies of every
+// module but the well-known types).
 func upstreamModuleFor(file *descriptorpb.FileDescriptorProto, lang languages.Language) (upstreamProtoModule, bool) {
+	module, found := matchUpstreamModule(file)
+	if !found || (!module.bufModule.isZero() && lang == languages.TYPESCRIPT) {
+		return upstreamProtoModule{}, false
+	}
+	return module, true
+}
+
+// matchUpstreamModule is the upstream module file belongs to, by its path and
+// its package, whatever the language.
+func matchUpstreamModule(file *descriptorpb.FileDescriptorProto) (upstreamProtoModule, bool) {
 	for _, module := range upstreamProtoModules {
-		if !module.bufModule.isZero() && lang == languages.TYPESCRIPT {
-			continue
-		}
 		if !strings.HasPrefix(file.GetName(), module.pathPrefix) {
 			continue
 		}
@@ -823,8 +850,11 @@ func writeOneContractDir(ctx context.Context, contractDir string, entry *Contrac
 		return err
 	}
 
+	// The catalog describes the contract persisted beside it, which --services
+	// narrows; the manifest's contract-digest stays the producer's.
 	catalogEntry := entry.Endpoint
 	catalogEntry.Path = filename
+	catalogEntry.Digest = composition.APIContractDigest(entry.ContractBytes)
 	packageID := entry.PackageID
 	if packageID == "" {
 		packageID = localPackageID

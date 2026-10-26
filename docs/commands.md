@@ -2434,6 +2434,7 @@ lodestar derives from the manifest.
 | `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
 | `--check` | Do not write; exit 1 if the library or `service-dependencies` are out of date |
 | `--apply-dependencies` | Add any `service-dependencies` entry missing for a bound consume entry to the entry service's `service.codefly.yaml`; without it, missing entries are printed as a warning. Existing entries are never removed. |
+| `--force` | Overwrite a library generated from a different version of a consumed contract (its recorded `sources[].contract-digest` differs) |
 
 Each bound entry is resolved against the workspace's own composition: the
 composed module named by `module` (workspace `add module` first), its
@@ -3407,7 +3408,7 @@ with no caller and no way to detect drift.
 |------|-------------|
 | `--from` | Required. Contract source: `module/service[/endpoint]` (a local workspace service), `package:<id>@<version>` (a composed module package), or `contracts:<dir>` (a `generate contracts` export) |
 | `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
-| `--services` | Restrict the facade to these protobuf services (protobuf contracts only; not supported when `--from` resolves through a descriptor set — see below) |
+| `--services` | Restrict the library to these protobuf services and the declarations they need (protobuf contracts only; see below) |
 | `--endpoint` | Select an endpoint when `--from package:`/`contracts:` resolves to more than one: `service/endpoint` |
 | `--name` | Library name (default `<module>-<service>-client`) |
 | `--module-name` | Facade entry-point name (default: derived from the contract's proto package) |
@@ -3440,10 +3441,32 @@ that generates but does not build is left in place with the build error reported
 one-entry contract in memory (the same way `generate contracts` does) and
 generates from the service's own proto sources. `--from package:`/`contracts:`
 read an already-persisted contract (a `contract.binpb`/`openapi.json` plus
-catalog entry) and generate from its descriptor bytes — a known upstream
-limitation in the facade plugin currently means `--services` filtering does not
-work over a multi-file descriptor set from these two sources; use the local
-source, or omit `--services` to generate the full contract's facade.
+catalog entry) and generate from its descriptor bytes.
+
+`--services` narrows the whole library, from any source, before anything is
+generated. The contract it persists under `contract/` keeps the named services
+and the declarations they reach: their methods' messages and, transitively,
+every message and enum those name (a nested type keeps the top-level message
+holding it), and every extension of a kept message. A file defining a custom
+option those declarations set — on any element, extension ranges included, or
+nested inside another option's value — is kept whole, as is a shared upstream
+file (`google/protobuf`, `google/api`, `google/rpc`, `google/type`,
+`buf/validate`). No other service is declared anywhere, so the catalog, the
+manifest's `sources[].services`, the bindings and the facade of every language
+carry the named services alone. The catalog's digest is the persisted
+(narrowed) contract's; `sources[].contract-digest` stays the producer's, the
+same digest `publish clients` records, so it keeps identifying the contract the
+library was generated from: changing `--services` regenerates in place, and only
+a new producer contract needs `--force`. A name the contract does not declare is
+refused, naming the services it does declare. Narrowing is deterministic, so
+regenerating a library reproduces it byte for byte. A library generated from a
+local source with `--services` is generated from the narrowed descriptor set
+rather than the proto sources. When `sync solution-sdk` aggregates several
+contracts into one library, each entry persists its own narrowed contract, while
+the bindings are generated from the closure of every entry at once, so a file
+two entries carry is generated the same for both; an entry naming no services
+keeps its whole contract, and two entries carrying different versions of one
+file are refused, naming the file and both entries.
 
 TypeScript's generated entry point (`src/index.ts`) has three parts. Each facade
 is re-exported flat under the name its plugin gives it (`accounts`,
@@ -3469,7 +3492,7 @@ are reachable only from inside the library.
 libraries/saas-starter-accounts-client/
   library.codefly.yaml
   contract/
-    catalog.codefly.json         # the endpoint's catalog entry (subset if --services)
+    catalog.codefly.json         # the endpoint's catalog entry (narrowed with --services)
     contract.binpb | openapi.json
   go/        go.mod, gen/…, accounts_facade.pb.go
   typescript/ package.json, tsconfig.json, src/index.ts, src/packages/…, src/gen/…, src/accounts_facade.ts

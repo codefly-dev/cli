@@ -2762,7 +2762,7 @@ Flags:
       --no-facade            generate bindings only, no facade
       --npm-scope string     npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
       --output string        output directory (default: <workspace>/libraries/<name>)
-      --services strings     restrict the facade to these protobuf services (protobuf contracts only)
+      --services strings     restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)
 ```
 
 ## `codefly generate contracts`
@@ -4932,6 +4932,7 @@ Flags:
 ```
       --apply-dependencies   add missing service-dependencies entries for every bound consume entry
       --check                do not write; exit 1 if the library or service-dependencies are out of date
+      --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
 ```
 
