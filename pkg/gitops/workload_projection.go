@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
 
@@ -159,7 +160,8 @@ func refuseReservedAnnotation(tree *renderRoot, owned string, opts *RenderOption
 
 // projectIdentityToken projects the host-audience token into the
 // authenticating container of each serving workload of an identity service's
-// unit, unless that container already mounts one for the audience.
+// unit, reusing a validated existing projection. Both forms deliver its path
+// through the same process carrier the shared credential reader consumes.
 func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, identity IdentityWorkload) error {
 	unitDir := filepath.Join(owned, filepath.FromSlash(identity.Path))
 	workloads, err := renderedWorkloadsInTree(tree, unitDir, opts.Environment)
@@ -180,7 +182,10 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, i
 		if err != nil {
 			return fmt.Errorf("workload %s: %w", workload.Name, err)
 		}
+		projection := &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name,
+			env: map[string]string{resources.WorkloadTokenFileKey: path.Join(identityTokenMount, identityTokenFile)}}
 		if provided {
+			patches = append(patches, projection)
 			continue
 		}
 		volume := projectedVolume(identityTokenVolume, map[string]any{serviceAccountTokenProjection: map[string]any{
@@ -190,7 +195,8 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, i
 		if workload.hasVolume(identityTokenVolume) {
 			return fmt.Errorf("workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, identityTokenVolume)
 		}
-		patches = append(patches, &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
+		projection.volume, projection.mount = volume, mount
+		patches = append(patches, projection)
 	}
 	return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 }
@@ -406,8 +412,8 @@ func readOnlyMount(name, path string) map[string]any {
 	return map[string]any{keyName: name, "mountPath": path, "readOnly": true}
 }
 
-// podProjection is one volume added to a workload's pod and mounted into one
-// of its containers.
+// podProjection delivers a volume and/or process carriers to one container.
+// A validated existing volume needs only its environment carrier.
 type podProjection struct {
 	kind, name, container string
 	volume, mount         map[string]any
@@ -436,11 +442,17 @@ func (projection *podProjection) environmentEntries() []any {
 
 // patch is the projection as an inline strategic-merge patch.
 func (projection *podProjection) patch() (map[string]any, error) {
-	container := map[string]any{keyName: projection.container, "volumeMounts": []any{projection.mount}}
+	container := map[string]any{keyName: projection.container}
+	if projection.mount != nil {
+		container["volumeMounts"] = []any{projection.mount}
+	}
 	if len(projection.env) > 0 {
 		container["env"] = projection.environmentEntries()
 	}
-	spec := map[string]any{"volumes": []any{projection.volume}, keyContainers: []any{container}}
+	spec := map[string]any{keyContainers: []any{container}}
+	if projection.volume != nil {
+		spec["volumes"] = []any{projection.volume}
+	}
 	if projection.automountToken {
 		spec[keyAutomountToken] = true
 	}
@@ -466,13 +478,17 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 	if spec == nil {
 		return false
 	}
-	spec["volumes"] = append(sliceField(spec, "volumes"), projection.volume)
+	if projection.volume != nil {
+		spec["volumes"] = append(sliceField(spec, "volumes"), projection.volume)
+	}
 	if projection.automountToken {
 		spec[keyAutomountToken] = true
 	}
 	for _, entry := range sliceField(spec, "containers") {
 		if container, _ := entry.(map[string]any); container != nil && container[keyName] == projection.container {
-			container["volumeMounts"] = append(sliceField(container, "volumeMounts"), projection.mount)
+			if projection.mount != nil {
+				container["volumeMounts"] = append(sliceField(container, "volumeMounts"), projection.mount)
+			}
 			if len(projection.env) > 0 {
 				var retained []any
 				for _, raw := range sliceField(container, "env") {

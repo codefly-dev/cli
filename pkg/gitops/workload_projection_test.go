@@ -242,6 +242,82 @@ func TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt(t *testing.T) {
 	}
 }
 
+// Both render forms must hand the shared credential reader the path of this
+// container's validated projection, including when the agent provided it.
+func TestIdentityProjectionDeliversItsCredentialPath(t *testing.T) {
+	for overlay, generate := range map[string]func(string) func(context.Context, string) error{
+		"kustomized": kustomizedWorkload,
+		"plain":      renderWorkload,
+	} {
+		for name, original := range map[string]string{
+			"new":          sidecarDeployment,
+			"existing":     withTokenMount("accounts", "/var/run/secrets/codefly", "token", ""),
+			"nested-file":  withTokenMount("accounts", "/var/run/secrets", "codefly/token", ""),
+			"daemon-set":   strings.Replace(sidecarDeployment, "kind: Deployment", "kind: DaemonSet", 1),
+			"stateful-set": strings.Replace(strings.Replace(pinnedDeployment, "kind: Deployment", "kind: StatefulSet", 1), "spec:\n", "spec:\n  serviceName: api\n", 1),
+		} {
+			for source, entry := range map[string]string{
+				"absent":    "",
+				"literal":   "            - name: CODEFLY__WORKLOAD_TOKEN_FILE\n              value: /wrong/path\n",
+				"reference": "            - name: CODEFLY__WORKLOAD_TOKEN_FILE\n              valueFrom:\n                configMapKeyRef:\n                  name: stale\n                  key: path\n",
+			} {
+				t.Run(overlay+"/"+name+"/"+source, func(t *testing.T) {
+					body := strings.Replace(original, "          image:", "          env:\n            - name: KEEP\n              value: retained\n"+entry+"          image:", 1)
+					destination := filepath.Join(t.TempDir(), "modules", "crm")
+					var first map[string]any
+					for range 2 {
+						_, err := RenderOwnedTree(t.Context(), solutionRenderOptions(destination), generate(body))
+						require.NoError(t, err)
+						spec := renderedPodSpec(t, destination, "api")
+						require.Len(t, sliceField(spec, "volumes"), 1, "no nil or duplicate projection")
+						for _, raw := range sliceField(spec, keyContainers) {
+							container := raw.(map[string]any)
+							paths, retained := 0, false
+							for _, item := range sliceField(container, "env") {
+								variable := item.(map[string]any)
+								if variable[envEntryName] == "KEEP" {
+									retained = variable["value"] == "retained"
+								}
+								if variable[envEntryName] == "CODEFLY__WORKLOAD_TOKEN_FILE" {
+									paths++
+									require.Equal(t, "/var/run/secrets/codefly/token", variable["value"])
+									require.Nil(t, variable["valueFrom"])
+								}
+							}
+							if container[keyName] == "api" {
+								require.Equal(t, 1, paths)
+								require.True(t, retained)
+								require.Len(t, sliceField(container, "volumeMounts"), 1)
+							} else {
+								require.Zero(t, paths, "no carrier in a sidecar")
+								require.Empty(t, sliceField(container, "volumeMounts"))
+							}
+						}
+						if first != nil {
+							require.Equal(t, first, spec, "rerender preserves one credential projection and carrier")
+						}
+						first = spec
+					}
+				})
+			}
+		}
+	}
+}
+
+func renderedPodSpec(t *testing.T, destination, service string) map[string]any {
+	t.Helper()
+	manifests, err := overlayManifests(filepath.Join(destination, "services", service, "overlays", "prod"))
+	require.NoError(t, err)
+	for _, item := range manifests {
+		if servingKind(item.kind) {
+			spec, _ := podSpec(item)
+			return spec
+		}
+	}
+	t.Fatal("the rendered unit carries no Deployment")
+	return nil
+}
+
 // renderedAutomount reads the named service's rendered Deployment back as
 // Kubernetes would run it and returns its pod's automountServiceAccountToken.
 func renderedAutomount(t *testing.T, destination, service string) any {
@@ -408,6 +484,11 @@ func TestOnlyAnIdentityWorkloadIsProjectedACredential(t *testing.T) {
 	}
 	if _, mounts := renderedVolume(t, destination, identityTokenVolume); len(mounts) != 1 || len(mounts["api"]) != 1 {
 		t.Fatalf("the identity workload's credential is mounted as %v", mounts)
+	}
+	for _, raw := range sliceField(renderedPodSpec(t, destination, "worker"), keyContainers) {
+		for _, item := range sliceField(raw.(map[string]any), "env") {
+			require.NotEqual(t, "CODEFLY__WORKLOAD_TOKEN_FILE", item.(map[string]any)[envEntryName])
+		}
 	}
 }
 

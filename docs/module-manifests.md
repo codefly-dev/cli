@@ -262,6 +262,21 @@ audience as the platform's admission is (the token the ServiceAccount plugin
 injects names none). A service that does not run as the module is projected
 nothing.
 
+The render also supplies `CODEFLY__WORKLOAD_TOKEN_FILE` to that authenticating
+container, naming the validated projection. It replaces a stale literal or
+`valueFrom` for this carrier while retaining unrelated environment entries.
+An existing valid projection receives the carrier without another mount or
+volume; sidecars and nonidentity workloads receive neither. Native runs use
+the same carrier, so Authority's shared `hop.RunCredential` reads and rereads
+the workload's credential without a consumer knowing a cell-specific path.
+
+Before upgrading a consumer that removes a fixed-path fallback, re-render its
+workload with this behavior and deliver the resulting pod template. The new
+image and carrier may be delivered together. A generator pin or an image-only
+upgrade does not update an already-rendered workload; verify the carrier in
+each authenticating container. Render tests do not qualify an applied cell or
+settle the separate handbook decision about mounted credential delivery.
+
 ## What a module asks for
 
 The manifest's `authority` block is the module's **request**. Its principal is

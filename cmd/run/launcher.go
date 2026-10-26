@@ -794,9 +794,9 @@ func (cluster *launcher) forget(unique string) {
 	cluster.mu.Unlock()
 }
 
-// workloadTokenFileVariable names the projected token's path to a process
-// that cannot read it from the path a pod mounts it at.
-const workloadTokenFileVariable = "CODEFLY__WORKLOAD_TOKEN_FILE" //nolint:gosec // G101: the name of a path variable, not a credential
+// workloadTokenFileVariable names the projected token's path through the same
+// process carrier as the cell renderer.
+const workloadTokenFileVariable = resources.WorkloadTokenFileKey
 
 // delivers reports whether this run delivers a manifest for an identity's
 // module: every module but the host's own.
