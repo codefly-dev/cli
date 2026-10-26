@@ -354,21 +354,40 @@ func pythonDistribution(requirement string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "_", "-"))
 }
 
-// assembleOpenAPILibrary synthesizes a basev0.Endpoint carrying the raw
-// OpenAPI document (the only thing proto.GenerateOpenAPI reads) and runs it.
-// OpenAPI clients have no facade: proto.GenerateOpenAPI's contract-derived
-// codegen is a plain typed HTTP client.
-func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule, npmPackage string) (generatedLanguageExport, error) {
+// stageOpenAPIEntry synthesizes a basev0.Endpoint carrying the raw OpenAPI
+// document (the only thing proto.GenerateOpenAPI reads) and generates it into
+// a scratch directory laid out as the library's language directory: gen/, and
+// for Go the go.mod go-swagger derives its import paths from — the library's
+// own when it has one, the scaffold's otherwise — so the staged tree imports
+// exactly what generating in place would have. OpenAPI clients have no
+// facade: proto.GenerateOpenAPI's contract-derived codegen is a plain typed
+// HTTP client.
+func stageOpenAPIEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule string) (_ string, err error) {
 	if lang != languages.GO && lang != languages.TYPESCRIPT {
-		return generatedLanguageExport{}, fmt.Errorf("openapi clients support go or typescript, not %s", lang)
+		return "", fmt.Errorf("openapi clients support go or typescript, not %s", lang)
 	}
+	raw, err := os.MkdirTemp("", "codefly-client-openapi")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(raw)
+		}
+	}()
 
-	genDir := filepath.Join(langDir, "gen")
-	if err := os.RemoveAll(genDir); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if err := os.MkdirAll(genDir, 0o755); err != nil {
-		return generatedLanguageExport{}, err
+	if lang == languages.GO {
+		existing := filepath.Join(langDir, "go.mod")
+		if _, statErr := os.Stat(existing); statErr == nil {
+			if err = copyFile(existing, filepath.Join(raw, "go.mod")); err != nil {
+				return "", err
+			}
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		if err = writeGoModule(raw, goModule); err != nil {
+			return "", err
+		}
 	}
 
 	endpoint := &basev0.Endpoint{
@@ -380,23 +399,31 @@ func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDi
 			Value: &basev0.API_Rest{Rest: &basev0.RestAPI{Openapi: entry.ContractBytes}},
 		},
 	}
+	if err = coreproto.GenerateOpenAPI(ctx, lang, filepath.Join(raw, "gen"), "", endpoint); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// applyOpenAPILibrary replaces langDir's gen/ with the staged one and writes
+// the scaffold where it is missing.
+func applyOpenAPILibrary(lang languages.Language, langDir, raw, goModule, npmPackage string) (generatedLanguageExport, error) {
+	genDir := filepath.Join(langDir, "gen")
+	if err := os.RemoveAll(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if err := copyTree(filepath.Join(raw, "gen"), genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 
 	if lang == languages.GO {
 		// go.mod lives at langDir, not genDir: genDir is fully regenerated
 		// every run (it is proto.GenerateOpenAPI's own output), but go.mod is
 		// a scaffold file a developer may hand-edit (an added dependency, a
-		// replace directive) and findModRoot walks up from genDir to find it
-		// either way, so placing it one level up costs nothing and makes it
-		// write-once like the protobuf path's go.mod.
+		// replace directive), so it is write-once like the protobuf path's.
 		if err := writeGoModule(langDir, goModule); err != nil {
 			return generatedLanguageExport{}, err
 		}
-	}
-	if err := coreproto.GenerateOpenAPI(ctx, lang, genDir, "", endpoint); err != nil {
-		return generatedLanguageExport{}, err
-	}
-
-	if lang == languages.GO {
 		bestEffortGoModTidy(langDir)
 		return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 	}
@@ -635,6 +662,20 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// copyTree copies every file under src to the same relative path under dst.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		return copyFile(p, filepath.Join(dst, rel))
+	})
 }
 
 // removeMatching removes every file directly in dir (non-recursive) whose

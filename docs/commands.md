@@ -3425,6 +3425,17 @@ from. `library.codefly.yaml` always carries a `sources:` list (one element for
 `generate client`, one per aggregated contract for `sync solution-sdk` below) so
 both commands share one schema.
 
+Every requested language is generated into scratch directories before anything
+under the library is written. A run that fails in the proto companion (a
+contract that does not compile, a buf dependency that does not resolve) leaves
+the library exactly as it was: its contract, its generated tree and the files
+written by hand beside them. Once every language has generated, the command
+replaces only what it owns: `gen/`, `src/` and `_gen/`, and each facade (a Python
+facade is recognised by its generated-code notice). Scaffold files are written
+only when missing, except that a Python `pyproject.toml` gains any dependency its
+bindings now need. A Go library is compiled after it is written, so a library
+that generates but does not build is left in place with the build error reported.
+
 `--from module/service[/endpoint]` loads the service's Builder to build a
 one-entry contract in memory (the same way `generate contracts` does) and
 generates from the service's own proto sources. `--from package:`/`contracts:`
