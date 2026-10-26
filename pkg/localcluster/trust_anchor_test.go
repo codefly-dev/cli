@@ -380,7 +380,7 @@ func TestAnchorReconciliationFollowsOnlyThePolicyConfigMap(t *testing.T) {
 }
 
 // A native run's host reads a local profile the run writes itself: bound to
-// the run's CA and admitting the run's own delivery key for the host's domain,
+// the run's workload-identity anchor, never to a cluster, and admitting the run's own delivery key for the host's domain,
 // with no developer listed in the workspace. No key, or no host, is refused.
 func TestANativeHostPolicyAdmitsTheRunsOwnSignerWithoutDevelopers(t *testing.T) {
 	signer := installLocalKey(t)
@@ -397,7 +397,7 @@ func TestANativeHostPolicyAdmitsTheRunsOwnSignerWithoutDevelopers(t *testing.T) 
 		t.Fatal(err)
 	}
 	public, _ := signing.PublicKeyPEM(signer)
-	if policy.Local.ClusterCertificateAuthoritySha256 != fingerprint || len(policy.Signers) != 1 || policy.Signers[0].KeyID != signer.KeyID() || policy.Signers[0].PublicKey != public || policy.Signers[0].Kind != "person" || len(policy.Signers[0].Domains) != 1 || policy.Signers[0].Domains[0] != "obin" {
+	if policy.Local.NativeAnchorSha256 != fingerprint || policy.Local.ClusterCertificateAuthoritySha256 != "" || len(policy.Signers) != 1 || policy.Signers[0].KeyID != signer.KeyID() || policy.Signers[0].PublicKey != public || policy.Signers[0].Kind != "person" || len(policy.Signers[0].Domains) != 1 || policy.Signers[0].Domains[0] != "obin" {
 		t.Fatalf("wrong native policy: %s", raw)
 	}
 	if _, err = NativeVerificationPolicy(fingerprint, nil, host); err == nil {

@@ -9,14 +9,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/modulecache"
+
 	"google.golang.org/protobuf/proto"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -48,7 +53,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
@@ -68,17 +73,236 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 	}
 	contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 	for _, recipe := range recipes {
-		// A recipe declaring Go module downloads is only built with the proxies
-		// its plan phase fetched; building it without them would fall back to
-		// fetching inside the build, which is what declaring them removes.
-		if recipeMissesGoModuleProxies(recipe, proxies[recipe.GetName()]) {
-			return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+		// A decision the plan phase took stands; Build does not take it again.
+		var decided *imageReuse
+		if decision, ok := reuse[recipe.GetName()]; ok {
+			decided = &decision
 		}
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()]); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, prefetched[recipe.GetName()], decided); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// imageReuse is the reuse decision for one recipe: the identity its inputs
+// digest to and, when an image was already built from exactly those inputs and
+// still exists, that image. A nil entry means the recipe is built.
+type imageReuse struct {
+	identity imageIdentity
+	entry    *imageCacheEntry
+	// image, when set, is the reference the recipe is pushed under instead of
+	// the one the agent named: a build-qualified tag for a build whose agent the
+	// workspace overrides (override_build.go).
+	image string
+}
+
+// decideImageReuse takes the reuse decision for a recipe as it will be built
+// (recipeAsBuilt), without provisioning a builder or fetching anything. A Go
+// module proxy the recipe declares reaches the identity only as the
+// placeholder every fetched proxy path is normalized to, so the decision does
+// not wait for the fetch: a render whose images are all up to date fetches no
+// module graph at all, where it used to download every Go service's graph into
+// a fresh cache before finding out that no image input had changed.
+func (b *Builder) decideImageReuse(
+	ctx context.Context,
+	w *wool.Wool,
+	outputDir, contextRoot string,
+	plan *builderv0.DockerBuildPlan,
+	recipe *builderv0.DockerBuildRecipe,
+	shouldPush bool,
+) (imageReuse, error) {
+	contextDir, err := recipeContext(contextRoot, recipe)
+	if err != nil {
+		return imageReuse{}, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
+	}
+	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe)
+	if err != nil {
+		return imageReuse{}, w.Wrapf(err, "cannot prepare recipe context")
+	}
+	defer prepared.Close()
+
+	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
+	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(placeholderProxies(recipe))
+
+	// Registry reads the reuse decision makes run on the caller's builder when it
+	// provided one, because a registry reachable only from that builder is
+	// reachable nowhere else; the CLI's own builder shares the host's registry
+	// configuration, so it needs neither naming nor provisioning for a read.
+	probeBuilder := b.world.BuildxBuilder
+	// Where this environment reads a mirrored registry from. It reaches the
+	// base-image resolution through the reference each manifest is read from
+	// and is not part of the identity (see registry_mirror.go).
+	mirrors := registryMirrors(b.world.Env)
+	scope := imageBuildScope{OutputDir: outputDir, ContextDir: prepared.Root, WorkspaceDir: b.world.Workspace.Dir()}
+
+	// The identity is derived from the invocation as it would run on any builder
+	// and without a metadata file, so the decision to reuse is taken before a
+	// builder is provisioned — provisioning one is work a reused image does not
+	// need. normalizedBuildxArgs drops those same two flags from whatever argv it
+	// is handed, so the two constructions cannot disagree about anything else.
+	identityArgs, err := cachedBuildxArgs(recipe, prepared.Dockerfile, prepared.Root, shouldPush, multiArch, "", "", cache, private)
+	if err != nil {
+		return imageReuse{}, err
+	}
+	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, prepared.Dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors)
+	if identityErr != nil {
+		// Not a build failure: an input this cannot account for means the image
+		// is rebuilt, which is the behaviour without a cache at all. It is said
+		// out loud because the alternative is a workspace that silently rebuilds
+		// everything forever and nobody knowing which input is unbindable.
+		w.Warn("an image input cannot be bound; building, and this recipe will not be reused",
+			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
+	}
+	decision := imageReuse{identity: identity}
+	// A build under a workspace agent override is not the build the release
+	// names, so it is pushed under a tag of its own (override_build.go).
+	if shouldPush && releasedVersionTag(recipe.GetImage()) {
+		pinned, overrideErr := b.overriddenAgent(ctx)
+		if overrideErr != nil {
+			return decision, w.Wrap(overrideErr)
+		}
+		if pinned != "" {
+			if identity.Key == "" {
+				return decision, w.NewError("%s builds with agent %s, which the workspace overrides from the %s its release pins, and an image input cannot be bound to name that build apart from the release: %v",
+					b.instance.Unique(), b.instance.Service.Agent.Identifier(), pinned, identityErr)
+			}
+			recipe = proto.CloneOf(recipe)
+			recipe.Image = overrideBuildImage(recipe.GetImage(), identity.Key)
+			decision.image = recipe.GetImage()
+			w.Info("the agent is overridden, so this is not the release's build; tagging it apart",
+				wool.Field("agent", b.instance.Service.Agent.Identifier()), wool.Field("release_pins", pinned), wool.Field("image", decision.image))
+		}
+	}
+	if b.world.RebuildImages {
+		return decision, nil
+	}
+	// A released version is built once. The image is tagged with the service's
+	// version, which `codefly publish` stamps on every service of the release, and
+	// a registry with immutable tags keeps that tag on that one build forever: so
+	// when the registry already holds this service at this version, it is that
+	// image, whichever environment, machine or checkout pushed it, and nothing is
+	// built. An unversioned service (0.0.0, never published) is not a release and
+	// is built as before.
+	if shouldPush && (releasedVersionTag(recipe.GetImage()) || decision.image != "") {
+		digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
+		if err != nil && !isImageNotFound(err) {
+			// Only the registry saying the tag does not exist means it is not
+			// published: building over a probe that failed for any other reason
+			// would overwrite a released tag wherever tags are mutable.
+			return decision, w.Wrapf(err, "cannot tell whether %s is already published", recipe.GetImage())
+		}
+		if err == nil && digest != "" {
+			// The version alone is not proof: a service whose version was not moved
+			// with its code would hand back another release's image. The published
+			// image records the inputs it was built from: the same inputs adopt it,
+			// and other inputs adopt it only when its code is this build's code
+			// (publishedReleaseVerdict) — what else differs is the agent's or the
+			// registry's, and the release's build is the one already published.
+			adopt, err := b.judgePublishedRelease(ctx, w, recipe, decision, digest, probeBuilder)
+			if err != nil {
+				return decision, err
+			}
+			if adopt != nil {
+				decision.entry = adopt
+				return decision, nil
+			}
+		}
+	}
+	if identity.Key == "" {
+		return decision, nil
+	}
+	entry, found := b.imageBuildCache().lookup(identity.Key, b.instance.Unique(), shouldPush)
+	switch {
+	case found && imageStillExists(ctx, entry, probeBuilder):
+		decision.entry = entry
+	case found:
+		w.Debug("an image was built from these inputs but no longer exists; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	default:
+		w.Debug("no image has been built from these inputs; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	}
+	return decision, nil
+}
+
+// judgePublishedRelease reads the build labels of a released tag the registry
+// holds at digest and returns the entry that adopts it, nothing when it is to
+// be built again (it records no inputs), or the refusal.
+func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, digest, probeBuilder string) (*imageCacheEntry, error) {
+	identity := decision.identity
+	labels, _ := resolveImageBuildLabels(ctx, recipe.GetImage(), probeBuilder)
+	published := labels[buildInputsLabel]
+	adopted := &imageCacheEntry{
+		Schema: imageCacheSchema, Key: identity.Key, Service: b.instance.Unique(), Recipe: recipe.GetName(),
+		Image: recipe.GetImage(), Pushed: true, Digest: digest, Platforms: recipe.GetPlatforms(),
+	}
+	switch {
+	case identity.Key != "" && published == identity.Key:
+		return adopted, nil
+	case identity.Key != "" && published != "" && decision.image != "":
+		// A build-qualified tag names one identity; it is never adopted from
+		// other inputs.
+		return nil, w.Wrap(publishedFromOtherInputs(recipe.GetImage(), b.instance.Service.Agent, labels[buildAgentLabel]))
+	case identity.Key != "" && published != "":
+		pinned, err := modulecache.Owned(b.world.Workspace.Dir(), b.instance.Service.Dir())
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot tell whether %s builds a pinned release", b.instance.Unique())
+		}
+		warning, refusal := publishedReleaseVerdict(recipe.GetImage(), identity, b.instance.Service.Agent, labels, pinned)
+		if refusal != nil {
+			return nil, w.Wrap(refusal)
+		}
+		w.Warn(warning, wool.Field("image", recipe.GetImage()), wool.Field("recipe", recipe.GetName()),
+			wool.Field("published_inputs", published), wool.Field("identity", identity.Key))
+		return adopted, nil
+	default:
+		w.Warn("the published image records no build inputs; building it again",
+			wool.Field("image", recipe.GetImage()), wool.Field("recipe", recipe.GetName()))
+		return nil, nil
+	}
+}
+
+// placeholderProxies stands in for the Go module proxies and git source mirrors
+// a recipe declares before they are fetched. normalizedBuildxArgs rewrites every fetched proxy
+// path to this same placeholder, so an identity computed over these equals the
+// one computed over the fetched paths — which is what lets the reuse decision
+// precede the fetch.
+func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
+	downloads := recipe.GetGoModuleDownloads()
+	if len(downloads) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
+		return nil
+	}
+	proxies := make(map[string]string, len(downloads)+len(recipe.GetGitSourceDownloads()))
+	for _, download := range downloads {
+		proxies[download.GetProxyContext()] = proxyPlaceholder
+	}
+	for _, download := range recipe.GetGitSourceDownloads() {
+		proxies[download.GetMirrorContext()] = proxyPlaceholder
+	}
+	return proxies
+}
+
+// recipeAsBuilt is the recipe as buildRecipe builds it: targeted to the
+// environment's platforms when the image is pushed, and named by the
+// reference it is pushed to (pushReference) when the cell pulls it through a
+// mirror. The reuse decision is taken on this form, so it binds the platforms
+// the build will actually run and probes the registry the image is pushed to;
+// the manifests keep the name the cell pulls, with the pushed digest.
+func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush bool) (*builderv0.DockerBuildRecipe, error) {
+	if !shouldPush {
+		return recipe, nil
+	}
+	targeted, err := b.targetEnvironmentPlatforms(recipe)
+	if err != nil {
+		return nil, err
+	}
+	if pushed := pushReference(b.world.Env, targeted.GetImage()); pushed != targeted.GetImage() {
+		targeted = proto.CloneOf(targeted)
+		targeted.Image = pushed
+	}
+	return targeted, nil
 }
 
 // recipeContextRoot is the directory a recipe's context is resolved against.
@@ -151,15 +375,57 @@ func (b *Builder) buildRecipe(
 	plan *builderv0.DockerBuildPlan,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
-	goModuleProxies map[string]string,
+	prefetched map[string]string,
+	reuse *imageReuse,
 ) error {
-	if shouldPush {
-		targeted, err := b.targetEnvironmentPlatforms(recipe)
-		if err != nil {
-			return w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
-		}
-		recipe = targeted
+	recipe, err := b.recipeAsBuilt(recipe, shouldPush)
+	if err != nil {
+		return w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
+
+	// Image evidence is owed by every recipe, not only the one a snapshot pins,
+	// so asking for it needs the digest of each pushed image too.
+	resolveEvidence := b.world.CollectImageSBOM
+
+	// The reuse decision comes before any build work, and one the plan phase
+	// already took is not taken again.
+	if reuse == nil {
+		decided, decideErr := b.decideImageReuse(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush)
+		if decideErr != nil {
+			return decideErr
+		}
+		reuse = &decided
+	}
+	if reuse.image != "" {
+		recipe = proto.CloneOf(recipe)
+		recipe.Image = reuse.image
+	}
+	// A pushed build records the immutable manifest digest a snapshot pins and a
+	// targeted single-service build returns to its caller. A non-pushed build
+	// never lands in a registry, so there is no digest to capture. A build pushed
+	// under a qualified tag is deployed by its digest whatever the mode: the
+	// agent names the deployed image by the release's tag, which holds another
+	// build.
+	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest || reuse.image != "")
+	if reuse.entry != nil {
+		w.Info("no image input changed; keeping the built image",
+			wool.Field("image", reuse.entry.Image), wool.Field("digest", reuse.entry.Digest),
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", reuse.identity.Key))
+		b.adoptCachedImage(recipe, reuse.entry, captureDigest, resolveEvidence)
+		return nil
+	}
+	identity := reuse.identity
+	// A recipe declaring Go module downloads is only built with the proxies
+	// its plan phase fetched; building it without them would fall back to
+	// fetching inside the build, which is what declaring them removes.
+	if recipeMissesGoModuleProxies(recipe, prefetched) {
+		return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+	}
+	// The same for a recipe declaring git sources and their mirrors.
+	if recipeMissesGitSourceMirrors(recipe, prefetched) {
+		return w.NewError("recipe %s of %s declares git sources that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+	}
+
 	contextDir, err := recipeContext(contextRoot, recipe)
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
@@ -175,68 +441,19 @@ func (b *Builder) buildRecipe(
 
 	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
 
-	// A pushed build records the immutable manifest digest a snapshot pins and a
-	// targeted single-service build returns to its caller. A non-pushed build
-	// never lands in a registry, so there is no digest to capture.
-	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
-	// Image evidence is owed by every recipe, not only the one a snapshot pins,
-	// so asking for it needs the digest of each pushed image too.
-	resolveEvidence := b.world.CollectImageSBOM
-
 	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
 	// A service that imports a private Go module reads it from the proxy the
 	// plan phase fetched; GOPRIVATE, a list of module paths and not a
 	// credential, still reaches recipes that declare it as an ARG.
-	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(prefetched)
 
-	// Registry reads the reuse decision makes run on the caller's builder when it
-	// provided one, because a registry reachable only from that builder is
-	// reachable nowhere else; the CLI's own builder shares the host's registry
-	// configuration, so it needs neither naming nor provisioning for a read.
-	probeBuilder := b.world.BuildxBuilder
 	// Where this environment reads a mirrored registry from. It reaches the
 	// build through the builder's buildkitd configuration and the base-image
 	// resolution through the reference each manifest is read from; it is in
 	// neither case part of the identity (see registry_mirror.go).
 	mirrors := registryMirrors(b.world.Env)
 	scope := imageBuildScope{OutputDir: outputDir, ContextDir: contextDir, WorkspaceDir: b.world.Workspace.Dir()}
-
-	// The identity is derived from the invocation as it would run on any builder
-	// and without a metadata file, so the decision to reuse is taken before a
-	// builder is provisioned — provisioning one is work a reused image does not
-	// need. normalizedBuildxArgs drops those same two flags from whatever argv it
-	// is handed, so the two constructions cannot disagree about anything else.
-	identityArgs, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, "", "", cache, private)
-	if err != nil {
-		return err
-	}
-	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors)
-	if identityErr != nil {
-		// Not a build failure: an input this cannot account for means the image
-		// is rebuilt, which is the behaviour without a cache at all. It is said
-		// out loud because the alternative is a workspace that silently rebuilds
-		// everything forever and nobody knowing which input is unbindable.
-		w.Warn("an image input cannot be bound; building, and this recipe will not be reused",
-			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
-	}
 	imageCache := b.imageBuildCache()
-	if identity.Key != "" && !b.world.RebuildImages {
-		entry, found := imageCache.lookup(identity.Key, b.instance.Unique(), shouldPush)
-		switch {
-		case found && imageStillExists(ctx, entry, probeBuilder):
-			w.Info("no image input changed; keeping the built image",
-				wool.Field("image", entry.Image), wool.Field("digest", entry.Digest),
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-			b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
-			return nil
-		case found:
-			w.Debug("an image was built from these inputs but no longer exists; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		default:
-			w.Debug("no image has been built from these inputs; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		}
-	}
 
 	builderName, err := b.selectImageBuilder(ctx, multiArch, mirrors)
 	if err != nil {
@@ -254,12 +471,18 @@ func (b *Builder) buildRecipe(
 	defer removeMetadata()
 
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
+	if err == nil {
+		args = withBuildAgentLabel(withBuildInputsLabel(args, identity), b.instance.Service.Agent)
+		if shouldPush {
+			args = withSourceLabel(args, b.world.Env, workspaceSourceRepository(ctx, b.world.Workspace.Dir()), multiArch)
+		}
+	}
 	if err != nil {
 		return err
 	}
 	started := time.Now()
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
-		wool.Field("goprivate", private.GoPrivate), wool.Field("go_module_proxies", len(private.Proxies)))
+		wool.Field("goprivate", private.GoPrivate), wool.Field("prefetched_contexts", len(private.Proxies)))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
@@ -722,9 +945,9 @@ func readPushedImageDigest(metadataFile string) (string, error) {
 
 // buildRecipeOutputDirectory is the absolute destination the caller asks the
 // agent to emit recipes into: the builder/ directory under the service's build
-// root (see buildRecipeRoot). It does not create the directory — the emitting
-// agent owns writing there, so a legacy agent that ignores the field leaves no
-// empty directory.
+// root (see buildRecipeRoot). The caller creates it before asking (Plan): the
+// agent owns what is written there, and an agent that assembles its build
+// context stats the directory before it writes.
 func buildRecipeOutputDirectory(root string) (string, error) {
 	return filepath.Abs(filepath.Join(root, buildRecipeDir))
 }
@@ -841,4 +1064,224 @@ func (b *Builder) stageBuildMetadata(wanted bool) (string, func(), error) {
 	path := file.Name()
 	_ = file.Close()
 	return path, func() { _ = os.Remove(path) }, nil
+}
+
+// releasedVersionTag reports whether image is tagged with a released service
+// version: an exact semantic version other than the unversioned 0.0.0 every
+// service carries until `codefly publish` stamps its release on it. A
+// pre-release, a moving name (latest) or a digest reference is not one.
+func releasedVersionTag(image string) bool {
+	if image == "" || strings.Contains(image, "@") {
+		return false
+	}
+	last := image
+	if separator := strings.LastIndex(image, "/"); separator >= 0 {
+		last = image[separator+1:]
+	}
+	colon := strings.LastIndex(last, ":")
+	if colon < 0 {
+		return false
+	}
+	tag := strings.TrimPrefix(last[colon+1:], "v")
+	return releasedVersion.MatchString(tag) && tag != "0.0.0"
+}
+
+var releasedVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+
+// buildInputsLabel is the image label a build records its input identity under,
+// so a later render can tell whether a published version holds exactly these
+// inputs (decideImageReuse).
+const buildInputsLabel = "org.codefly.build.inputs"
+
+// The per-class labels a build records beside the aggregate (buildClasses), so
+// a published release can be compared by what moved: its code, or only what
+// the agent and the registry contribute.
+const (
+	buildCodeLabel   = buildInputsLabel + ".code"
+	buildRecipeLabel = buildInputsLabel + ".recipe"
+	buildBasesLabel  = buildInputsLabel + ".bases"
+)
+
+// buildLabels is every label resolveImageBuildLabels reads back.
+var buildLabels = []string{buildInputsLabel, buildCodeLabel, buildRecipeLabel, buildBasesLabel, buildAgentLabel}
+
+// withBuildInputsLabel records the build's input identity on the image: the
+// aggregate and each class. It is added to the build's own argv after the
+// identity was computed from it, so no label is an input to what it records.
+func withBuildInputsLabel(args []string, identity imageIdentity) []string {
+	if identity.Key == "" {
+		return args
+	}
+	flags := []string{"--label", buildInputsLabel + "=" + identity.Key}
+	if classes := identity.Classes; classes != nil {
+		for _, class := range [][2]string{{buildCodeLabel, classes.Code}, {buildRecipeLabel, classes.Recipe}, {buildBasesLabel, classes.Bases}} {
+			if class[1] != "" {
+				flags = append(flags, "--label", class[0]+"="+class[1])
+			}
+		}
+	}
+	return withBuildFlags(args, flags...)
+}
+
+// publishedReleaseVerdict decides a released tag whose image records other
+// inputs than this build's. The refusal exists to catch a version that did not
+// move with its code, so only a code difference refuses; the published image is
+// otherwise the release's build — rebuilding it would overwrite a release, and
+// refusing would block every render of every cell holding it — and is adopted
+// with a warning naming what differs. An agent recorded as other than the one
+// the release pins still refuses: that tag holds a build made under an agent
+// override (override_build.go), which the release does not name.
+//
+// An image labelled before the classes were recorded carries only the
+// aggregate, so its code cannot be compared with this build's. It is adopted
+// only when pinned says this build's code is a pinned release the CLI
+// materialized (modulecache.Owned) — the release's own code, by construction —
+// and refused otherwise: from a checkout, an edited service whose version did
+// not move would be handed the earlier release's image with nothing compared.
+func publishedReleaseVerdict(image string, identity imageIdentity, agent *resources.Agent, labels map[string]string, pinned bool) (string, error) {
+	const release = "release a new version (codefly publish) instead of rebuilding a published one"
+	publishedAgent := labels[buildAgentLabel]
+	if agent != nil && publishedAgent != "" && publishedAgent != agent.Identifier() {
+		return "", publishedFromOtherInputs(image, agent, publishedAgent)
+	}
+	classes := identity.Classes
+	if classes == nil {
+		classes = &buildClasses{}
+	}
+	code := labels[buildCodeLabel]
+	switch {
+	case code == "" && pinned:
+		return "the published image predates per-class build labels; this build's code is the pinned release the CLI materialized, " +
+			"so adopting it as the release's build (--rebuild builds it again)", nil
+	case code == "":
+		return "", fmt.Errorf("%s is already published, and it predates per-class build labels, so its code cannot be compared with this build's, "+
+			"which is not a pinned release the CLI materialized (a checkout or an override): build from the pinned release, or %s", image, release)
+	case code != classes.Code:
+		return "", fmt.Errorf("%s is already published from other code: the service's build context or Go module manifests differ from the published build's, "+
+			"so its code changed without its version moving; %s", image, release)
+	}
+	var differs []string
+	if labels[buildRecipeLabel] != classes.Recipe {
+		differs = append(differs, "the build recipe its agent emitted or the build invocation")
+	}
+	if labels[buildBasesLabel] != classes.Bases {
+		differs = append(differs, "the resolved base images")
+	}
+	if len(differs) == 0 {
+		differs = append(differs, "an input no class records")
+	}
+	return "the published image was built from this build's code, and " + strings.Join(differs, " and ") +
+		" differ; adopting it as the release's build", nil
+}
+
+// withBuildFlags inserts flags right after the `build` subcommand of a buildx
+// argv, leaving an argv with none unchanged.
+func withBuildFlags(args []string, flags ...string) []string {
+	for index, argument := range args {
+		if argument == "build" {
+			labelled := append([]string(nil), args[:index+1]...)
+			labelled = append(labelled, flags...)
+			return append(labelled, args[index+1:]...)
+		}
+	}
+	return args
+}
+
+// imageSourceLabel is the OCI annotation GitHub Container Registry links a
+// package to its repository by, which is how a private package inherits the
+// repository's access.
+const imageSourceLabel = "org.opencontainers.image.source"
+
+// withSourceLabel links an image pushed to ghcr.io to the workspace's GitHub
+// repository. Like withBuildInputsLabel it is added after the identity was
+// computed, so it is never an input to it; a multi-platform push also
+// annotates the index, which is the manifest the registry reads it from.
+func withSourceLabel(args []string, env *environments.Environment, source string, multiArch bool) []string {
+	if source == "" || env == nil || env.Registry == nil {
+		return args
+	}
+	if host, _, _ := strings.Cut(env.Registry.URL, "/"); host != environments.GHCRRegistry {
+		return args
+	}
+	flags := []string{"--label", imageSourceLabel + "=" + source}
+	if multiArch {
+		flags = append(flags, "--annotation", "index:"+imageSourceLabel+"="+source)
+	}
+	return withBuildFlags(args, flags...)
+}
+
+// githubRemote matches the GitHub remotes a workspace is cloned from.
+var githubRemote = regexp.MustCompile(`^(?:git@github\.com:|(?:https|ssh)://(?:git@)?github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
+
+// workspaceSourceRepository is the https URL of the GitHub repository the
+// workspace is checked out from, or "" when it is not one. A seam for tests.
+var workspaceSourceRepository = func(ctx context.Context, dir string) string {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	match := githubRemote.FindStringSubmatch(strings.TrimSpace(string(out)))
+	if match == nil {
+		return ""
+	}
+	return "https://github.com/" + match[1] + "/" + match[2]
+}
+
+// resolveImageBuildLabels reads the build labels every platform of a published
+// image agrees on (buildLabels); a label a platform lacks
+// or disagrees on is absent. A seam so a test needs no registry.
+var resolveImageBuildLabels = func(ctx context.Context, reference, builderName string) (map[string]string, error) {
+	probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
+	defer cancel()
+	args := []string{buildxCommand, "imagetools", "inspect"}
+	if builderName != "" {
+		args = append(args, "--builder", builderName)
+	}
+	args = append(args, "--format", "{{json .Image}}", reference)
+	out, err := exec.CommandContext(probe, "docker", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	return buildLabelsFromImageConfig(out), nil
+}
+
+// buildLabelsFromImageConfig reads the build labels out of `imagetools
+// inspect`'s image configuration: one configuration for a single-platform image,
+// one per platform otherwise. A label is kept only when every platform records
+// the same value.
+func buildLabelsFromImageConfig(raw []byte) map[string]string {
+	type config struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"config"`
+	}
+	labels := map[string]string{}
+	var single config
+	if err := json.Unmarshal(raw, &single); err == nil && single.Config.Labels != nil {
+		for _, key := range buildLabels {
+			if value := single.Config.Labels[key]; value != "" {
+				labels[key] = value
+			}
+		}
+		return labels
+	}
+	var platforms map[string]config
+	if err := json.Unmarshal(raw, &platforms); err != nil || len(platforms) == 0 {
+		return labels
+	}
+	for _, key := range buildLabels {
+		value := ""
+		for _, platform := range platforms {
+			label := platform.Config.Labels[key]
+			if label == "" || (value != "" && label != value) {
+				value = ""
+				break
+			}
+			value = label
+		}
+		if value != "" {
+			labels[key] = value
+		}
+	}
+	return labels
 }

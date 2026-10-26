@@ -303,7 +303,7 @@ func observedPublication(t *testing.T) ObserveRequest {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"}, Environment: "local",
-		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
+		AppProject: "payments", OwnedPath: "environments/modules/payments",
 		Units: promotableServiceGraph("payments", []string{"api"}), Promotable: true,
 	}, func(ctx context.Context, stage string) error {
 		service := filepath.Join(stage, "services", "api", "overlays", "local")

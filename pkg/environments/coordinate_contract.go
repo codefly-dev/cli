@@ -62,6 +62,9 @@ func (c *CoordinateContract) validate() error {
 		}
 	}
 	env := &c.Environment
+	if err := env.admitCarried(); err != nil {
+		return err
+	}
 	if err := validateResourcePathComponent("environment name", env.Name); err != nil {
 		return err
 	}
@@ -92,6 +95,9 @@ func (c *CoordinateContract) validate() error {
 		return err
 	}
 	if err := env.ServiceIdentity.Validate(); err != nil {
+		return err
+	}
+	if err := env.ServiceMesh.Validate(); err != nil {
 		return err
 	}
 	if err := env.validateServiceKeyCollisions(); err != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/environments"
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
@@ -279,22 +282,28 @@ func (b *Builder) buildRecipeRoot() (string, error) {
 }
 
 // plannedBuild is one service's emitted build: where its recipe lives, the
-// agent's answer, and the Go module proxies prefetched for each recipe.
+// agent's answer, and the Go module proxies and git source mirrors prefetched
+// for each recipe.
 type plannedBuild struct {
 	recipeRoot string
 	outputDir  string
 	response   *builderv0.BuildResponse
-	// proxies maps a recipe name to its prefetched Go module proxies, keyed by
-	// the build-context name the recipe declares.
-	proxies map[string]map[string]string
+	// prefetched maps a recipe name to its prefetched Go module proxies and git
+	// source mirrors, keyed by the build-context name the recipe declares.
+	prefetched map[string]map[string]string
+	// reuse maps a recipe name to the reuse decision Plan took for it, for the
+	// recipes it decided before fetching; Build adopts or builds from it.
+	reuse map[string]imageReuse
 }
 
 // Plan asks the agent for the service's build recipe and fetches the Go module
 // graphs the recipe declares, without building an image. A snapshot runs Plan
 // for every service before it builds any (SnapshotPolicy), so every module is
 // fetched at the start of the render, with the credentials the host has then,
-// and no image build needs one. Build executes the planned recipe; a flow
-// without a plan phase plans at the start of Build instead.
+// and no image build needs one. A recipe whose image was already built from
+// exactly its current inputs fetches nothing: the reuse decision is taken here,
+// before the fetch, and Build adopts that image. Build executes the planned
+// recipe; a flow without a plan phase plans at the start of Build instead.
 func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Plan")
@@ -318,12 +327,21 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot prepare build recipe directory")
 	}
+	// The directory the CLI asks the agent to emit into exists before the
+	// agent is called: an agent that assembles a build context stats it first
+	// (a uv path-source service copies its tree while skipping the recipe
+	// directory by identity), and under the scratch root of a materialized
+	// module nothing else ever created it.
+	if err = os.MkdirAll(outputDir, 0o755); err != nil {
+		return nil, w.Wrapf(err, "cannot create build recipe directory %s", outputDir)
+	}
 
 	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{
 		BuildContext:    builder.BuildContextFromDocker(dockerContext),
 		OutputDirectory: outputDir,
 	})
 	if err != nil {
+		w.Warn("cannot ask the agent for its image build plan", wool.Field("service", b.instance.Unique()), wool.ErrField(err))
 		return nil, w.Wrapf(err, "cannot call build")
 	}
 	if resp == nil {
@@ -343,14 +361,36 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		}
 		contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 		for _, recipe := range plan.GetRecipes() {
-			if len(recipe.GetGoModuleDownloads()) == 0 {
+			if len(recipe.GetGoModuleDownloads()) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
+				continue
+			}
+			// Decide reuse before fetching, on the recipe as it will be built: an
+			// image already built from exactly these inputs needs no module, so a
+			// render whose images are up to date downloads nothing.
+			built, err := b.recipeAsBuilt(recipe, b.world.Push)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
+			}
+			reuse, err := b.decideImageReuse(ctx, w, outputDir, contextRoot, plan, built, b.world.Push)
+			if err != nil {
+				return nil, err
+			}
+			if planned.reuse == nil {
+				planned.reuse = map[string]imageReuse{}
+			}
+			planned.reuse[recipe.GetName()] = reuse
+			if reuse.entry != nil {
+				w.Info("no image input changed; the Go modules and git sources this recipe declares are not fetched",
+					wool.Field("recipe", recipe.GetName()), wool.Field("image", reuse.entry.Image))
 				continue
 			}
 			contextDir, err := recipeContext(contextRoot, recipe)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 			}
-			w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
+			if len(recipe.GetGoModuleDownloads()) > 0 {
+				w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
+			}
 			proxies, err := b.world.goModules().proxiesFor(ctx, contextDir, recipe)
 			if err != nil {
 				// What names the cause of a failed fetch is the go tool's own
@@ -363,10 +403,25 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 					wool.Field("recipe", recipe.GetName()), wool.ErrField(err))
 				return nil, w.Wrapf(err, "cannot fetch the Go modules of %s", b.instance.Unique())
 			}
-			if planned.proxies == nil {
-				planned.proxies = map[string]map[string]string{}
+			// The same phase and route for a dependency locked to a git commit:
+			// the host's git fetches it, the build reads a mirror context.
+			if len(recipe.GetGitSourceDownloads()) > 0 {
+				w.Info("fetching git sources before any image build", wool.Field("recipe", recipe.GetName()))
+				mirrors, err := b.world.gitSources().mirrorsFor(ctx, recipe)
+				if err != nil {
+					w.Warn("cannot fetch the git sources this recipe declares",
+						wool.Field("recipe", recipe.GetName()), wool.ErrField(err))
+					return nil, w.Wrapf(err, "cannot fetch the git sources of %s", b.instance.Unique())
+				}
+				if proxies == nil {
+					proxies = make(map[string]string, len(mirrors))
+				}
+				maps.Copy(proxies, mirrors)
 			}
-			planned.proxies[recipe.GetName()] = proxies
+			if planned.prefetched == nil {
+				planned.prefetched = map[string]map[string]string{}
+			}
+			planned.prefetched[recipe.GetName()] = proxies
 		}
 	}
 	b.planned = planned
@@ -403,7 +458,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	buildResult := dockerBuildResult(resp.Result)
 	if plan != nil {
-		if err = b.buildFromPlan(ctx, outputDir, plan, planned.proxies); err != nil {
+		if err = b.buildFromPlan(ctx, outputDir, plan, planned.prefetched, planned.reuse); err != nil {
 			return nil, err
 		}
 	} else if buildResult != nil {
@@ -413,24 +468,32 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 				if err = verifyImageArchitecture(ctx, im); err != nil {
 					return nil, w.Wrapf(err, "refusing to push %s", im)
 				}
-				cmd := exec.CommandContext(ctx, "docker", "push", im)
-				if pushErr := cmd.Run(); pushErr != nil {
+				if pushErr := pushLegacyImage(ctx, b.world.Env, im); pushErr != nil {
 					return nil, w.Wrapf(pushErr, "cannot push docker image")
 				}
+			}
+		}
+		// The digest is read from the reference that was pushed: only it has a
+		// repository digest.
+		var deployed string
+		if len(buildResult.Images) == 1 {
+			deployed = buildResult.Images[0]
+			if b.world.Push {
+				deployed = pushReference(b.world.Env, deployed)
 			}
 		}
 		if b.world.Mode == SnapshotMode && len(buildResult.Images) > 0 {
 			if len(buildResult.Images) != 1 {
 				return nil, w.NewError("snapshot build returned %d images for %s; exactly one deployable image is required", len(buildResult.Images), b.instance.Unique())
 			}
-			b.imageDigest, err = inspectImageDigest(ctx, buildResult.Images[0])
+			b.imageDigest, err = inspectImageDigest(ctx, deployed)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
 			}
 		} else if b.world.CaptureImageDigest && b.world.Push && len(buildResult.Images) == 1 {
 			// The image is already pushed; resolving its digest is best-effort
 			// for reporting, so a lookup failure must not fail the build.
-			if digest, digestErr := inspectImageDigest(ctx, buildResult.Images[0]); digestErr != nil {
+			if digest, digestErr := inspectImageDigest(ctx, deployed); digestErr != nil {
 				w.Warn("built and pushed but could not resolve image digest", wool.ErrField(digestErr))
 			} else {
 				b.imageDigest = digest
@@ -457,6 +520,25 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 }
 
 var sha256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// runDocker runs one docker command of the legacy push path. A seam so a test
+// needs no daemon.
+var runDocker = func(ctx context.Context, args ...string) error {
+	return exec.CommandContext(ctx, "docker", args...).Run()
+}
+
+// pushLegacyImage pushes an image an agent built in-process. One named by the
+// cell's pull repository is tagged and pushed to the registry that repository
+// mirrors (pushReference, recipeAsBuilt's rule).
+func pushLegacyImage(ctx context.Context, env *environments.Environment, image string) error {
+	pushed := pushReference(env, image)
+	if pushed != image {
+		if err := runDocker(ctx, "tag", image, pushed); err != nil {
+			return fmt.Errorf("tag %s as %s: %w", image, pushed, err)
+		}
+	}
+	return runDocker(ctx, "push", pushed)
+}
 
 func inspectImageDigest(ctx context.Context, image string) (string, error) {
 	output, err := exec.CommandContext(

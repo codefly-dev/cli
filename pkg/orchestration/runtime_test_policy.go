@@ -6,6 +6,7 @@ import (
 
 	"github.com/codefly-dev/core/architecture"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -36,7 +37,8 @@ func (policy *RuntimeTestPolicy) Execute(ctx context.Context, action Action) ([]
 	w := wool.Get(ctx).In("RuntimeTestPolicy.Execute", wool.Field("action", action))
 	var executor OutputProcessorFunc
 	var err error
-	if action.Type == RuntimeStart && action.Service == policy.origin && policy.dependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES {
+	barrier := action.Type == RuntimeStart && action.Service == policy.origin && policy.dependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES
+	if barrier {
 		// This is a sequencing barrier: dependency RuntimeStart actions in the
 		// same group have completed, but the target process must remain stopped.
 		executor = func(context.Context) (*OutputProperty, error) { return OnInit(), nil }
@@ -82,6 +84,13 @@ func (policy *RuntimeTestPolicy) Execute(ctx context.Context, action Action) ([]
 		}
 		return policy.BasicNext(ctx, outputProperty, action, RuntimeStart)
 	case RuntimeStart:
+		// A synthetic target barrier never starts a process. Real dependency
+		// and full-stack starts must be visible to readiness and run hooks.
+		if !barrier {
+			if emitter, ok := policy.ExecutorManager.(stateEmitter); ok {
+				emitter.emitState(action.Service, tui.StateRunning, emitter.ServicePort(action.Service))
+			}
+		}
 		if action.Service == policy.origin {
 			return []Action{action.Next(RuntimeTest)}, nil
 		}

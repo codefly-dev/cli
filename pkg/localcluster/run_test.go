@@ -37,9 +37,6 @@ func (d *fakeDriver) step(name string) error {
 }
 
 func (d *fakeDriver) EnsureArgoCD(context.Context) (bool, error) { return true, d.step("argocd") }
-func (d *fakeDriver) EnsureDeliveryAccount(context.Context) error {
-	return d.step("delivery-account")
-}
 func (d *fakeDriver) EnsureNamespaces(_ context.Context, modules []string) error {
 	return d.step("namespaces " + strings.Join(modules, ","))
 }
@@ -61,7 +58,7 @@ func (d *fakeDriver) Serve(_ context.Context, revision string) error {
 func (d *fakeDriver) Bootstrap(_ context.Context, revision string, published []gitops.PublishResult) ([]gitops.DeliveryJob, error) {
 	var jobs []gitops.DeliveryJob
 	for _, result := range published {
-		jobs = append(jobs, gitops.DeliveryJob{Kind: "presence", Name: "deliver-" + result.Path, Namespace: "ns"})
+		jobs = append(jobs, gitops.DeliveryJob{Kind: "manifest", Name: "deliver-" + result.Path, Namespace: "ns"})
 	}
 	return jobs, d.step("bootstrap " + revision)
 }
@@ -85,7 +82,7 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"argocd", "delivery-account", "namespaces host,documents", "trust-anchor",
+		"argocd", "namespaces host,documents", "trust-anchor",
 		"render host", "publish host", "render documents", "publish documents",
 		"latest", "serve abc", "bootstrap abc",
 		"await deliver-modules/host", "await deliver-modules/documents",
@@ -102,9 +99,9 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 // stops the run there; a publish that did not promote is refused rather than
 // served; a delivery the host refused fails the run with its receipts kept.
 func TestARunStopsWhereItFailsAndNeverServesAnUnpromotedRevision(t *testing.T) {
-	accountFailure := &fakeDriver{promoted: true, fail: "delivery-account"}
-	if _, err := Run(context.Background(), localEnvironment(), []string{"host"}, accountFailure, quiet); err == nil || strings.Join(accountFailure.steps, ",") != "argocd,delivery-account" {
-		t.Fatalf("delivery account failure did not stop before rendering: steps=%v err=%v", accountFailure.steps, err)
+	namespaceFailure := &fakeDriver{promoted: true, fail: "namespaces host"}
+	if _, err := Run(context.Background(), localEnvironment(), []string{"host"}, namespaceFailure, quiet); err == nil || strings.Join(namespaceFailure.steps, ",") != "argocd,namespaces host" {
+		t.Fatalf("namespace failure did not stop before rendering: steps=%v err=%v", namespaceFailure.steps, err)
 	}
 	failing := &fakeDriver{promoted: true, fail: "publish host"}
 	if _, err := Run(context.Background(), localEnvironment(), []string{"host", "documents"}, failing, quiet); err == nil {

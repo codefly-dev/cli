@@ -2,7 +2,6 @@ package builder
 
 import (
 	"context"
-	"fmt"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -14,13 +13,14 @@ func SetRepository(repo string) {
 	repository = repo
 }
 
-func DockerBuildContext(_ context.Context, workspace *resources.Workspace) (*builderv0.DockerBuildContext, error) {
-	repo := repository
-	if workspace.Layout != resources.LayoutKindFlat {
-		repo = fmt.Sprintf("%s/%s", repo, workspace.Name)
-	}
+// DockerBuildContext is the repository a service's image is pushed under: the
+// registry alone. The agent names the image <repository>/<module>/<service> and
+// tags it with the service's version, so an image belongs to the module that owns
+// the code, never to the workspace that composed it: the same module release
+// composed by two workspaces, or delivered to two environments, is one image.
+func DockerBuildContext(_ context.Context, _ *resources.Workspace) (*builderv0.DockerBuildContext, error) {
 	return &builderv0.DockerBuildContext{
-		DockerRepository: repo,
+		DockerRepository: repository,
 	}, nil
 }
 

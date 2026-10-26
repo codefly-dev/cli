@@ -377,3 +377,34 @@ func TestProjectManagedIdentityNamesConflictingDependenciesByModule(t *testing.T
 		}
 	}
 }
+
+// A service that presents its module's identity to the host (module-identity)
+// runs as its own ServiceAccount even when the environment declares no
+// identity for it: the module manifest lists that workload by the account it
+// runs as and refuses the namespace's default, so the render gives it one.
+func TestProjectManagedIdentityGivesAModuleIdentityServiceItsOwnAccount(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "annotations")
+	writeConsumerTree(t, root, "production", "payments", "annotations", "store.payments.svc:5432")
+	service := &resources.Service{Name: "annotations", ModuleIdentity: true}
+	env := &environments.Environment{Name: "production", Namespace: "payments"}
+	if err := projectManagedIdentity(context.Background(), root, service, env, consumerScope()); err != nil {
+		t.Fatal(err)
+	}
+	rendered := buildOverlay(t, root, "production")
+	deployment := manifestOfKind(t, rendered, kindDeployment)
+	spec, _ := podSpec(deployment)
+	if spec["serviceAccountName"] != "annotations" {
+		t.Fatalf("pod serviceAccountName = %v, want the service's own account", spec["serviceAccountName"])
+	}
+	manifestOfKind(t, rendered, "ServiceAccount")
+	plain := &resources.Service{Name: "worker"}
+	root = filepath.Join(t.TempDir(), "worker")
+	writeConsumerTree(t, root, "production", "payments", "worker", "store.payments.svc:5432")
+	if err := projectManagedIdentity(context.Background(), root, plain, env, consumerScope()); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ = podSpec(manifestOfKind(t, buildOverlay(t, root, "production"), kindDeployment))
+	if _, named := spec["serviceAccountName"]; named {
+		t.Fatalf("a service that presents no identity and holds no principal is projected no account, got %v", spec["serviceAccountName"])
+	}
+}

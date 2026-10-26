@@ -12,7 +12,7 @@ import (
 )
 
 // hostedServiceYAML is a service declaring endpoints with their ports and a
-// workspace configuration group, the two things the presence document and the group
+// workspace configuration group, the two things the module manifest and the group
 // digest read off a service. `grpc` is internal and names nobody: since core
 // v0.14.0 the allow-list is derived from the consumers' declared dependencies
 // (billing/ledger declares one below) and an authored one is refused by key.
@@ -81,7 +81,6 @@ environments:
       domain: acme
       audience: accounts
       trust_domain: cluster.example
-      envelope_revision: 1
       delivery: platform/accounts/rest
 `,
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                           "kind: module\nname: shop\nservices:\n  - name: api\n",
@@ -162,11 +161,11 @@ func renderHostedTree(t *testing.T, workspace *resources.Workspace, module, serv
 	return result
 }
 
-// TestPresenceRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold: several
+// TestRenderRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold: several
 // containers and none named after the service is the sidecar ambiguity, named
 // in the refusal rather than resolved by a guess — through the reader the
-// presence document derives its workloads with.
-func TestPresenceRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *testing.T) {
+// module manifest derives its workloads with.
+func TestRenderRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *testing.T) {
 	workspace := writeHostedWorkspace(t)
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: moduleRenderDestination(workspace, "shop"),
@@ -185,7 +184,7 @@ func TestPresenceRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *tes
 	require.NoError(t, err)
 	workloads, err := renderedWorkloads(filepath.Join(result.Path, "services", "api"), "staging")
 	require.NoError(t, err)
-	_, _, err = authenticatingContainer("api", servingWorkload(t, workloads, "api"))
+	_, err = authenticatingContainer("api", servingWorkload(t, workloads, "api"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "none of its containers (web, proxy) is named \"api\"")
 }
@@ -269,11 +268,10 @@ spec:
 			workloads, err := renderedWorkloads(unit, "staging")
 			require.NoError(t, err)
 			require.Len(t, workloads, 1)
-			authenticating, others, err := authenticatingContainer("api", &workloads[0])
+			authenticating, err := authenticatingContainer("api", &workloads[0])
 			if tc.refused == "" {
 				require.NoError(t, err)
 				require.Equal(t, "api", authenticating.Name)
-				require.Equal(t, []string{"migrate", "proxy"}, others)
 				return
 			}
 			require.Error(t, err)
@@ -282,8 +280,8 @@ spec:
 		})
 	}
 
-	// The refusal is the presence document's, through the reader it derives
-	// its workloads with.
+	// The refusal is the render's, through the reader a module manifest
+	// derives its workloads with.
 	workspace := writeHostedWorkspace(t)
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: moduleRenderDestination(workspace, "shop"),
@@ -301,7 +299,7 @@ spec:
 	require.NoError(t, err)
 	workloads, err := renderedWorkloads(filepath.Join(result.Path, "services", "api"), "staging")
 	require.NoError(t, err)
-	_, _, err = authenticatingContainer("api", servingWorkload(t, workloads, "api"))
+	_, err = authenticatingContainer("api", servingWorkload(t, workloads, "api"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `proxy mounts host-token (audience "accounts")`)
 }

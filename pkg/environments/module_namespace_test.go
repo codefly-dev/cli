@@ -30,6 +30,28 @@ func TestModuleNamespaceSuffixesOnlyWhenSeveralModulesAreComposed(t *testing.T) 
 	require.Empty(t, nilEnv.ModuleNamespace(several, "saas"))
 }
 
+// TestADeliveredNamespaceIsNamedByItsDeliveryEnvironmentAndModule is the
+// handbook decision a-delivered-namespace-is-named-by-its-delivery-environment-and-module
+// (obin-ai/handbook#339): a module composed beside others is delivered into
+// <delivery>-<environment>-<module>, the environment's namespace being
+// <delivery>-<environment>. Never the bare module name — an ordinary word that
+// collides across environments of one cell and with every other application —
+// and never <delivery>-<module>, which two environments of one delivery on one
+// cell would share.
+func TestADeliveredNamespaceIsNamedByItsDeliveryEnvironmentAndModule(t *testing.T) {
+	composition := &resources.Workspace{Name: "platform-obin", Layout: resources.LayoutKindModules, Modules: []*resources.ModuleReference{{Name: "saas"}, {Name: "records"}}}
+	staging := &environments.Environment{Name: "staging", Namespace: "platform-obin-staging"}
+	production := &environments.Environment{Name: "production", Namespace: "platform-obin-production"}
+
+	require.Equal(t, "platform-obin-staging-saas", staging.ModuleNamespace(composition, "saas"))
+	require.Equal(t, "platform-obin-staging-records", staging.ModuleNamespace(composition, "records"))
+	require.NotEqual(t, staging.ModuleNamespace(composition, "saas"), production.ModuleNamespace(composition, "saas"),
+		"two environments of one delivery on one cell never share a module's namespace")
+	for _, module := range []string{"saas", "records"} {
+		require.NotEqual(t, module, staging.ModuleNamespace(composition, module), "a delivered namespace is never the bare module name")
+	}
+}
+
 // The suffix can push a namespace that was a valid label on its own past what
 // Kubernetes accepts; that must fail at workspace load, naming the rule, rather
 // than when Argo CD applies the render.

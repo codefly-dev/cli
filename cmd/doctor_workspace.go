@@ -9,11 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/cmd/publish"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -180,9 +182,10 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	checkDevAgents(scope, report)
 
-	toResolve, provided := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
+	checked, rootGroups, checkErr := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
+	toResolve, provided := checkConfigurationSources(ctx, ws, env, checked, opts.module != "" || opts.service != "", scope, requiredBy, report)
 
-	checkConfigurationReferences(ctx, ws, env, provided, scope, report)
+	checkConfigurationReferences(ctx, ws, env, provided, checked, rootGroups, checkErr, scope, report)
 
 	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
 
@@ -541,12 +544,20 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 		}
 		directive := overlayDirective(overlay, ref.Name)
 		receipt := receipts[ref.Name]
-		mode := composition.ResolutionModeFor(directive, receipt, declared[ref.Name])
+		mode := composition.ResolutionModeFor(ref, directive, receipt, declared[ref.Name])
 		checkModuleMaterialization(ref, directive, receipt, mode, report)
 		if mode == composition.ResolutionModeDeclaredGit {
 			report.add(codeModuleResolutionGit, "resolution of "+ref.Name, "ok",
 				fmt.Sprintf("module %q is declared %s: git in %s: it resolves by cloning %s at its %s tag, unverified by declaration", ref.Name, composition.ModuleResolutionKey, resources.WorkspaceConfigurationName, ref.Source, moduleVersionLabel(ref)),
 				fmt.Sprintf("once %s publishes a signed module package, add module-trust.repositories/signers for %q and drop it from %s — nothing else about the entry changes", ref.Source, ref.Name, composition.ModuleResolutionKey))
+		}
+		if mode == composition.ResolutionModeCommit {
+			// Named apart from the opt-outs: no module-trust entry can make a
+			// commit verified, so the remediation is the tag, not the policy.
+			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
+				fmt.Sprintf("module %q is pinned at commit %s: it resolves by cloning %s at that commit, and nothing about it is signature- or digest-checked — a commit pin is for validation", ref.Name, ref.Version, ref.Source),
+				fmt.Sprintf("release from a tag: once the cell is green, cut the tag on %s and set the `version:` of module %q in %s to it", ref.Source, ref.Name, resources.WorkspaceConfigurationName))
+			continue
 		}
 		if mode.Unverified() {
 			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
@@ -855,7 +866,7 @@ func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, servic
 //
 // Nothing here returns silently: a check that could not run says so, or the
 // report claims a clean bill the doctor never established.
-func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, provided *configurations.WorkspaceConfigurations, scope []*resources.Service, report *workspaceReadinessReport) {
+func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, provided, checked *configurations.WorkspaceConfigurations, rootGroups []string, checkErr error, scope []*resources.Service, report *workspaceReadinessReport) {
 	if len(scope) == 0 {
 		return
 	}
@@ -887,8 +898,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 	// a check that had not happened. One unsupplied ${profile} value in an
 	// unrelated group was enough to reach it, and the workspace was reported
 	// ready with a typo'd producer in a root group.
-	checked, rootGroups, err := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
-	if err != nil {
+	if checkErr != nil {
 		// A failure here is not only "the doctor could not look": the run
 		// resolves these configurations through the same loader, so a workspace
 		// whose configurations do not load has no working run either. It is a
@@ -896,7 +906,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		// where checkConfigurationSources has already reported the read failure
 		// and this is a note beside it.
 		report.add(codeConfigurationInvalid, "configuration references", "fail",
-			fmt.Sprintf("not checked: %v", err),
+			fmt.Sprintf("not checked: %v", checkErr),
 			"fix the workspace configurations named above, then run the doctor again")
 		return
 	}
@@ -1024,10 +1034,11 @@ type scopedConfiguration struct {
 // in its tree — through core's configurations.ReadWorkspaceConfigurations, the
 // one definition of that rule, so the doctor cannot disagree with `run` — and
 // then the per-service directories. It never creates a directory: a missing
-// workspace directory is a failure only for the groups no composed module
-// provides. It returns the configurations whose secret values are in scope for
+// workspace directory is a failure only for groups neither a composed module
+// nor the invocation supplies. checked is the orchestration inventory shared
+// with the reference check, including generated groups. It returns the configurations whose secret values are in scope for
 // reference resolution.
-func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
+func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, checked *configurations.WorkspaceConfigurations, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
 	required := make([]string, 0, len(requiredBy))
 	var renderOwned []string
 	for name := range requiredBy {
@@ -1043,7 +1054,10 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	sort.Strings(renderOwned)
 	for _, name := range renderOwned {
 		status, message := "warn", "supplied only by a local k3d or cell render; absent here"
-		if env.DeclaresLocalK3d() {
+		switch {
+		case name == environments.EgressConfiguration:
+			status, message = "ok", "generated from the environment's egress declaration on every run and render"
+		case env.DeclaresLocalK3d():
 			status, message = "ok", "supplied per workload by the render"
 		}
 		report.add("", "workspace configurations", status,
@@ -1078,68 +1092,41 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	if provided != nil {
 		declared := ownConfigurationNames(wsCfgDir)
 		byName, own, composed := classifyProvidedConfigurations(provided, declared)
-		// Only what nobody provides — a name no module ships, or one two modules
-		// disagree on — is what the workspace directory would have to hold; a
-		// module-shipped group is satisfied without it, exactly as in a run.
-		var unprovided []string
-		for _, name := range required {
-			if _, ok := byName[name]; !ok {
-				unprovided = append(unprovided, name)
+		// The authored inventory owns file diagnostics and provenance. A run can
+		// also supply groups without files (generated hop routes, invocation
+		// overrides). Judge their availability from the same resolved inventory
+		// whose references are checked below, never from a name exemption.
+		if checked != nil {
+			for _, info := range checked.Infos {
+				if _, authored := byName[info.Name]; authored {
+					continue
+				}
+				byName[info.Name] = info
+				if !serviceScoped {
+					toResolve = append(toResolve, scopedConfiguration{origin: "invocation", info: info})
+				}
+				if consumers := requiredBy[info.Name]; len(consumers) > 0 {
+					report.add("", "workspace configuration "+info.Name, "ok",
+						fmt.Sprintf("supplied by this invocation (required by %s)", strings.Join(consumers, ", ")), "")
+				}
 			}
 		}
-		switch {
-		case !dirExists(wsCfgDir) && len(unprovided) > 0:
-			report.add(codeConfigurationDirMissing, "workspace configurations", "fail",
-				fmt.Sprintf("%s does not exist and %d required workspace configuration(s) are provided by no composed module: %s", relCfgDir, len(unprovided), strings.Join(unprovided, ", ")),
-				fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
-		case !dirExists(wsCfgDir) && len(required) > 0:
-			report.add("", "workspace configurations", "ok",
-				fmt.Sprintf("none present under %s (all %d required configuration(s) are provided by composed modules)", relCfgDir, len(required)), "")
-		case !dirExists(wsCfgDir):
-			report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
-		case len(own) == 0:
-			report.add("", "workspace configurations", "ok", fmt.Sprintf("none under %s", relCfgDir), "")
-		default:
-			report.add("", "workspace configurations", "ok",
-				fmt.Sprintf("%d configuration(s) under %s: %s", len(own), relCfgDir, infoNames(own)), "")
+		// Doctor has no selected runtime. Report native-only supply as a warning,
+		// and exempt no other service that also requires the authored group.
+		if byName[environments.FederationConfiguration] == nil && provided.Ambiguous[environments.FederationConfiguration] == nil &&
+			nativeFederationCoversScope(env, scope) {
+			required = slices.DeleteFunc(required, func(name string) bool { return name == environments.FederationConfiguration })
+			report.add("", "workspace configuration federation", "warn",
+				"derived from host for the native delivery service; container runs and deployments still require authored federation values", "")
 		}
+		reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir, required, byName, own, report)
 		if len(composed) > 0 {
 			report.add("", "composed module configurations", "ok",
 				fmt.Sprintf("%d configuration(s) shipped by composed modules: %s", len(composed), providedNames(composed, provided.ComposedBy)), "")
 		}
+		sources := workspaceGroupSources{relCfgDir: relCfgDir, provided: provided, byName: byName, declared: declared}
 		for _, name := range required {
-			requiredByList := strings.Join(requiredBy[name], ", ")
-			if conflict, ok := provided.Ambiguous[name]; ok {
-				report.add(codeConfigurationDuplicate, "workspace configurations", "fail",
-					fmt.Sprintf("required workspace configuration %q is ambiguous (required by %s): %v", name, requiredByList, conflict),
-					fmt.Sprintf("add %s/%s.env to this workspace: its own definition overrides every composed module's", relCfgDir, name))
-				continue
-			}
-			info, ok := byName[name]
-			if !ok {
-				report.add(codeConfigurationMissing, "workspace configurations", "fail",
-					fmt.Sprintf("required workspace configuration %q is neither under %s nor shipped by a composed module (required by %s)", name, relCfgDir, requiredByList),
-					fmt.Sprintf("add %s/%s.env (or %s.secret.env holding provider references)", relCfgDir, name, name))
-				continue
-			}
-			module, fromModule := provided.ComposedBy[name]
-			if len(info.ConfigurationValues) == 0 && info.Data == nil {
-				where, remedy := "exists under "+relCfgDir, fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name)
-				if fromModule {
-					where = fmt.Sprintf("is shipped by composed module %q", module)
-					remedy = fmt.Sprintf("add %s/%s.env with the required keys: the workspace's values are overlaid per key onto the module's group", relCfgDir, name)
-				}
-				report.add(codeConfigurationMissing, "workspace configurations", "fail",
-					fmt.Sprintf("workspace configuration %q %s but defines no values (required by %s)", name, where, requiredByList), remedy)
-				continue
-			}
-			if fromModule {
-				message := fmt.Sprintf("provided by composed module %q (required by %s)", module, requiredByList)
-				if declared[name] {
-					message = fmt.Sprintf("shipped by composed module %q, with the values under %s overlaid per key (required by %s)", module, relCfgDir, requiredByList)
-				}
-				report.add("", "workspace configuration "+name, "ok", message, "")
-			}
+			checkRequiredWorkspaceConfiguration(ctx, ws, env, sources, name, strings.Join(requiredBy[name], ", "), report)
 		}
 		if serviceScoped {
 			// Resolve only what the selected service declares; unrelated
@@ -1157,6 +1144,159 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	}
 
 	return append(toResolve, checkServiceConfigurationSources(ctx, env, profiles, profile, scope, report)...), provided
+}
+
+// nativeFederationCoversScope requires every declaring consumer to be the
+// delivery host. A generated host group never satisfies a sibling's requirement.
+func nativeFederationCoversScope(env *environments.Environment, scope []*resources.Service) bool {
+	if env == nil || env.DeclaresLocalK3d() {
+		return false
+	}
+	found := false
+	for _, service := range scope {
+		if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.FederationConfiguration) {
+			continue
+		}
+		group, err := environments.NativeHostFederation(env.Host, service)
+		if err != nil || group == nil {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// reportWorkspaceConfigurationDirectory reports the workspace's own
+// configuration directory. Only what nobody provides — a name no module
+// ships, or one two modules disagree on — is what the directory would have to
+// hold; a module-shipped group is satisfied without it, exactly as in a run,
+// and an optional group's absence is judged with the group
+// (checkRequiredWorkspaceConfiguration).
+func reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir string, required []string, byName map[string]*basev0.ConfigurationInformation, own []*basev0.ConfigurationInformation, report *workspaceReadinessReport) {
+	var unprovided, optional []string
+	for _, name := range required {
+		if _, ok := byName[name]; ok {
+			continue
+		}
+		if environments.OptionalWorkspaceConfiguration(name) {
+			optional = append(optional, name)
+			continue
+		}
+		unprovided = append(unprovided, name)
+	}
+	switch {
+	case !dirExists(wsCfgDir) && len(unprovided) > 0:
+		report.add(codeConfigurationDirMissing, "workspace configurations", "fail",
+			fmt.Sprintf("%s does not exist and %d required workspace configuration(s) are provided by no composed module: %s", relCfgDir, len(unprovided), strings.Join(unprovided, ", ")),
+			fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
+	case !dirExists(wsCfgDir) && len(required) > len(optional):
+		report.add("", "workspace configurations", "ok",
+			fmt.Sprintf("none present under %s (all %d required configuration(s) are supplied by composed modules or this invocation)", relCfgDir, len(required)-len(optional)), "")
+	case !dirExists(wsCfgDir):
+		report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
+	case len(own) == 0:
+		report.add("", "workspace configurations", "ok", fmt.Sprintf("none under %s", relCfgDir), "")
+	default:
+		report.add("", "workspace configurations", "ok",
+			fmt.Sprintf("%d configuration(s) under %s: %s", len(own), relCfgDir, infoNames(own)), "")
+	}
+}
+
+// workspaceGroupSources is what judging one required group reads: where the
+// workspace's own files are, what a run provisions, and which names the
+// workspace itself declares.
+type workspaceGroupSources struct {
+	relCfgDir string
+	provided  *configurations.WorkspaceConfigurations
+	byName    map[string]*basev0.ConfigurationInformation
+	declared  map[string]bool
+}
+
+// checkRequiredWorkspaceConfiguration judges one group a service in scope
+// declares: it is unambiguous, provided, and defines values. An optional
+// group (environments.OptionalWorkspaceConfiguration) is judged against what
+// the environment prepares instead (checkRunnableBindingsGroup).
+func checkRequiredWorkspaceConfiguration(ctx context.Context, ws *resources.Workspace, env *environments.Environment, sources workspaceGroupSources, name, requiredBy string, report *workspaceReadinessReport) {
+	relCfgDir := sources.relCfgDir
+	if conflict, ok := sources.provided.Ambiguous[name]; ok {
+		report.add(codeConfigurationDuplicate, "workspace configurations", "fail",
+			fmt.Sprintf("required workspace configuration %q is ambiguous (required by %s): %v", name, requiredBy, conflict),
+			fmt.Sprintf("add %s/%s.env to this workspace: its own definition overrides every composed module's", relCfgDir, name))
+		return
+	}
+	info, ok := sources.byName[name]
+	if environments.OptionalWorkspaceConfiguration(name) && checkRunnableBindingsGroup(ctx, ws, env, name, info, relCfgDir, requiredBy, report) {
+		return
+	}
+	if !ok {
+		report.add(codeConfigurationMissing, "workspace configurations", "fail",
+			fmt.Sprintf("required workspace configuration %q is neither under %s nor shipped by a composed module (required by %s)", name, relCfgDir, requiredBy),
+			fmt.Sprintf("add %s/%s.env (or %s.secret.env holding provider references)", relCfgDir, name, name))
+		return
+	}
+	module, fromModule := sources.provided.ComposedBy[name]
+	if len(info.ConfigurationValues) == 0 && info.Data == nil {
+		where, remedy := "exists under "+relCfgDir, fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name)
+		if fromModule {
+			where = fmt.Sprintf("is shipped by composed module %q", module)
+			remedy = fmt.Sprintf("add %s/%s.env with the required keys: the workspace's values are overlaid per key onto the module's group", relCfgDir, name)
+		}
+		report.add(codeConfigurationMissing, "workspace configurations", "fail",
+			fmt.Sprintf("workspace configuration %q %s but defines no values (required by %s)", name, where, requiredBy), remedy)
+		return
+	}
+	if fromModule {
+		message := fmt.Sprintf("provided by composed module %q (required by %s)", module, requiredBy)
+		if sources.declared[name] {
+			message = fmt.Sprintf("shipped by composed module %q, with the values under %s overlaid per key (required by %s)", module, relCfgDir, requiredBy)
+		}
+		report.add("", "workspace configuration "+name, "ok", message, "")
+	}
+}
+
+// checkRunnableBindingsGroup judges the runnable-bindings group, the one
+// optional group, against the bindings the environment selects, read with the
+// rule generation applies (generate.SelectRunnableBindings). An environment
+// that selects none — nothing derived, or every binding declined — prepares
+// no runnable binding, so the group absent or holding no value is its answer.
+// A selected binding the group does not hold fails, naming the generation
+// that writes it. It reports whether it judged the group; a group that holds
+// every selected binding is left to the checks every group gets.
+func checkRunnableBindingsGroup(ctx context.Context, ws *resources.Workspace, env *environments.Environment, name string, info *basev0.ConfigurationInformation, relCfgDir, requiredBy string, report *workspaceReadinessReport) bool {
+	selection, err := generate.SelectRunnableBindings(ctx, ws, env)
+	if err != nil {
+		report.add(codeRunnableOperationsUnreadable, "workspace configuration "+name, checkStatusFail,
+			fmt.Sprintf("cannot tell which runnable bindings environment %s prepares: %v (required by %s)", env.Name, err, requiredBy),
+			"run `codefly generate contracts` and `codefly generate runnables` for the module named above")
+		return true
+	}
+	held := map[string]bool{}
+	for _, value := range info.GetConfigurationValues() {
+		held[value.GetKey()] = true
+	}
+	var missing []string
+	for _, key := range selection.Selected {
+		if !held[key] {
+			missing = append(missing, key)
+		}
+	}
+	remedy := fmt.Sprintf("run `codefly generate runnable-bindings --env %s`", env.Name)
+	switch {
+	case len(missing) > 0 && info == nil:
+		report.add(codeConfigurationMissing, "workspace configurations", checkStatusFail,
+			fmt.Sprintf("required workspace configuration %q is neither under %s nor shipped by a composed module, and environment %s selects %d runnable binding(s): %s (required by %s)", name, relCfgDir, env.Name, len(missing), strings.Join(missing, ", "), requiredBy),
+			remedy)
+	case len(missing) > 0:
+		report.add(codeConfigurationMissing, "workspace configurations", checkStatusFail,
+			fmt.Sprintf("workspace configuration %q lacks %d runnable binding(s) environment %s selects: %s (required by %s)", name, len(missing), env.Name, strings.Join(missing, ", "), requiredBy),
+			remedy)
+	case len(held) == 0:
+		report.add("", "workspace configuration "+name, "ok",
+			fmt.Sprintf("environment %s prepares no runnable binding, so %q holds none (required by %s)", env.Name, name, requiredBy), "")
+	default:
+		return false
+	}
+	return true
 }
 
 // checkServiceConfigurationSources checks the per-service `configurations/<env>`

@@ -13,12 +13,12 @@ import (
 
 // FrontendFileName is the optional frontend declaration for either component
 // kind, beside its entry service's service.codefly.yaml. The runtime embeds it
-// and the CLI delivers it in presence. Core owns the strict reader for both.
+// and the CLI delivers it in the module manifest. Core owns the strict reader for both.
 const FrontendFileName = "solution.frontend.codefly.yaml"
 
 // DeclaredFrontend reads either component kind's optional frontend beside its
 // entry service. No entry or no file means a headless component. A present file
-// is parsed with Core's presence rules; malformed declarations fail delivery.
+// is parsed with Core's manifest rules; malformed declarations fail delivery.
 func DeclaredFrontend(ctx context.Context, module *resources.Module) (*solutionhost.Frontend, error) {
 	if module == nil {
 		return nil, fmt.Errorf("cannot read %s without a component", FrontendFileName)
@@ -60,7 +60,7 @@ const FrontendBundleManifest = "mf-manifest.json"
 // FrontendBundle is the built bundle of a component, when its frontend build
 // wrote one: the directory FrontendBundleDir with FrontendBundleManifest at
 // its root. No such directory is no bundle (a generation whose bundle is not
-// built, which a presence carries as a frontend without a payload); a
+// built, which a manifest carries as a frontend without a payload); a
 // directory without the manifest at its root is refused by name, since a host
 // would otherwise admit bytes that load nothing.
 func FrontendBundle(module *resources.Module) (string, bool, error) {
@@ -85,7 +85,7 @@ func FrontendBundle(module *resources.Module) (string, bool, error) {
 }
 
 // parseFrontend hands the declared file to core's own reader: the same strict
-// decoder and frontend rules that admit the block on a presence, so accepting
+// decoder and frontend rules that admit the block on a manifest, so accepting
 // the file here cannot disagree with signing it. An empty file is invalid to
 // core; an absent one is a headless component for either kind.
 func parseFrontend(raw []byte, component string) (*solutionhost.Frontend, error) {

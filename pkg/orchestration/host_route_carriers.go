@@ -27,7 +27,7 @@ import (
 //     one HTTP endpoint the solution's entry service declares — in plain
 //     HTTP, the way it already reaches a module. Nothing a solution reports
 //     at run time is an address: the gateway routes a solution from its
-//     applied presence's endpoints and from these carriers, as it routes a
+//     applied module manifest's endpoints, which carry these addresses, as it routes a
 //     module, and a solution's transport identity is the mesh's, not a
 //     certificate it serves.
 //
@@ -76,7 +76,8 @@ func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Se
 func (world *World) hostRouteCarrier(
 	ctx context.Context, gateway *resources.Service, hostModule string, route hostRoute, access *basev0.NetworkAccess,
 ) (string, string, error) {
-	if _, err := world.Dependencies.ServiceFromUnique(route.producer()); err != nil {
+	producer, err := world.Dependencies.ServiceFromUnique(route.producer())
+	if err != nil {
 		if world.deploys() {
 			return "", "", fmt.Errorf("%s is not a service of this workspace", route.producer())
 		}
@@ -94,9 +95,15 @@ func (world *World) hostRouteCarrier(
 	}
 	if len(consumed) == 0 {
 		if !world.deploys() {
-			// A local producer has an address only once this run allocated it
-			// (--temporary-ports allocates at initialization).
-			return "", "", fmt.Errorf("this run has not allocated %s's address yet", route.producer())
+			declared, declarationErr := declaresEndpoint(ctx, producer, route.endpoint)
+			if declarationErr != nil {
+				return "", "", fmt.Errorf("read %s's endpoints: %w", route.producer(), declarationErr)
+			}
+			if declared {
+				// A local producer has an address only once this run allocated
+				// it (--temporary-ports allocates at initialization).
+				return "", "", fmt.Errorf("this run has not allocated %s's address yet", route.producer())
+			}
 		}
 		return "", "", fmt.Errorf("%s declares no endpoint named %q", route.producer(), route.endpoint)
 	}
@@ -117,6 +124,22 @@ func (world *World) hostRouteCarrier(
 	}
 	variable := resources.EndpointAsEnvironmentVariable(endpoints[0])
 	return variable.Key, fmt.Sprint(variable.Value), nil
+}
+
+// declaresEndpoint reports whether service declares an endpoint named name, so
+// a run tells an endpoint the producer no longer declares from one it has not
+// addressed yet.
+func declaresEndpoint(ctx context.Context, service *resources.Service, name string) (bool, error) {
+	endpoints, err := service.LoadEndpoints(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, endpoint := range endpoints {
+		if endpoint.GetName() == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // hostRoute is one endpoint the host's gateway forwards to: a module endpoint
@@ -182,6 +205,12 @@ func HostRouteTargets(ctx context.Context, workspace *resources.Workspace, hostM
 
 func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
 	consumptions, err := solutionrun.ConsumedEndpoints(ctx, workspace)
+	if err == nil && hostModule == "" && len(consumptions) > 0 {
+		// Without the host's module nothing can tell a consumed host endpoint
+		// from a routed module, and the refusal below would name the host as
+		// a module consumed under the wrong alias.
+		return nil, fmt.Errorf("the environment's host declares no gateway, and %d consumed endpoint(s) route through it; declare host.gateway as <module>/<service>", len(consumptions))
+	}
 	if err != nil {
 		return nil, err
 	}

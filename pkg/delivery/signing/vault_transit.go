@@ -35,14 +35,64 @@ type VaultTransit struct {
 	client                               *http.Client
 }
 
+// transitVariables configure the Vault Transit custody.
+var transitVariables = []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"}
+
 // FromEnvironment is consulted only by release publishing. Missing or invalid
 // custody configuration becomes an Unavailable signer with a readable refusal.
 func FromEnvironment(lookup func(string) (string, bool)) Signer {
-	signer, err := NewVaultTransit(lookup)
+	signer, err := newReleaseSigner(lookup)
 	if err != nil {
 		return &Unavailable{Reason: err.Error()}
 	}
 	return signer
+}
+
+// newReleaseSigner selects the one custody the environment configures: Cloud
+// KMS when CODEFLY_RELEASE_KMS_KEY is set and no Transit variable is, Vault
+// Transit otherwise. Both configured is refused, naming each, rather than
+// one silently winning.
+func newReleaseSigner(lookup func(string) (string, bool)) (Signer, error) {
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	var transit []string
+	for _, name := range transitVariables {
+		if value, _ := lookup(name); value != "" {
+			transit = append(transit, name)
+		}
+	}
+	if kms, _ := lookup("CODEFLY_RELEASE_KMS_KEY"); kms != "" {
+		if len(transit) > 0 {
+			return nil, fmt.Errorf("two release custodies are configured: Cloud KMS (CODEFLY_RELEASE_KMS_KEY) and Vault Transit (%s); unset one", strings.Join(transit, ", "))
+		}
+		signer, err := NewCloudKMS(lookup, nil)
+		if err != nil {
+			return nil, err
+		}
+		return signer, nil
+	}
+	signer, err := NewVaultTransit(lookup)
+	if err != nil {
+		return nil, err
+	}
+	return signer, nil
+}
+
+// custodyAddress admits a custody endpoint over HTTPS, or HTTP for a loopback
+// host only, and reports whether the chosen scheme is cleartext.
+func custodyAddress(variable, address string) (string, bool, error) {
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false, errors.New(variable + " must be an HTTPS URL without credentials, query or fragment")
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	loopback := strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !loopback) {
+		return "", false, errors.New(variable + " requires https (http is allowed only for a loopback host)")
+	}
+	return strings.TrimRight(address, "/"), parsed.Scheme == "http", nil
 }
 
 func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) {
@@ -54,26 +104,20 @@ func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) 
 	if address == "" || token == "" || name == "" {
 		return nil, ErrNoIdentity
 	}
-	parsed, err := url.Parse(address)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("VAULT_ADDR must be an HTTPS URL without credentials, query or fragment")
-	}
-	host := parsed.Hostname()
-	ip := net.ParseIP(host)
-	loopback := strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()
-	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !loopback) {
-		return nil, errors.New("VAULT_ADDR requires https (http is allowed only for a loopback host)")
+	address, cleartext, err := custodyAddress("VAULT_ADDR", address)
+	if err != nil {
+		return nil, err
 	}
 	mount := get("CODEFLY_RELEASE_TRANSIT_MOUNT")
 	if mount == "" {
 		mount = "transit"
 	}
-	if !vaultPath(mount, true) || !vaultPath(name, false) {
+	if !cleanPath(mount, true) || !cleanPath(name, false) {
 		return nil, errors.New("the Transit mount and key name must be clean path components")
 	}
-	signer := &VaultTransit{address: strings.TrimRight(address, "/"), token: token, mount: mount, name: name, client: &http.Client{
+	signer := &VaultTransit{address: address, token: token, mount: mount, name: name, client: &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: vaultTransport(parsed.Scheme == "http"),
+		Transport: custodyTransport(cleartext),
 		// A redirect must never forward the token to a different endpoint.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -130,7 +174,7 @@ func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) 
 	return signer, nil
 }
 
-func vaultPath(value string, nested bool) bool {
+func cleanPath(value string, nested bool) bool {
 	if value == "" {
 		return false
 	}
@@ -205,11 +249,11 @@ func (s *VaultTransit) request(method, operation string, body []byte, result any
 	return nil
 }
 
-// vaultTransport keeps a cleartext request on this machine. The environment's
+// custodyTransport keeps a cleartext custody request on this machine. The environment's
 // proxy is never consulted for one — Go's localhost exemption is
 // case-sensitive, so http://LOCALHOST would otherwise send the token to a proxy
 // in the clear — and every address it dials must be loopback.
-func vaultTransport(cleartext bool) http.RoundTripper {
+func custodyTransport(cleartext bool) http.RoundTripper {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		base = &http.Transport{}
@@ -231,7 +275,7 @@ func vaultTransport(cleartext bool) http.RoundTripper {
 		}
 		// Try every loopback address in order, as the default dialer would,
 		// and never a non-loopback one.
-		dialErr := errors.New("a cleartext Vault address must resolve to loopback")
+		dialErr := errors.New("a cleartext custody address must resolve to loopback")
 		for _, candidate := range addresses {
 			if !candidate.IP.IsLoopback() {
 				continue

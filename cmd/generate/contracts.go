@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -30,9 +30,10 @@ import (
 )
 
 var (
-	contractsOutput string
-	contractsCheck  bool
-	contractsFormat string
+	contractsOutput      string
+	contractsCheck       bool
+	contractsPermissions bool
+	contractsFormat      string
 )
 
 // yamlStringTag is the yaml.v3 tag for a plain string scalar node.
@@ -49,14 +50,21 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
-contract and are skipped, as is a connect endpoint whose service has no proto.
+document (openapi.json). An HTTP endpoint gets the OpenAPI document its service
+carries (openapi/api.swagger.json), when it carries one: a solution backend
+publishes its routes there, each with its x-codefly-authority-policy. TCP and
+MCP endpoints have no machine-readable contract and are skipped, as are an HTTP
+endpoint whose service carries no document and a connect endpoint whose
+service has no proto.
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
 configuration, separate from the agent's spec. Multiple exported protobuf
 endpoints require an inventory; a full descriptor alone does not establish what
-each listener serves. See docs/commands.md#generate-contracts.
+each listener serves. An inventory may include implemented interfaces from other
+protobuf packages; every named procedure must exist in the descriptor. For such
+multi-package endpoints, package is empty and services[].fullName identifies
+each package. See docs/commands.md#generate-contracts.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -96,7 +104,13 @@ against what's on disk, without writing anything.
 		}
 
 		if contractsCheck {
-			return runContractsCheck(ctx, workspace, module, output)
+			if err = runContractsCheck(ctx, workspace, module, output); err != nil {
+				return err
+			}
+			if contractsPermissions {
+				return generatePermissions(ctx, module, "", true)
+			}
+			return nil
 		}
 
 		catalog, err := generateContracts(ctx, workspace, module, generateOptions{
@@ -108,6 +122,11 @@ against what's on disk, without writing anything.
 			return err
 		}
 
+		if contractsPermissions {
+			if err = generatePermissions(ctx, module, "", false); err != nil {
+				return err
+			}
+		}
 		if contractsFormat == "json" {
 			data, err := catalog.CanonicalBytes()
 			if err != nil {
@@ -121,6 +140,7 @@ against what's on disk, without writing anything.
 }
 
 func init() {
+	ContractsCmd.Flags().BoolVar(&contractsPermissions, "permissions", false, "also generate typed permission constants; with --check, verify their freshness")
 	ContractsCmd.Flags().StringVar(&contractsOutput, "output", "", "output directory for generated contracts (default: <module dir>/contracts/api)")
 	ContractsCmd.Flags().BoolVar(&contractsCheck, "check", false, "do not write; exit 1 if the on-disk catalog differs from what would be generated")
 	ContractsCmd.Flags().StringVar(&contractsFormat, "format", "text", "output format: text|json")
@@ -186,8 +206,15 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		// always carries a contract, so a missing proto there stays a hard
 		// error (surfaced by writeProtobufContract).
 		serviceHasProto, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), "proto", "buf.yaml"))
+		// A rest endpoint's contract is the OpenAPI document its service carries
+		// where core loads it (standards.OpenAPIPath). The exported endpoint is
+		// read from the module's interface and carries no API details, so it
+		// cannot answer this; asking it skipped every REST face. An http
+		// endpoint's is the same document, when its service carries one: a
+		// solution backend serves plain HTTP and publishes its routes there.
+		serviceHasOpenAPI, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), standards.OpenAPIPath))
 
-		carriers := contractCarriers(ctx, serviceName, exported, serviceHasProto)
+		carriers := contractCarriers(ctx, serviceName, exported, serviceHasProto, serviceHasOpenAPI)
 		if len(carriers) == 0 {
 			continue
 		}
@@ -196,17 +223,29 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			return nil, fmt.Errorf("module %s: %w", module.Name, surfaceErr)
 		}
 
-		loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
-		if loadErr != nil {
-			return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
-		}
-		loadedByName := make(map[string]*basev0.Endpoint, len(loaded))
-		for _, endpoint := range loaded {
-			loadedByName[endpoint.Name] = endpoint
+		// The agent reports each endpoint's API details at Load. An http
+		// endpoint has none to report (its document is the service's file), so
+		// a service whose carriers are all http is not loaded.
+		var loadedByName map[string]*basev0.Endpoint
+		for _, endpoint := range carriers {
+			if endpoint.Api == standards.HTTP || loadedByName != nil {
+				continue
+			}
+			loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
+			if loadErr != nil {
+				return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
+			}
+			loadedByName = make(map[string]*basev0.Endpoint, len(loaded))
+			for _, endpoint := range loaded {
+				loadedByName[endpoint.Name] = endpoint
+			}
 		}
 
 		for _, endpoint := range carriers {
-			actual, ok := loadedByName[endpoint.Name]
+			actual, ok := endpoint, true
+			if endpoint.Api != standards.HTTP {
+				actual, ok = loadedByName[endpoint.Name]
+			}
 			if !ok {
 				return nil, fmt.Errorf("service %s does not report endpoint %q at Builder.Load", serviceName, endpoint.Name)
 			}
@@ -248,7 +287,7 @@ func anyCarriesContract(exported []*basev0.Endpoint) bool {
 
 // contractCarriers keeps the exported endpoints that carry a machine-readable
 // contract, saying why each of the others is skipped.
-func contractCarriers(ctx context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto bool) []*basev0.Endpoint {
+func contractCarriers(_ context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto, serviceHasOpenAPI bool) []*basev0.Endpoint {
 	var carriers []*basev0.Endpoint
 	for _, endpoint := range exported {
 		switch {
@@ -256,8 +295,10 @@ func contractCarriers(ctx context.Context, serviceName string, exported []*basev
 			cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
 		case endpoint.Api == standards.CONNECT && !serviceHasProto:
 			cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
-		case endpoint.Api == standards.REST && restWithoutOpenAPI(ctx, endpoint):
+		case endpoint.Api == standards.REST && !serviceHasOpenAPI:
 			cli.Info("endpoint %s/%s (api rest) has no OpenAPI document; exported for reachability only, skipped", serviceName, endpoint.Name)
+		case endpoint.Api == standards.HTTP && !serviceHasOpenAPI:
+			cli.Info("endpoint %s/%s (api http) has no OpenAPI document; skipped", serviceName, endpoint.Name)
 		default:
 			carriers = append(carriers, endpoint)
 		}
@@ -282,6 +323,11 @@ func writeContractCatalog(ctx context.Context, module *resources.Module, contrac
 	if err = catalog.Validate(); err != nil {
 		return nil, fmt.Errorf("generated catalog is invalid: %w", err)
 	}
+	if opts.updateManifest && manifest != nil {
+		if err = requireContractArtifactRoots(module, manifest, contractEndpoints); err != nil {
+			return nil, err
+		}
+	}
 
 	catalogBytes, err := catalog.CanonicalBytes()
 	if err != nil {
@@ -303,6 +349,31 @@ func writeContractCatalog(ctx context.Context, module *resources.Module, contrac
 	return catalog, nil
 }
 
+// requireContractArtifactRoots refuses, before the catalog or the package
+// manifest is written, a manifest whose artifact-roots do not cover the
+// contract files this run records in it: the package would not carry them,
+// and composition.ValidatePackageAPIContracts would refuse the manifest only
+// after it had been rewritten. The refusal names the manifest and the root to
+// add — the top directory of the first uncovered contract path.
+func requireContractArtifactRoots(module *resources.Module, manifest *composition.PackageManifest, contractEndpoints []composition.APIContractEndpoint) error {
+	for i := range contractEndpoints {
+		endpoint := &contractEndpoints[i]
+		covered := false
+		for _, root := range manifest.ArtifactRoots {
+			if endpoint.Path == root || strings.HasPrefix(endpoint.Path, root+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			root, _, _ := strings.Cut(endpoint.Path, "/")
+			return fmt.Errorf("%w: package manifest %s does not declare the artifact root %q, so the package cannot carry the %s/%s contract at %s; add %q under artifact-roots",
+				composition.ErrContract, filepath.Join(module.Dir(), composition.PackageManifestFileName), root, endpoint.Service, endpoint.Endpoint, endpoint.Path, root)
+		}
+	}
+	return nil
+}
+
 // resolvePackageIdentity returns the catalog's Package/Version and, when the
 // module has one, its package manifest. A module without a manifest is not
 // packageable yet, so it falls back to a synthetic identity and a warning
@@ -319,19 +390,12 @@ func resolvePackageIdentity(module *resources.Module) (string, string, *composit
 	return manifest.ID, manifest.Version, manifest, nil
 }
 
-// restWithoutOpenAPI reports whether a rest endpoint carries no OpenAPI
-// document to export: either core attached no REST details to it or the
-// document is empty.
-func restWithoutOpenAPI(ctx context.Context, endpoint *basev0.Endpoint) bool {
-	rest := resources.IsRest(ctx, endpoint)
-	return rest == nil || len(rest.Openapi) == 0
-}
-
 // endpointCarriesContract reports whether an endpoint's API can be exported as
 // a machine-readable contract: grpc and connect resolve to a protobuf
-// FileDescriptorSet, rest to an OpenAPI document. http and tcp have none.
+// FileDescriptorSet, rest and http to an OpenAPI document (http only when its
+// service carries one, which contractCarriers decides). tcp and mcp have none.
 func endpointCarriesContract(api string) bool {
-	return api == standards.GRPC || api == standards.CONNECT || api == standards.REST
+	return api == standards.GRPC || api == standards.CONNECT || api == standards.REST || api == standards.HTTP
 }
 
 // writeEndpointContract writes one endpoint's contract files and returns its
@@ -350,6 +414,17 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 		return writeProtobufContract(ctx, module, service, endpoint, surface, physicalDir, canonicalDir)
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
+		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
+	}
+	if endpoint.Api == standards.HTTP {
+		// An http endpoint reports no API details at Load, so its document is
+		// read where the service carries it, by core's own REST loader: the
+		// same bytes and routes a rest endpoint's agent reports.
+		document := filepath.Join(service.Dir(), standards.OpenAPIPath)
+		rest, err := resources.LoadRestAPI(ctx, &document)
+		if err != nil {
+			return nil, fmt.Errorf("endpoint %s: %s: %w", endpoint.Name, standards.OpenAPIPath, err)
+		}
 		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
 	}
 	return nil, fmt.Errorf("endpoint %s reports neither a grpc/connect nor a rest contract", endpoint.Name)
@@ -417,24 +492,26 @@ func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, s
 	return entry, nil
 }
 
-// serviceContractPackage returns the single proto package that the service's
-// own proto files — those physically under protoDir, not the transitive
-// imports buf pulls in — use to declare services. A codefly service declares
-// all of its RPC services in one package; message-only packages contributed
-// alongside it (composed settings, shared types) carry no service to expose in
-// a client contract and are ignored.
-//
-// `surface` is the endpoint's declared served surface, when the module declares
-// one through contracts.codefly.yaml. It names which services this endpoint
-// serves, so it also settles which proto package the contract covers, and the
-// candidates are scoped to it. That matters for a service that must generate
-// client stubs from ANOTHER service's API: those protos declare services in a
-// foreign package and have to live in the owned tree for codegen to reach them,
-// yet the endpoint does not serve them, so without this they make a
-// single-package endpoint look multi-package and the export fails on a
-// contract that is in fact well formed. A module that declares no surface is
-// unchanged: nothing narrows the candidates and the single-package rule stands.
+// serviceContractPackage preserves the single-package default. An explicit
+// listener inventory may span packages; then the package field is empty and
+// each service's fully qualified name supplies its package.
 func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string, surface []composition.APIContractService) (string, error) {
+	if packages := surfacePackages(surface); len(packages) > 0 {
+		names := make([]string, 0, len(packages))
+		for pkg := range packages {
+			names = append(names, pkg)
+		}
+		sort.Strings(names)
+		for _, pkg := range names {
+			if len(composition.ProtobufServices(set, pkg)) == 0 {
+				return "", fmt.Errorf("inventory package %s declares no services in the descriptor", pkg)
+			}
+		}
+		if len(names) == 1 {
+			return names[0], nil
+		}
+		return "", nil
+	}
 	own := map[string]struct{}{}
 	walkErr := filepath.WalkDir(protoDir, func(p string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -473,23 +550,6 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 		packages = append(packages, pkg)
 	}
 	sort.Strings(packages)
-
-	// Scope to the declared surface. Dropping to zero means the surface names
-	// no package the descriptor set declares a service in, which is a
-	// configuration error the unscoped diagnostics below describe better than a
-	// silent empty contract, so the narrowing is only applied when it keeps at
-	// least one candidate.
-	if served := surfacePackages(surface); len(served) > 0 {
-		scoped := make([]string, 0, len(packages))
-		for _, pkg := range packages {
-			if _, ok := served[pkg]; ok {
-				scoped = append(scoped, pkg)
-			}
-		}
-		if len(scoped) > 0 {
-			packages = scoped
-		}
-	}
 
 	switch len(packages) {
 	case 0:
@@ -539,15 +599,7 @@ func writeRestContract(ctx context.Context, module *resources.Module, endpoint *
 		return nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
 	}
 
-	var routes []composition.APIContractRoute
-	for _, group := range rest.Groups {
-		for _, route := range group.Routes {
-			routes = append(routes, composition.APIContractRoute{
-				Method: route.Method.String(),
-				Path:   path.Join(group.Path, route.Path),
-			})
-		}
-	}
+	routes := contractRoutes(rest.Groups)
 
 	relPath, err := relativeContractPath(module, filepath.Join(canonicalDir, "openapi.json"))
 	if err != nil {
@@ -605,22 +657,40 @@ func printContractLine(endpoint *composition.APIContractEndpoint) {
 // included. It works from a temporary copy of protoDir so buf's dependency
 // resolution never mutates the service's committed buf.lock.
 func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
+	descriptor, _, err := compileProtoDir(ctx, protoDir, false)
+	return descriptor, err
+}
+
+// ListProtoSources names protoDir's source set as buf compiles it: the one
+// source-set mechanism, shared by `generate client` and `publish clients`
+// (over a published contract's proto tree, which carries its buf.yaml).
+func ListProtoSources(ctx context.Context, protoDir string) ([]proto.Source, error) {
+	_, sources, err := compileProtoDir(ctx, protoDir, true)
+	return sources, err
+}
+
+// compileProtoDir has buf, in the pinned proto companion, build protoDir's
+// descriptor set and, when listSources is set, name the source set it built
+// it from (`buf ls-files --format json`): every file buf compiles, read from
+// where buf found it and named by its import path. buf.yaml's modules,
+// includes, excludes and symlinks are buf's to interpret, never this CLI's.
+func compileProtoDir(ctx context.Context, protoDir string, listSources bool) ([]byte, []proto.Source, error) {
 	if !runners.DockerEngineRunning(ctx) {
-		return nil, fmt.Errorf("docker is not running; please start Docker first")
+		return nil, nil, fmt.Errorf("docker is not running; please start Docker first")
 	}
 	image, err := proto.CompanionImage(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("cannot get companion image: %w", err)
+		return nil, nil, fmt.Errorf("cannot get companion image: %w", err)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "codefly-contract-proto")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	if err = copyTree(protoDir, tmpDir); err != nil {
-		return nil, fmt.Errorf("cannot copy proto sources: %w", err)
+		return nil, nil, fmt.Errorf("cannot copy proto sources: %w", err)
 	}
 
 	projectContainerRecovery(ctx)
@@ -628,7 +698,7 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	name := fmt.Sprintf("contracts-%d", time.Now().UnixMilli())
 	runner, err := runners.NewDockerEnvironment(ctx, image, tmpDir, name)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create docker runner: %w", err)
+		return nil, nil, fmt.Errorf("cannot create docker runner: %w", err)
 	}
 	// A descriptor-set container holds no state worth preserving across runs: it
 	// is created, driven once and shut down in the defer below. Marking it
@@ -654,41 +724,137 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	}()
 
 	if err = runner.Init(ctx); err != nil {
-		return nil, fmt.Errorf("cannot init runner: %w", err)
+		return nil, nil, fmt.Errorf("cannot init runner: %w", err)
 	}
 
 	depProc, err := runner.NewProcess("buf", "dep", "update")
 	if err != nil {
-		return nil, fmt.Errorf("cannot create process: %w", err)
+		return nil, nil, fmt.Errorf("cannot create process: %w", err)
 	}
 	if err = depProc.Run(ctx); err != nil {
-		return nil, fmt.Errorf("cannot update buf dependencies: %w", err)
+		return nil, nil, fmt.Errorf("cannot update buf dependencies: %w", err)
 	}
 
 	const descriptorFile = ".codefly-contract.binpb"
 	buildProc, err := runner.NewProcess("buf", "build", "--as-file-descriptor-set", "-o", "/workspace/"+descriptorFile)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create process: %w", err)
+		return nil, nil, fmt.Errorf("cannot create process: %w", err)
 	}
 	if err = buildProc.Run(ctx); err != nil {
-		return nil, fmt.Errorf("cannot build descriptor set: %w", err)
+		return nil, nil, fmt.Errorf("cannot build descriptor set: %w", err)
 	}
 
-	return os.ReadFile(filepath.Join(tmpDir, descriptorFile))
+	descriptor, err := os.ReadFile(filepath.Join(tmpDir, descriptorFile))
+	if err != nil || !listSources {
+		return descriptor, nil, err
+	}
+	lsProc, err := runner.NewProcess("buf", "ls-files", "--format", "json")
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot create process: %w", err)
+	}
+	stdout, err := lsProc.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read buf ls-files: %w", err)
+	}
+	if err = lsProc.Start(ctx); err != nil {
+		return nil, nil, fmt.Errorf("cannot list proto sources: %w", err)
+	}
+	listing, readErr := io.ReadAll(stdout)
+	if err = lsProc.Wait(ctx); err != nil {
+		return nil, nil, fmt.Errorf("cannot list proto sources: %w", err)
+	}
+	if readErr != nil {
+		return nil, nil, fmt.Errorf("cannot read buf ls-files: %w", readErr)
+	}
+	sources, err := protoSourcesFromListing(tmpDir, listing)
+	return descriptor, sources, err
+}
+
+// bufListedFile is one line of `buf ls-files --format json`.
+type bufListedFile struct {
+	Path       string `json:"path"`
+	ImportPath string `json:"import_path"`
+	IsImport   bool   `json:"is_import"`
+}
+
+// protoSourcesFromListing reads every file buf listed, from its path under
+// root, as a Source named by its import path — the name every importer spells
+// and the descriptor set records. Files buf lists only as imports are not
+// sources.
+func protoSourcesFromListing(root string, listing []byte) ([]proto.Source, error) {
+	var sources []proto.Source
+	decoder := json.NewDecoder(bytes.NewReader(listing))
+	for decoder.More() {
+		var file bufListedFile
+		if err := decoder.Decode(&file); err != nil {
+			return nil, fmt.Errorf("cannot parse buf ls-files: %w", err)
+		}
+		if file.IsImport {
+			continue
+		}
+		if file.Path == "" || file.ImportPath == "" || !filepath.IsLocal(filepath.FromSlash(file.Path)) {
+			return nil, fmt.Errorf("buf ls-files listed an unusable file %q (%q)", file.Path, file.ImportPath)
+		}
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file.Path))) //nolint:gosec // a local path buf listed under root
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, proto.Source{Path: file.ImportPath, Content: content})
+	}
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("buf lists no .proto files to compile")
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
+	return sources, nil
 }
 
 // copyTree copies the file tree rooted at src into dst, creating dst as
-// needed.
+// needed. A symlink is copied as what it points at, so a symlinked module
+// folder reaches buf in the container, where the link's target is not mounted,
+// and the published contract's proto tree is self-contained. A linked folder
+// may live outside src (a module shared between services is the reason to link
+// one), but a link to a folder that holds it, or to one already being copied,
+// is a loop and is refused by name.
 func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, entry os.DirEntry, walkErr error) error {
+	root, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	return copyResolvedTree(root, dst, []string{root})
+}
+
+// copyResolvedTree copies root, a directory with no symlink in its path, into
+// dst. copying holds every resolved folder whose copy is in progress, outermost
+// first and root last.
+func copyResolvedTree(root, dst string, copying []string) error {
+	return filepath.WalkDir(root, func(p string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(src, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
+		if entry.Type()&os.ModeSymlink != 0 {
+			info, statErr := os.Stat(p)
+			if statErr != nil {
+				return statErr
+			}
+			if info.IsDir() {
+				resolved, linkErr := filepath.EvalSymlinks(p)
+				if linkErr != nil {
+					return linkErr
+				}
+				// WalkDir follows no link, so p's folder is already resolved.
+				for _, held := range append([]string{filepath.Dir(p)}, copying...) {
+					if folderHolds(resolved, held) {
+						return fmt.Errorf("symlink %s points at %s, which holds it: a looping link cannot be copied", p, resolved)
+					}
+				}
+				return copyResolvedTree(resolved, target, append(copying[:len(copying):len(copying)], resolved))
+			}
+		}
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
@@ -698,6 +864,12 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(target, data, 0o644) //nolint:gosec
 	})
+}
+
+// folderHolds reports whether dir is folder or lies beneath it.
+func folderHolds(folder, dir string) bool {
+	rel, err := filepath.Rel(folder, dir)
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // runContractsCheck regenerates contracts into a throwaway directory and
@@ -717,7 +889,7 @@ func runContractsCheck(ctx context.Context, workspace *resources.Workspace, modu
 		return err
 	}
 
-	diffs, err := diffTrees(tempDir, output)
+	diffs, err := generators.DiffTrees(tempDir, output)
 	if err != nil {
 		return err
 	}
@@ -730,71 +902,6 @@ func runContractsCheck(ctx context.Context, workspace *resources.Workspace, modu
 		cli.Info("  %s", d)
 	}
 	return fmt.Errorf("generated contracts differ from %s (%d file(s)); run `codefly generate contracts` to update", output, len(diffs))
-}
-
-// diffTrees returns the slash-separated, sorted set of relative paths whose
-// content (or presence) differs between the two directory trees.
-func diffTrees(generated, existing string) ([]string, error) {
-	generatedFiles, err := listRelativeFiles(generated)
-	if err != nil {
-		return nil, err
-	}
-	existingFiles, err := listRelativeFiles(existing)
-	if err != nil {
-		return nil, err
-	}
-
-	seen := map[string]struct{}{}
-	for f := range generatedFiles {
-		seen[f] = struct{}{}
-	}
-	for f := range existingFiles {
-		seen[f] = struct{}{}
-	}
-
-	var diffs []string
-	for f := range seen {
-		a, okA := generatedFiles[f]
-		b, okB := existingFiles[f]
-		if okA != okB || !bytes.Equal(a, b) {
-			diffs = append(diffs, f)
-		}
-	}
-	sort.Strings(diffs)
-	return diffs, nil
-}
-
-func listRelativeFiles(root string) (map[string][]byte, error) {
-	files := map[string][]byte{}
-	info, err := os.Stat(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return files, nil
-		}
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", root)
-	}
-	err = filepath.WalkDir(root, func(p string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil {
-			return relErr
-		}
-		data, readErr := os.ReadFile(p) //nolint:gosec // p is walked from root, a generated-contracts directory this command owns
-		if readErr != nil {
-			return readErr
-		}
-		files[filepath.ToSlash(rel)] = data
-		return nil
-	})
-	return files, err
 }
 
 // updateManifestFile rewrites module.package.codefly.yaml's
@@ -934,4 +1041,18 @@ func appendScalarField(node *yaml.Node, key, value string) {
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: value},
 	)
+}
+
+// contractRoutes lists a REST endpoint's routes for its contract entry. A
+// route's path is already the full path (core's loader holds every route to
+// start with its group's path), so the group's path is never prepended: doing
+// so wrote "/v1/x/y/v1/x/y" into every catalog.
+func contractRoutes(groups []*basev0.RestRouteGroup) []composition.APIContractRoute {
+	var routes []composition.APIContractRoute
+	for _, group := range groups {
+		for _, route := range group.Routes {
+			routes = append(routes, composition.APIContractRoute{Method: route.Method.String(), Path: route.Path})
+		}
+	}
+	return routes
 }

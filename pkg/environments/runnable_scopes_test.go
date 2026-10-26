@@ -117,3 +117,27 @@ func TestNullScopeSelectionIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// An environment declares where its prepared runnable calls are sent, so the
+// bindings it prepares do not depend on a flag retyped per invocation. The
+// declaration is installation input: it is never agent runtime configuration.
+func TestAnEnvironmentDeclaresItsRunnableCallEndpoint(t *testing.T) {
+	var workspace resources.Workspace
+	require.NoError(t, yaml.Unmarshal([]byte("name: product\nenvironments:\n  - name: local\n    runnable-call-endpoint: authority/hop/http\n"), &workspace))
+	env, err := environments.Select(&workspace, "local")
+	require.NoError(t, err)
+	require.Equal(t, "authority/hop/http", env.RunnableCallEndpoint)
+	require.Empty(t, env.Runtime().Extensions, "installation input is not agent runtime configuration")
+	resource, err := env.Resource()
+	require.NoError(t, err)
+	reloaded, err := environments.FromRuntime(resource)
+	require.NoError(t, err)
+	require.Equal(t, "authority/hop/http", reloaded.RunnableCallEndpoint)
+
+	for _, bad := range []string{"authority/hop", "Authority/hop/http", "authority/hop/http/extra"} {
+		var malformed resources.Workspace
+		require.NoError(t, yaml.Unmarshal([]byte("name: product\nenvironments:\n  - name: local\n    runnable-call-endpoint: "+bad+"\n"), &malformed))
+		_, err := environments.Select(&malformed, "local")
+		require.ErrorContains(t, err, "runnable-call-endpoint", bad)
+	}
+}

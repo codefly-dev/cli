@@ -15,7 +15,7 @@ import (
 // Signer is core's custody boundary. Core owns envelope construction and verification.
 type Signer = solutionhost.Signer
 
-var ErrNoIdentity = errors.New("no delivery signing key: release publishing requires VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY")
+var ErrNoIdentity = errors.New("no delivery signing key: release publishing requires VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY (Vault Transit custody) or CODEFLY_RELEASE_KMS_KEY (Cloud KMS custody)")
 var ErrSignature = errors.New("delivery document signature verification failed")
 
 // Unavailable records why this process cannot sign.
@@ -59,8 +59,8 @@ func PublicKeyPEM(signer Signer) (string, error) {
 type SelfCheck func(ctx context.Context, envelope, payload []byte) error
 
 // KeyCheck refuses a custody key outside the environment's declaration before
-// signing, and holds what was signed to the host's own verifier by schema: a
-// presence, an authority or an endpoint delivery.
+// signing, and holds what was signed to the host's own verifier: a module
+// manifest or a module envelope, its canonical bytes and its ownership domain.
 func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted ...string) (SelfCheck, error) {
 	if signer == nil {
 		return nil, ErrNoIdentity
@@ -91,21 +91,14 @@ func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted 
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrSignature, err)
 		}
-		// Delivered verifies canonical content and ownership as well as the envelope.
-		var schema struct {
-			Schema string `json:"schema"`
-		}
-		if err = json.Unmarshal(payload, &schema); err == nil {
-			switch schema.Schema {
-			case solutionhost.SchemaAuthorityV1:
-				_, err = solutionhost.VerifyDeliveredAuthority(ctx, carrier, verifier)
-			case solutionhost.EndpointDeliverySchema:
-				// The endpoints bound to a presence: the same pinned-key
-				// verification, canonical content and ownership domain.
-				_, err = solutionhost.VerifyDeliveredEndpoints(ctx, carrier, verifier)
-			default:
-				_, err = solutionhost.VerifyDelivered(ctx, carrier, verifier)
-			}
+		// Delivered verifies canonical content and ownership as well as the
+		// envelope. A module envelope is verified as its host verifies it,
+		// which admits only a release key: a key pinned here as a person's
+		// fails the check rather than produce a carrier the host refuses.
+		if solutionhost.SchemaOf(payload) == solutionhost.SchemaModuleEnvelopeV1 {
+			_, err = solutionhost.VerifyDeliveredEnvelope(ctx, carrier, verifier)
+		} else {
+			_, err = solutionhost.VerifyDelivered(ctx, carrier, verifier)
 		}
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrSignature, err)

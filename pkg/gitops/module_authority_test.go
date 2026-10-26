@@ -9,6 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +41,6 @@ environments:
       audience: mint
       module_audience: module-capabilities
       trust_domain: local.example
-      envelope_revision: 1
       delivery: edge/gateway/rest
       gateway: edge/gateway
 `,
@@ -63,9 +63,9 @@ environments:
 
 // The principal module-authority hands a service is its mesh principal: the
 // SPIFFE ID the cell's mesh issues to the ServiceAccount the rendered pod
-// runs as, the same one its presence names. Nothing is issued or mounted for
+// runs as, the same one its module manifest names. Nothing is issued or mounted for
 // it, and the internal token aliases the existing internal-auth secret.
-func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testing.T) {
+func TestModuleAuthorityMatchesTheDeliveredManifestAndReusesInternalSecret(t *testing.T) {
 	workspace, env := hostComposition(t)
 	env.ServiceSecrets = storeEnvironment().ServiceSecrets
 	// A known value exists in the composition, but rendering must never copy it.
@@ -85,11 +85,11 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 			opts := solutionRenderOptions(filepath.Join(t.TempDir(), "rendered"))
 			opts.Module, opts.Namespace, opts.Host = module, scope.Namespace, env.Host
 			opts.Units = promotableServiceGraph(module, []string{name})
-			instance := &opts.SolutionInstances[0]
-			instance.Name, instance.Alias = module, module
-			instance.Units = []SolutionArtifactUnit{{Name: name, Path: "services/" + name, Subject: "workload@example.test"}}
+			instance := opts.Instance
+			instance.Name = module
+			instance.Identities = []IdentityWorkload{{Service: name, Path: "services/" + name}}
 			instance.Endpoints = nil
-			instance.Modules[0].Module = module
+			instance.Authority = &solutionhost.Authority{Principal: module}
 			result, err := RenderOwnedTree(t.Context(), opts, func(ctx context.Context, stage string) error {
 				unit := filepath.Join(stage, "services", name)
 				writeConsumerTree(t, unit, env.Name, scope.Namespace, name, "database.example:5432")
@@ -97,18 +97,20 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 				return projectServiceConfiguration(ctx, testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{Secrets: map[string]string{storedSecretKey: storedSecretKey}})
 			})
 			require.NoError(t, err)
-			presence := deliveredBinding(t, result.Path, "example.prod."+module)
-			require.Len(t, presence.Workloads, 1)
+			manifest := deliveredModuleManifest(t, result.Path, "example.prod."+module)
+			require.Len(t, manifest.Workloads, 1)
 			rendered := buildOverlay(t, filepath.Join(result.Path, "services", name), env.Name)
 			data := configMapData(t, rendered)
-			require.Equal(t, presence.Workloads[0].Identity.SPIFFEID, data[authorityPrefix+"PRINCIPAL"])
+			// A cell's principal is the mesh identity of the declared workload:
+			// its module's delivered namespace (<delivery>-<environment>-<module>,
+			// handbook decisions/a-delivered-namespace-is-named-by-its-delivery-environment-and-module.md),
+			// as the account named after the service.
 			require.Equal(t, "spiffe://local.example/ns/example-"+module+"/sa/"+name, data[authorityPrefix+"PRINCIPAL"])
 			// The host's name for a module capability's audience, the same for
 			// every module, and never the module's own name.
 			require.Equal(t, env.Host.ModuleAudience, data[authorityPrefix+"AUDIENCE"])
 			require.Equal(t, "module-capabilities", data[authorityPrefix+"AUDIENCE"])
-			require.Equal(t, module, presence.Modules[0].Module)
-			require.Equal(t, presence.Workloads[0].Identity.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
+			require.Equal(t, module, manifest.Authority.Principal)
 			require.Equal(t, env.Host.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
 			principals[module] = data[authorityPrefix+"PRINCIPAL"].(string)
 			variables := containerEnvironment(t, rendered)
@@ -197,46 +199,50 @@ func TestModuleAuthorityRequiresAnExplicitConsumerAndRefusesOverlayOverrides(t *
 }
 
 func TestRenderRefusesAuthoredCompositionGroups(t *testing.T) {
-	for _, location := range []string{"configurations/prod", "modules/app/configurations/prod", "ambiguous", "empty"} {
-		for _, extension := range []string{".env", ".secret.env"} {
-			t.Run(location+extension, func(t *testing.T) {
-				workspace, env := hostComposition(t)
-				// A composed module's own workspace is its configuration boundary.
-				for name, service := range map[string]string{"app": "api", "edge": "gateway"} {
-					path := filepath.Join(workspace.Dir(), "modules", name, resources.WorkspaceConfigurationName)
-					require.NoError(t, os.WriteFile(path, []byte("name: "+name+"\nlayout: flat\n"), 0o600))
-					// Even an unconsumed file is refused, before any build starts.
-					path = filepath.Join(workspace.Dir(), "modules", name, "services", service, resources.ServiceConfigurationName)
-					require.NoError(t, os.WriteFile(path, []byte(hostedServiceYAML(service)), 0o600))
-				}
-				var err error
-				workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
-				require.NoError(t, err)
-				locations := []string{location}
-				if location == "ambiguous" {
-					locations = []string{"modules/app/configurations/prod", "modules/edge/configurations/prod"}
-				} else if location == "empty" {
-					locations = []string{"configurations/prod"}
-				}
-				for _, directory := range locations {
-					path := filepath.Join(workspace.Dir(), directory, "module-authority"+extension)
-					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-					body := "PRINCIPAL=" + directory + "\n"
-					if location == "empty" {
-						body = ""
+	// egress is generated from the environment's egress declaration: an
+	// authored copy of it is the hand-kept list it replaces.
+	for _, group := range []string{"module-authority", environments.EgressConfiguration} {
+		for _, location := range []string{"configurations/prod", "modules/app/configurations/prod", "ambiguous", "empty"} {
+			for _, extension := range []string{".env", ".secret.env"} {
+				t.Run(group+"/"+location+extension, func(t *testing.T) {
+					workspace, env := hostComposition(t)
+					// A composed module's own workspace is its configuration boundary.
+					for name, service := range map[string]string{"app": "api", "edge": "gateway"} {
+						path := filepath.Join(workspace.Dir(), "modules", name, resources.WorkspaceConfigurationName)
+						require.NoError(t, os.WriteFile(path, []byte("name: "+name+"\nlayout: flat\n"), 0o600))
+						// Even an unconsumed file is refused, before any build starts.
+						path = filepath.Join(workspace.Dir(), "modules", name, "services", service, resources.ServiceConfigurationName)
+						require.NoError(t, os.WriteFile(path, []byte(hostedServiceYAML(service)), 0o600))
 					}
-					require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
-				}
-				module, err := workspace.LoadModuleFromName(t.Context(), "app")
-				require.NoError(t, err)
-				_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
-				require.ErrorContains(t, err, "owned by the render")
-				require.False(t, strings.Contains(err.Error(), "registry"), "refuse before builds")
-				service, err := module.LoadServiceFromName(t.Context(), "api")
-				require.NoError(t, err)
-				_, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
-				require.ErrorContains(t, err, "owned by the render")
-			})
+					var err error
+					workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+					require.NoError(t, err)
+					locations := []string{location}
+					if location == "ambiguous" {
+						locations = []string{"modules/app/configurations/prod", "modules/edge/configurations/prod"}
+					} else if location == "empty" {
+						locations = []string{"configurations/prod"}
+					}
+					for _, directory := range locations {
+						path := filepath.Join(workspace.Dir(), directory, group+extension)
+						require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+						body := "PRINCIPAL=" + directory + "\n"
+						if location == "empty" {
+							body = ""
+						}
+						require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+					}
+					module, err := workspace.LoadModuleFromName(t.Context(), "app")
+					require.NoError(t, err)
+					_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
+					require.ErrorContains(t, err, "owned by the render")
+					require.False(t, strings.Contains(err.Error(), "registry"), "refuse before builds")
+					service, err := module.LoadServiceFromName(t.Context(), "api")
+					require.NoError(t, err)
+					_, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
+					require.ErrorContains(t, err, "owned by the render")
+				})
+			}
 		}
 	}
 }

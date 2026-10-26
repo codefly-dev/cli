@@ -2,8 +2,12 @@ package generate
 
 import (
 	"context"
+	"fmt"
+	googleproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/composition"
@@ -134,4 +138,70 @@ func TestContractSurfaceConfigurationIsCLIOwnedAndStrict(t *testing.T) {
 	service := &resources.Service{Name: "owner", Spec: map[string]any{"api-contract-surfaces": "ignored-agent-setting.json"}}
 	_, err := loadContractSurfaces(service, []*basev0.Endpoint{{Name: "grpc", Api: "grpc"}, {Name: "connect", Api: "connect"}}, "")
 	require.ErrorContains(t, err, contractSurfacesConfigFile, "agent settings are not CLI configuration")
+}
+
+// An implementing listener serves its own API and several host interfaces. Its
+// generated inventory, rather than a proto package filter, defines publication.
+func TestContractSurfacePublishesImplementedInterfacePackages(t *testing.T) {
+	ctx := context.Background()
+	service := &resources.Service{Name: "accounts"}
+	module := &resources.Module{Name: "saas"}
+	module.WithDir(t.TempDir())
+	service.WithDir(filepath.Join(module.Dir(), "services/accounts"))
+	var files []*descriptorpb.FileDescriptorProto
+	var surface []composition.APIContractService
+	for _, entry := range []struct {
+		pkg, name string
+		count     int
+	}{
+		{"saas.accounts.v1", "Accounts", 1},
+		{"host.authority.v1", "AuthorityService", 7},
+		{"host.installation.v1", "InstallationService", 3},
+		{"host.session.v1", "SessionService", 3},
+		{"host.composition.v1", "CompositionService", 1},
+		{"foreign.client.v1", "NotServed", 1},
+	} {
+		f := &descriptorpb.FileDescriptorProto{Name: googleproto.String(strings.ReplaceAll(entry.pkg, ".", "/") + "/api.proto"), Package: googleproto.String(entry.pkg),
+			Service: []*descriptorpb.ServiceDescriptorProto{{Name: googleproto.String(entry.name)}},
+		}
+		for i := 0; i < entry.count; i++ {
+			f.Service[0].Method = append(f.Service[0].Method, &descriptorpb.MethodDescriptorProto{Name: googleproto.String(fmt.Sprintf("Call%d", i))})
+		}
+		files = append(files, f)
+		// Implemented schemas can be imports rather than physically owned files.
+		if strings.HasPrefix(entry.pkg, "saas.") || strings.HasPrefix(entry.pkg, "foreign.") {
+			writeFixtureFile(t, filepath.Join(service.Dir(), "proto", f.GetName()), []byte("// source snapshot\n"))
+		}
+		if entry.name != "NotServed" {
+			surface = append(surface, composition.ProtobufServices(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{f}}, entry.pkg)...)
+		}
+	}
+	set := &descriptorpb.FileDescriptorSet{File: files}
+	data, err := googleproto.Marshal(set)
+	require.NoError(t, err)
+	dir := filepath.Join(module.Dir(), "contracts/api/accounts/connect")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	endpoint := &basev0.Endpoint{Name: "connect", Api: "connect"}
+	entry, err := writeBuiltProtobufContract(ctx, module, service, endpoint, surface, dir, dir, data)
+	require.NoError(t, err)
+	require.Empty(t, entry.Package, "there is no single package; fullName carries each service's package")
+	require.Equal(t, surface, entry.Services)
+	methods, err := endpointProcedures(set, entry)
+	require.NoError(t, err)
+	require.Len(t, methods, 15, "own method plus all 14 implemented host procedures")
+	for _, method := range methods {
+		require.NotContains(t, method, "NotServed")
+	}
+	catalog := &composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: "codefly/saas", Version: "0.1.0", Endpoints: []composition.APIContractEndpoint{*entry}}
+	require.NoError(t, catalog.Validate())
+	encoded, err := catalog.CanonicalBytes()
+	require.NoError(t, err)
+	writeFixtureFile(t, filepath.Join(module.Dir(), composition.APIContractCatalogFileName), encoded)
+	loaded, err := composition.LoadAPIContractCatalog(module.Dir())
+	require.NoError(t, err)
+	require.Len(t, loaded.Endpoints[0].Services, 5)
+	// A typo or a method missing from the descriptor must still be a named refusal.
+	entry.Services[1].Procedures = append(entry.Services[1].Procedures, "/host.authority.v1.AuthorityService/Missing")
+	_, err = endpointProcedures(set, entry)
+	require.ErrorContains(t, err, "/host.authority.v1.AuthorityService/Missing")
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,14 +16,13 @@ import (
 
 // --- Delivery Jobs ---
 //
-// A delivery document declares; a delivery Job delivers. The documents a render
-// writes are desired state Argo keeps true in the cluster, and nothing more:
+// A module manifest declares; a delivery Job delivers. The manifest a render
+// writes is desired state Argo keeps true in the cluster, and nothing more:
 // the host learns of a generation when its delivery API is POSTed the signed
-// carrier, which is what these Jobs do. One presence Job per module tree, run
-// in the module's own namespace, POSTs every presence carrier the tree
-// delivers; one authority Job, run in the platform's authority namespace —
-// which only the delivery pipeline may create Jobs in — POSTs every authority
-// carrier.
+// carrier, which is what this Job does. One Job per module tree, run in the
+// module's own namespace — the namespace of the manifest's workloads, the one
+// the host authorizes the carrier in — as the `delivery` ServiceAccount,
+// POSTs every manifest carrier the tree delivers, a withdrawal included.
 //
 // The Jobs are Argo CD Sync hooks rather than tracked resources, on purpose. A
 // tracked Job is applied once and, being Complete, never re-synced: restore the
@@ -40,9 +40,8 @@ import (
 // express "after the host's delivery API is reachable", because the host is
 // another module's Application; so the Job retries a transport failure or a
 // 5xx with backoff until the API answers, inside its budget. What the wave
-// orders is narrower: the Job lives in the bindings (or authority)
-// Application beside the ConfigMaps it mounts and the ServiceAccount it runs
-// as, which sit at the default wave, and is annotated one wave later so it
+// orders is narrower: the Job lives in the module-manifests Application
+// beside the ConfigMaps it mounts and the ServiceAccount it runs as, which sit at the default wave, and is annotated one wave later so it
 // runs once they exist. Where a parent syncs the module's Applications by
 // wave, that Application lands beside the module's consumers (after its
 // bootstrap units) — neither waits for the other — except for the module
@@ -56,50 +55,62 @@ import (
 // rather than discovered when a solution never appears.
 
 const (
-	// deliveryImage is the image the delivery Jobs run: a digest-pinned curl.
-	// It is the second third-party image the render itself pins (remoteImage
-	// is the first), and it is pinned the same way, by digest, so that what a
-	// Job runs is what was reviewed. A codefly-owned delivery image would
-	// replace it; until one is published, the pinned digest is the honest
-	// record of what delivers.
-	deliveryImage = "docker.io/curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"
+	// deliveryImage is the image the delivery Jobs run: codefly's own base
+	// companion, published by codefly on ghcr.io and pinned by digest (the
+	// multi-arch index of tag 0.0.4), so that what a Job runs is what was
+	// reviewed. It carries everything deliveryScript calls — /bin/sh, curl,
+	// date, basename, cat, tail, sed, printf, sleep — and runs as the
+	// non-root user on a read-only root filesystem. A delivery Job never
+	// pulls from Docker Hub: a cell's nodes are not promised a route to it,
+	// and its anonymous pulls are rate-limited. The cell file declares this
+	// same image (cellDelivery), so moving the digest changes every cell file
+	// and the cell must be re-rendered and published with, or before, the
+	// first Job that runs the new one.
+	deliveryImage = "ghcr.io/codefly-dev/codefly@sha256:8fcaaea34622eb1743a5b755c7c6540a0be245cb37c8b2188732f45c8207a833"
 
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"
 
-	// deliveryServiceAccount is the ServiceAccount a delivery Job runs as. In a
-	// module's namespace the render creates it; in the authority namespace the
-	// platform does, because that namespace is not the module's to populate.
+	// deliveryServiceAccount is the ServiceAccount a delivery Job runs as,
+	// which the render creates in the module's namespace: the host authorizes
+	// a carrier whose account is `delivery` in the namespace of the
+	// manifest's workloads.
 	deliveryServiceAccount = "delivery"
+	// deliveryServiceAccountFile is the account's file in a delivery overlay.
+	deliveryServiceAccountFile = "delivery-service-account.yaml"
 
-	// authorityNamespace is the namespace authority Jobs run in. The platform
-	// provisions it so that only the delivery pipeline may create Jobs there
-	// (the writer-trust decision: signed AND isolated).
-	authorityNamespace = "platform-authority"
+	// manifestDeliveryPath is the host's manifest delivery route, relative to
+	// the delivery endpoint the environment names (envelopeDeliveryPath is the
+	// envelope's).
+	manifestDeliveryPath = "/platform/_delivery/manifest"
 
-	// presenceDeliveryPath and authorityDeliveryPath are the host's delivery API
-	// routes, relative to the delivery endpoint the environment names.
-	presenceDeliveryPath  = "/platform/_delivery/presence"
-	authorityDeliveryPath = "/platform/_delivery/authority"
-	endpointsDeliveryPath = "/platform/_delivery/endpoints"
-
-	// presenceCarrierKey and authorityCarrierKey are the ConfigMap data keys
-	// holding the signed carrier of each document type: the canonical bytes that
-	// were signed, verbatim, beside the DSSE envelope over them. The carrier is
-	// JSON under a YAML extension because a JSON object is valid YAML and a YAML
-	// emitter would fold the long scalar the signature covers.
-	presenceCarrierKey  = "solution-host-binding.signed.codefly.yaml"
-	authorityCarrierKey = "solution-authority.signed.codefly.yaml"
-	// endpointCarrierKey holds, beside a presence's signed carrier, the
-	// signed endpoint delivery bound to that presence generation: the
-	// in-cluster carriers of the endpoints it names, delivered after it.
-	endpointCarrierKey = "endpoint-delivery.signed.codefly.yaml"
-
-	// deliveryLabel marks the objects that deliver documents, by document type.
-	deliveryLabel     = "codefly.dev/delivery"
-	deliveryPresence  = "presence"
-	deliveryAuthority = "authority"
-	deliveryEndpoints = "endpoints"
+	// deliveryLabel marks the objects that deliver documents, and
+	// deliveryCarrierValue is its one value: it names the CARRIER — the pod a
+	// cell admits per namespace by this exact label, the account it runs as —
+	// never a document kind, so the cell file's selector and every Job's pod
+	// are rendered from this one constant whatever the Job delivers.
+	// deliveredDocumentLabel, on the Job alone, names the kind it delivers:
+	// deliveryManifest for module manifests.
+	//
+	// The VALUE is a compatibility-bearing identifier, not a name to tidy. A
+	// cell turns each namespace's delivery selector into one entry of a CLOSED
+	// execution-admission set, matched on the exact label set, and a render
+	// regenerates the cell file whole while a Job moves only when its own
+	// module is published. So a renamed value flips every namespace's selector
+	// in one commit and leaves every not-yet-republished module's delivered
+	// pod matching no approved entry — refused by admission, its delivery sync
+	// failing, with nothing in the refusal naming the label. It stays
+	// "manifest" for that reason alone: kind-neutrality is expressed by
+	// deliveredDocumentLabel, which nothing selects on. Changing it means
+	// re-publishing every module in the environment in the same change that
+	// pins the new cell. The signed carrier is held in the
+	// manifest's ConfigMap under core's SignedFileName: JSON under a YAML
+	// extension, because a JSON object is valid YAML and a YAML emitter would
+	// fold the long scalar the signature covers.
+	deliveryLabel          = "codefly.dev/delivery"
+	deliveryCarrierValue   = "manifest"
+	deliveredDocumentLabel = "codefly.dev/delivered-document"
+	deliveryManifest       = "manifest"
 
 	deliveryDocumentsMount = "/delivery/documents"
 	deliveryIdentityMount  = "/var/run/secrets/codefly/delivery"
@@ -353,9 +364,39 @@ echo "delivered $delivered document(s) to $url in $round round(s), $refused refu
 [ "$refused" -eq 0 ]
 `
 
+// deliveryCarrier is the pod a delivery Job of one kind runs: the labels its
+// pods carry, the account it runs as, its one container and that container's
+// image. It is the ONE statement of the carrier: publish renders the Job from
+// it and the cell file declares the carrier from it (cellDelivery), so what a
+// cell admits is what the Job runs, without either reading the other back.
+type deliveryCarrier struct {
+	Kind           string
+	Labels         map[string]string
+	ServiceAccount string
+	Container      string
+	Image          string
+}
+
+// deliveryCarrierOf is the carrier every delivery Job runs, whatever document
+// it posts. A cell admits ONE carrier per namespace by its exact labels, so
+// the pod is labelled as the carrier and only the Job's own
+// deliveredDocumentLabel names the kind it delivers: an envelope Job in the
+// host's namespace runs the same admitted pod as that namespace's manifest
+// Job.
+func deliveryCarrierOf() deliveryCarrier {
+	return deliveryCarrier{
+		Kind:           kindJob,
+		Labels:         map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryCarrierValue},
+		ServiceAccount: deliveryServiceAccount,
+		Container:      deliveryContainerName,
+		Image:          deliveryImage,
+	}
+}
+
 // renderDeliveryJob writes the Job delivering documents to the host's delivery
-// route into the overlay directory, and returns the manifest's file name.
-func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path string, target *DeliveryTarget, documents []deliveryDocument) (string, error) {
+// route into the overlay directory, and returns the manifest's file name. The
+// pod it runs is deliveryCarrierOf(), and nothing else.
+func renderDeliveryJob(directory, name, namespace, kind, path string, target *DeliveryTarget, documents []deliveryDocument) (string, error) {
 	if len(documents) > deliveryDocumentBound {
 		return "", fmt.Errorf("the %s set carries %d documents and one delivery Job attempts at most %d within its budget (%d seconds, %d per request); the set does not shrink until the host acknowledges its tombstones, which the delivery API does not offer yet",
 			kind, len(documents), deliveryDocumentBound, deliveryBudgetSeconds, deliveryRequestSeconds)
@@ -375,12 +416,14 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			Items: []deliveryKeyToPath{{Key: document.Key, Path: document.Name}},
 		}})
 	}
-	labels := map[string]string{managedByLabel: managedByCodefly, deliveryLabel: kind}
+	carrier := deliveryCarrierOf()
+	jobLabels := maps.Clone(carrier.Labels)
+	jobLabels[deliveredDocumentLabel] = kind
 	job := deliveryJobManifest{
 		APIVersion: "batch/v1",
-		Kind:       kindJob,
+		Kind:       carrier.Kind,
 		Metadata: deliveryJobMetadata{
-			Name: name, Namespace: namespace, Labels: labels,
+			Name: name, Namespace: namespace, Labels: jobLabels,
 			Annotations: map[string]string{
 				argoHookAnnotation:     argoHookSync,
 				argoHookDeletePolicy:   argoHookBeforeHookCreation,
@@ -389,9 +432,9 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 		},
 		Spec: deliveryJobSpec{BackoffLimit: deliveryBackoffLimit, ActiveDeadlineSeconds: deliveryDeadlineSeconds},
 	}
-	job.Spec.Template.Metadata.Labels = labels
+	job.Spec.Template.Metadata.Labels = carrier.Labels
 	job.Spec.Template.Spec = deliveryPodSpec{
-		ServiceAccountName: serviceAccount,
+		ServiceAccountName: carrier.ServiceAccount,
 		// The default mount is the unscoped API token; the only token this pod
 		// needs is the one projected for the host's audience below.
 		AutomountServiceAccountToken: false,
@@ -401,8 +444,8 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 		},
 		Containers: []deliveryContainer{{
-			Name:    deliveryContainerName,
-			Image:   deliveryImage,
+			Name:    carrier.Container,
+			Image:   carrier.Image,
 			Command: []string{"/bin/sh", "-ec", deliveryScript},
 			Env: []deliveryEnv{
 				{Name: "DELIVERY_URL", Value: target.URL},
@@ -466,7 +509,7 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 		Kind:       kindServiceAccount,
 		Metadata: deliveryAccountMetadata{
 			Name: deliveryServiceAccount, Namespace: namespace,
-			Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryPresence},
+			Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryCarrierValue},
 		},
 		AutomountServiceAccountToken: false,
 	}
@@ -474,11 +517,10 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 	if err != nil {
 		return "", fmt.Errorf("encode delivery service account: %w", err)
 	}
-	const file = "delivery-service-account.yaml"
-	if err := tree.write(directory, file, body); err != nil {
+	if err := tree.write(directory, deliveryServiceAccountFile, body); err != nil {
 		return "", fmt.Errorf("write delivery service account: %w", err)
 	}
-	return file, nil
+	return deliveryServiceAccountFile, nil
 }
 
 // deliveryJobName names the Job that delivers one settled set: the kind, the
@@ -489,7 +531,7 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 // set is the same Job, which every sync RE-RUNS as a Sync hook: a re-sync
 // re-POSTs a generation the host answers "current" to. The environment keeps
 // two environments of one workspace on one cluster from replacing each other's
-// Job in the authority namespace, which they share.
+// Job when they share a namespace.
 func deliveryJobName(kind, module, environment string, carriers [][]byte) string {
 	sum := sha256.New()
 	for _, carrier := range carriers {

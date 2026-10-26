@@ -6,23 +6,30 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/runnables"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
 // ModuleAuthorityConfiguration requests per-workload authority from the render.
 const ModuleAuthorityConfiguration = "module-authority"
 
-// ArtifactCacheConfiguration requests, from a NATIVE run only, the root of the
-// workspace's artifact cache (ArtifactCacheRootKey): the digest-named files
-// the CLI retains and acquires, which a host's read-only native bundle source
-// reads a frontend bundle from by the digest the presence names. A cell's
-// render projects nothing for it, so in Kubernetes the value is absent and
-// the host's directory source stays refused there.
+// ArtifactCacheConfiguration is the render-owned group naming where a host
+// reads frontend bundles from, by the digest a signed module manifest names.
+// A NATIVE run hands ArtifactCacheRootKey, the workspace's artifact cache the
+// CLI retains bundles in; a deployed render hands ArtifactCacheRepositoryKey,
+// the one repository it publishes bundles to. A service receives at most one;
+// a render that publishes no bundles (a local k3d cluster) hands neither.
 const ArtifactCacheConfiguration = "artifact-cache"
 
-// ArtifactCacheRootKey is the one value of ArtifactCacheConfiguration: the
+// ArtifactCacheRootKey is the native value of ArtifactCacheConfiguration: the
 // absolute path of the cache directory.
 const ArtifactCacheRootKey = "ROOT"
+
+// ArtifactCacheRepositoryKey is the deployed value of
+// ArtifactCacheConfiguration: the OCI repository (registry host and path, no
+// tag or digest) the render publishes every frontend bundle to.
+const ArtifactCacheRepositoryKey = "REPOSITORY"
 
 // FederationConfiguration is the host's authored workspace configuration
 // group (its registration secrets live there, declared by the composition).
@@ -44,11 +51,28 @@ const (
 )
 
 // RenderOwnedWorkspaceConfiguration names the groups supplied per workload by
-// the render (or by the native run standing in for it). They are never
-// dependencies of the configuration manager and cannot be provided by
-// authored workspace configuration files.
+// the CLI rather than authored: by the render (or by the native run standing
+// in for it), and EgressConfiguration by every delivery path from the
+// environment's egress declaration. They are never dependencies of the
+// configuration manager and cannot be provided by authored workspace
+// configuration files.
 func RenderOwnedWorkspaceConfiguration(group string) bool {
-	return group == ModuleAuthorityConfiguration || group == ArtifactCacheConfiguration
+	return group == ModuleAuthorityConfiguration || group == ArtifactCacheConfiguration || group == EgressConfiguration
+}
+
+// OptionalWorkspaceConfiguration names the groups whose absence is itself an
+// answer. The CLI generates them, and generates nothing for an environment
+// that has nothing to put there: `codefly generate runnable-bindings` writes
+// no runnable-bindings file for an environment that prepares no runnable
+// binding. A service that declares such a group reads the keys it needs and
+// treats an absent one as not configured, so every path that resolves a
+// service's declared groups delivers nothing for one the workspace does not
+// provide, instead of refusing it as missing. A provided group is delivered
+// like any other, and one two composed modules define differently is still
+// refused. `codefly doctor workspace` judges the absence against what the
+// environment prepares.
+func OptionalWorkspaceConfiguration(group string) bool {
+	return group == runnables.RunnableBindingsGroup
 }
 
 // ValidateHostComposition checks what a host block asks of the composition: a
@@ -97,4 +121,30 @@ func ValidateHostComposition(ctx context.Context, workspace *resources.Workspace
 		}
 	}
 	return nil
+}
+
+// NativeHostFederation derives only the delivery host's public federation keys.
+// Registration secrets remain authored configuration. A container or cell render
+// does not use this native projection.
+func NativeHostFederation(host *EnvironmentHost, service *resources.Service) (*basev0.Configuration, error) {
+	if host == nil || service == nil || !slices.Contains(service.WorkspaceConfigurationDependencies, FederationConfiguration) {
+		return nil, nil
+	}
+	if !deliveryPattern.MatchString(host.Delivery) {
+		return nil, fmt.Errorf("host.delivery %q is not <module>/<service>/<endpoint>", host.Delivery)
+	}
+	module, name, _ := host.DeliveryEndpoint()
+	if resources.WithUnique(service).Unique() != resources.ServiceUnique(module, name) {
+		return nil, nil
+	}
+	if host.Coordinate == "" || host.Domain == "" {
+		return nil, fmt.Errorf("the delivery host requires host.coordinate and host.domain")
+	}
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+		Name: FederationConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
+			{Key: FederationHostCoordinateKey, Value: host.Coordinate},
+			{Key: FederationHostOwnershipDomainsKey, Value: host.Domain},
+			{Key: FederationHostTrustPolicyKey, Value: FederationHostTrustPolicyKeys},
+		},
+	}}}, nil
 }

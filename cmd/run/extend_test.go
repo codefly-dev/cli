@@ -1,14 +1,19 @@
 package run
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
+
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,15 +37,15 @@ func TestExtensionRefreshesGroupsWithoutAddingRoots(t *testing.T) {
 	require.NoError(t, err)
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	require.NoError(t, err)
-	cluster := &nativeCluster{workspace: workspace, env: env, identities: identities}
-	nativeClusterMu.Lock()
-	previous := nativeClusterActive
-	nativeClusterActive = cluster
-	nativeClusterMu.Unlock()
+	cluster := &launcher{workspace: workspace, env: env, identities: identities}
+	launcherMu.Lock()
+	previous := launcherActive
+	launcherActive = cluster
+	launcherMu.Unlock()
 	t.Cleanup(func() {
-		nativeClusterMu.Lock()
-		nativeClusterActive = previous
-		nativeClusterMu.Unlock()
+		launcherMu.Lock()
+		launcherActive = previous
+		launcherMu.Unlock()
 	})
 	t.Chdir(workspace.Dir())
 	baseline := extensionBaseline(ctx, workspace)
@@ -50,7 +55,7 @@ func TestExtensionRefreshesGroupsWithoutAddingRoots(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "Revised", group.Title)
 	require.Equal(t, []string{"model/model"}, flow.Roots())
-	require.Nil(t, cluster.authority, "refreshing declarations starts no replacement authority")
+	require.Nil(t, cluster.vouch, "refreshing declarations starts no replacement issuer")
 }
 
 // The roots a reload admits are the ones neither the run nor the composition
@@ -76,8 +81,10 @@ func TestGoneRootsAreTheDroppedOnesTheRunDidNotPin(t *testing.T) {
 	require.Nil(t, goneRoots(map[string]bool{}, running, running), "nothing dropped withdraws nothing")
 }
 
-// A stopped root has already left Flow.Roots when host delivery fails. A
-// subsequent refresh must still attempt that withdrawal, before any add.
+// A stopped root has already left Flow.Roots when its module's withdrawal
+// fails. The module stays pending, and a subsequent refresh attempts that
+// withdrawal again, with no gone root to name it; the stopped workload itself
+// is forgotten at once.
 func TestWithdrawalRetriesAfterTheRootHasLeftTheFlow(t *testing.T) {
 	ctx := t.Context()
 	workspace, env := writeHostedNativeWorkspace(t)
@@ -87,31 +94,83 @@ func TestWithdrawalRetriesAfterTheRootHasLeftTheFlow(t *testing.T) {
 	require.NoError(t, err)
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode)
 	require.NoError(t, err)
-	cluster := &nativeCluster{stateDir: t.TempDir(), documents: map[string]*gitops.NativeDocuments{"gone/backend": {}}, identities: map[string]gitops.NativeIdentity{"gone/backend": {Module: "gone"}}}
-	nativeClusterMu.Lock()
-	previous := nativeClusterActive
-	nativeClusterActive = cluster
-	nativeClusterMu.Unlock()
-	t.Cleanup(func() { nativeClusterMu.Lock(); nativeClusterActive = previous; nativeClusterMu.Unlock() })
+	host := *env.Host
+	host.Gateway = "model/model"
+	hosted := *env
+	hosted.Host = &host
+	delivered := &solutionhost.ModuleManifest{
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.gone", Alias: "gone", Kind: solutionhost.KindModule, Generation: 1,
+		Host: solutionhost.HostTarget{Coordinate: host.Coordinate, Domain: host.Domain}, Release: solutionhost.Release{Publisher: "acme", Name: "gone", Version: "1.0.0"},
+		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend"}},
+	}
+	cluster := &launcher{
+		stateDir: t.TempDir(), env: &hosted, flow: flow, workspace: workspace,
+		identities:         map[string]gitops.NativeIdentity{"gone/backend": {Module: "gone", Service: "backend"}},
+		running:            map[string]bool{"gone/backend": true},
+		delivered:          map[string]*solutionhost.ModuleManifest{"gone": delivered},
+		pendingWithdrawals: map[string]bool{},
+	}
+	launcherMu.Lock()
+	previous := launcherActive
+	launcherActive = cluster
+	launcherMu.Unlock()
+	t.Cleanup(func() { launcherMu.Lock(); launcherActive = previous; launcherMu.Unlock() })
 	t.Chdir(workspace.Dir())
-	_, err = cluster.withdraw(ctx, []string{"gone/backend"})
-	require.ErrorContains(t, err, "nothing was delivered")
+
+	withdrawn, err := cluster.withdraw(ctx, []string{"gone/backend"})
+	require.Error(t, err, "the host's delivery endpoint is not resolved in this run")
+	require.Empty(t, withdrawn)
+	require.NotContains(t, cluster.identities, "gone/backend", "the stopped workload is forgotten")
+	require.Empty(t, cluster.startedIdentities("gone"))
+	require.True(t, cluster.pendingWithdrawals["gone"], "the module's withdrawal is retained for the next refresh")
+	require.Same(t, delivered, cluster.delivered["gone"], "nothing was delivered in its place")
+
 	require.NotContains(t, flow.Roots(), "gone/backend")
-	require.ErrorContains(t, withdrawDroppedRoots(ctx, flow, pinnedRoots(flow)), "nothing was delivered")
-	require.Contains(t, cluster.identities, "gone/backend", "failed withdrawal retains delivery context")
-	// An undelivered workload needs no host tombstone and is forgotten. That
-	// successful outcome also clears the pending retry.
-	delete(cluster.documents, "gone/backend")
+	require.Error(t, withdrawDroppedRoots(ctx, flow, pinnedRoots(flow)), "a refresh with no gone root retries the pending withdrawal")
+	// A module this run never delivered has nothing to withdraw: the retry
+	// succeeds and clears the pending withdrawal.
+	delete(cluster.delivered, "gone")
 	require.NoError(t, withdrawDroppedRoots(ctx, flow, pinnedRoots(flow)))
-	require.NotContains(t, cluster.identities, "gone/backend")
 	require.Empty(t, cluster.pendingWithdrawals)
 }
 
-func TestPendingWithdrawalBlocksHotReloadBeforeChangingTheEnvelope(t *testing.T) {
-	cluster := &nativeCluster{pendingWithdrawals: map[string]bool{"removed/backend": true}}
-	err := cluster.deliver(t.Context(), "other/backend", gitops.NativeIdentity{}, nil)
-	require.ErrorContains(t, err, "delivery waits for pending withdrawals")
-	require.Empty(t, cluster.documents)
-	require.Empty(t, cluster.builds)
-	require.Nil(t, cluster.envelope)
+func TestRefreshPreflightKeepsBaselineRootsOutAndPrecedesAdmission(t *testing.T) {
+	ctx := t.Context()
+	workspace, env := writeHostedNativeWorkspace(t)
+	module, err := workspace.LoadModuleFromName(ctx, "model")
+	require.NoError(t, err)
+	service, err := module.LoadServiceFromName(ctx, "model")
+	require.NoError(t, err)
+	refusal := errors.New("invalid refreshed permissions")
+	reject := false
+	checks := 0
+	check := func(_ context.Context, selected *resources.Workspace, _ *environments.Environment) error {
+		checks++
+		for _, ref := range selected.Modules {
+			require.NotEqual(t, "ledger", ref.Name, "baseline-only roots must stay outside this run")
+		}
+		if reject {
+			return refusal
+		}
+		return nil
+	}
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode, orchestration.WithRunModuleClosure("model"), orchestration.WithCompositionCheck(check))
+	require.NoError(t, err)
+	baseline := extensionBaseline(ctx, workspace)
+	cluster := &launcher{workspace: workspace, env: env}
+	launcherMu.Lock()
+	previous := launcherActive
+	launcherActive = cluster
+	launcherMu.Unlock()
+	t.Cleanup(func() { launcherMu.Lock(); launcherActive = previous; launcherMu.Unlock() })
+	t.Chdir(workspace.Dir())
+	reject = true
+	require.ErrorIs(t, extendRunningWorkspace(ctx, flow, baseline), refusal, "even a no-new-root refresh is checked")
+	require.Equal(t, 2, checks)
+	require.Same(t, workspace, cluster.workspace, "admission did not change the launcher snapshot")
+	composeModule(t, workspace, "newcomer")
+	require.ErrorIs(t, extendRunningWorkspace(ctx, flow, baseline), refusal)
+	require.Equal(t, 3, checks)
+	require.Same(t, workspace, cluster.workspace)
+	require.Equal(t, []string{"model/model"}, flow.Roots())
 }

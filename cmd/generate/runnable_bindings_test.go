@@ -19,8 +19,15 @@ import (
 
 func resetRunnableBindingsFlags(t *testing.T) {
 	t.Helper()
-	runnableBindingsEnv, runnableBindingsCheck = "local", false
-	t.Cleanup(func() { runnableBindingsEnv, runnableBindingsCheck = "local", false })
+	reset := func() {
+		runnableBindingsEnv, runnableBindingsCheck = "local", false
+		runnableBindingsNamingScope, runnableBindingsCallEndpoint = "", ""
+		for _, name := range []string{"naming-scope", "call-endpoint"} {
+			RunnableBindingsCmd.Flags().Lookup(name).Changed = false
+		}
+	}
+	reset()
+	t.Cleanup(reset)
 }
 
 // Every derived operation is prepared as the tiny binding a caller installs:

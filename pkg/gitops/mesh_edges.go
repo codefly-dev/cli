@@ -24,7 +24,7 @@ import (
 // endpoint each service declares, on which port, and who the composition
 // declares reaches it. So with the rendered tree it delivers those edges as
 // data, in the render record at the tree root (.codefly-render.json,
-// `meshEdges`), documented in docs/solution-host-bindings.md and versioned by
+// `meshEdges`), documented in docs/module-manifests.md and versioned by
 // MeshEdgesSchemaVersion. Each module's tree carries the edges INTO that
 // module's workloads; the applier reads every tree it applies.
 //
@@ -42,7 +42,16 @@ import (
 //     principal (every module mints on it);
 //   - a public endpoint — the gateway's `rest` — admits the cell's ingress
 //     gateway, whose principal is the cell's to name, so it is marked rather
-//     than named.
+//     than named;
+//   - the endpoint a module's DERIVED OPERATION is called on (the owner's
+//     served connect endpoint, or the published REST one) admits every
+//     service that installs prepared runnable bindings — the services
+//     declaring the `runnable-bindings` workspace-configuration group. An
+//     executor (the runtime) calls owners it does not and must not declare;
+//     the composition prepares those calls (`codefly generate
+//     runnable-bindings`), so the composition is where the edge comes from.
+//     Without it the owner's connect endpoint had no consumer at all and every
+//     fan-out operation on a cell settled OWNER_UNAVAILABLE at the mesh.
 //
 // One source is not in the composition at all: a service whose render includes
 // a workload that does not serve its endpoints — an agent's bootstrap Job,
@@ -83,7 +92,7 @@ type MeshEdges struct {
 type MeshEdge struct {
 	// Module, Service and Namespace name the destination workload; Account is
 	// the ServiceAccount it runs as and Principal that account's mesh
-	// principal, the one its presence names.
+	// principal, the one its module manifest names.
 	Module    string `json:"module"`
 	Service   string `json:"service"`
 	Namespace string `json:"namespace"`
@@ -129,6 +138,10 @@ type meshComposition struct {
 	gatewayPrincipal string
 	allow            resources.DerivedAllowModules
 	targets          []orchestration.HostRouteTarget
+	// executors are the principals of the services that install prepared
+	// runnable bindings; owners are the endpoints their prepared calls target.
+	executors []string
+	reach     *runnableReach
 }
 
 // indexMeshComposition derives the composition's side of every edge once.
@@ -148,10 +161,11 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 		return nil, err
 	}
 	index := &meshComposition{byModule: map[string][]string{}, gateway: host.Gateway, allow: allow, targets: targets}
-	// Every composed workload's principal, by module: a managed service has
-	// no workload of its own in the cell, so it holds no principal.
+	// Every composed workload's principal, by module: a managed or an
+	// excluded service has no workload of its own in the cell, so it holds no
+	// principal.
 	for _, ref := range refs {
-		if _, managed := env.ManagedService(ref.Module, ref.Name); managed {
+		if _, managed := env.ManagedService(ref.Module, ref.Name); managed || env.Excludes(ref.Module, ref.Name) {
 			continue
 		}
 		namespace := env.ModuleNamespace(workspace, ref.Module)
@@ -165,6 +179,26 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	if host.Gateway != "" {
 		index.gatewayPrincipal = meshPrincipal(host, env.ModuleNamespace(workspace, gatewayModule), gatewayService)
 	}
+	// The reach the composition prepares rather than declares, derived once
+	// for the cell file and the mesh alike (derivedRunnableReach): the
+	// executors' principals, and the owner endpoints their prepared bindings
+	// call.
+	reach, err := derivedRunnableReach(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	index.reach = reach
+	for _, executor := range reach.executors {
+		if _, managed := env.ManagedService(executor.Module, executor.Service); managed {
+			continue
+		}
+		namespace := env.ModuleNamespace(workspace, executor.Module)
+		if namespace == "" {
+			continue
+		}
+		index.executors = append(index.executors, meshPrincipal(host, namespace, executor.Service))
+	}
+	slices.Sort(index.executors)
 	return index, nil
 }
 
@@ -187,6 +221,11 @@ func (index *meshComposition) sources(module, service, endpoint string) []string
 	}
 	if resources.ServiceUnique(module, service) == index.gateway && endpoint == gatewayWorkloadEndpoint {
 		for _, principal := range index.every {
+			admitted[principal] = true
+		}
+	}
+	if index.reach.reaches(module, service, endpoint) {
+		for _, principal := range index.executors {
 			admitted[principal] = true
 		}
 	}
@@ -264,20 +303,23 @@ func deriveMeshEdges(
 				principals = append(principals, principal)
 				slices.Sort(principals)
 			}
-			// Public exposure, judged on the manifest endpoint as core's
-			// IsExposedEndpoint judges the proto one: the one condition a
-			// public address exists on, and so the one the cell's ingress
-			// gateway reaches.
-			ingress := endpoint.Exposure == resources.ExposurePublic
+			// The cell's ingress gateway reaches exactly the endpoints the
+			// environment routes (`ingress:`): the composition decides its
+			// entrance — a product's portal, its marketing site, or the
+			// host gateway — and an endpoint routed at the edge must be one
+			// its module declares public, judged on the manifest endpoint
+			// as core's IsExposedEndpoint judges the proto one. A public
+			// endpoint nobody routes has no ingress edge.
+			ingress := routedAtTheEdge(env, unique, endpoint.Name)
+			if ingress && endpoint.Exposure != resources.ExposurePublic {
+				return nil, fmt.Errorf("the environment routes %s/%s at its edge, but %s declares it %q, not public; a route reaches only an endpoint its module exposes", unique, endpoint.Name, service.Name, endpoint.Exposure)
+			}
 			if len(principals) == 0 && !ingress {
 				continue
 			}
 			targetPort := containerPorts[unique][endpoint.Name]
 			if targetPort == 0 {
 				return nil, fmt.Errorf("mesh endpoint %s/%s has no resolved container target port", unique, endpoint.Name)
-			}
-			if ingress && (unique != index.gateway || endpoint.Name != "rest") {
-				return nil, fmt.Errorf("mesh ingress may reach only the host gateway's rest endpoint, not %s/%s", unique, endpoint.Name)
 			}
 			record.Edges = append(record.Edges, MeshEdge{
 				Module: module.Name, Service: service.Name, Namespace: namespace,
@@ -293,4 +335,15 @@ func deriveMeshEdges(
 		return record.Edges[i].Endpoint < record.Edges[j].Endpoint
 	})
 	return record, nil
+}
+
+// routedAtTheEdge reports whether the environment declares an ingress route
+// onto one endpoint of one service, named module-qualified as a route names it.
+func routedAtTheEdge(env *environments.Environment, unique, endpoint string) bool {
+	for _, route := range env.Ingress {
+		if route.Service == unique && route.Endpoint == endpoint {
+			return true
+		}
+	}
+	return false
 }

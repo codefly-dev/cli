@@ -8,7 +8,7 @@
 
 - **Module:** `github.com/codefly-dev/cli`
 - **Repository:** `https://github.com/codefly-dev/cli`
-- **Language:** Go 1.27.2 (`go.mod` is the source of truth — see [Bump the Go version](docs/runbooks/bump-go-version.md))
+- **Language:** Go 1.27.3 (`go.mod` is the source of truth — see [Bump the Go version](docs/runbooks/bump-go-version.md))
 
 The CLI is the primary interface for codefly. It orchestrates agent lifecycles, manages the
 daemon, runs services with their dependency graphs, and exposes an MCP server for AI tool
@@ -95,7 +95,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 - **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
 - **Product-owned selections** (Core resolution, local checkouts, evidence and execution blockers) → [docs/composition-selections.md](docs/composition-selections.md)
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
-- **Delivery documents** (presence and authority: the environment's `host` block, the module contract, what publish settles and signs, the carrier Jobs) → [docs/solution-host-bindings.md](docs/solution-host-bindings.md)
+- **Module manifests** (the one signed document per module: the environment's `host` block, its workloads, endpoints and authority request, what publish settles and signs, the delivery Job, the native run) → [docs/module-manifests.md](docs/module-manifests.md)
 - **Execution receipts** (the gateway's governed execution: Work Contexts verified with core's authenticator, the live sources it needs, why `--governed-execution` is unavailable until a client for them exists) → [docs/execution-receipts.md](docs/execution-receipts.md)
 - **The prerelease gate** (why a prerelease version never reaches `main`, the one labelled exception, and how each repo wires the check in) → [docs/prerelease-gate.md](docs/prerelease-gate.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
@@ -171,6 +171,7 @@ codefly self build --with-agents    # ...also rebuild every canonical agent repo
 go test ./...                       # All tests
 go test ./pkg/orchestration/ -v     # Orchestration tests
 make lint                           # golangci-lint (reproduces CI)
+make hooks                          # once per clone: gofmt on commit; lint + CLI reference on push
 make check-coverage                 # Coverage gate
 ```
 
@@ -248,8 +249,8 @@ relative paths.
   credential; a value a service does not receive is decided **before** anything
   is checked or resolved, so it imposes no obligation on that service. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
-- **Configuration uses runtime carriers.** Live host routes additionally use Core's applied-presence-bound endpoint projection through the SDK; the native run replaces
-  files in one stable directory. See `docs/solution-host-bindings.md` for delivery ownership.
+- **Configuration uses runtime carriers.** Live host routes are the endpoint addresses inside each module's applied manifest; the native run replaces
+  files in one stable directory. See `docs/module-manifests.md` for delivery ownership.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent
   binaries all live there.
 - **MCP exposes codefly capabilities to AI agents.** When adding a CLI feature, consider whether

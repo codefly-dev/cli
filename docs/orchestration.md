@@ -155,9 +155,30 @@ native run that declares a host supplies it the way the render does; elsewhere
 it supplies no values and each service decides whether it can run without
 them. `doctor workspace` reports it as supplied on local k3d and warns
 elsewhere: "supplied only by a local k3d or cell render; absent here". See
-[mesh principals and module authority](solution-host-bindings.md#mesh-principals-and-module-authority)
+[module authority](module-manifests.md#local-runs)
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
+
+The `egress` group is generated too, from the environment's `egress:` block:
+a service that declares it in `workspace-configuration-dependencies` receives
+`HOSTS`, its own declared external hosts as comma-separated `host:port`
+(sorted, every port explicit, 443 where the declaration names none) — the same
+list the cell file carries for it, so the cell's allowance and the service's own
+check never disagree — and `HOSTS` empty when the environment declares no egress
+for it. Every path delivers it the same way, from the shared resolution: a
+native or container `codefly run` and a render alike (the process reads
+`CODEFLY__WORKSPACE_CONFIGURATION__EGRESS__HOSTS`). Like `module-authority` it
+is never a manager dependency, a render refuses an authored file for it, a run
+profile can exclude it, and `doctor workspace` reports it as generated on every
+environment.
+
+An optional group — `runnable-bindings`, which `codefly generate
+runnable-bindings` writes nothing for when the environment prepares no binding
+(`environments.OptionalWorkspaceConfiguration`) — that the workspace does not
+provide is left out the same way on every path: a service that declares it
+receives nothing for it and reads each key as not configured. A provided one
+is delivered like any other group, and one two composed modules define
+differently is still refused.
 
 **Addresses are kept across a reload.** `Runner.Init` pins the host ports a
 service was accepted at through core's port-override seam
@@ -375,6 +396,18 @@ root group reaches every service of every run, including a module-closure run
 whose graph is a slice of the workspace, and judging it against that slice would
 report a real producer as "not a service of this workspace" and refuse the run.
 Whether a producer is in *this* run is not a plan-time question.
+
+A group a consumer **declares** is judged against the plan's graph and, beyond
+it, every other service of the workspace except one this run excludes. A
+module-closure run includes producers of groups its services declare, using
+Core's configuration-reference closure option with the same invocation snapshot
+used for graph edges and validation. Thus a hop's generated routes bring their
+producers into the run. Root-only groups do not grow the module closure; a
+reference to a producer outside that run is dropped at WARN with its consumer,
+value and producer named. Endpoint existence and visibility still apply. A
+producer the workspace lacks is refused, and an explicit run exclusion
+(`--exclude-dependency` or a run profile) coupled to a declared reference is
+refused rather than silently dropping that value.
 
 ##### What this refuses that used to be tolerated
 
@@ -828,13 +861,24 @@ RuntimeInit  → RuntimeStart (once init completes)
 RuntimeStart → done (service is running)
 ```
 
-At each transition, the policy checks the dependency graph: if service B depends on service A, then B's `RuntimeLoad` won't fire until A's `RuntimeLoad` completes. Services at the same DAG level transition in parallel.
+At each transition, the policy checks the dependency graph: if service B depends on service A, then B's `RuntimeLoad` won't fire until A's `RuntimeLoad` completes. The playbook executes queued actions synchronously; a callback cannot wait for another action later in that queue to start its prerequisite. Required ordering belongs in the dependency graph.
 
 If an action fails (executor returns `Wait`), the action is marked as `Failing` and the PauseManager handles retry.
 
 ### RuntimeTestPolicy
 
-Same as RuntimeStartPolicy, but adds `RuntimeTest` after `RuntimeStart` for the target service. The playbook stops after the test action completes.
+The agent's test dependency mode selects what starts before the target's test:
+
+- `NONE` initializes only the target and starts no process.
+- `START_DEPENDENCIES` starts the dependencies, then passes a sequencing barrier
+  for the target without starting it.
+- `START_STACK` starts dependencies and target.
+
+Successful real starts emit Running through the same lifecycle hook as an
+ordinary run, making them visible to readiness and delivery. The target barrier
+emits no Running event and calls no pre-start admission hook. Failed, waiting,
+or canceled starts do not become Running. The playbook stops after the target's
+test action completes.
 
 ### BuilderBuildPolicy (BuildPolicy)
 
@@ -1145,3 +1189,74 @@ advertisement never grants a skip. A supported operation that returns Unimplemen
 remains a contract failure. CI records unsupported operations as skipped with
 `agent_no_lint_capability`, `agent_no_compile_capability`, or
 `agent_no_test_capability`, rather than reporting a successful check.
+## Published hop routes
+
+A hop declaring the `hop-routes` workspace group receives a generated route
+snapshot for the principals named by `hop/MODULES`. Do not author that group or
+an RPC-to-address table. Codefly reads the selected modules' published API catalogs,
+checks their package identity and contract digests, and derives exact endpoint
+references. Run and render feed those references through the same Core loader,
+dependency graph, visibility checks and address resolver. Only the declaring
+consumer receives the generated group; it is not a composition-root group.
+
+This requires published catalogs from `codefly generate contracts`. A source
+file that has not been exported does not create a route. Unknown principals,
+stale contract artifacts, conflicting destinations, and unreachable exact
+endpoints refuse before a hop starts. The hop keeps authority enforcement:
+routes identify a listener and policy method, never grants or readiness.
+
+Each listener's methods are the method policy table delivered to the
+authority for that listener, read by the same reader from the digest-checked
+contract bytes: a protobuf listener's served procedures, an OpenAPI listener's
+operations, `<VERB> <basePath><path>` (a Swagger 2.0 `basePath` prefixes both
+sides alike). The catalog's own route list never names a route, so a catalog
+that omits a stricter route its document declares cannot make the hop check that
+call against a looser template. Which procedures a protobuf listener serves is
+the catalog's record, for the routes and the delivered table alike. Inventory
+comes from `codefly generate contracts`. This path does not
+prove that unexported source is current or that a running listener registers
+every published method; generation checks and live module qualification remain
+separate requirements.
+
+The snapshot lasts for one run. Ordinary source reload keeps accepted endpoint
+addresses. Changing the published route inventory or a used address requires
+stopping and restarting the run. `SIGUSR1`, withdrawal, extension, loader
+reload, source-watch admission, startup admission and readiness delivery reject
+a changed snapshot before stopping services, adopting declarations or
+delivering a policy table read since; endpoint publication cannot
+replace an address already handed to a snapshot. An address first learned from
+an agent's Init response is rejected before publication; this does not undo that
+agent's process effects. This is an explicit restart
+boundary, not live route reconfiguration. Existing hop versions that do not
+declare `hop-routes` keep their existing configuration mode; a new hop requires
+both the CLI projection and the generated group.
+
+A routed module ordered after the hop — one that calls through it is — has
+loaded but not initialized when the hop starts. The snapshot routes it at the
+address its own Init will be proposed, derived from the workspace, the service
+and the naming scope, and that Init is the check: the proposed address is
+accepted; an Init that accepts another address, or drops the routed endpoint,
+is refused naming the route, the address the snapshot holds and the one
+offered. A restart derives the same address again, so the remedy is the
+module's agent serving the proposed address or, for a module that does not
+call through the hop, ordering it before the hop.
+
+Until that Init, the hop routes to a loopback port nothing holds yet, and a
+local process that binds it first receives what the hop forwards until then.
+The module's first Init ends that: before the agent's Init, the run dials
+every native port the Init proposes on 127.0.0.1 and on ::1 and, if anything
+answers, refuses the Init naming the port and its holder, so the run does not
+come up with the hop routing to a squatter. Each loopback family is probed
+because on macOS a squatter on 127.0.0.1:P and a service listening on the
+wildcard :P both bind. The one listener that is not a squatter is the
+service's own kept container: a Docker store with `keep-running` leaves its
+container up for the next run to adopt, still publishing the service's port.
+An address is let through only when the container listening there is the one
+the service's agent will adopt — its name in this run's workspace and naming
+scope, codefly-owned, labelled with this run's recovery scope, running, not
+ephemeral, and publishing that port on that loopback family; any other holder,
+including one on the other family beside it, is refused. Not covered: a
+process that binds a loopback address on the port after that probe, and a
+routed module that crashes or is withdrawn mid-run, whose port the hop keeps
+routing to. `--temporary-ports` derives no
+address, so a reference that needs one is refused before the hop starts.

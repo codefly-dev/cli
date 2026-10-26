@@ -77,8 +77,11 @@ type verificationPolicy struct {
 	Signers []personSigner `json:"signers"`
 }
 
+// localBinding is what a local profile is bound to: one cluster's CA, or one
+// native run's workload-identity anchor. Exactly one is set.
 type localBinding struct {
-	ClusterCertificateAuthoritySha256 string `json:"clusterCertificateAuthoritySha256"`
+	ClusterCertificateAuthoritySha256 string `json:"clusterCertificateAuthoritySha256,omitempty"`
+	NativeAnchorSha256                string `json:"nativeAnchorSha256,omitempty"`
 }
 
 type personSigner struct {
@@ -123,11 +126,11 @@ func VerificationPolicy(fingerprint string, host *environments.EnvironmentHost) 
 }
 
 // NativeVerificationPolicy is the local profile a NATIVE run's host reads:
-// bound to the run's own temporary CA and admitting the run's own delivery
+// bound to the run's workload-identity anchor and admitting the run's own delivery
 // signer, the key every document the run delivers is signed with, for the
 // host's domain. A native run lists no developers in the workspace: the key
 // never leaves the machine and is never committed to a shared composition,
-// and the run that owns the CA owns the signer it admits.
+// and the run that owns the anchor owns the signer it admits.
 func NativeVerificationPolicy(fingerprint string, signer signing.Signer, host *environments.EnvironmentHost) ([]byte, error) {
 	if host == nil {
 		return nil, fmt.Errorf("a native host's local profile names the host's domain, and no host is declared")
@@ -135,10 +138,10 @@ func NativeVerificationPolicy(fingerprint string, signer signing.Signer, host *e
 	if signer == nil {
 		return nil, fmt.Errorf("a native run admits its own delivery key, and none is held")
 	}
-	policy, err := localProfile(fingerprint)
-	if err != nil {
-		return nil, err
+	if !isSHA256Hex(fingerprint) {
+		return nil, fmt.Errorf("native anchor fingerprint %q is not a lowercase hex SHA-256", fingerprint)
 	}
+	policy := verificationPolicy{Local: localBinding{NativeAnchorSha256: fingerprint}, Signers: []personSigner{}}
 	admitted, err := admittedSigner(signer, host)
 	if err != nil {
 		return nil, err
@@ -149,11 +152,15 @@ func NativeVerificationPolicy(fingerprint string, signer signing.Signer, host *e
 
 // localProfile is a policy bound to one CA and admitting nobody yet.
 func localProfile(fingerprint string) (verificationPolicy, error) {
-	decoded, err := hex.DecodeString(fingerprint)
-	if err != nil || len(decoded) != sha256.Size || strings.ToLower(fingerprint) != fingerprint {
+	if !isSHA256Hex(fingerprint) {
 		return verificationPolicy{}, fmt.Errorf("cluster CA fingerprint %q is not a lowercase hex SHA-256", fingerprint)
 	}
 	return verificationPolicy{Local: localBinding{ClusterCertificateAuthoritySha256: fingerprint}, Signers: []personSigner{}}, nil
+}
+
+func isSHA256Hex(fingerprint string) bool {
+	decoded, err := hex.DecodeString(fingerprint)
+	return err == nil && len(decoded) == sha256.Size && strings.ToLower(fingerprint) == fingerprint
 }
 
 // admittedSigner is one person signer the policy admits for the host's
