@@ -223,6 +223,8 @@ type agentCIOptions struct {
 	skipAudit       bool
 	failOnVuln      bool
 	skipConformance bool
+	// Only release supplies this lookup; standalone agent ci always tests locally.
+	sourceAttestation func(context.Context) bool
 }
 
 type agentCIState struct {
@@ -308,7 +310,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			_ = source.prepared.Close()
 		}
 	}()
-	if err = runStage(stageSource, func() error {
+	if err = state.runSourceStage(ctx, options.sourceAttestation, func() error {
 		// Resolve against the original home once, before isolating CI. Both
 		// validation and packaging use this same private executable selection.
 		source, err = prepareAgentCISource(ctx, options.dir, &state.manifest, state.temporary)
@@ -318,8 +320,8 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		if err = os.Setenv(resources.CodeflyHomeEnv, state.agentHome); err != nil {
 			return err
 		}
-		return validateAgentSource(ctx, source)
-	}); err != nil {
+		return nil
+	}, func() error { return validateAgentSource(ctx, source) }); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
 	if err := runStage(stageBuild, func() error {
@@ -453,6 +455,24 @@ func (state *agentCIState) runStage(name string, action func() error) error {
 	}
 	stage.Status = statusPassed
 	return nil
+}
+
+// Preparation is shared by source validation, build and audit and always runs.
+func (state *agentCIState) runSourceStage(ctx context.Context, attested func(context.Context) bool, prepare, validate func() error) error {
+	skip := attested != nil && attested(ctx)
+	err := state.runStage(stageSource, func() error {
+		if err := prepare(); err != nil {
+			return err
+		}
+		if skip {
+			return nil
+		}
+		return validate()
+	})
+	if err == nil && skip {
+		state.stage(stageSource).Status = statusSkipped
+	}
+	return err
 }
 
 func (state *agentCIState) skipStage(name string) {
