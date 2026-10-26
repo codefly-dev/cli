@@ -301,15 +301,29 @@ func printErrorChain(err error) {
 // which case it is the innermost layer above the exit, the one that ran the
 // command and names what it was doing. An error that is nothing but an exit
 // status keeps it.
+//
+// A sentinel is not that layer either. fmt.Errorf("%w: reason", ErrX) puts
+// the sentinel innermost and its reason in the layer above, so showing the
+// innermost layer alone would print the refusal's class ("module contract
+// negotiation failed") and drop the reason it names. When the layer above
+// the root reads "root: …", that layer is shown whole.
 func actionableRoot(err error) string {
 	layers := unwrapErrorLayers(err)
-	i := 0
-	for cur := err; cur != nil; cur, i = errors.Unwrap(cur), i+1 {
+	var chain []error
+	for cur := err; cur != nil; cur = errors.Unwrap(cur) {
+		chain = append(chain, cur)
+	}
+	root := len(chain) - 1
+	for i, cur := range chain {
 		if _, exit := cur.(*exec.ExitError); exit && i > 0 {
-			return layers[i-1]
+			root = i - 1
+			break
 		}
 	}
-	return layers[len(layers)-1]
+	if root > 0 && strings.HasPrefix(chain[root-1].Error(), chain[root].Error()+": ") {
+		return layers[root-1]
+	}
+	return layers[root]
 }
 
 // unwrapErrorLayers walks the Unwrap chain and returns each layer's

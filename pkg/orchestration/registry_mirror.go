@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	"github.com/distribution/reference"
 )
 
 // REGISTRY MIRRORS: READING A BASE IMAGE FROM SOMEWHERE ELSE.
@@ -49,56 +48,31 @@ func registryMirrors(env *environments.Environment) map[string]string {
 	return env.Registry.Mirrors
 }
 
-// mirroredReference is the reference to read `reference` from: the same
-// repository and tag under the mirror declared for its registry, or the
-// reference itself when no mirror is declared for it.
-//
-// A mirror of Docker Hub holds the upstream repository path verbatim, which for
-// an unqualified reference is the `library` namespace Docker resolves it to —
-// so `debian:trixie-slim` is read as `<mirror>/library/debian:trixie-slim`,
-// which is what an Artifact Registry remote repository (and a pull-through
-// registry generally) serves it at.
+// mirroredReference is the reference to read `reference` from. It is
+// environments.MirroredReference, the one spelling a cell's pull repository
+// (EnvironmentRegistry.PullRepository) is mirrored with too.
 func mirroredReference(ref string, mirrors map[string]string) string {
-	if len(mirrors) == 0 {
-		return ref
-	}
-	host, repository, ok := referenceRegistry(ref)
-	if !ok {
-		return ref
-	}
-	mirror := mirrors[host]
-	if mirror == "" {
-		return ref
-	}
-	return mirror + "/" + repository
+	return environments.MirroredReference(ref, mirrors)
 }
 
-// referenceRegistry splits an image reference into the host of the registry it
-// resolves against and the repository (with its tag or digest) within it, using
-// the same parser the daemon, BuildKit and containerd all normalize references
-// with — so the host this keys a mirror on is the host BuildKit will look that
-// mirror up under, and the two cannot disagree about what a reference names.
-//
-// That parser folds exactly one alias, `index.docker.io`, into `docker.io`, and
-// puts a reference with no path component in Hub's `library` namespace.
-// `registry-1.docker.io` is NOT folded — it is a distinct registry to the
-// parser and to BuildKit alike, so a reference spelling it reads through a
-// mirror declared under that spelling and no other. A reference this cannot
-// parse is reported unsplit: the build will fail on it with the registry's own
-// error, which says more than a guess made here would.
-func referenceRegistry(ref string) (string, string, bool) {
-	named, err := reference.ParseNormalizedNamed(ref)
-	if err != nil {
-		return "", "", false
+// pushReference is the reference an image named under the environment's pull
+// repository (EnvironmentRegistry.PullRepository) is pushed to: the same
+// repository under registry.url. An image named under anything else, and every
+// image of an environment whose registry is not mirrored, is pushed where it
+// names.
+func pushReference(env *environments.Environment, image string) string {
+	if env == nil || env.Registry == nil {
+		return image
 	}
-	repository := reference.Path(named)
-	if tagged, ok := named.(reference.Tagged); ok {
-		repository += ":" + tagged.Tag()
+	pull := strings.TrimSuffix(env.Registry.PullRepository(), "/")
+	push := strings.TrimSuffix(env.Registry.URL, "/")
+	if pull == push || pull == "" {
+		return image
 	}
-	if digested, ok := named.(reference.Digested); ok {
-		repository += "@" + digested.Digest().String()
+	if rest, ok := strings.CutPrefix(image, pull+"/"); ok {
+		return push + "/" + rest
 	}
-	return reference.Domain(named), repository, true
+	return image
 }
 
 // buildkitRegistryConfig renders the mirrors as the buildkitd configuration a

@@ -24,6 +24,24 @@ func cellServiceYAML(name string) string {
 `
 }
 
+func TestCellSourceCarriesTheEnvironmentPublicationPath(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	runGit(t, workspace.Dir(), "init", "--initial-branch=main")
+	runGit(t, workspace.Dir(), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "source")
+	for _, path := range []string{"deployments", "deployments/environments/blue"} {
+		env := &environments.Environment{Gitops: &environments.EnvironmentGitops{
+			RepoURL: "https://github.com/obin-ai/platform-obin.git", Branch: "main", Path: path,
+		}}
+		source := cellSource(context.Background(), workspace, env)
+		require.NotNil(t, source)
+		if path == DefaultGitopsPath {
+			require.Empty(t, source.Path, "retained cell files preserve their default publication path")
+		} else {
+			require.Equal(t, path, source.Path, "infra must read the same root that publish writes")
+		}
+	}
+}
+
 // exposedCellServiceYAML is cellServiceYAML for the service whose `http`
 // endpoint the staging environment routes an ingress to: it is public and
 // states its exposure, or the route is refused.
@@ -262,17 +280,51 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, string(data), string(same), "a second render with nothing changed writes identical bytes")
 }
 
-// A tree rendered for another environment describes another cell: it is left
-// out and reported, never merged in.
+// A tree rendered for another environment describes another cell: it is never
+// merged in, and a composed module whose only render is for another
+// environment has none for this one, so the file is refused rather than
+// written without it.
 func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {
 	workspace := writeCellWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
 	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "production")
-	result, err := RenderCell(context.Background(), workspace, env)
+	_, err := RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "composed module(s) billing")
+	require.Contains(t, err.Error(), "codefly deploy gitops render billing --env staging")
+}
+
+// A composed module with no render record in the checkout (the records are
+// uncommitted render outputs, so a clean of deployments/ removes them) refuses
+// the cell file by name, with the command that renders it, and leaves the file
+// already on disk as it was: a file regenerated whole without that module
+// would withdraw every workload it delivers. Once it is rendered, the file is
+// written as before.
+func TestCellFileRefusesToDropAComposedModuleWithNoRender(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	full, err := RenderCell(context.Background(), workspace, env)
 	require.NoError(t, err)
-	require.Equal(t, []string{"shop"}, result.Modules)
-	require.Equal(t, []string{"billing"}, result.Skipped)
+	before, err := os.ReadFile(full.Path)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(moduleRenderDestination(workspace, "billing")))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cell file is not written")
+	require.Contains(t, err.Error(), "composed module(s) billing")
+	require.Contains(t, err.Error(), "codefly deploy gitops render billing --env staging")
+	after, err := os.ReadFile(full.Path)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after), "a refused cell file leaves the one on disk untouched")
+
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	again, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "shop"}, again.Modules)
 }
 
 // A workload whose authenticating container cannot be told from a sidecar is
@@ -506,10 +558,15 @@ func TestAHostStatingAnEnvelopeCarriesDelivery(t *testing.T) {
 // `@` followed by another algorithm, a short digest or upper-case hex is a
 // digest no running pod reports, and is refused.
 func TestOnlyASha256DigestPinsAnImage(t *testing.T) {
-	repository, digest, err := splitPinnedImage("registry.example.test/acme/api:1.2.0@sha256:" + strings.Repeat("a", 64))
-	require.NoError(t, err)
-	require.Equal(t, "registry.example.test/acme/api", repository)
-	require.Equal(t, "sha256:"+strings.Repeat("a", 64), digest)
+	// The tag is informational: a build pushed under a build-qualified tag (an
+	// agent the workspace overrides) is deployed under the release's tag with
+	// its own digest, and the cell names the repository and that digest alone.
+	for _, tag := range []string{":1.2.0", ":1.2.0-build.0123456789abcdef", ""} {
+		repository, digest, err := splitPinnedImage("registry.example.test/acme/api" + tag + "@sha256:" + strings.Repeat("a", 64))
+		require.NoError(t, err)
+		require.Equal(t, "registry.example.test/acme/api", repository, tag)
+		require.Equal(t, "sha256:"+strings.Repeat("a", 64), digest, tag)
+	}
 	for _, image := range []string{
 		"registry.example.test/acme/api:1.2.0",
 		"registry.example.test/acme/api@latest",

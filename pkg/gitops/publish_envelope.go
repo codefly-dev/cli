@@ -82,23 +82,46 @@ func (p *deliveryPublication) declareEnvelope(inventory *Inventory, environment 
 	if !inventory.HostsDelivery || p.options.Target == nil || p.local || p.workspace == nil {
 		return nil
 	}
-	principals, err := fixture.ReadCompositionGrants(p.workspace, environment)
+	// The environment's own configuration profile states it, or a profile it
+	// derives from, so every cell deriving from one hosted profile is
+	// delivered the ceiling that profile states.
+	profile, err := p.env.ConfigurationProfileName()
+	if err != nil {
+		return fmt.Errorf("select the configuration profile the module envelope of %s is read from: %w", environment, err)
+	}
+	principals, err := fixture.ReadCompositionGrants(p.workspace, profile)
 	if err != nil {
 		return fmt.Errorf("read the module envelope the composition states for %s: %w", environment, err)
 	}
-	stated, err := fixture.StatesGrants(p.workspace, environment)
+	stated, err := fixture.StatesGrants(p.workspace, profile)
 	if err != nil {
 		return err
 	}
-	statesPrincipals, err := fixture.StatesPrincipals(p.workspace, environment)
+	statesPrincipals, err := fixture.StatesPrincipals(p.workspace, profile)
 	if err != nil {
 		return err
 	}
-	floor, err := fixture.ReadCompositionMinimumRevision(p.workspace, environment)
+	floor, err := fixture.ReadCompositionMinimumRevision(p.workspace, profile)
 	if err != nil {
 		return err
 	}
 	p.options.Envelope = &declaredEnvelope{Principals: principals, Stated: stated, StatesPrincipals: statesPrincipals, MinimumRevision: floor}
+	return nil
+}
+
+// listPreparedBindings lists, in the envelope this publish delivers, each
+// prepared binding a module installs, exactly as a native run lists them
+// (WithPreparedBindingGrants), so a cell grants what a run grants. An
+// envelope this publish does not deliver is left alone.
+func (p *deliveryPublication) listPreparedBindings(ctx context.Context, environment string) error {
+	if p.options.Envelope == nil {
+		return nil
+	}
+	principals, err := WithPreparedBindingGrants(ctx, p.workspace, p.env, p.options.Envelope.Principals)
+	if err != nil {
+		return fmt.Errorf("list the prepared bindings in the module envelope for %s: %w", environment, err)
+	}
+	p.options.Envelope.Principals = principals
 	return nil
 }
 

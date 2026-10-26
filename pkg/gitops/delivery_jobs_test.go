@@ -71,8 +71,13 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	if spec.ServiceAccountName != deliveryServiceAccount || spec.AutomountServiceAccountToken || spec.RestartPolicy != "OnFailure" {
 		t.Fatalf("pod spec %+v", spec)
 	}
-	if len(spec.Containers) != 1 || spec.Containers[0].Image != deliveryImage || !strings.Contains(deliveryImage, "@sha256:") {
+	if len(spec.Containers) != 1 || spec.Containers[0].Image != deliveryImage {
 		t.Fatalf("container %+v", spec.Containers)
+	}
+	// The carrier is codefly's own image, pinned by digest: never a Docker Hub
+	// image a cell's nodes may not reach and whose anonymous pulls are capped.
+	if !strings.HasPrefix(deliveryImage, "ghcr.io/codefly-dev/") || !strings.Contains(deliveryImage, "@sha256:") {
+		t.Fatalf("delivery image %q is not a digest-pinned ghcr.io/codefly-dev/ image", deliveryImage)
 	}
 	env := map[string]string{}
 	for _, entry := range spec.Containers[0].Env {

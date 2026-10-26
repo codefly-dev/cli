@@ -1,17 +1,16 @@
 package gitops
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 // A withdrawal is complete once the host's applied record of the binding is
-// exactly it — binding, generation, digest, release and removed — read with
-// the applied-state observer's credential, never the delivery's.
+// exactly it — binding, generation, digest, release and removed — as the
+// composition interface answers it.
 func TestWithdrawalCompletionRequiresExactAppliedWithdrawal(t *testing.T) {
 	module, services := nativeModule(t, "crm", false)
 	live := renderNative(t, module, services, "api")
@@ -22,37 +21,34 @@ func TestWithdrawalCompletionRequiresExactAppliedWithdrawal(t *testing.T) {
 	require.NoError(t, err)
 	for _, tc := range []struct {
 		name    string
-		status  int
-		change  func(map[string]any)
+		missing bool
+		refused error
+		change  func(*AppliedManifest)
 		want    bool
 		wantErr bool
 	}{
-		{name: "exact applied", status: 200, want: true},
-		{name: "only received", status: 202, wantErr: true},
-		{name: "no applied state", status: 404},
-		{name: "previous generation", status: 200, change: func(v map[string]any) { v["generation"] = withdrawal.Generation - 1; v["removed"] = false }},
-		{name: "wrong binding", status: 200, change: func(v map[string]any) { v["binding"] = "other" }, wantErr: true},
-		{name: "wrong digest", status: 200, change: func(v map[string]any) { v["digest"] = "other" }, wantErr: true},
-		{name: "wrong release", status: 200, change: func(v map[string]any) { v["release"] = "other" }, wantErr: true},
-		{name: "not removed", status: 200, change: func(v map[string]any) { v["removed"] = false }, wantErr: true},
-		{name: "later generation", status: 200, change: func(v map[string]any) { v["generation"] = withdrawal.Generation + 1 }, wantErr: true},
-		{name: "observer refused", status: 403, wantErr: true},
+		{name: "exact applied", want: true},
+		{name: "no applied state", missing: true},
+		{name: "previous generation", change: func(v *AppliedManifest) { v.Generation = withdrawal.Generation - 1; v.Removed = false }},
+		{name: "wrong binding", change: func(v *AppliedManifest) { v.Binding = "other" }, wantErr: true},
+		{name: "wrong digest", change: func(v *AppliedManifest) { v.Digest = "other" }, wantErr: true},
+		{name: "wrong release", change: func(v *AppliedManifest) { v.Release = "other" }, wantErr: true},
+		{name: "not removed", change: func(v *AppliedManifest) { v.Removed = false }, wantErr: true},
+		{name: "later generation", change: func(v *AppliedManifest) { v.Generation = withdrawal.Generation + 1 }, wantErr: true},
+		{name: "observation refused", refused: errors.New("refused"), wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			response := map[string]any{"binding": withdrawal.Binding, "generation": withdrawal.Generation, "digest": digest, "release": withdrawal.Release.Identity(), "removed": true}
-			if tc.change != nil {
-				tc.change(response)
-			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet || r.URL.Path != "/platform/_delivery/applied/"+withdrawal.Binding || r.Header.Get("Authorization") != "Bearer observer" {
-					http.Error(w, "wrong observer request", 400)
-					return
+			d := &NativeDeliverer{Applied: func(_ context.Context, binding string) (*AppliedManifest, bool, error) {
+				require.Equal(t, withdrawal.Binding, binding)
+				if tc.refused != nil || tc.missing {
+					return nil, false, tc.refused
 				}
-				w.WriteHeader(tc.status)
-				_ = json.NewEncoder(w).Encode(response)
-			}))
-			defer server.Close()
-			d := &NativeDeliverer{DeliveryURL: server.URL, ObserverToken: func() (string, error) { return "observer", nil }, Token: func(string) (string, error) { t.Fatal("writer token used for observation"); return "", nil }}
+				applied := &AppliedManifest{Binding: binding, Generation: withdrawal.Generation, Digest: digest, Release: withdrawal.Release.Identity(), Removed: true}
+				if tc.change != nil {
+					tc.change(applied)
+				}
+				return applied, true, nil
+			}}
 			got, err := d.withdrawalApplied(t.Context(), withdrawal, digest)
 			require.Equal(t, tc.want, got)
 			if tc.wantErr {
@@ -65,5 +61,7 @@ func TestWithdrawalCompletionRequiresExactAppliedWithdrawal(t *testing.T) {
 			}
 		})
 	}
-	require.Error(t, (&NativeDeliverer{ObserverToken: func() (string, error) { return "", nil }}).WaitForWithdrawal(t.Context(), live), "a live manifest is no withdrawal to wait for")
+	applied := func(context.Context, string) (*AppliedManifest, bool, error) { return nil, false, nil }
+	require.Error(t, (&NativeDeliverer{Applied: applied}).WaitForWithdrawal(t.Context(), live), "a live manifest is no withdrawal to wait for")
+	require.Error(t, (&NativeDeliverer{}).WaitForWithdrawal(t.Context(), withdrawal), "no applied-state source is no completion")
 }

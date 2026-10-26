@@ -173,6 +173,26 @@ func (d *Document) Has(key string) bool {
 	return strings.TrimSpace(value) != ""
 }
 
+// Value returns the key's value as the file holds it, and whether it holds a
+// non-empty one — the same test Has applies, so presence and value cannot
+// disagree.
+//
+// It is the one accessor that returns a value, and it exists because the
+// environment's secret store is seeded from the very files this package
+// writes: `codefly deploy secrets` resolves a rendered property from
+// `configurations/<profile>/<group>.secret.env` (pkg/deploysecrets
+// ReadConfigured) and writes it to the store. The planner that receives it
+// reports property names, secret keys and source paths only, so the value goes
+// to the store and nowhere else. Nothing that prints may call this.
+func (d *Document) Value(key string) (string, bool) {
+	i, ok := d.index[key]
+	if !ok {
+		return "", false
+	}
+	_, value, _ := splitEntry(d.lines[i])
+	return value, strings.TrimSpace(value) != ""
+}
+
 // Keys returns the key names in file order. Values are never exposed.
 func (d *Document) Keys() []string {
 	keys := make([]string, 0, len(d.index))

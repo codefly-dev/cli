@@ -171,6 +171,7 @@ codefly self build --with-agents    # ...also rebuild every canonical agent repo
 go test ./...                       # All tests
 go test ./pkg/orchestration/ -v     # Orchestration tests
 make lint                           # golangci-lint (reproduces CI)
+make hooks                          # once per clone: gofmt on commit; lint + CLI reference on push
 make check-coverage                 # Coverage gate
 ```
 

@@ -72,3 +72,77 @@ func TestRenderKeepsAPublicKeyUnderACredentialSoundingGroup(t *testing.T) {
 	err = render("  CODEFLY__WORKSPACE_SECRET_CONFIGURATION__CREDENTIAL_POLICY__CLIENT_ID: plaintext\n")
 	require.ErrorContains(t, err, "credential value", "a secret carrier is sensitive to core whatever its key")
 }
+
+// A public OAuth client identifier is not a credential.
+//
+// A client id identifies the client to an authorization server and is published
+// in redirects, in discovery documents and in browser requests; the matching
+// secret is the client SECRET. Core already calls a bare CLIENT_ID public. What
+// it still called sensitive is the spelling an operator writes —
+// OAUTH_CLIENT_ID, AUTH_CLIENT_ID — and only through the AUTH word in front of
+// it, so the render refused a public value and the only way to deliver it was a
+// secretKeyRef into a store entry somebody had to fill by hand.
+//
+// Both sides are pinned, because the narrowing is a name heuristic and the cost
+// of getting it wrong is asymmetric: a public value refused costs an operator a
+// hand write, a credential accepted commits it to a repository.
+func TestTheRenderGuardAcceptsAPublicClientIdAndRefusesACredential(t *testing.T) {
+	for name, want := range map[string]bool{
+		// Public: the client identifier, in every spelling of it.
+		"client_id":        false,
+		"client-id":        false,
+		"clientId":         false,
+		"CLIENT_ID":        false,
+		"oauth_client_id":  false,
+		"OAUTH_CLIENT_ID":  false,
+		"AUTH_CLIENT_ID":   false,
+		"OAUTH2_CLIENT_ID": false,
+		"CODEFLY__WORKSPACE_CONFIGURATION__IDENTITY__OAUTH_CLIENT_ID":                   false,
+		"CODEFLY__SERVICE_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__OAUTH_CLIENT_ID": false,
+		// Credentials, under the same AUTH words: the secret, the token, the
+		// password and the key keep their refusal.
+		"client_secret":       true,
+		"CLIENT_SECRET":       true,
+		"OAUTH_CLIENT_SECRET": true,
+		"OAUTH_ACCESS_TOKEN":  true,
+		"AUTH_PASSWORD":       true,
+		"OAUTH_CLIENT_KEY":    true,
+		// A name ending in the client-identifier spelling whose credential
+		// signal is NOT the AUTH word: the marker survives the strip, so core
+		// still classifies it and nothing is narrowed.
+		"OAUTH_TOKEN_CLIENT_ID": true,
+		"CLIENT_ID_SECRET":      true,
+		// A SECRET carrier is sensitive whatever its key: the value was
+		// authored as a secret, and that declaration outranks its name.
+		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__OAUTH_CLIENT_ID": true,
+	} {
+		require.Equal(t, want, isCredentialKey(name, true), name)
+	}
+}
+
+// End to end: the render that refused a public client id, and the one that must
+// keep refusing a client secret beside it.
+func TestRenderAcceptsAPlainClientIdAndRefusesAPlainClientSecret(t *testing.T) {
+	render := func(data string) error {
+		_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+			Destination: filepath.Join(t.TempDir(), "owned"),
+			Module:      "payments", Environment: "production", Promotable: true,
+		}, func(ctx context.Context, root string) error {
+			manifest := pinnedDeployment + "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: identity\ndata:\n" + data
+			return os.WriteFile(filepath.Join(root, "manifests.yaml"), []byte(manifest), 0o644)
+		})
+		return err
+	}
+	require.NoError(t, render(
+		"  OAUTH_CLIENT_ID: public-client-identifier\n"+
+			"  AUTH_CLIENT_ID: public-client-identifier\n"+
+			"  CODEFLY__WORKSPACE_CONFIGURATION__IDENTITY__OAUTH_CLIENT_ID: public-client-identifier\n"))
+	for _, data := range []string{
+		"  OAUTH_CLIENT_SECRET: plaintext\n",
+		"  OAUTH_ACCESS_TOKEN: plaintext\n",
+		"  AUTH_PASSWORD: plaintext\n",
+		"  OAUTH_CLIENT_KEY: plaintext\n",
+	} {
+		require.ErrorContains(t, render(data), "credential value", data)
+	}
+}

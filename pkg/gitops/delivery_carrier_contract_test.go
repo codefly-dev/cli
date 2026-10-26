@@ -49,3 +49,16 @@ func TestTheCellSelectorIsTheLabelSetTheCarrierPodCarries(t *testing.T) {
 	require.Equal(t, deliveryServiceAccount, delivery.ServiceAccount,
 		"the cell admits the account the delivery Job runs as")
 }
+
+// The cell file declares the carrier's image as codefly's own repository on
+// ghcr.io, pinned by digest: the image a cell admits for delivery is the one
+// the render pins, and it is never pulled from Docker Hub.
+func TestTheCellDeclaresCodeflysOwnDeliveryImage(t *testing.T) {
+	env := &environments.Environment{Name: "prod", Host: testHost()}
+	delivery, err := cellDelivery(env, "example-prod-shop")
+	require.NoError(t, err)
+	require.Equal(t, "ghcr.io/codefly-dev/codefly", delivery.Image.Repository)
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, delivery.Image.Digest)
+	require.Equal(t, delivery.Image.Repository+"@"+delivery.Image.Digest, deliveryImage,
+		"the cell's carrier image is the image the delivery Job runs")
+}

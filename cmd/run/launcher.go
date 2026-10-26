@@ -2,7 +2,12 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc"
+
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
@@ -66,7 +74,7 @@ type launcher struct {
 	identities map[string]gitops.NativeIdentity
 	signer     solutionhost.Signer
 
-	hostModule, hostService string
+	hostModule, hostService, hostEndpoint string
 
 	// composition guards workspace and identities: the components this run
 	// composes, which admit extends with the ones a reloaded workspace adds
@@ -79,14 +87,28 @@ type launcher struct {
 	// running are the identity workloads that reached Running: the ones a
 	// module's manifest lists.
 	running map[string]bool
+	// delivery serializes manifest generations and network calls without
+	// holding mu. A canceled waiter must not wait for another host call.
+	deliveryOnce sync.Once
+	delivery     *semaphore.Weighted
 	// delivered is the last manifest delivered per module, a withdrawal
-	// included.
+	// included; protected by delivery rather than the short-lived state lock.
 	delivered map[string]*solutionhost.ModuleManifest
+	// outsideTargets are the bindings to a module outside the run that
+	// admission has reported, so each is said once; protected by delivery.
+	outsideTargets map[string]bool
 	// pendingWithdrawals are modules whose withdrawal the host has not applied
 	// yet: retried on the next composition refresh, even with no gone roots.
 	pendingWithdrawals map[string]bool
-	envelope           *gitops.EnvelopeWriter
-	stop               chan struct{}
+	// envelope writes the module envelope through the host's gateway, for a
+	// host reached through the legacy HTTP delivery.
+	envelope *gitops.EnvelopeWriter
+	stop     chan struct{}
+	stopOnce sync.Once
+
+	// host is the run's one connection to the host's composition interface,
+	// reused by every delivery and withdrawal, and closed with the run.
+	host compositionHost
 
 	// schedule bounds each workload's wait for the host; waiters are the
 	// deliveries in flight, one per workload.
@@ -103,31 +125,51 @@ var (
 // attachLauncher wires the run as the composition's cluster when its
 // environment declares a host and the run is native. It is a no-op otherwise.
 func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
-	if env == nil || env.Host == nil || runtimeContext == resources.RuntimeContextContainer {
-		return nil
-	}
-	w := wool.Get(ctx).In("launcher")
 	launcherMu.Lock()
 	defer launcherMu.Unlock()
 	if launcherActive != nil {
 		launcherActive.close()
 		launcherActive = nil
 	}
-	if err := env.Host.Validate(); err != nil {
+	cluster, err := newNativeLauncher(ctx, flow, workspace, env, runtimeContext, fixture)
+	if err != nil {
 		return err
+	}
+	launcherActive = cluster
+	return nil
+}
+
+// AttachNativeLauncher gives test entry points the same native authority
+// admission as run, with explicit configuration and flow-owned teardown.
+// Call after InitManagers determines whether this test starts any service.
+func AttachNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, selectedRuntime, fixture string) error {
+	if len(flow.LocalRuntimeServices()) == 0 {
+		return nil
+	}
+	_, err := newNativeLauncher(ctx, flow, workspace, env, selectedRuntime, fixture)
+	return err
+}
+
+func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, selectedRuntime, fixture string) (*launcher, error) {
+	if env == nil || env.Host == nil || selectedRuntime == resources.RuntimeContextContainer {
+		return nil, nil
+	}
+	w := wool.Get(ctx).In("launcher")
+	if err := env.Host.Validate(); err != nil {
+		return nil, err
 	}
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	signer, err := signing.LoadDeveloperKey()
 	if err != nil {
-		return fmt.Errorf("a native run delivers with the developer key, and none is held: %w", err)
+		return nil, fmt.Errorf("a native run delivers with the developer key, and none is held: %w", err)
 	}
 	stateDir := filepath.Join(workspace.Dir(), ".codefly", "run", env.Name)
 	launcherIdentity, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, stateDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cluster := &launcher{
 		vouch: launcherIdentity, workspace: workspace, env: env, flow: flow, fixture: fixture,
@@ -140,27 +182,21 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 		stop:               make(chan struct{}),
 		schedule:           nativeDeliverySchedule,
 	}
-	parts := strings.Split(env.Host.Delivery, "/")
-	if len(parts) != 3 {
-		return fmt.Errorf("host.delivery %q is not <module>/<service>/<endpoint>", env.Host.Delivery)
-	}
-	cluster.hostModule, cluster.hostService = parts[0], parts[1]
+	cluster.hostModule, cluster.hostService, cluster.hostEndpoint = env.Host.DeliveryEndpoint()
 	// The run vouches for exactly what it composes: each identity workload,
 	// each module's delivery carrier, and the applied observer it acts as.
 	cluster.declare(identities)
 	if err := cluster.projectHost(); err != nil {
-		return err
+		return nil, err
 	}
 	world := flow.World()
 	world.RenderOwnedGroups = cluster.renderOwnedGroups
 	world.RuntimeOverrides = cluster.runtimeOverrides
-	flow.WithRunningHook(func(service string, _ int) {
-		go cluster.onRunning(context.WithoutCancel(ctx), service)
-	})
-	go cluster.refreshTokens()
+	world.BeginRuntimeStart = cluster.beginRuntimeStart
+	go cluster.refreshTokens(ctx)
 	w.Info("native run: the run vouches for the composition's workloads", wool.Field("anchor", launcherIdentity.AnchorFingerprint()[:16]))
-	launcherActive = cluster
-	return nil
+	world.BeforeRuntimeStop = cluster.close
+	return cluster, nil
 }
 
 func stopLauncher() {
@@ -173,15 +209,41 @@ func stopLauncher() {
 }
 
 func (cluster *launcher) close() {
-	select {
-	case <-cluster.stop:
-	default:
-		close(cluster.stop)
+	cluster.stopOnce.Do(func() {
+		if cluster.stop != nil {
+			close(cluster.stop)
+		}
+	})
+	cluster.host.close()
+	// A run torn down keeps no staged frontend copy: the next run stages and
+	// installs again, and reuses every bundle still retained.
+	if cluster.stateDir != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := (solutionrun.LocalFrontend{StateDir: cluster.frontendState()}).ForgetAll(ctx); err != nil {
+			wool.Get(ctx).In("launcher.close").Warn("cannot remove the staged frontend copies", wool.ErrField(err))
+		}
 	}
 }
 
+// frontendState is where this run keeps its frontend build records and staged
+// copies, per environment.
+func (cluster *launcher) frontendState() string {
+	return filepath.Join(cluster.stateDir, "frontend")
+}
+
+// forgetFrontend removes a module's staged frontend copy.
+func (cluster *launcher) forgetFrontend(ctx context.Context, module string) error {
+	if cluster.stateDir == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return solutionrun.LocalFrontend{StateDir: cluster.frontendState()}.Forget(ctx, module)
+}
+
 // declare records identity workloads the run vouches for, with their delivery
-// carriers and the observer.
+// carriers and the observer the legacy HTTP delivery reads applied state as.
 func (cluster *launcher) declare(identities map[string]gitops.NativeIdentity) {
 	if cluster.vouch == nil {
 		return
@@ -321,12 +383,7 @@ func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string
 	if ok {
 		// A module-identity service reads its token from the path a cell's
 		// render mounts unless told otherwise; this is the otherwise.
-		credential, err := cluster.project(unique, identity)
-		if err != nil {
-			wool.Get(context.Background()).In("launcher").Warn("cannot project the module's credential", wool.Field("service", unique), wool.ErrField(err))
-			return out
-		}
-		out[workloadTokenFileVariable] = credential.File
+		out[workloadTokenFileVariable] = cluster.vouch.ProjectionPath(identity.Workload(cluster.env.Host.TrustDomain))
 	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
@@ -344,20 +401,19 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 	// a cell's composition declares for the environment and this run derives
 	// from the host block: handed last, so they settle over what the host's
 	// own authored group leaves empty.
-	if unique := resources.WithUnique(service).Unique(); unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) &&
-		slices.Contains(service.WorkspaceConfigurationDependencies, environments.FederationConfiguration) {
-		group, err := federationGroup(cluster.env.Host)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", unique, err)
-		}
+	group, err := environments.NativeHostFederation(cluster.env.Host, service)
+	if err != nil {
+		return nil, err
+	}
+	if group != nil {
 		out = append(out, group)
 	}
 	if slices.Contains(service.WorkspaceConfigurationDependencies, environments.ArtifactCacheConfiguration) {
-		group, err := artifactCacheGroup(cluster.composed().Dir())
-		if err != nil {
-			return nil, err
+		cacheGroup, cacheErr := artifactCacheGroup(cluster.composed().Dir())
+		if cacheErr != nil {
+			return nil, cacheErr
 		}
-		out = append(out, group)
+		out = append(out, cacheGroup)
 	}
 	if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration) {
 		return out, nil
@@ -379,27 +435,6 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 	return append(out, &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{authority}}), nil
 }
 
-// federationGroup is the federation surface a native run hands the delivery
-// host: the coordinate it answers for, the ownership domain it accepts a
-// binding under (the one the run's own policy admits the run's signer for)
-// and the trust policy, pinned keys — the three values a cell's composition
-// declares in the host's federation group, derived here from the host block
-// the manifests this run delivers are stamped with, so the host accepts what
-// the run signs and nothing else. The host's registration secrets stay in its
-// authored group, untouched.
-func federationGroup(host *environments.EnvironmentHost) (*basev0.Configuration, error) {
-	if host == nil || host.Coordinate == "" || host.Domain == "" {
-		return nil, fmt.Errorf("the delivery host answers for the environment's host.coordinate under host.domain, and the environment declares no host with both")
-	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: environments.FederationConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
-			{Key: environments.FederationHostCoordinateKey, Value: host.Coordinate},
-			{Key: environments.FederationHostOwnershipDomainsKey, Value: host.Domain},
-			{Key: environments.FederationHostTrustPolicyKey, Value: environments.FederationHostTrustPolicyKeys},
-		},
-	}}}, nil
-}
-
 // artifactCacheGroup is the artifact-cache group a native run hands a service
 // that declares it: ROOT, the absolute path of the workspace's artifact cache,
 // the read-only source a host's native bundle adapter reads a frontend bundle
@@ -417,31 +452,34 @@ func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
 	}}}, nil
 }
 
-// frontendBundle archives the bundle a component's frontend build wrote
-// beside its entry service, in core's canonical form, and retains it in the
-// workspace's artifact cache under its digest — the read-only source the
-// host's native adapter reads bundles from — so the manifest names the bytes
-// the host verifies. A component that declares a page and built no bundle is
-// refused by name, with what to build: a host admits no new frontend without
-// its signed payload, and a mutable fallback is never delivered in its place.
-// A headless component needs no bundle, and a leftover one is not its page.
+// frontendBundle is the bundle of a module's declared page, built from the
+// frontend's own inputs only when they changed since the bundle retained for
+// them, and retained in the existing artifact cache for host delivery. It runs
+// before the delivery lock is taken, so a build delays no other module's
+// delivery. The frontend's own npm build runs natively unless the service that
+// owns the page runs in a container, where it builds in the pinned builder
+// image as deployment does. Headless components need no build.
 func (cluster *launcher) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
 	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
 	if err != nil || frontend == nil {
 		return nil, err
 	}
-	root, built, err := solutionrun.FrontendBundle(module)
+	workspaceDir := cluster.composed().Dir()
+	build := solutionrun.LocalFrontend{
+		StateDir: cluster.frontendState(),
+		Docker:   cluster.flow.ServiceRuntimeContext(resources.ServiceUnique(module.Name, module.ServiceEntry)) == resources.RuntimeContextContainer,
+		Retain: func(ctx context.Context, root string) (string, error) {
+			digest, _, retainErr := composition.RetainCanonicalArchive(ctx, workspaceDir, root)
+			return digest, retainErr
+		},
+		Retained: func(digest string) bool {
+			info, statErr := os.Stat(filepath.Join(composition.ArtifactCacheDir(workspaceDir), strings.TrimPrefix(digest, "sha256:")))
+			return statErr == nil && info.Mode().IsRegular()
+		},
+	}
+	digest, err := build.Bundle(ctx, module)
 	if err != nil {
 		return nil, err
-	}
-	if !built {
-		source := filepath.Join(module.ServicesDir(), "fe-remote")
-		return nil, fmt.Errorf("module %s declares a frontend (%s beside its service-entry) and its bundle is not built: %s holds no %s; a host admits no frontend without its signed bundle, so build the frontend from %s with its own build workflow and start the run again",
-			module.Name, solutionrun.FrontendFileName, filepath.Join(module.ServicesDir(), filepath.FromSlash(solutionrun.FrontendBundleDir)), solutionrun.FrontendBundleManifest, source)
-	}
-	digest, _, err := composition.RetainCanonicalArchive(ctx, cluster.composed().Dir(), root)
-	if err != nil {
-		return nil, fmt.Errorf("retain the frontend bundle of %s: %w", module.Name, err)
 	}
 	return &solutionhost.FrontendPayload{Artifact: gitops.FrontendArtifactName, Digest: solutionhost.PayloadDigest(digest), MediaType: composition.CanonicalArchiveMediaType}, nil
 }
@@ -473,96 +511,191 @@ func (cluster *launcher) project(unique string, identity gitops.NativeIdentity) 
 	return cluster.vouch.Project(unique, identity.Workload(cluster.env.Host.TrustDomain))
 }
 
-// refreshTokens re-issues every projected token at 80% of its lifetime, as
-// the kubelet rotates a projected token: a mint client that re-reads the
-// projection before every mint always presents a token the host has not
-// recorded yet.
-func (cluster *launcher) refreshTokens() {
-	ticker := time.NewTicker(identity.RefreshInterval)
+// refreshTokens checks wall-clock expiry on a short poll, so waking from
+// suspend does not leave expired credentials waiting for a lifetime timer.
+func (cluster *launcher) refreshTokens(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-cluster.stop:
 			return
 		case <-ticker.C:
-			cluster.vouch.Refresh()
+			if err := cluster.vouch.Refresh(time.Now()); err != nil {
+				wool.Get(ctx).In("launcher.refreshTokens").Error("cannot refresh workload credentials; retrying on next poll", wool.ErrField(err))
+			}
 		}
 	}
 }
 
-// onRunning is the cell's delivery, for one identity workload that just
-// started: its module's manifest, listing it — once the host is ready to take
-// it, retrying while it is not serving yet (hostDelivery). A workload that is
-// not delivered is said so plainly: the gateway routes nothing to its module.
-func (cluster *launcher) onRunning(ctx context.Context, unique string) {
-	w := wool.Get(ctx).In("launcher.deliver", wool.Field("service", unique))
-	identity, ok := cluster.identity(unique)
-	if !ok || !cluster.delivers(identity) {
-		return
-	}
-	cluster.mu.Lock()
-	cluster.running[unique] = true
-	cluster.mu.Unlock()
-	waiter := cluster.waitFor(unique)
+// runReadyDelivery publishes the latest readiness after an attempt. Failed
+// restarts remove stale routes through the same nonterminal signed manifest.
+func (cluster *launcher) runReadyDelivery(ctx context.Context, unique string, identity gitops.NativeIdentity, waiter *deliveryWaiter, failed bool) {
 	defer cluster.doneWaiting(unique, waiter)
+	w := wool.Get(ctx).In("launcher.deliver", wool.Field("service", unique))
 	err := hostDelivery{
 		schedule: cluster.schedule, stop: cluster.stop, superseded: waiter.superseded,
 		log: w.With(wool.Field("module", identity.Module)),
 		ready: func(ctx context.Context) error {
-			// A refreshed composition can withdraw the workload while its
-			// delivery waits; nothing is then delivered on its behalf.
 			if _, composed := cluster.identity(unique); !composed {
 				return errWorkloadGone
 			}
 			return cluster.hostReady(ctx)
 		},
-		deliver: func(ctx context.Context) error { return cluster.deliver(ctx, identity.Module) },
+		deliver: func(ctx context.Context) error { return cluster.deliverReadiness(ctx, identity.Module, failed) },
 	}.run(ctx)
 	if deliveryAbandoned(err) {
 		w.Debug("delivery abandoned", wool.ErrField(err))
-		return
-	}
-	if err != nil {
-		w.Error(fmt.Sprintf("delivery to the host failed: module %s's manifest does not list %s, so every gateway route to module %s answers 404 until it is delivered (a restart of the workload delivers again)", identity.Module, unique, identity.Module), wool.ErrField(err))
+	} else if err != nil {
+		w.Error(fmt.Sprintf("delivery completion was not confirmed for module %s, workload %s; routes to module %s may be unavailable (the host may already have applied the manifest)", identity.Module, unique, identity.Module), wool.ErrField(err))
 	}
 }
 
-// newDeliverer is the deliverer of this run's manifests to the host: the
-// host's delivery endpoint as the flow resolves it now, this run's signer and
-// state, and the delivery account's credential. It also answers the gateway's
-// current address, which the envelope follows.
+// newDeliverer is the deliverer of this run's manifests to the host, with
+// this run's signer and state and the delivery account's credential. A host
+// whose delivery endpoint declares codefly.dev/composition receives them
+// through it, over the run's one connection to it; the gateway address is then
+// empty, since such a host takes no envelope. A host whose endpoint declares
+// no such interface receives them through the legacy HTTP delivery route, with
+// the envelope written through its gateway, whose address is answered: the
+// reason is logged on every delivery that takes it. A host whose module cannot
+// be read is neither: the delivery fails with the reason.
 func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
+	implements, err := gitops.HostImplements(ctx, cluster.composed(), cluster.hostModule, cluster.hostService, cluster.hostEndpoint, gitops.CompositionInterface)
+	if err != nil {
+		return nil, "", err
+	}
+	deliverer := &gitops.NativeDeliverer{
+		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
+		StateDir: filepath.Join(cluster.stateDir, "delivery"),
+		Token: func(module string) (string, error) {
+			return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
+		},
+	}
+	if implements {
+		target, resolveErr := cluster.flow.GRPCEndpointTarget(ctx, cluster.hostModule, cluster.hostService, cluster.hostEndpoint)
+		if resolveErr != nil {
+			return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", resolveErr)
+		}
+		composition, dialErr := cluster.host.delivery(target, cluster.newCompositionDelivery)
+		if dialErr != nil {
+			return nil, "", dialErr
+		}
+		deliverer.Prepare, deliverer.Applied = composition.Prepare, composition.Applied
+		return deliverer, "", nil
+	}
+	wool.Get(ctx).In("launcher.deliver").Info(fmt.Sprintf("the host's delivery endpoint %s/%s/%s declares no %s, so manifests go to its legacy HTTP delivery route and the module envelope is written through host.gateway",
+		cluster.hostModule, cluster.hostService, cluster.hostEndpoint, gitops.CompositionInterface))
+	if deliverer.DeliveryURL, err = cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, cluster.hostEndpoint); err != nil {
+		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
+	}
 	gatewayModule, gatewayService, ok := strings.Cut(cluster.env.Host.Gateway, "/")
 	if !ok {
-		return nil, "", fmt.Errorf("a native run writes the envelope through the host gateway, and host.gateway %q names no <module>/<service>", cluster.env.Host.Gateway)
+		return nil, "", fmt.Errorf("the legacy HTTP delivery writes the envelope through the host gateway, and host.gateway %q names no <module>/<service>", cluster.env.Host.Gateway)
 	}
 	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, gatewayModule, gatewayService, "rest")
 	if err != nil {
 		return nil, "", fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
 	}
-	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, strings.Split(cluster.env.Host.Delivery, "/")[2])
-	if err != nil {
-		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
+	deliverer.ObserverToken = func() (string, error) { return cluster.vouch.Issue(cluster.vouch.Observer()) }
+	return deliverer, gatewayURL, nil
+}
+
+// newCompositionDelivery speaks the composition interface over conn, reading
+// each module's method policies, scope ceilings, roles and owner-awareness
+// from the module as the run composes it at the time of the delivery.
+func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *gitops.CompositionDelivery {
+	load := func(ctx context.Context, module string) (string, error) {
+		m, err := cluster.composed().LoadModuleFromName(ctx, module)
+		if err != nil {
+			return "", err
+		}
+		return m.Dir(), nil
 	}
-	return &gitops.NativeDeliverer{
-		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
-		StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,
-		Token: func(module string) (string, error) {
-			return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
+	return gitops.NewCompositionDelivery(conn, cluster.signer,
+		func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+			dir, err := load(ctx, module)
+			if err != nil {
+				return nil, false, err
+			}
+			return gitops.MethodPolicies(dir)
 		},
-		ObserverToken: func() (string, error) {
-			return cluster.vouch.Issue(cluster.vouch.Observer())
+		func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
+			dir, err := load(ctx, module)
+			if err != nil {
+				return nil, err
+			}
+			return gitops.ScopeCeilings(dir)
 		},
-	}, gatewayURL, nil
+		func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error) {
+			dir, err := load(ctx, module)
+			if err != nil {
+				return nil, err
+			}
+			return gitops.Roles(dir)
+		},
+		func(ctx context.Context, module string) (bool, error) {
+			dir, err := load(ctx, module)
+			if err != nil {
+				return false, err
+			}
+			return gitops.OwnerAware(dir)
+		})
+}
+
+// compositionHost holds the run's connection to the host's composition
+// interface: dialled on the first delivery, reused by every later one and
+// every retry, dialled again only when the host answers at another address (a
+// host restarted on another port), and closed with the run.
+type compositionHost struct {
+	mu          sync.Mutex
+	target      orchestration.GRPCTarget
+	conn        *grpc.ClientConn
+	composition *gitops.CompositionDelivery
+	closed      bool
+}
+
+// delivery answers the composition client for target, dialling it unless the
+// connection held already reaches it.
+func (host *compositionHost) delivery(target orchestration.GRPCTarget, speak func(grpc.ClientConnInterface) *gitops.CompositionDelivery) (*gitops.CompositionDelivery, error) {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	if host.closed {
+		return nil, errRunStopped
+	}
+	if host.conn != nil && host.target == target {
+		return host.composition, nil
+	}
+	conn, err := target.Dial()
+	if err != nil {
+		return nil, fmt.Errorf("dial the host's composition interface at %s: %w", target.Address, err)
+	}
+	if host.conn != nil {
+		_ = host.conn.Close()
+	}
+	host.target, host.conn, host.composition = target, conn, speak(conn)
+	return host.composition, nil
+}
+
+func (host *compositionHost) close() {
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	host.closed = true
+	if host.conn != nil {
+		_ = host.conn.Close()
+		host.conn, host.composition = nil, nil
+	}
 }
 
 // withdraw takes the stopped workloads out of their modules' manifests: a
 // module that still runs an identity workload is delivered again at the next
 // generation, listing what remains; one that runs none is withdrawn — its
-// manifest at the next generation with `removed: true`, terminal for the
-// binding — and the run waits until the host has applied it. Each stopped
-// workload is forgotten. The run's authority, the envelope and the host's
-// process are untouched. Returned are the modules withdrawn.
+// manifest at the next generation with `removed: true`, which the host keeps
+// terminal for the binding while it holds it — and the run waits until the
+// host has applied it. Each stopped workload is forgotten. The run's authority
+// and the host's process are untouched. Returned are the modules withdrawn.
 func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]string, error) {
 	modules := map[string]bool{}
 	for _, unique := range uniques {
@@ -583,7 +716,7 @@ func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]stri
 	sort.Strings(pending)
 	var withdrawn []string
 	for _, module := range pending {
-		if len(cluster.startedIdentities(module)) > 0 {
+		if len(cluster.declaredIdentities(module)) > 0 {
 			if err := cluster.deliver(ctx, module); err != nil {
 				return withdrawn, fmt.Errorf("%s: deliver the workloads that remain: %w", module, err)
 			}
@@ -595,6 +728,10 @@ func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]stri
 		}
 		if done {
 			withdrawn = append(withdrawn, module)
+			// A module that left the composition keeps no staged frontend.
+			if err := cluster.forgetFrontend(ctx, module); err != nil {
+				wool.Get(ctx).In("launcher.withdraw").Warn("cannot remove the staged frontend of a withdrawn module", wool.Field("module", module), wool.ErrField(err))
+			}
 		}
 	}
 	return withdrawn, nil
@@ -605,14 +742,19 @@ func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]stri
 // settles to the same generation, which the host replays. A module this run
 // never delivered has nothing to withdraw.
 func (cluster *launcher) withdrawModule(ctx context.Context, module string) (bool, error) {
-	cluster.mu.Lock()
-	defer cluster.mu.Unlock()
+	if err := cluster.acquireDelivery(ctx); err != nil {
+		return false, err
+	}
+	defer cluster.delivery.Release(1)
 	delivered := cluster.delivered[module]
+	cluster.mu.Lock()
 	if delivered == nil {
 		delete(cluster.pendingWithdrawals, module)
+		cluster.mu.Unlock()
 		return false, nil
 	}
 	cluster.pendingWithdrawals[module] = true
+	cluster.mu.Unlock()
 	withdrawal, err := gitops.WithdrawalOf(delivered)
 	if err != nil {
 		return false, err
@@ -622,16 +764,24 @@ func (cluster *launcher) withdrawModule(ctx context.Context, module string) (boo
 		return false, err
 	}
 	receipt, err := deliverer.Deliver(ctx, withdrawal)
-	if err != nil {
+	switch {
+	case errors.Is(err, solutionhost.ErrWithdrawn):
+		// The host already holds a withdrawal of this binding (a module
+		// re-added and refused, then dropped again): nothing is served under it.
+		cluster.delivered[module] = withdrawal
+	case err != nil:
 		return false, err
+	default:
+		cluster.delivered[module] = withdrawal
+		wool.Get(ctx).In("launcher.withdraw").Info("withdrawal received", wool.Field("module", module),
+			wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
+		if err := deliverer.WaitForWithdrawal(ctx, withdrawal); err != nil {
+			return false, err
+		}
 	}
-	cluster.delivered[module] = withdrawal
-	wool.Get(ctx).In("launcher.withdraw").Info("withdrawal received", wool.Field("module", module),
-		wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
-	if err := deliverer.WaitForWithdrawal(ctx, withdrawal); err != nil {
-		return false, err
-	}
+	cluster.mu.Lock()
 	delete(cluster.pendingWithdrawals, module)
+	cluster.mu.Unlock()
 	return true, nil
 }
 
@@ -680,59 +830,127 @@ func (cluster *launcher) startedIdentities(module string) []gitops.NativeIdentit
 }
 
 // deliver delivers a module's manifest, listing every identity workload of it
-// that runs now, with the addresses this run allocated for its routed
-// endpoints, after making sure the host holds the composition's envelope.
+// declared in the run, with the addresses this run allocated for the routed
+// endpoints of those that are ready.
 func (cluster *launcher) deliver(ctx context.Context, module string) error {
-	started := cluster.startedIdentities(module)
-	cluster.mu.Lock()
-	defer cluster.mu.Unlock()
-	if len(started) == 0 {
+	return cluster.deliverReadiness(ctx, module, false)
+}
+
+// deliverReadiness delivers a module's readiness. A ready delivery builds its
+// frontend bundle first, before the delivery lock is taken, so a build delays
+// no other module's delivery; an early one (after a failed start) builds
+// nothing.
+func (cluster *launcher) deliverReadiness(ctx context.Context, module string, early bool) error {
+	if len(cluster.declaredIdentities(module)) == 0 {
 		return nil
 	}
 	loaded, err := cluster.composed().LoadModuleFromName(ctx, module)
 	if err != nil {
 		return err
 	}
-	services := make([]*resources.Service, 0, len(loaded.ServiceReferences))
-	for _, reference := range loaded.ServiceReferences {
-		service, loadErr := cluster.composed().LoadService(ctx, &resources.ServiceWithModule{Name: reference.Name, Module: module})
-		if loadErr != nil {
-			return loadErr
+	var bundle *solutionhost.FrontendPayload
+	if !early {
+		if bundle, err = cluster.frontendBundle(ctx, loaded); err != nil {
+			return err
 		}
-		services = append(services, service)
+	}
+	if err = cluster.acquireDelivery(ctx); err != nil {
+		return err
+	}
+	defer cluster.delivery.Release(1)
+	// Failure may precede admission. Replace a previous host snapshot, but do
+	// not admit a new module just to clean up an unstarted attempt.
+	if early && cluster.delivered[module] == nil {
+		return nil
+	}
+	if len(cluster.declaredIdentities(module)) == 0 {
+		return nil
+	}
+	if err = cluster.checkRoutingSnapshot(ctx); err != nil {
+		return err
 	}
 	deliverer, gatewayURL, err := cluster.newDeliverer(ctx)
 	if err != nil {
 		return err
 	}
-	if err = cluster.ensureEnvelope(ctx, gatewayURL); err != nil {
-		return err
-	}
-	bundle, err := cluster.frontendBundle(ctx, loaded)
+	manifest, err := cluster.renderDelivery(ctx, deliverer, loaded, early, bundle)
 	if err != nil {
 		return err
 	}
-	carriers, err := cluster.flow.EndpointCarriers(ctx, module, resources.NewNativeNetworkAccess())
-	if err != nil {
-		return err
+	return cluster.applyDelivery(ctx, deliverer, gatewayURL, module, manifest)
+}
+
+// renderDelivery renders a loaded module's manifest. An early delivery keeps
+// the page payload previously published, since deferral removes a page; a
+// ready one names the bundle its caller built.
+func (cluster *launcher) renderDelivery(ctx context.Context, deliverer *gitops.NativeDeliverer, loaded *resources.Module, early bool, bundle *solutionhost.FrontendPayload) (*solutionhost.ModuleManifest, error) {
+	module := loaded.Name
+	services := make([]*resources.Service, 0, len(loaded.ServiceReferences))
+	for _, reference := range loaded.ServiceReferences {
+		service, loadErr := cluster.composed().LoadService(ctx, &resources.ServiceWithModule{Name: reference.Name, Module: module})
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		services = append(services, service)
 	}
-	manifest, err := deliverer.Render(ctx, &gitops.NativeWorkload{Module: loaded, Services: services, Started: started, Carriers: carriers, FrontendBundle: bundle})
+	if early {
+		// Deferral removes a page. Keep a previously published payload during
+		// unrelated partial startup instead of accidentally unpublishing it.
+		if previous := cluster.delivered[module]; previous != nil && previous.Frontend != nil {
+			bundle = previous.Frontend.Payload
+		}
+	}
+	started := cluster.startedIdentities(module)
+	var ready []string
+	for _, identity := range started {
+		ready = append(ready, resources.ServiceUnique(identity.Module, identity.Service))
+	}
+	carriers, err := cluster.flow.ReadyEndpointCarriers(ctx, module, resources.NewNativeNetworkAccess(), ready)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	return deliverer.Render(ctx, &gitops.NativeWorkload{
+		Module: loaded, Services: services, Declared: cluster.declaredIdentities(module),
+		Started: started, Carriers: carriers, FrontendBundle: bundle, DeferFrontend: early && bundle == nil,
+	})
+}
+
+// Caller holds delivery across rendering, generation reservation and Applied.
+func (cluster *launcher) applyDelivery(ctx context.Context, deliverer *gitops.NativeDeliverer, gatewayURL, module string, manifest *solutionhost.ModuleManifest) error {
+	if gatewayURL != "" {
+		if err := cluster.ensureEnvelope(ctx, gatewayURL); err != nil {
+			return err
+		}
 	}
 	receipt, err := deliverer.Deliver(ctx, manifest)
 	if err != nil {
 		return err
 	}
 	cluster.delivered[module] = manifest
-	wool.Get(ctx).In("launcher.deliver").Info("delivered", wool.Field("module", module), wool.Field("workloads", len(manifest.Workloads)),
+	w := wool.Get(ctx).In("launcher.deliver")
+	w.Info("delivered", wool.Field("module", manifest.Alias), wool.Field("workloads", len(manifest.Workloads)),
 		wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
-	// Accepted into the inbox is not applied. The host says which, and why.
 	if err := deliverer.WaitForApplied(ctx, manifest); err != nil {
-		return fmt.Errorf("module %s is delivered and not served: %w", module, err)
+		return fmt.Errorf("module %s is delivered and not served: %w", manifest.Alias, err)
 	}
-	wool.Get(ctx).In("launcher.deliver").Info("applied", wool.Field("module", module), wool.Field("generation", manifest.Generation))
+	w.Info("applied", wool.Field("module", manifest.Alias), wool.Field("generation", manifest.Generation))
 	return nil
+}
+
+// checkRoutingSnapshot refuses a delivery whose policy tables a hop's frozen
+// routes no longer describe: the tables are read live, the routes were fixed
+// when the run started, and a contract published since would deliver new
+// policies behind old routes. Called under the delivery lock, before reading.
+func (cluster *launcher) checkRoutingSnapshot(ctx context.Context) error {
+	if err := cluster.flow.CheckRoutingSnapshot(ctx, cluster.composed()); err != nil {
+		return fmt.Errorf("deliver no policy table behind the hop's routes: %w", err)
+	}
+	return nil
+}
+
+func (cluster *launcher) acquireDelivery(ctx context.Context) error {
+	cluster.deliveryOnce.Do(func() { cluster.delivery = semaphore.NewWeighted(1) })
+	return cluster.delivery.Acquire(ctx, 1)
 }
 
 // ensureEnvelope writes the composition's envelope — each module principal's
@@ -740,7 +958,7 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 // the fixture's platform administrator, unless the host holds it already. A
 // composition that states no grant writes none.
 func (cluster *launcher) ensureEnvelope(ctx context.Context, gatewayURL string) error {
-	grants, err := cluster.grants()
+	grants, err := cluster.grants(ctx)
 	if err != nil || len(grants) == 0 {
 		return err
 	}
@@ -772,10 +990,18 @@ func (cluster *launcher) fixtureAdministrator(ctx context.Context) (runfixture.A
 // grants each module principal, in the host's own grant shape. A platform base
 // states its modules' grants and a solution composed on it states its own
 // principal's; the consuming workspace decides a principal it states
-// (runfixture.ReadCompositionGrants).
-func (cluster *launcher) grants() (map[string]gitops.EnvelopeGrant, error) {
-	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), cluster.env.Name)
+// (runfixture.ReadCompositionGrants), with an entry for each prepared binding
+// a module installs (gitops.WithPreparedBindingGrants).
+func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.EnvelopeGrant, error) {
+	envelopeProfile, err := cluster.env.ConfigurationProfileName()
 	if err != nil {
+		return nil, err
+	}
+	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), envelopeProfile)
+	if err != nil {
+		return nil, err
+	}
+	if principals, err = gitops.WithPreparedBindingGrants(ctx, cluster.composed(), cluster.env, principals); err != nil {
 		return nil, err
 	}
 	out := map[string]gitops.EnvelopeGrant{}

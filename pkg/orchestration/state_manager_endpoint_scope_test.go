@@ -101,3 +101,38 @@ func mappingEndpointNames(mappings []*basev0.NetworkMapping) []string {
 	}
 	return names
 }
+
+// Three interfaces one endpoint implements bind three dependencies to one
+// producer. Its mappings are handed out once, not once per dependency: core
+// refuses a producer's endpoint name seen twice.
+func TestDependencyNetworkMappingsNameEachProducerOnce(t *testing.T) {
+	const dependencyUnique = "users/accounts"
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":            "name: scope\nlayout: modules\nmodules:\n    - name: mind\n    - name: users\n",
+		"modules/mind/module.codefly.yaml":  "kind: module\nname: mind\n",
+		"modules/users/module.codefly.yaml": "kind: module\nname: users\n",
+	})
+	published := func(name, api string) *basev0.Endpoint {
+		return &basev0.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}
+	}
+	state := &StateManager{
+		workspace: workspace,
+		networkMappings: map[string][]*basev0.NetworkMapping{
+			dependencyUnique: {
+				{Endpoint: published("connect", standards.CONNECT)},
+				{Endpoint: published("grpc", standards.GRPC)},
+			},
+		},
+	}
+	consumer := &resources.Service{Name: "mind"}
+	for range 3 {
+		consumer.ServiceDependencies = append(consumer.ServiceDependencies, &resources.ServiceDependency{
+			Name: "accounts", Module: "users", Endpoints: []*resources.EndpointReference{{Name: "connect"}},
+		})
+	}
+	consumer.WithModule("mind")
+
+	mappings, err := state.GetDependenciesNetworkMappings(context.Background(), consumer)
+	require.NoError(t, err)
+	require.Contains(t, mappingEndpointNames(mappings), "connect")
+}

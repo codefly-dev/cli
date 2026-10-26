@@ -159,6 +159,9 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		evidenceProvider = manager
 	}
 
+	if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return nil, nil, err
+	}
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
 	if err != nil {
 		return nil, nil, w.Wrap(err)

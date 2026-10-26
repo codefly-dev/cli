@@ -27,7 +27,10 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is a `v0.19.6` pseudo-version of core, ahead of any tag:
+The current pin is a `v0.19.7` pseudo-version of core: `257e6b23`, branch
+`chore/envelope-on-0.19.6`, which merges `v0.19.6` (with the git source
+declaration, codefly-dev/core#832) into `5522c4da`, the commit carrying the
+module envelope that `pkg/delivery/signing` uses. `v0.19.6` carries
 `b81d92e6`, the merge of codefly-dev/core#812 — the module manifest
 (`solutionhost.ModuleManifest`, one signed document per module, whose
 workload is `(service, container)` and which names no build) and

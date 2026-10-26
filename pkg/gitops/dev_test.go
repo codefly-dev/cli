@@ -542,3 +542,42 @@ func TestDeployDevRefusesAnUncommittedCellFile(t *testing.T) {
 	require.ErrorContains(t, err, "environment staging's cell file deployments/cells/staging/cell.yaml is not committed")
 	require.Zero(t, *calls)
 }
+
+// The delivery overlay (`module-manifests/`) is publish's: after a render,
+// publish settles and signs the manifest there, adds the delivery Job and
+// rewrites the kustomization, and the branch carries that version while the
+// render record still lists the provisional one. A dev deployment re-pins one
+// service's image and leaves the overlay as it finds it, so a tree whose only
+// difference from its render is that overlay is not "edited since its render":
+// the deployment proceeds and the re-derived inventory lists the overlay as
+// found. A moved service file still refuses (the test above).
+func TestDeployDevCarriesThePublishedDeliveryOverlayAsFound(t *testing.T) {
+	workspace, module := writeDevWorkspace(t)
+	renderDevFixture(t, workspace)
+	root := moduleRenderDestination(workspace, "shop")
+	inventory, err := LoadInventory(root)
+	require.NoError(t, err)
+	inventory.ModuleManifestPath = moduleManifestDir
+	require.NoError(t, writeCanonicalInventory(filepath.Join(root, InventoryFilename), &inventory))
+	overlay := filepath.Join(root, moduleManifestDir, "overlays", "staging")
+	require.NoError(t, os.MkdirAll(overlay, 0o755))
+	delivered := filepath.Join(overlay, "deliver-manifest.yaml")
+	require.NoError(t, os.WriteFile(delivered, []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-manifest\n"), 0o644))
+	source := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(source, resources.ServiceConfigurationName), []byte(devServiceYAML("api")), 0o644))
+	stubBuild(t, []string{"registry.example.com/acme/api@" + devNewDigest}, nil)
+	result, err := DeployDev(context.Background(), &DevRequest{
+		Workspace: workspace, Module: module, Service: "api", Environment: environmentNamed("staging"),
+		Source: DevSource{Dir: source, Origin: DevSourceFlag},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Changed)
+	after, err := LoadInventory(root)
+	require.NoError(t, err)
+	var listed bool
+	for _, file := range after.Files {
+		listed = listed || file.Path == moduleManifestDir+"/overlays/staging/deliver-manifest.yaml"
+	}
+	require.True(t, listed, "the re-derived inventory lists the delivery overlay as found: %+v", after.Files)
+	require.Equal(t, moduleManifestDir, after.ModuleManifestPath)
+}

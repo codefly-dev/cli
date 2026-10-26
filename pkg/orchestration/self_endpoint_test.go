@@ -98,7 +98,7 @@ func TestNativeRunDeliversTheEnvironmentsTelemetryCarriers(t *testing.T) {
 	}
 	got := runner.runtimeOverridesFor(nil)
 	require.Equal(t, "http://localhost:4317", got["OTEL_EXPORTER_OTLP_ENDPOINT"])
-	require.Equal(t, "service.namespace=saas,deployment.environment.name=local", got["OTEL_RESOURCE_ATTRIBUTES"])
+	require.Equal(t, "deployment.environment.name=local", got["OTEL_RESOURCE_ATTRIBUTES"])
 	require.Equal(t, "operator-named", got["OTEL_SERVICE_NAME"], "an explicit --set of the same key is the operator's to make")
 
 	silent := &Runner{instance: instance, world: &World{Env: &environments.Environment{Name: "local"}}, runtimeContext: resources.RuntimeContextNative}

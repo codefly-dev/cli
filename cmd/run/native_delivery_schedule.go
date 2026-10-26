@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"syscall"
 	"time"
@@ -32,7 +31,12 @@ type launcherFlow interface {
 	World() *orchestration.World
 	ServiceFromUnique(unique string) (*resources.Service, error)
 	GetAddressForEndpoint(ctx context.Context, module, service, endpoint string) (string, error)
+	GRPCEndpointTarget(ctx context.Context, module, service, endpoint string) (orchestration.GRPCTarget, error)
+	ServiceRuntimeContext(unique string) string
 	EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error)
+	ReadyEndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess, services []string) (map[string]string, error)
+	LocalRuntimeServices() []string
+	CheckRoutingSnapshot(ctx context.Context, workspace *resources.Workspace) error
 	ServiceReadiness(ctx context.Context, service string) *orchestration.ReadinessFailure
 }
 
@@ -59,30 +63,24 @@ var (
 )
 
 func deliveryAbandoned(err error) bool {
-	return errors.Is(err, errRunStopped) || errors.Is(err, errWorkloadGone) || errors.Is(err, errSuperseded)
+	return errors.Is(err, context.Canceled) || errors.Is(err, errRunStopped) || errors.Is(err, errWorkloadGone) || errors.Is(err, errSuperseded)
 }
 
 // transientDeliveryRefusal reports whether a failed delivery attempt says the
-// host is not serving yet rather than that it refuses: a 5xx (the envelope
-// read's 503 among them); a 404 from the gateway, before it exposes the route
-// (a 404 from the host's own delivery endpoint is a wrong endpoint, not a
-// wait); a 409 on the envelope (a lost revision race); or no answer at all —
-// refused, reset or timed out, never a request that could not be formed.
-// Anything else — another 4xx, a policy refusal, a manifest the host refuses —
-// is not, and fails at once.
+// host is not serving yet rather than that it refuses: the host was
+// unreachable, out of time or out of capacity (HostStatusError.Transient, which
+// also classifies the legacy HTTP delivery's statuses), or the HTTP request got
+// no answer at all.
+// Anything else — an interface the host does not serve, a policy refusal, a
+// manifest the host refuses, a refusal it could not classify — is its answer,
+// and fails at once with its reason.
 func transientDeliveryRefusal(err error) bool {
 	var refusal *gitops.HostStatusError
 	if errors.As(err, &refusal) {
-		switch {
-		case refusal.Status >= http.StatusInternalServerError:
-			return true
-		case refusal.Status == http.StatusNotFound:
-			return refusal.Gateway
-		case refusal.Status == http.StatusConflict:
-			return refusal.Envelope
-		}
-		return false
+		return refusal.Transient()
 	}
+	// The legacy HTTP delivery's no answer at all: refused, reset or timed
+	// out, never a request that could not be formed.
 	var transport *url.Error
 	if !errors.As(err, &transport) {
 		return false
@@ -111,18 +109,66 @@ type hostDelivery struct {
 // are logged at info, each retry at debug. A non-transient refusal is
 // returned at once; at the deadline, the reason the host is still not
 // serving and the last refusal it answered.
-func (d hostDelivery) run(ctx context.Context) error {
-	deadline := time.Now().Add(d.schedule.Deadline)
+func (d hostDelivery) run(parent context.Context) (result error) {
+	bounded, timeout := context.WithTimeout(parent, d.schedule.Deadline)
+	defer timeout()
+	ctx, cancel := context.WithCancelCause(bounded)
+	defer cancel(nil)
+	// Stop and supersession must reach a readiness probe or delivery RPC already
+	// in flight, not just the wait between attempts. The owned calls honor ctx.
+	go func() {
+		select {
+		case <-d.stop:
+			cancel(errRunStopped)
+		case <-d.superseded:
+			cancel(errSuperseded)
+		case <-ctx.Done():
+		}
+	}()
+	cancellation := func() error {
+		// Check the lifecycle channels synchronously too: a preclosed channel
+		// must prevent the first call without waiting for the watcher to run.
+		select {
+		case <-d.stop:
+			cancel(errRunStopped)
+		case <-d.superseded:
+			cancel(errSuperseded)
+		default:
+		}
+		return context.Cause(ctx)
+	}
+	deadline, _ := ctx.Deadline()
 	backoff := d.schedule.FirstBackoff
 	var reason string
 	var lastRefusal error
+	phase := "checking host readiness"
+	defer func() {
+		if errors.Is(result, context.DeadlineExceeded) {
+			result = fmt.Errorf("delivery completion was not confirmed before its deadline (configured bound %s; %s; last wait reason: %q): %w", d.schedule.Deadline, phase, reason, result)
+			if lastRefusal != nil {
+				result = fmt.Errorf("%w (its last refusal: %w)", result, lastRefusal)
+			}
+		}
+	}()
 	for attempt := 1; ; attempt++ {
+		if err := cancellation(); err != nil {
+			return err
+		}
+		phase = "checking host readiness"
 		err := d.ready(ctx)
+		if cause := cancellation(); cause != nil {
+			return cause
+		}
 		if errors.Is(err, errWorkloadGone) {
 			return err
 		}
 		if err == nil {
-			if err = d.deliver(ctx); err == nil {
+			phase = "delivering the manifest"
+			err = d.deliver(ctx)
+			if cause := cancellation(); cause != nil {
+				return cause
+			}
+			if err == nil {
 				if attempt > 1 {
 					d.log.Info("delivered once the host was serving", wool.Field("attempts", attempt))
 				}
@@ -134,10 +180,7 @@ func (d hostDelivery) run(ctx context.Context) error {
 			lastRefusal = err
 		}
 		if !time.Now().Add(backoff).Before(deadline) {
-			if lastRefusal != nil && lastRefusal != err {
-				return fmt.Errorf("the host did not accept the delivery within %s: %w (its last refusal: %w)", d.schedule.Deadline, err, lastRefusal)
-			}
-			return fmt.Errorf("the host did not accept the delivery within %s: %w", d.schedule.Deadline, err)
+			return errors.Join(context.DeadlineExceeded, err)
 		}
 		if err.Error() != reason {
 			reason = err.Error()
@@ -145,6 +188,8 @@ func (d hostDelivery) run(ctx context.Context) error {
 		}
 		d.log.Debug("retrying the delivery", wool.Field("attempt", attempt), wool.Field("in", backoff.String()), wool.ErrField(err))
 		select {
+		case <-ctx.Done():
+			return cancellation()
 		case <-d.stop:
 			return errRunStopped
 		case <-d.superseded:
@@ -159,7 +204,11 @@ func (d hostDelivery) run(ctx context.Context) error {
 // the gateway the envelope is written through, then the service whose
 // delivery endpoint receives the documents.
 func (cluster *launcher) hostReady(ctx context.Context) error {
-	for _, unique := range []string{cluster.env.Host.Gateway, cluster.hostModule + "/" + cluster.hostService} {
+	hosts, err := nativeHostServices(ctx, cluster.composed(), cluster.env)
+	if err != nil {
+		return err
+	}
+	for _, unique := range hosts {
 		if unique == "" {
 			continue
 		}

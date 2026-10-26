@@ -94,3 +94,41 @@ service-mesh:
 		t.Fatalf("a mistyped key is refused: %v", err)
 	}
 }
+
+// The egress group a service receives is its own declaration, every port
+// explicit and sorted, the list the cell file carries for it; a service the
+// environment declares nothing for receives the group with HOSTS empty.
+func TestEgressGroupCarriesExactlyTheServicesDeclaredHosts(t *testing.T) {
+	env := decodeEnvironment(t, `name: staging
+egress:
+  shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
+  shop/web: {hosts: [cdn.example.test]}
+`)
+	hostsOf := func(env *Environment, module, service string) string {
+		t.Helper()
+		group := env.EgressGroup(module, service)
+		if len(group.Infos) != 1 || group.Infos[0].Name != EgressConfiguration || len(group.Infos[0].ConfigurationValues) != 1 {
+			t.Fatalf("group = %+v", group)
+		}
+		value := group.Infos[0].ConfigurationValues[0]
+		if value.Key != EgressHostsKey || value.Secret {
+			t.Fatalf("value = %+v", value)
+		}
+		return value.Value
+	}
+	if got := hostsOf(env, "shop", "api"); got != "api.github.com:8443,identity.example.test:443" {
+		t.Fatalf("shop/api HOSTS = %q", got)
+	}
+	if got := hostsOf(env, "shop", "web"); got != "cdn.example.test:443" {
+		t.Fatalf("shop/web HOSTS = %q", got)
+	}
+	for _, other := range [][2]string{{"shop", "worker"}, {"edge", "api"}} {
+		if got := hostsOf(env, other[0], other[1]); got != "" {
+			t.Fatalf("%s/%s declares no egress, HOSTS = %q", other[0], other[1], got)
+		}
+	}
+	var none *Environment
+	if got := hostsOf(none, "shop", "api"); got != "" {
+		t.Fatalf("no environment, HOSTS = %q", got)
+	}
+}

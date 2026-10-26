@@ -17,7 +17,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
@@ -34,7 +33,10 @@ import (
 // environment, in the shape the consumer reads (pkg/gitops/cellfile).
 //
 // It is regenerated whole after every module render, so absence is correct: a
-// workload not in the file is not delivered. It cannot live in a module's owned
+// workload not in the file is not delivered. That is why it is never written
+// while a module the workspace composes has no render for the environment
+// (refuseUnrenderedModules), and why a publication holds it to the delivery
+// base branch's file (holdCellToBase). It cannot live in a module's owned
 // tree, where the promotable ruleset admits only Kubernetes manifests and
 // Kustomizations; it lives beside the module trees, under
 // <gitops path>/cells/<environment>/cell.yaml, and is committed with them.
@@ -141,6 +143,14 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
 		}
+		// A tree rendered before the environment excluded one of its services
+		// still delivers it; describing it would put back what the
+		// composition withdrew.
+		for index := range inventory.Units {
+			if unit := &inventory.Units[index]; env.Excludes(inventory.Module, unit.Name) {
+				return cellfile.File{}, CellResult{}, fmt.Errorf("the render of module %s still delivers %s/%s, which environment %s excludes (exclude-services); render %s again for %s", inventory.Module, inventory.Module, unit.Name, env.Name, inventory.Module, env.Name)
+			}
+		}
 		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)
 		if namespaceErr != nil {
 			return cellfile.File{}, CellResult{}, namespaceErr
@@ -151,6 +161,9 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if len(file.Namespaces) == 0 {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
 	}
+	if err = refuseUnrenderedModules(workspace, env, result.Modules); err != nil {
+		return cellfile.File{}, CellResult{}, err
+	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
@@ -158,6 +171,40 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		return cellfile.File{}, CellResult{}, err
 	}
 	return file, result, nil
+}
+
+// refuseUnrenderedModules refuses a cell file that would leave out a module
+// the workspace composes because no render of it for this environment is in
+// the checkout: the record is missing (never rendered, or cleaned away with
+// the rest of the uncommitted render outputs) or describes another
+// environment. The file is regenerated whole and absence is removal, so such
+// a file would withdraw every workload that module delivers from the cell's
+// admission set, and nothing would say so.
+//
+// It refuses rather than keeping the module's entries from the cell file
+// already on disk: an entry is derived from the composition as a whole — its
+// consumers are other modules' declared dependencies, its bindings and egress
+// the environment's — so an entry carried over from an earlier render is a
+// claim about a composition that may no longer exist, and the file it was
+// read from is as likely to have been cleaned as the records were. No digest
+// is invented either: the render of the module is what knows it.
+func refuseUnrenderedModules(workspace *resources.Workspace, env *environments.Environment, rendered []string) error {
+	var missing []string
+	for _, reference := range workspace.Modules {
+		if reference != nil && !slices.Contains(rendered, reference.Name) {
+			missing = append(missing, reference.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	commands := make([]string, 0, len(missing))
+	for _, module := range missing {
+		commands = append(commands, fmt.Sprintf("codefly deploy gitops render %s --env %s", module, env.Name))
+	}
+	return fmt.Errorf("environment %s's cell file is not written: this checkout holds no render for %s of the composed module(s) %s, and a cell file without them would withdraw every workload they deliver from the cell; render them (%s), or every module at once with `codefly deploy gitops render --all --env %s`",
+		env.Name, env.Name, strings.Join(missing, ", "), strings.Join(commands, "; "), env.Name)
 }
 
 // writeCell encodes the cell file and writes it at path.
@@ -197,7 +244,11 @@ func cellSource(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if len(revision) != 40 {
 		return nil
 	}
-	return &cellfile.Source{Repo: env.Gitops.RepoURL, Revision: revision, Branch: env.Gitops.Branch}
+	source := &cellfile.Source{Repo: env.Gitops.RepoURL, Revision: revision, Branch: env.Gitops.Branch}
+	if path, err := validateRelativePath(env.Gitops.Path); err == nil && path != "" && path != DefaultGitopsPath {
+		source.Path = filepath.ToSlash(path)
+	}
+	return source
 }
 
 // cellNamespace derives one module's namespace entry from its rendered tree
@@ -476,7 +527,11 @@ func carriesDelivery(workspace *resources.Workspace, env *environments.Environme
 	if !inventory.HostsDelivery || env.Host == nil || workspace == nil {
 		return false, nil
 	}
-	return fixture.StatesGrants(workspace, env.Name)
+	profile, err := env.ConfigurationProfileName()
+	if err != nil {
+		return false, err
+	}
+	return fixture.StatesGrants(workspace, profile)
 }
 
 // cellDelivery is the presence carrier of a module that carries delivery for a
@@ -535,7 +590,21 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 				return nil, nil, fmt.Errorf("load service %s/%s to index its dependencies: %w", module.Name, serviceReference.Name, err)
 			}
 			consumer := resources.ServiceUnique(module.Name, service.Name)
+			if env.Excludes(module.Name, service.Name) {
+				continue
+			}
 			for _, dependency := range service.ServiceDependencies {
+				if dependency == nil {
+					continue
+				}
+				targetModule := dependency.Module
+				if targetModule == "" {
+					targetModule = module.Name
+				}
+				// A withdrawn edge reaches nothing in this environment.
+				if env.Excludes(targetModule, dependency.Name) {
+					continue
+				}
 				for _, key := range dependencyKeys(ctx, workspace, module.Name, dependency) {
 					add(key, consumer)
 				}
@@ -545,7 +614,7 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 				reads = append(reads, references[group]...)
 			}
 			for _, read := range reads {
-				key, err := configuredEndpoint(ctx, workspace, consumer, read)
+				key, err := configuredEndpoint(ctx, workspace, env, consumer, read)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -596,7 +665,7 @@ type configuredReference struct{ source, reference string }
 // reading one dials that endpoint, so it is a consumer of it exactly as a
 // service dependency makes it one.
 func configuredEndpointReferences(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string][]configuredReference, error) {
-	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	reader, err := orchestration.NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -623,13 +692,16 @@ func configuredEndpointReferences(ctx context.Context, workspace *resources.Work
 // configuredEndpoint is the `<module>/<service>/<endpoint>` a configured
 // reference names, refused, naming the service, the key and the target, when
 // the composition has no such endpoint.
-func configuredEndpoint(ctx context.Context, workspace *resources.Workspace, consumer string, read configuredReference) (string, error) {
+func configuredEndpoint(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, consumer string, read configuredReference) (string, error) {
 	refuse := func(why string) error {
 		return fmt.Errorf("service %s reads %s = ${endpoint:%s}, %s", consumer, read.source, read.reference, why)
 	}
 	info, err := resources.ParseEndpointReference(read.reference)
 	if err != nil {
 		return "", refuse(err.Error())
+	}
+	if env.Excludes(info.Module, info.Service) {
+		return "", refuse(fmt.Sprintf("but environment %s excludes %s/%s (exclude-services), so it has no address there", env.Name, info.Module, info.Service))
 	}
 	target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: info.Service, Module: info.Module})
 	if err != nil {

@@ -33,6 +33,11 @@ type StateManager struct {
 
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
+	// Generated hop snapshots retain these exact addresses until run restart.
+	routingMappings map[string]frozenRoute
+	// How many times each service has recorded its mappings: one means the
+	// recorded set is its first Init's.
+	networkMappingRecords map[string]int
 }
 
 // SetDependencies rebinds the dependency graph. Used by Flow when
@@ -238,7 +243,15 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 	}
 	s.mu.RLock()
 	var candidates []*basev0.NetworkMapping
+	// Several dependencies can name one producer (three interfaces one
+	// endpoint implements bind to the same service), and its mappings are
+	// that producer's once: core judges each dependency against them.
+	producers := make(map[string]struct{}, len(service.ServiceDependencies))
 	for _, req := range service.ServiceDependencies {
+		if _, seen := producers[req.Unique()]; seen {
+			continue
+		}
+		producers[req.Unique()] = struct{}{}
 		for _, mapping := range s.networkMappings[req.Unique()] {
 			if mapping == nil {
 				continue
@@ -286,7 +299,14 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *resou
 		return w.Wrapf(err, "cannot get service identity")
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err = s.checkFrozenRoutes(id.Unique(), mappings); err != nil {
+		return err
+	}
 	s.networkMappings[id.Unique()] = mappings
-	s.mu.Unlock()
+	if s.networkMappingRecords == nil {
+		s.networkMappingRecords = map[string]int{}
+	}
+	s.networkMappingRecords[id.Unique()]++
 	return nil
 }

@@ -186,3 +186,26 @@ func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) 
 		})
 	}
 }
+
+// The egress group is generated from the environment's egress declaration on
+// every run and render, so the doctor never asks a configuration directory
+// for it, on any environment.
+func TestReadinessCountsTheEgressGroupAsGenerated(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                            "name: demo\nlayout: modules\nmodules:\n    - name: backend\nenvironments:\n  - name: local\n",
+		"modules/backend/module.codefly.yaml":               testModuleYAML("api"),
+		"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "egress"),
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	if report.Status != readinessStatusReady {
+		t.Fatalf("status = %q, want ready\n%s", report.Status, reportJSON(t, report))
+	}
+	requireNoCode(t, report, codeConfigurationMissing)
+	for _, check := range report.Checks {
+		if check.Name == "workspace configurations" && check.Status == "ok" && strings.Contains(check.Message, `"egress"`) &&
+			strings.Contains(check.Message, "generated from the environment's egress declaration") && strings.Contains(check.Message, "backend/api") {
+			return
+		}
+	}
+	t.Fatalf("missing ok report for egress: %s", reportJSON(t, report))
+}
