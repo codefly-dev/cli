@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
@@ -202,19 +204,69 @@ func TestNativeAuthorityOrdersHostWithoutAuthoredDependency(t *testing.T) {
 	require.Empty(t, order)
 }
 
-func TestAdmissionRefusesUndeliveredBindingBeforeSending(t *testing.T) {
-	for _, audience := range []string{"missing", "model"} {
+// writeTargetBinding gives alpha one binding, read-target, addressed to the
+// audience the composition names.
+func writeTargetBinding(t *testing.T, cluster *launcher, audience string) {
+	t.Helper()
+	contract := "schema: codefly/module-contract/v1\nprincipal: alpha\nnamespaces: []\nqueues: []\ndestinations: []\nscope_ceilings: []\nbindings:\n  - id: read-target\n    operations: [invoke]\n    audience: {from: target/read-audience}\n    scope_ceiling:\n      invoke:\n        - resource_kind: target.item\n          actions: [read]\n"
+	configDir := filepath.Join(cluster.composed().Dir(), "configurations", "local")
+	require.NoError(t, os.MkdirAll(configDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "target.env"), []byte("READ_AUDIENCE="+audience+"\n"), 0600))
+	path := filepath.Join(cluster.composed().Dir(), "modules", "alpha", "module.contract.codefly.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(contract), 0600))
+}
+
+// A binding to the host's own module could never be served: the run declares
+// that module to no authority, so admission refuses the whole selection
+// before sending any manifest.
+func TestAdmissionRefusesBindingToHostBeforeSending(t *testing.T) {
+	cluster, peer := admissionLauncher(t)
+	writeTargetBinding(t, cluster, "model")
+	err := cluster.admitSelected(t.Context())
+	require.ErrorContains(t, err, "binding read-target targets model, the host's own module")
+	require.Empty(t, peer.snapshots(), "validate the entire selection before applying any manifest")
+}
+
+// A run composes a unit and only the modules it consumes: a binding to a
+// module outside the run, or to one selected only through services with no
+// identity workload, does not stop startup. It is delivered as declared, for
+// the authority to decide at call time; every selected module is admitted
+// with its own workloads only; a binding outside the run is said once.
+func TestAdmissionDeliversBindingsOutsideTheRunAsDeclared(t *testing.T) {
+	for _, audience := range []string{"missing", "store", "beta"} {
 		t.Run(audience, func(t *testing.T) {
 			cluster, peer := admissionLauncher(t)
-			contract := "schema: codefly/module-contract/v1\nprincipal: alpha\nnamespaces: []\nqueues: []\ndestinations: []\nscope_ceilings: []\nbindings:\n  - id: read-target\n    operations: [invoke]\n    audience: {from: target/read-audience}\n    scope_ceiling:\n      invoke:\n        - resource_kind: target.item\n          actions: [read]\n"
-			configDir := filepath.Join(cluster.composed().Dir(), "configurations", "local")
-			require.NoError(t, os.MkdirAll(configDir, 0700))
-			require.NoError(t, os.WriteFile(filepath.Join(configDir, "target.env"), []byte("READ_AUDIENCE="+audience+"\n"), 0600))
-			path := filepath.Join(cluster.composed().Dir(), "modules", "alpha", "module.contract.codefly.yaml")
-			require.NoError(t, os.WriteFile(path, []byte(contract), 0600))
-			err := cluster.admitSelected(t.Context())
-			require.ErrorContains(t, err, "binding read-target targets "+audience)
-			require.Empty(t, peer.snapshots(), "validate the entire selection before applying any manifest")
+			flow, ok := cluster.flow.(*admissionFlow)
+			require.True(t, ok)
+			flow.selected = append(flow.selected, "store/db") // a datastore: selected, no identity workload
+			writeTargetBinding(t, cluster, audience)
+			capture := &refreshLogCapture{}
+			provider := wool.New(context.Background(), &wool.Resource{}).WithLogger(capture)
+			defer provider.Done()
+			ctx := provider.Inject(t.Context())
+			for range 2 { // admission repeats on every start
+				require.NoError(t, cluster.admitSelected(ctx))
+			}
+			admitted := map[string]bool{}
+			for _, m := range peer.snapshots() {
+				admitted[m.Alias] = true
+				require.NotNil(t, m.Authority)
+				require.Len(t, m.Workloads, 1)
+				require.Equal(t, "api", m.Workloads[0].Service, "an identity is declared for a selected workload only")
+				if m.Alias != "alpha" {
+					continue
+				}
+				require.Len(t, m.Authority.Bindings, 1)
+				require.Equal(t, "read-target", m.Authority.Bindings[0].ID)
+				require.Equal(t, audience, m.Authority.Bindings[0].Audience, "the binding is delivered as declared")
+			}
+			require.Equal(t, map[string]bool{"alpha": true, "beta": true}, admitted, "only selected modules with an identity workload are admitted")
+			said := strings.Count(strings.Join(capture.messages, "\n"), "binding read-target targets "+audience+", which is not part of this run")
+			if audience == "missing" {
+				require.Equal(t, 1, said, "a binding outside the run is said, once")
+			} else {
+				require.Zero(t, said, "a binding to a selected module is part of the run")
+			}
 		})
 	}
 }

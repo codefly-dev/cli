@@ -160,27 +160,52 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		}
 	}
 
-	if err := writeContractFiles(ctx, req.Output, req.Entries); err != nil {
-		return fmt.Errorf("cannot write contract: %w", err)
-	}
-
 	pyPackage := strings.ReplaceAll(req.Name, "-", "_")
 	version := libraryVersion(req.Output, req.Entries)
+	if strings.TrimSpace(version) == "" {
+		// Refused before anything is generated, so the library is untouched.
+		return fmt.Errorf("library %s declares no version: its producer's version is empty", req.Name)
+	}
 
-	var langExports []generatedLanguageExport
+	// Every language is generated before anything under req.Output is
+	// touched. The companion runs are what fail — a contract that does not
+	// compile, a buf dependency that does not resolve, an image that is not
+	// there — and they write only into scratch directories; the library is
+	// rewritten from those once all of them have succeeded. A failed run
+	// leaves the library exactly as it found it, generated files and
+	// hand-written ones alike, as `generate proto` does with its staging tree.
+	var staged []*stagedLanguage
+	defer func() {
+		for _, s := range staged {
+			s.remove()
+		}
+	}()
 	for _, lang := range req.Languages {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		export, genErr := generateLanguageForEntries(ctx, lang, filepath.Join(req.Output, string(lang)), req.Entries, !req.NoFacade, req.GoModule, req.NpmPackage, pyPackage)
+		s, genErr := stageLanguage(ctx, lang, filepath.Join(req.Output, string(lang)), req.Entries, !req.NoFacade, req.GoModule)
 		if genErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
 		}
-		if err := stampPackageVersion(lang, filepath.Join(req.Output, string(lang)), version); err != nil {
-			return fmt.Errorf("cannot set the %s client's version: %w", lang, err)
+		staged = append(staged, s)
+	}
+
+	if err := writeContractFiles(ctx, req.Output, req.Entries); err != nil {
+		return fmt.Errorf("cannot write contract: %w", err)
+	}
+
+	var langExports []generatedLanguageExport
+	for _, s := range staged {
+		export, applyErr := s.apply(req.GoModule, req.NpmPackage, pyPackage)
+		if applyErr != nil {
+			return fmt.Errorf("cannot generate %s client: %w", s.lang, applyErr)
+		}
+		if err := stampPackageVersion(s.lang, s.langDir, version); err != nil {
+			return fmt.Errorf("cannot set the %s client's version: %w", s.lang, err)
 		}
 		langExports = append(langExports, export)
-		cli.Info("generated %s client at %s", lang, filepath.Join(req.Output, string(lang)))
+		cli.Info("generated %s client at %s", s.lang, s.langDir)
 	}
 
 	langExports = mergeLanguageExports(existingLanguages, langExports, req.Languages)
@@ -233,72 +258,134 @@ func checkContractDiamond(entries []ContractEntry) error {
 	return nil
 }
 
-// generateLanguageForEntries generates one language's export for the library.
-// An OpenAPI contract has no facade to aggregate and is only ever generated
-// alone (GenerateClientLibrary refuses to mix it with other entries).
-func generateLanguageForEntries(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade bool, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
-	if err := os.MkdirAll(langDir, 0o755); err != nil {
-		return generatedLanguageExport{}, err
-	}
-	if len(entries) == 1 && entries[0].Endpoint.Kind == composition.APIContractKindOpenAPI {
-		return generateOpenAPILanguageEntry(ctx, lang, langDir, &entries[0], goModule, npmPackage)
-	}
-	return generateProtobufLanguageEntries(ctx, lang, langDir, entries, facade, goModule, npmPackage, pyPackage)
+// stagedLanguage is one language's generated output, held in scratch
+// directories until every language of the run has generated, then applied
+// to langDir. An OpenAPI contract has no facade to aggregate and is only ever
+// generated alone (GenerateClientLibrary refuses to mix it with other
+// entries), so a language holds either protobuf entries or one OpenAPI tree.
+type stagedLanguage struct {
+	lang    languages.Language
+	langDir string
+	entries []stagedEntry
+	openAPI string
 }
 
-// generateProtobufLanguageEntries wipes langDir's generated content once,
-// then runs proto.GenerateClient once per entry and merges each result in —
-// so N entries land in one gen/ tree with one facade file per entry, sharing
-// one scaffold.
-func generateProtobufLanguageEntries(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade bool, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
+// stagedEntry is one protobuf contract entry generated into raw, with the
+// upstream proto modules it dropped from the output, which the library's own
+// dependency declaration must cover.
+type stagedEntry struct {
+	raw        string
+	moduleName string
+	mapped     []upstreamProtoModule
+}
+
+func (s *stagedLanguage) remove() {
+	for _, entry := range s.entries {
+		_ = os.RemoveAll(entry.raw)
+	}
+	if s.openAPI != "" {
+		_ = os.RemoveAll(s.openAPI)
+	}
+}
+
+// stageLanguage runs the companion for every entry of one language, writing
+// only into scratch directories. On error it leaves nothing behind.
+func stageLanguage(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade bool, goModule string) (_ *stagedLanguage, err error) {
+	staged := &stagedLanguage{lang: lang, langDir: langDir}
+	defer func() {
+		if err != nil {
+			staged.remove()
+		}
+	}()
+	if len(entries) == 1 && entries[0].Endpoint.Kind == composition.APIContractKindOpenAPI {
+		staged.openAPI, err = stageOpenAPIEntry(ctx, lang, langDir, &entries[0], goModule)
+		return staged, err
+	}
 	switch lang {
-	case languages.GO:
-		if err := wipeGoLibrary(langDir); err != nil {
-			return generatedLanguageExport{}, err
-		}
-	case languages.TYPESCRIPT:
-		if err := wipeTypeScriptLibrary(langDir); err != nil {
-			return generatedLanguageExport{}, err
-		}
-	case languages.PYTHON:
-		if err := wipePythonLibrary(filepath.Join(langDir, pyPackage)); err != nil {
-			return generatedLanguageExport{}, err
-		}
+	case languages.GO, languages.TYPESCRIPT, languages.PYTHON:
 	default:
-		return generatedLanguageExport{}, fmt.Errorf("language %s is not supported for client generation", lang)
+		return nil, fmt.Errorf("language %s is not supported for client generation", lang)
+	}
+	for i := range entries {
+		entry := &entries[i]
+		generated, genErr := stageProtobufEntry(ctx, lang, entry, facade)
+		if genErr != nil {
+			return nil, fmt.Errorf("entry %s/%s/%s: %w", entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint, genErr)
+		}
+		staged.entries = append(staged.entries, generated)
+	}
+	return staged, nil
+}
+
+// apply rewrites langDir from the staged output: it wipes langDir's generated
+// content once, merges each entry in — so N entries land in one gen/ tree
+// with one facade file per entry, sharing one scaffold — and finalizes the
+// scaffold. What the wipe spares (hand-written files, a hand-edited
+// scaffold) is the wipe's own rule; staging only decides when it runs.
+func (s *stagedLanguage) apply(goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
+	if err := os.MkdirAll(s.langDir, 0o755); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if s.openAPI != "" {
+		return applyOpenAPILibrary(s.lang, s.langDir, s.openAPI, goModule, npmPackage)
+	}
+	pkgDir := filepath.Join(s.langDir, pyPackage)
+	var wipeErr error
+	switch s.lang {
+	case languages.GO:
+		wipeErr = wipeGoLibrary(s.langDir)
+	case languages.TYPESCRIPT:
+		wipeErr = wipeTypeScriptLibrary(s.langDir)
+	case languages.PYTHON:
+		wipeErr = wipePythonLibrary(pkgDir)
+	}
+	if wipeErr != nil {
+		return generatedLanguageExport{}, wipeErr
 	}
 
 	var mapped []upstreamProtoModule
-	for i := range entries {
-		entry := &entries[i]
-		marked, err := generateOneProtobufEntry(ctx, lang, langDir, entry, facade, goModule, pyPackage)
-		if err != nil {
-			return generatedLanguageExport{}, fmt.Errorf("entry %s/%s/%s: %w", entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint, err)
+	for _, entry := range s.entries {
+		var mergeErr error
+		switch s.lang {
+		case languages.GO:
+			mergeErr = mergeGoEntry(s.langDir, entry.raw, entry.moduleName, goModule)
+		case languages.TYPESCRIPT:
+			mergeErr = mergeTypeScriptEntry(s.langDir, entry.raw)
+		case languages.PYTHON:
+			mergeErr = mergePythonEntry(pkgDir, entry.raw, entry.moduleName, pyPackage)
 		}
-		mapped = append(mapped, marked...)
+		if mergeErr != nil {
+			return generatedLanguageExport{}, mergeErr
+		}
+		mapped = append(mapped, entry.mapped...)
 	}
 
-	switch lang {
+	switch s.lang {
 	case languages.GO:
-		return finalizeGoLibrary(langDir, goModule)
+		return finalizeGoLibrary(s.langDir, goModule)
 	case languages.TYPESCRIPT:
-		return finalizeTypeScriptLibrary(langDir, npmPackage)
-	case languages.PYTHON:
-		return finalizePythonLibrary(langDir, pyPackage, pythonPackagesFor(mapped))
+		return finalizeTypeScriptLibrary(s.langDir, npmPackage)
 	default:
-		return generatedLanguageExport{}, fmt.Errorf("language %s is not supported for client generation", lang)
+		return finalizePythonLibrary(s.langDir, pyPackage, pythonPackagesFor(mapped))
 	}
 }
 
-// generateOneProtobufEntry generates one contract entry into langDir and
-// reports the upstream proto modules it dropped from the output, which the
-// library's own dependency declaration must now cover.
-func generateOneProtobufEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, facade bool, goModule, pyPackage string) ([]upstreamProtoModule, error) {
+// stageProtobufEntry generates one contract entry into a scratch directory of
+// its own, which the caller owns once this returns without error.
+func stageProtobufEntry(ctx context.Context, lang languages.Language, entry *ContractEntry, facade bool) (_ stagedEntry, err error) {
+	var set descriptorpb.FileDescriptorSet
+	if err = googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
+		return stagedEntry{}, fmt.Errorf("cannot parse contract descriptor set: %w", err)
+	}
 	raw, err := os.MkdirTemp("", "codefly-client-raw")
 	if err != nil {
-		return nil, err
+		return stagedEntry{}, err
 	}
-	defer func() { _ = os.RemoveAll(raw) }()
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(raw)
+		}
+	}()
 
 	moduleName := entryModuleName(entry)
 	req := coreproto.ClientRequest{
@@ -308,10 +395,6 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		Services:    entry.Services,
 		Facade:      facade,
 		GoRequires:  linkedGoBindings(),
-	}
-	var set descriptorpb.FileDescriptorSet
-	if err := googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
-		return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
 	}
 	var mapped []upstreamProtoModule
 	if len(entry.ProtoSources) > 0 && !vendorsUpstreamModules(entry.ProtoSources, &set, lang) {
@@ -326,28 +409,18 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		req.Sources = entry.ProtoSources
 		mapped = upstreamModulesIn(&set, lang)
 	} else {
-		image, marked, err := markUpstreamModulesAsImports(&set, lang)
-		if err != nil {
-			return nil, fmt.Errorf("cannot prepare contract descriptor set: %w", err)
+		image, marked, markErr := markUpstreamModulesAsImports(&set, lang)
+		if markErr != nil {
+			return stagedEntry{}, fmt.Errorf("cannot prepare contract descriptor set: %w", markErr)
 		}
 		req.DescriptorSet = image
 		req.TargetFiles = targetFilesForPackage(&set, entry.Endpoint.Package)
 		mapped = marked
 	}
-	if err := coreproto.GenerateClient(ctx, req); err != nil {
-		return nil, err
+	if err = coreproto.GenerateClient(ctx, req); err != nil {
+		return stagedEntry{}, err
 	}
-
-	switch lang {
-	case languages.GO:
-		return mapped, mergeGoEntry(langDir, raw, moduleName, goModule)
-	case languages.TYPESCRIPT:
-		return mapped, mergeTypeScriptEntry(langDir, raw)
-	case languages.PYTHON:
-		return mapped, mergePythonEntry(filepath.Join(langDir, pyPackage), raw, moduleName, pyPackage)
-	default:
-		return nil, fmt.Errorf("language %s is not supported for client generation", lang)
-	}
+	return stagedEntry{raw: raw, moduleName: moduleName, mapped: mapped}, nil
 }
 
 // entryModuleName is the facade entry-point name proto.GenerateClient uses
@@ -361,14 +434,6 @@ func entryModuleName(entry *ContractEntry) string {
 		return entry.FacadeModuleDefault
 	}
 	return defaultFacadeModule
-}
-
-// generateOpenAPILanguageEntry synthesizes a basev0.Endpoint carrying the raw
-// OpenAPI document (the only thing proto.GenerateOpenAPI reads) and runs it.
-// OpenAPI clients have no facade: proto.GenerateOpenAPI's contract-derived
-// codegen is a plain typed HTTP client.
-func generateOpenAPILanguageEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule, npmPackage string) (generatedLanguageExport, error) {
-	return assembleOpenAPILibrary(ctx, lang, langDir, entry, goModule, npmPackage)
 }
 
 // upstreamProtoModule is a shared proto module a persisted contract carries
