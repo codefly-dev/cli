@@ -102,8 +102,9 @@ owner must still serve it.
 In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
 binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
 and lookup. Every required slot needs exact resource kinds, actions and ids;
-missing selections, wildcards and overlapping kinds are refused. Tool exposure
-is carried from the owner. See docs/runnable.md for the selection YAML.
+missing selections, wildcards and overlapping kinds are refused. Every
+operation is a tool; its presentation and effect are carried from the derived
+policy. See docs/runnable.md for the selection YAML.
 
 An environment that installs an operation for no resource answers its key with
 an explicitly empty list, KEY: []. That operation is declined: its key is absent
@@ -528,6 +529,15 @@ func operationSpec(declared *runnablespkg.Operation, spelling string, codes core
 		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
 			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
 	}
+	var recovery basev0.RunnableExecution_Recovery
+	if declared.Recovery != "" {
+		value, known := basev0.RunnableExecution_Recovery_value[declared.Recovery]
+		if !known || basev0.RunnableExecution_Recovery(value) == basev0.RunnableExecution_RECOVERY_UNKNOWN {
+			return nil, fmt.Errorf("recovery %q is not a recovery; %s and %s are the two",
+				declared.Recovery, basev0.RunnableExecution_RECOVERY_RECOMPUTE, basev0.RunnableExecution_RECOVERY_RECEIPT)
+		}
+		recovery = basev0.RunnableExecution_Recovery(value)
+	}
 	return &corerunnable.OperationSpec{
 		Method:             spelling,
 		Codes:              codes,
@@ -545,6 +555,7 @@ func operationSpec(declared *runnablespkg.Operation, spelling string, codes core
 		Completion:         basev0.RunnableExecution_Completion(completion),
 		Tool:               declared.Tool,
 		RequiredScopeSlots: declared.RequiredScopeSlots,
+		Recovery:           recovery,
 	}, nil
 }
 

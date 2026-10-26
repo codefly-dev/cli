@@ -37,7 +37,18 @@ func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operat
 		Completion:         spec.Completion.String(),
 		Tool:               spec.Tool,
 		RequiredScopeSlots: spec.RequiredScopeSlots,
+		Recovery:           recoveryName(spec.Recovery),
 	}
+}
+
+// recoveryName spells a declared recovery, empty when the owner stated none:
+// an operation derived before recovery could be stated keeps its document
+// byte for byte, and reads back as the receipt it always was.
+func recoveryName(recovery basev0.RunnableExecution_Recovery) string {
+	if recovery == basev0.RunnableExecution_RECOVERY_UNKNOWN {
+		return ""
+	}
+	return recovery.String()
 }
 
 func scopeDocuments(scopes []*basev0.WorkScopeV1) []runnablespkg.Scope {

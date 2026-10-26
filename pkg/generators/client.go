@@ -166,6 +166,12 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		// Refused before anything is generated, so the library is untouched.
 		return fmt.Errorf("library %s declares no version: its producer's version is empty", req.Name)
 	}
+	for _, lang := range req.Languages {
+		if err := checkPackageVersionStampable(lang, filepath.Join(req.Output, string(lang))); err != nil {
+			// Refused before anything is generated, so the library is untouched.
+			return fmt.Errorf("cannot set the %s client's version: %w", lang, err)
+		}
+	}
 
 	// Every language is generated before anything under req.Output is
 	// touched. The companion runs are what fail — a contract that does not
