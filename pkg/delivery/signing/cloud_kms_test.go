@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -254,6 +255,20 @@ func TestCloudKMSRefusalsNeverExposeToken(t *testing.T) {
 				t.Fatal("redirect followed")
 			}
 		})
+	}
+}
+
+type failedKMSCredential struct{ err error }
+
+func (c failedKMSCredential) Token() (*oauth2.Token, error) { return nil, c.err }
+
+func TestCloudKMSCredentialRefusalsKeepStatusWithoutResponseBody(t *testing.T) {
+	for _, prefix := range []string{"oauth2/google", "oauth2/google/externalaccount"} {
+		credential := failedKMSCredential{errors.New(prefix + ": status code 403: private-test-token")}
+		_, err := NewCloudKMS(kmsLookup("http://localhost"), credential)
+		if err == nil || !strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "private-test-token") {
+			t.Fatalf("unsafe or unhelpful credential refusal: %v", err)
+		}
 	}
 }
 

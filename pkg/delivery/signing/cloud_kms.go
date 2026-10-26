@@ -44,6 +44,7 @@ const kmsScope = "https://www.googleapis.com/auth/cloudkms"
 const kmsVersionShape = "projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<name>/cryptoKeyVersions/<n>"
 
 var kmsEnumName = regexp.MustCompile(`^[A-Z0-9_]{1,64}$`)
+var googleCredentialStatus = regexp.MustCompile(`^oauth2/google(?:/externalaccount)?: status code ([1-5][0-9]{2}):`)
 
 // CloudKMS is the optional adapter the handbook decision admits behind the
 // same custody interface as Vault Transit: public metadata and an
@@ -210,6 +211,13 @@ func (s *CloudKMS) request(method, operation string, body []byte, result any) er
 		var exchange *oauth2.RetrieveError
 		if errors.As(err, &exchange) && exchange.Response != nil {
 			return fmt.Errorf("the Google credential was not exchanged for a Cloud KMS token (HTTP %d)", exchange.Response.StatusCode)
+		}
+		// Google's impersonation/STS token sources return an untyped error
+		// containing the response body. Retain only its known status prefix.
+		for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+			if status := googleCredentialStatus.FindStringSubmatch(cause.Error()); status != nil {
+				return fmt.Errorf("the Google credential was not exchanged for a Cloud KMS token (HTTP %s)", status[1])
+			}
 		}
 		return fmt.Errorf("the Cloud KMS %s request failed", stage)
 	}
