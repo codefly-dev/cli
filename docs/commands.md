@@ -323,7 +323,12 @@ configuration does not hold yet to a value minted by the same generator, into
 the file `codefly config generate` writes (`configurations/<profile>/<group>.secret.env`,
 0600, refused when git would track it), and says which keys it generated,
 never their values. A held value is never rotated. A `service` generator names
-the services it covers; a local run guesses none. An environment whose
+the services it covers; a local run guesses none. A `workspace` generator for a
+group the workspace inherits from a composed workspace, and does not author, is
+refused unless the group is declared under `configuration-extensions`: the
+generated file is an own group, which would replace the inherited one whole
+(the hop's `MODULES` lost, and every route with it); declared, the generated
+keys extend it. An environment whose
 `service-secrets` names a store keeps its secrets there, and a run writes
 nothing for it; a render refuses a secret in an environment that names no
 store, since it carries secrets only as references into one. So a playground

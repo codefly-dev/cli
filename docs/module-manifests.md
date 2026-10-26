@@ -1127,9 +1127,11 @@ run, the CLI is:
   for its routed endpoints, signs it with the developer key and carries it,
   with a native credential for account `delivery` in the module's namespace,
   to `ApplyManifest` of the `codefly.dev/composition` interface the
-  `host.delivery` endpoint declares in its module's interface endpoints. A
-  host whose delivery endpoint declares no such interface — the saas host on
-  main — receives it through the legacy HTTP route instead, POSTed to
+  `host.delivery` endpoint declares in its module's interface endpoints —
+  a `grpc` endpoint, or a `connect` one, which answers the gRPC protocol on
+  the same listener (the saas host's Connect face). A
+  host whose delivery endpoint declares no such interface (a saas host
+  delivered at its `rest` endpoint) receives it through the legacy HTTP route instead, POSTed to
   `/platform/_delivery/manifest`, with the envelope written through its
   gateway (below); the run logs that reason on every delivery that takes it.
   A host whose module does not load receives nothing, with the reason; the

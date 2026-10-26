@@ -209,10 +209,59 @@ func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]rou
 		slices.Sort(entry.Methods)
 		out = append(out, entry)
 	}
+	if err := routeForeignMethods(out, contract.ForeignMethods); err != nil {
+		return nil, err
+	}
 	slices.SortFunc(out, func(a, b routing.RouteEndpoint) int {
 		return strings.Compare(a.Service+"/"+a.Endpoint, b.Service+"/"+b.Endpoint)
 	})
 	return out, nil
+}
+
+// routeForeignMethods adds the module contract's foreign methods — served
+// from a protocol the module does not own, so no published contract of its
+// declares them — to the listeners that serve them, so the routes hold the
+// same method set as the policy table the authority receives
+// (gitops.ServiceMethodPolicies delivers them). A foreign method names no
+// service: it is served by the module's one service publishing protobuf over
+// gRPC or Connect, on each of those listeners, which the hop treats as one
+// destination. A module where none or several services do is refused by name
+// rather than guessed, as is a foreign method a published contract already
+// declares.
+func routeForeignMethods(endpoints []routing.RouteEndpoint, foreign []modulecontract.ForeignMethod) error {
+	if len(foreign) == 0 {
+		return nil
+	}
+	rpc := func(e *routing.RouteEndpoint) bool { return e.Transport == "grpc" || e.Transport == "connect" }
+	var services []string
+	for i := range endpoints {
+		if rpc(&endpoints[i]) && !slices.Contains(services, endpoints[i].Service) {
+			services = append(services, endpoints[i].Service)
+		}
+	}
+	if len(services) != 1 {
+		methods := make([]string, 0, len(foreign))
+		for _, method := range foreign {
+			methods = append(methods, method.Method)
+		}
+		slices.Sort(services)
+		return fmt.Errorf("its module contract declares foreign methods %s, which name no service, and %d services publish gRPC or Connect contracts %v: the hop cannot tell which one serves them",
+			strings.Join(methods, ", "), len(services), services)
+	}
+	for i := range endpoints {
+		endpoint := &endpoints[i]
+		if !rpc(endpoint) {
+			continue
+		}
+		for _, method := range foreign {
+			if slices.Contains(endpoint.Methods, method.Method) {
+				return fmt.Errorf("foreign method %s is also declared by the contract %s/%s publishes", method.Method, endpoint.Service, endpoint.Endpoint)
+			}
+			endpoint.Methods = append(endpoint.Methods, method.Method)
+		}
+		slices.Sort(endpoint.Methods)
+	}
+	return nil
 }
 
 // publishedContract is the package manifest's contract for a catalog
