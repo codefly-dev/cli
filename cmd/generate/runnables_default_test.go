@@ -101,6 +101,10 @@ func TestGenerateRunnablesDerivesEveryMethodBehindTheHop(t *testing.T) {
 	require.Equal(t, "RECOVERY_RECEIPT", write["recovery"])
 	require.Equal(t, "EFFECT_MUTATION", write["tool"].(map[string]any)["effect"])
 	require.EqualValues(t, 1, write["max_attempts"])
+	// The receipt is read under the scopes that made the effect: no read is
+	// added on the written kind, and no lookup scopes are declared.
+	require.Equal(t, []any{map[string]any{"resource_kind": "documents", "actions": []any{"write"}}}, write["invoke_scopes"])
+	require.Empty(t, write["lookup_scopes"])
 
 	// The explicit option keeps its document, beside its presentation.
 	apply := read("ApplyText")
