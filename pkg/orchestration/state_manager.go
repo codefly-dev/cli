@@ -34,7 +34,7 @@ type StateManager struct {
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 	// Generated hop snapshots retain these exact addresses until run restart.
-	routingMappings map[string]string
+	routingMappings map[string]frozenRoute
 }
 
 // SetDependencies rebinds the dependency graph. Used by Flow when
@@ -297,20 +297,8 @@ func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *resou
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, previous := range s.networkMappings[id.Unique()] {
-		key := resources.EndpointDestination(previous.GetEndpoint())
-		if expected, frozen := s.routingMappings[key]; frozen {
-			found := false
-			for _, candidate := range mappings {
-				if resources.EndpointDestination(candidate.GetEndpoint()) == key {
-					found = resources.NetworkMappingHash(candidate) == expected
-					break
-				}
-			}
-			if !found {
-				return routingRestartRequired()
-			}
-		}
+	if err = s.checkFrozenRoutes(id.Unique(), mappings); err != nil {
+		return err
 	}
 	s.networkMappings[id.Unique()] = mappings
 	return nil
