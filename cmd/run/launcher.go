@@ -94,6 +94,9 @@ type launcher struct {
 	// delivered is the last manifest delivered per module, a withdrawal
 	// included; protected by delivery rather than the short-lived state lock.
 	delivered map[string]*solutionhost.ModuleManifest
+	// outsideTargets are the bindings to a module outside the run that
+	// admission has reported, so each is said once; protected by delivery.
+	outsideTargets map[string]bool
 	// pendingWithdrawals are modules whose withdrawal the host has not applied
 	// yet: retried on the next composition refresh, even with no gone roots.
 	pendingWithdrawals map[string]bool
