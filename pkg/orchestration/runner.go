@@ -2103,17 +2103,23 @@ func (runner *Runner) gatherInitInputs(ctx, cfgCtx context.Context, w *wool.Wool
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
-	out.workspaceConfigurations, err = runner.workspaceConfigurations(cfgCtx, out.dependenciesNetworkMappings, out.runtimeContext)
+	// The addresses this Init proposes come first: a service whose own groups
+	// reference its own endpoint (the hop's ENDPOINT names the hop) resolves
+	// that reference to the address it is about to serve. Deriving it again as
+	// a producer's would allocate a second, different port under
+	// --temporary-ports, where a derivation is refused for that reason.
+	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+	resolvable := append(slices.Clone(out.dependenciesNetworkMappings), out.networkMappings...)
+	out.workspaceConfigurations, err = runner.workspaceConfigurations(cfgCtx, resolvable, out.runtimeContext)
 	if err != nil {
 		return nil, runner.initReadFailure(cfgCtx, w, err, "workspace dependencies configurations")
 	}
 	out.dependenciesConfigurations, err = runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
 	if err != nil {
 		return nil, runner.initReadFailure(cfgCtx, w, err, "dependencies configurations")
-	}
-	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
 	return out, nil
 }
