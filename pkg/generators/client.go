@@ -5,6 +5,7 @@ package generators
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,8 @@ const defaultFacadeModule = "client"
 // an entry generated from a live local service rather than a composed module
 // package (no producer package to name).
 const localPackageID = "local"
+
+var errInvalidLibraryManifest = errors.New("invalid generated library manifest")
 
 // ContractEntry is one API contract a generated library binds: an endpoint's
 // catalog entry, the raw contract bytes it points to, the package/module that
@@ -153,15 +156,21 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 	}
 
 	existingSources, err := readExistingLibrarySources(req.Output)
-	if err != nil {
+	rebuildManifest := req.Force && len(entries) == 1 && errors.Is(err, errInvalidLibraryManifest)
+	if err != nil && !rebuildManifest {
 		return err
+	}
+	if rebuildManifest {
+		existingSources = nil
 	}
 	existingByKey := make(map[[3]string]librarySource, len(existingSources))
 	for i := range existingSources {
 		s := &existingSources[i]
 		existingByKey[[3]string{s.Module, s.Service, s.Endpoint}] = *s
 	}
-	anyDigestChanged := false
+	// A malformed manifest cannot vouch for previously generated languages.
+	// One explicit contract supplies its replacement identity and version.
+	anyDigestChanged := rebuildManifest
 	for i := range entries {
 		entry := &entries[i]
 		key := [3]string{entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint}
@@ -185,7 +194,10 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 	if !anyDigestChanged {
 		existingLanguages, err = readExistingLanguageExports(req.Output)
 		if err != nil {
-			return err
+			if !req.Force || len(entries) != 1 || !errors.Is(err, errInvalidLibraryManifest) {
+				return err
+			}
+			existingLanguages = nil
 		}
 	}
 
@@ -767,7 +779,7 @@ func readExistingLibrarySources(outputDir string) ([]librarySource, error) {
 		Sources []librarySource `yaml:"sources"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
+		return nil, fmt.Errorf("cannot parse existing %s: %w: %w", resources.LibraryConfigurationName, errInvalidLibraryManifest, err)
 	}
 	return doc.Sources, nil
 }
@@ -786,7 +798,7 @@ func readExistingLanguageExports(outputDir string) ([]generatedLanguageExport, e
 		Languages []generatedLanguageExport `yaml:"languages"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
+		return nil, fmt.Errorf("cannot parse existing %s: %w: %w", resources.LibraryConfigurationName, errInvalidLibraryManifest, err)
 	}
 	return doc.Languages, nil
 }
