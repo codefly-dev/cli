@@ -17,6 +17,7 @@ import (
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/pkg/cli"
 	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/generators"
@@ -465,7 +466,7 @@ func resolveClientsOutputRoot(flag string) (root string, cleanup func(), err err
 // Whatever shipped is immutable, so a partial failure is recorded before it
 // is returned and a re-run publishes only the languages still missing.
 func publishClientWork(ctx context.Context, run *clientsRun, item *clientWork, cfg librarystore.StoreConfig, policy librarystore.RepositoryPolicy, outputRoot string, w io.Writer) error {
-	entry, err := generators.BuildModuleClientEntry(ctx, run.module.Dir(), run.module.Name, run.catalog, item.plan)
+	entry, err := generators.BuildModuleClientEntry(ctx, run.module.Dir(), run.module.Name, run.catalog, item.plan, generate.ListProtoSources)
 	if err != nil {
 		return err
 	}

@@ -496,3 +496,34 @@ func TestCoordinateContractRefusesUnsupportedSchemas(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkloadIdentityForPrefersTheModuleQualifiedEntry pins the resolution
+// order a composition relies on when two modules share a service name: the
+// `<module>/<service>` entry, then the bare entry, then the default.
+func TestWorkloadIdentityForPrefersTheModuleQualifiedEntry(t *testing.T) {
+	env := &Environment{
+		ServiceIdentity: &EnvironmentServiceIdentity{
+			Default: &EnvironmentWorkloadIdentity{Principal: "default-principal"},
+			Services: map[string]EnvironmentWorkloadIdentity{
+				"cache":      {Principal: "bare-cache"},
+				"saas/cache": {Principal: "saas-cache"},
+				"saas/store": {Principal: "saas-store"},
+			},
+		},
+	}
+	for _, tc := range []struct{ module, service, want string }{
+		{"saas", "cache", "saas-cache"},
+		{"documents", "cache", "bare-cache"},
+		{"", "cache", "bare-cache"},
+		{"saas", "store", "saas-store"},
+		{"documents", "store", "default-principal"},
+		{"saas", "accounts", "default-principal"},
+	} {
+		if got := env.WorkloadIdentityFor(tc.module, tc.service); got == nil || got.Principal != tc.want {
+			t.Errorf("WorkloadIdentityFor(%q, %q) = %+v, want principal %q", tc.module, tc.service, got, tc.want)
+		}
+	}
+	if got := env.WorkloadIdentity("store"); got == nil || got.Principal != "default-principal" {
+		t.Errorf("WorkloadIdentity(store) must not see a qualified entry: %+v", got)
+	}
+}

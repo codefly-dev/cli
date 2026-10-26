@@ -2,14 +2,12 @@ package gitops
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	modulecontract "github.com/codefly-dev/core/contracts/module"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -26,7 +24,9 @@ import (
 type renderBuild struct {
 	standAlone      bool
 	validateCluster bool
-	rebuild         bool
+	rebuild         bool // withoutCell leaves the environment's cell file to the caller: a
+	// whole-composition render derives it once, after every module.
+	withoutCell bool
 }
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -47,6 +47,12 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
+		return RenderResult{}, err
+	}
+	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return RenderResult{}, err
+	}
+	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
 		return RenderResult{}, err
 	}
 	ownedPath, err := moduleOwnedPath(workspace, env, module.Name)
@@ -87,26 +93,80 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	result.StaleGroupConsumers = render.staleConsumers
+	// A hosted environment's cell file describes every module tree rendered
+	// for it; this render moved one, so the file is derived again from all
+	// of them as they stand now.
+	// A sibling tree this CLI cannot read (an older render) stops the file,
+	// not this render: re-rendering the modules one by one converges, and the
+	// last render writes the file. The result says what is still owed.
+	if env.Host != nil && !build.withoutCell {
+		cell, cellErr := RenderCell(ctx, workspace, env)
+		if cellErr != nil {
+			result.CellError = cellErr.Error()
+		} else {
+			result.Cell = &cell
+		}
+	}
 	return result, nil
+}
+
+// DefaultGitopsPath is the directory a delivery repository holds its modules
+// tree under when the environment's gitops block names no path. It is the
+// layout a render leaves in the workspace (deployments/modules/<module>), so a
+// workspace delivering into its own repository delivers exactly where it
+// rendered.
+const DefaultGitopsPath = "deployments"
+
+// gitopsPathOf is the one selection of an environment's gitops path, shared
+// by the render (moduleOwnedPath) and the publish (resolveGitops) so the two
+// never lay the tree out differently: the environment's own path when its
+// block names one; the workspace default when the environment's block names
+// no repository of its own (an environment may override the path alone);
+// and the repository root when it names its own repository and no path.
+func gitopsPathOf(env *environments.Environment, defaults *environments.EnvironmentGitops) string {
+	if env != nil && env.Gitops != nil && (env.Gitops.Path != "" || env.Gitops.RepoURL != "") {
+		return env.Gitops.Path
+	}
+	if defaults != nil {
+		return defaults.Path
+	}
+	return ""
+}
+
+// deliveryModulesPath is the one rule for where the gitops path puts the
+// modules tree in the delivery repository: `<path>/modules`, the path
+// defaulting to DefaultGitopsPath. gitopsPath is the environment's
+// `gitops.path` as validateRelativePath returns it: "" for none or ".".
+// Every path a render records and a publish writes, reads or settles
+// against derives from here, so `path: deployments` and no path are the
+// same tree, and no path is ever prefixed twice.
+func deliveryModulesPath(gitopsPath string) string {
+	if gitopsPath == "" {
+		gitopsPath = DefaultGitopsPath
+	}
+	return filepath.ToSlash(filepath.Join(gitopsPath, "modules"))
+}
+
+// deliveryModulePath is one module's tree in the delivery repository:
+// `<path>/modules/<module>` (deliveryModulesPath).
+func deliveryModulePath(gitopsPath, module string) string {
+	return filepath.ToSlash(filepath.Join(deliveryModulesPath(gitopsPath), module))
 }
 
 // moduleOwnedPath is where the module's tree lives in the delivery
 // repository: under the environment's gitops path when it declares one, the
-// workspace's default otherwise.
+// workspace's default otherwise (gitopsPathOf), laid out as
+// deliveryModulePath says.
 func moduleOwnedPath(workspace *resources.Workspace, env *environments.Environment, module string) (string, error) {
-	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", module))
-	gitopsPath := ""
-	if env.Gitops != nil {
-		gitopsPath = env.Gitops.Path
-	} else if defaults, err := environments.WorkspaceGitops(workspace); err != nil {
+	defaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
 		return "", err
-	} else if defaults != nil {
-		gitopsPath = defaults.Path
 	}
-	if gitopsPath != "" {
-		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
+	gitopsPath, err := validateRelativePath(gitopsPathOf(env, defaults))
+	if err != nil {
+		return "", fmt.Errorf("gitops.path: %w", err)
 	}
-	return ownedPath, nil
+	return deliveryModulePath(gitopsPath, module), nil
 }
 
 // moduleRender is one module's render in progress: what it was asked to
@@ -125,10 +185,10 @@ type moduleRender struct {
 }
 
 // stage fills the staged owned tree: every root service rendered through its
-// agent, the units inventoried, the module's presence and authority declared,
+// agent, the units inventoried, the module's instance declared,
 // and the module bundle or the environment bootstrap staged beside them.
 func (r *moduleRender) stage(ctx context.Context, stage string) error {
-	services, err := loadModuleServices(ctx, r.module)
+	services, err := loadModuleServices(ctx, r.module, r.env)
 	if err != nil {
 		return err
 	}
@@ -157,11 +217,52 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if err = collectRenderTemplates(r.scope.Templates, rendered.deployed, rendered.secretKeys); err != nil {
 		return err
 	}
-	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, r.sink)
+	uniques := make([]string, 0, len(rendered.outputs))
+	for unique := range rendered.outputs {
+		uniques = append(uniques, unique)
+	}
+	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, rendered.hostRoutes, telemetryCarriersForRender(r.env, uniques), r.sink)
 	if err != nil {
 		return err
 	}
 	if err = r.inventoryUnits(ctx, services, catalog, stage, rendered, injections); err != nil {
+		return err
+	}
+	// The edges into this module's workloads, from the ports the render
+	// learned: delivered in the record, for the cell's applier.
+	containerPorts := map[string]map[string]uint32{}
+	// A service that rendered a workload which does not serve its endpoints —
+	// an agent's bootstrap Job, running under the service's own
+	// ServiceAccount — reaches those endpoints as a client of itself. The
+	// composition declares no such dependency, so the rendered tree is the one
+	// place it can be read.
+	selfConsuming := map[string]bool{}
+	if r.env.Host != nil {
+		for index := range r.options.Units {
+			unit := &r.options.Units[index]
+			if unit.Path == "" {
+				continue
+			}
+			unique := resources.ServiceUnique(r.module.Name, unit.Name)
+			unitDir := filepath.Join(stage, unit.Path)
+			containerPorts[unique], err = renderedContainerPortsInTree(r.options.renderRoot,
+				unitDir, r.env.Name, rendered.inClusterPorts[unique])
+			if err != nil {
+				return fmt.Errorf("derive container ports for %s: %w", unique, err)
+			}
+			unit.Endpoints = inventoryEndpoints(rendered.inClusterPorts[unique], containerPorts[unique])
+			if selfConsuming[unique], err = renderTreeSelfConsumes(r.options.renderRoot, unitDir, r.env.Name); err != nil {
+				return fmt.Errorf("read the rendered workloads of %s: %w", unique, err)
+			}
+		}
+	}
+	if len(rendered.endpointCarriers) > 0 {
+		r.options.EndpointCarriers = rendered.endpointCarriers
+	}
+	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts, containerPorts, selfConsuming); err != nil {
+		return err
+	}
+	if err = bindGatewayServiceEvidence(r.options.MeshEdges, r.options.renderRoot, stage, r.env.Name, r.options.Units); err != nil {
 		return err
 	}
 	if err = r.declareInstances(ctx, services); err != nil {
@@ -169,7 +270,7 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	}
 	if r.module.Agent != nil {
 		modulePath := filepath.Join(stage, moduleBundleDir)
-		if err = renderModuleBundle(ctx, r.workspace, r.module, r.env, modulePath, r.options.Units); err != nil {
+		if err = renderModuleBundle(ctx, r.workspace, r.module, r.env, modulePath, r.options.renderRoot, r.options.Units); err != nil {
 			return err
 		}
 		r.options.ModulePath = moduleBundleDir
@@ -181,10 +282,14 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	return r.stageBootstrap(stage)
 }
 
-// loadModuleServices loads every service the module references.
-func loadModuleServices(ctx context.Context, module *resources.Module) ([]*resources.Service, error) {
-	services := make([]*resources.Service, 0, len(module.ServiceReferences))
-	for _, reference := range module.ServiceReferences {
+// loadModuleServices loads every service the module references and the
+// environment renders.
+// A service the environment excludes (exclude-services) is not one of them:
+// it has no unit, no tree, no image and no workload in this environment.
+func loadModuleServices(ctx context.Context, module *resources.Module, env *environments.Environment) ([]*resources.Service, error) {
+	references := env.ComposedServices(module)
+	services := make([]*resources.Service, 0, len(references))
+	for _, reference := range references {
 		service, err := module.LoadServiceFromName(ctx, reference.Name)
 		if err != nil {
 			return nil, fmt.Errorf("load service %s: %w", reference.Name, err)
@@ -199,11 +304,12 @@ func loadModuleServices(ctx context.Context, module *resources.Module) ([]*resou
 // configuration reference of every root's graph checked, and the snapshot
 // registry prepared when there is a service to build.
 func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.Service) (*contractCatalogDocument, []*resources.Service, error) {
-	pkg, err := modulePackage(r.module.Dir())
+	pkg, artifacts, err := modulePackage(r.module.Dir())
 	if err != nil {
 		return nil, nil, err
 	}
-	r.options.Package = pkg
+	r.options.Package, r.options.ReleaseArtifacts = pkg, artifacts
+	r.options.Pin = compositionPin(r.workspace, r.module.Name)
 	catalog, err := loadContractCatalog(r.module.Dir())
 	if err != nil {
 		return nil, nil, err
@@ -233,21 +339,28 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 // learned: each one's deployment output, self endpoints, deployed
 // configuration with its declared secret keys, and in-cluster ports.
 type renderedRoots struct {
-	outputs        map[string]*builderv0.DeploymentOutput
-	selfEndpoints  map[string]map[string]string
-	deployed       map[string]*basev0.Configuration
-	secretKeys     map[string][]string
-	inClusterPorts map[string]map[string]uint32
+	outputs       map[string]*builderv0.DeploymentOutput
+	selfEndpoints map[string]map[string]string
+	hostRoutes    map[string]map[string]string
+	// endpointCarriers are the in-cluster addresses of this module's
+	// endpoints the host routes, keyed as the gateway reads them: what its
+	// module manifest's endpoints carry.
+	endpointCarriers map[string]string
+	deployed         map[string]*basev0.Configuration
+	secretKeys       map[string][]string
+	inClusterPorts   map[string]map[string]uint32
 }
 
 // renderRoots renders every root service through its agent into the stage.
 func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Service, stage string) (*renderedRoots, error) {
 	rendered := &renderedRoots{
-		outputs:        make(map[string]*builderv0.DeploymentOutput),
-		selfEndpoints:  make(map[string]map[string]string),
-		deployed:       make(map[string]*basev0.Configuration),
-		secretKeys:     make(map[string][]string),
-		inClusterPorts: make(map[string]map[string]uint32),
+		outputs:          make(map[string]*builderv0.DeploymentOutput),
+		selfEndpoints:    make(map[string]map[string]string),
+		hostRoutes:       make(map[string]map[string]string),
+		endpointCarriers: map[string]string{},
+		deployed:         make(map[string]*basev0.Configuration),
+		secretKeys:       make(map[string][]string),
+		inClusterPorts:   make(map[string]map[string]uint32),
 	}
 	destinations := moduleStageDestinations(r.workspace, r.module, stage)
 	for _, service := range roots {
@@ -271,6 +384,11 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 					rendered.selfEndpoints[unique] = variables
 				}
 			},
+			func(routes map[string]map[string]string) {
+				for unique, variables := range routes {
+					rendered.hostRoutes[unique] = variables
+				}
+			},
 			func(configurations map[string]*basev0.Configuration, keys map[string][]string) {
 				for unique, configuration := range configurations {
 					rendered.deployed[unique] = configuration
@@ -283,6 +401,9 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 				for unique, declared := range ports {
 					rendered.inClusterPorts[unique] = declared
 				}
+			},
+			func(carriers map[string]string) {
+				maps.Copy(rendered.endpointCarriers, carriers)
 			},
 		); flowErr != nil {
 			return nil, fmt.Errorf("render service %s: %w", service.Name, flowErr)
@@ -316,7 +437,8 @@ func (r *moduleRender) inventoryUnits(
 		}
 		unique := resources.ServiceUnique(r.module.Name, service.Name)
 		if managed {
-			bootstrap, bundleErr := retainManagedBundle(
+			bootstrap, bundleErr := retainManagedBundleInTree(
+				r.options.renderRoot,
 				filepath.Join(stage, unitDir, service.Name),
 				service.Name,
 				r.env.Name,
@@ -338,7 +460,7 @@ func (r *moduleRender) inventoryUnits(
 				return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 			}
 			if projectErr := projectServiceConfiguration(
-				ctx,
+				ctx, r.options.renderRoot,
 				filepath.Join(stage, unitDir, service.Name),
 				service,
 				r.env,
@@ -347,8 +469,8 @@ func (r *moduleRender) inventoryUnits(
 			); projectErr != nil {
 				return projectErr
 			}
-			if portsErr := verifyDeclaredEndpointPorts(
-				filepath.Join(stage, unitDir, service.Name),
+			if portsErr := verifyDeclaredEndpointPortsInTree(
+				r.options.renderRoot, filepath.Join(stage, unitDir, service.Name),
 				r.env.Name,
 				r.module.Name,
 				service,
@@ -365,33 +487,29 @@ func (r *moduleRender) inventoryUnits(
 	return nil
 }
 
-// declareInstances declares presence from the resolution this render already
-// holds — the module it is rendering, the services it loaded from it, the
-// package it resolved, and the units it just assembled — so the binding
-// cannot describe a composition the workloads did not come from. Authority is
-// effective from a presence generation, so a module declaring no presence
-// asks for none.
+// declareInstances declares the module's instance from the resolution this
+// render already holds — the module it is rendering, the services it loaded
+// from it, the package it resolved, the units it just assembled and the
+// addresses it resolved for the module's routed endpoints — so the manifest
+// cannot describe a composition the workloads did not come from.
 func (r *moduleRender) declareInstances(ctx context.Context, services []*resources.Service) error {
-	instance, undeclared, err := presenceInstanceOf(r.module, services, r.env, r.options)
+	artifacts, err := publishFrontendBundle(ctx, r.workspace, r.module, r.env, r.options.ReleaseArtifacts)
 	if err != nil {
 		return err
 	}
-	r.options.UndeclaredPresence = undeclared
-	if instance == nil {
-		// A module that publishes a contract asks for authority, and
-		// authority is effective from a presence generation: with no
-		// presence to declare, the request would be dropped silently.
-		if _, loadErr := modulecontract.Load(r.module.Dir()); loadErr == nil {
-			return fmt.Errorf("module %s publishes %s but declares no presence (%s); authority is effective from a presence generation, so a module with a contract must declare presence", r.module.Name, modulecontract.FileName, undeclared)
-		} else if !errors.Is(loadErr, os.ErrNotExist) {
-			return loadErr
-		}
-		r.options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
-		return nil
+	r.options.ReleaseArtifacts = artifacts
+	instance, undeclared, err := moduleInstanceOf(ctx, r.workspace, r.module, services, r.env,
+		r.options.Package, r.options.ReleaseArtifacts, r.options.EndpointCarriers)
+	if err != nil {
+		return err
 	}
-	r.options.SolutionInstances = []SolutionInstance{*instance}
-	r.options.AuthorityInstances, r.options.UndeclaredAuthority, err = authorityInstancesOf(ctx, r.workspace, r.module, services, r.env, instance.Units)
-	return err
+	if instance != nil {
+		if err = bindIdentityUnits(instance, r.options.Units); err != nil {
+			return err
+		}
+	}
+	r.options.Instance, r.options.UndeclaredManifest = instance, undeclared
+	return nil
 }
 
 // stageBootstrap copies the module's environment bootstrap into the stage and
@@ -410,10 +528,13 @@ func (r *moduleRender) stageBootstrap(stage string) error {
 		return fmt.Errorf("module kustomize path is not a directory")
 	}
 	bootstrap := filepath.Join(stage, "bootstrap")
-	if err = copyEnvironmentBootstrap(static, r.env.Name, bootstrap); err != nil {
+	if err = r.options.renderRoot.inspect(bootstrap); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = copyEnvironmentBootstrapInTree(r.options.renderRoot, static, r.env.Name, bootstrap); err != nil {
 		return fmt.Errorf("copy module environment bootstrap: %w", err)
 	}
-	if _, err = projectResourceQuota(bootstrap, r.env.Name, r.scope.Namespace, r.env.ResourceQuota); err != nil {
+	if _, err = projectResourceQuota(r.options.renderRoot, bootstrap, r.env.Name, r.scope.Namespace, r.env.ResourceQuota); err != nil {
 		return fmt.Errorf("project module namespace resource quota: %w", err)
 	}
 	return nil
@@ -445,26 +566,44 @@ func moduleRenderRoots(module string, services []*resources.Service) ([]*resourc
 }
 
 func copyEnvironmentBootstrap(source, environment, destination string) error {
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return err
+	}
+	tree, err := newRenderRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return copyEnvironmentBootstrapInTree(tree, source, environment, destination)
+}
+
+func copyEnvironmentBootstrapInTree(tree *renderRoot, source, environment, destination string) error {
+	inputs, err := newRenderRoot(source)
+	if err != nil {
+		return err
+	}
+	defer inputs.Close()
+	source = inputs.path
 	selected := filepath.Join(source, "overlays", environment)
-	info, err := os.Stat(selected)
+	info, err := inputs.stat(source, filepath.Join("overlays", environment))
 	if err != nil {
 		return fmt.Errorf("select environment overlay %q: %w", environment, err)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("environment overlay %q is not a directory", environment)
 	}
-	entries, err := os.ReadDir(source)
+	entries, err := inputs.readDir(source)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
 		sourcePath := filepath.Join(source, entry.Name())
 		destinationPath := filepath.Join(destination, entry.Name())
-		if entry.Name() == "overlays" {
+		if entry.Name() == overlaysDirectory {
 			sourcePath = selected
 			destinationPath = filepath.Join(destinationPath, environment)
 		}
-		if err := copyTree(sourcePath, destinationPath); err != nil {
+		if err := tree.copyFrom(inputs, sourcePath, destinationPath); err != nil {
 			return err
 		}
 	}
@@ -479,22 +618,31 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return RenderResult{}, err
+	}
+	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
+		return RenderResult{}, err
+	}
 	serviceDir, _ := unitDirectory(UnitKindService)
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
-	pkg, err := modulePackage(module.Dir())
+	pkg, artifacts, err := modulePackage(module.Dir())
 	if err != nil {
 		return RenderResult{}, err
 	}
-	return RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination,
-		Module:      module.Name,
-		Unit:        service.Name,
-		Environment: env.Name,
-		Namespace:   env.ModuleNamespace(workspace, module.Name),
-		AppProject:  project,
-		Promotable:  true,
-		Package:     pkg,
-	}, func(ctx context.Context, stage string) error {
+	options := &RenderOptions{
+		ReleaseArtifacts: artifacts,
+		Destination:      destination,
+		Module:           module.Name,
+		Unit:             service.Name,
+		Environment:      env.Name,
+		Namespace:        env.ModuleNamespace(workspace, module.Name),
+		AppProject:       project,
+		Promotable:       true,
+		Package:          pkg,
+		Pin:              compositionPin(workspace, module.Name),
+	}
+	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
 		// pushed.
 		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, build.standAlone); err != nil {
@@ -505,6 +653,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		}
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
+		var hostRoutes map[string]map[string]string
 		var deployed map[string]*basev0.Configuration
 		var secretKeys map[string][]string
 		var inClusterPorts map[string]map[string]uint32
@@ -520,14 +669,20 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			nil,
 			func(services map[string]*resources.Service) { graph = services },
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
+			func(rendered map[string]map[string]string) { hostRoutes = rendered },
 			func(rendered map[string]*basev0.Configuration, keys map[string][]string) {
 				deployed, secretKeys = rendered, keys
 			},
 			func(rendered map[string]map[string]uint32) { inClusterPorts = rendered },
+			nil,
 		); err != nil {
 			return err
 		}
-		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
+		uniques := make([]string, 0, len(graph))
+		for unique := range graph {
+			uniques = append(uniques, unique)
+		}
+		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, hostRoutes, telemetryCarriersForRender(env, uniques), sink)
 		if err != nil {
 			return err
 		}
@@ -535,10 +690,10 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err := collectRenderTemplates(templates, deployed, secretKeys); err != nil {
 			return err
 		}
-		if err := projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates); err != nil {
+		if err := projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates, options); err != nil {
 			return err
 		}
-		return verifyGraphDeclaredEndpointPorts(stage, env, graph, inClusterPorts)
+		return verifyGraphDeclaredEndpointPorts(options.renderRoot, stage, env, graph, inClusterPorts)
 
 	})
 }
@@ -576,21 +731,29 @@ func moduleStageDestinations(workspace *resources.Workspace, module *resources.M
 }
 
 func serviceRenderDestinations(root string) func(*resources.Module, *resources.Service) string {
-	serviceDir, _ := unitDirectory(UnitKindService)
 	return func(module *resources.Module, service *resources.Service) string {
-		return filepath.Join(root, "modules", module.Name, serviceDir, service.Name)
+		return filepath.Join(root, serviceRenderPath(module.Name, service.Name))
 	}
+}
+
+func serviceRenderPath(module, service string) string {
+	serviceDir, _ := unitDirectory(UnitKindService)
+	return filepath.Join("modules", module, serviceDir, service)
 }
 
 // prepareSnapshotRegistry validates the environment's registry and, when it
 // declares an auth method, logs in so `docker push` can resolve the immutable
 // snapshot digest. Managed registries authenticate out-of-band and declare no
 // auth, so login is skipped. Runs once per render rather than per service.
+//
+// Images are named by the repository the cell pulls from (PullRepository, the
+// mirror of the registry when one is declared), so the rendered manifests and
+// the cell file name it; the build pushes to registry.url and logs in there.
 func prepareSnapshotRegistry(ctx context.Context, env *environments.Environment) error {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
 	}
-	builder.SetRepository(env.Registry.URL)
+	builder.SetRepository(env.Registry.PullRepository())
 	if env.Registry.Auth != "" {
 		if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
 			return fmt.Errorf("authenticate snapshot registry: %w", err)
@@ -616,8 +779,10 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 	recordSelfEndpoints func(map[string]map[string]string),
+	recordHostRoutes func(map[string]map[string]string),
 	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 	recordInClusterPorts func(map[string]map[string]uint32),
+	recordEndpointCarriers func(map[string]string),
 ) (result error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return err
@@ -655,11 +820,25 @@ func renderServiceFlow(
 	if recordSelfEndpoints != nil {
 		recordSelfEndpoints(flow.SelfEndpoints(ctx))
 	}
+	if recordHostRoutes != nil {
+		routes, err := flow.HostRouteCarriers(ctx)
+		if err != nil {
+			return err
+		}
+		recordHostRoutes(routes)
+	}
 	if recordConfigurations != nil {
 		recordConfigurations(flow.DeployedConfigurations(), flow.DeployedSecretKeys())
 	}
 	if recordInClusterPorts != nil {
 		recordInClusterPorts(flow.InClusterPorts(ctx))
+	}
+	if recordEndpointCarriers != nil {
+		carriers, err := flow.EndpointCarriers(ctx, module.Name, resources.NewContainerNetworkAccess())
+		if err != nil {
+			return err
+		}
+		recordEndpointCarriers(carriers)
 	}
 	if recordServices != nil {
 		services := map[string]*resources.Service{}
@@ -688,4 +867,19 @@ func (gitOpsDeploymentOutputManager) Handle(
 	*builderv0.DeploymentOutput,
 ) error {
 	return nil
+}
+
+// inventoryEndpoints records, sorted by endpoint, the Service port and the
+// container port the render resolved for each in-cluster endpoint of a unit.
+func inventoryEndpoints(inCluster, container map[string]uint32) []InventoryEndpoint {
+	names := make([]string, 0, len(inCluster))
+	for name := range inCluster {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	endpoints := make([]InventoryEndpoint, 0, len(names))
+	for _, name := range names {
+		endpoints = append(endpoints, InventoryEndpoint{Name: name, Port: inCluster[name], TargetPort: container[name]})
+	}
+	return endpoints
 }

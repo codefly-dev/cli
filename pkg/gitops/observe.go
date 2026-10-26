@@ -112,7 +112,8 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	if inventory.ModulePath != "" {
 		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.ModulePath, "overlays", request.Environment))] = struct{}{}
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}

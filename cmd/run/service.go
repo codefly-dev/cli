@@ -20,6 +20,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -218,6 +219,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// every exit path — including failures — so a partially-started flow
 	// never orphans agents or containers.
 	stopFresh := func() error {
+		stopLauncher() // Cancel delivery before waiting for service teardown.
 		if run.flowManager != nil {
 			run.flowManager.Release(serviceName, run.flow)
 		}
@@ -328,6 +330,7 @@ func (run *serviceRun) headless(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
 	}
+	go watchForExtensions(ctx, run.flow, extensionBaseline(ctx, run.workspace))
 	// Print each dependency's lifecycle (Loading→Init→Starting→Running,
 	// or Failed) using the same ">>" milestone form as the origin, so a
 	// stalled dependency (e.g. vault waiting on its health probe) is
@@ -522,6 +525,7 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 			t.SendDone(runErr) // quit the TUI instead of hanging on the error
 			return
 		}
+		go watchForExtensions(runCtx, run.flow, extensionBaseline(runCtx, run.workspace))
 
 		// Drive per-dependency live status from the orchestrator so each
 		// dependency shows its own Loading→Init→Starting→Running (and any
@@ -897,9 +901,19 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	w.Info("Running with remotes", wool.Field("remotes", remoteServices))
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode,
-		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...))
+		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...),
+		NativeAuthorityPrerequisites(env, runtimeContext),
+		orchestration.WithCompositionCheck(gitops.PermissionPreflight(false)))
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+
+	generated, err := provisionGeneratedSecrets(ctx, workspace, env)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	if len(generated) > 0 {
+		cli.Info("generated %s, as environment %s's service-secrets declare (values never printed)", strings.Join(generated, ", "), env.Name)
 	}
 
 	flow.WithOutputSink(cli.NewOutputSink())
@@ -948,8 +962,11 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
+	if attachErr := attachLauncher(ctx, flow, workspace, env, selectedFixture); attachErr != nil {
+		return nil, w.Wrap(attachErr)
+	}
 	flow.WithRemotes(remoteServices)
-	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
+	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies, ExcludeWorkspaceConfigurations: excludeWorkspaceConfigurations})
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -1118,6 +1135,7 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
+	ServiceCmd.Flags().StringSliceVar(&excludeWorkspaceConfigurations, "exclude-workspace-configuration", nil, "Exclude a workspace configuration group from the run, with the producers its values name (repeatable)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
 	ServiceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -13,7 +14,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,9 +36,12 @@ func (injections renderInjections) forService(module, service string) serviceInj
 
 // deriveRenderInjections joins the api.consumes projection of the workspace's
 // composed solutions with the self-endpoint carriers of the services the render
-// deployed. Both are public/secret splits of the same shape; a key is never
-// derived by both, so the join is a plain union.
-func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace, selfEndpoints map[string]map[string]string, sink orchestration.OutputSink) (renderInjections, error) {
+// deployed, the host gateway's route carriers (orchestration's
+// HostRouteCarriers: the addresses of what composed solutions consume through
+// it) and the environment's telemetry carriers (telemetryCarriersForRender).
+// All are public values of the same shape; a key is never derived by two, so
+// the join is a plain union.
+func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace, selfEndpoints, hostRoutes, telemetry map[string]map[string]string, sink orchestration.OutputSink) (renderInjections, error) {
 	solutions, err := solutionrun.DerivedDeployInputs(ctx, workspace)
 	if err != nil {
 		return nil, err
@@ -56,15 +59,17 @@ func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace,
 	for unique, injection := range solutions.Services {
 		injections[unique] = injection
 	}
-	for unique, variables := range selfEndpoints {
-		injection := injections[unique]
-		if injection.Public == nil {
-			injection.Public = map[string]string{}
+	for _, carriers := range []map[string]map[string]string{selfEndpoints, hostRoutes, telemetry} {
+		for unique, variables := range carriers {
+			injection := injections[unique]
+			if injection.Public == nil {
+				injection.Public = map[string]string{}
+			}
+			for key, value := range variables {
+				injection.Public[key] = value
+			}
+			injections[unique] = injection
 		}
-		for key, value := range variables {
-			injection.Public[key] = value
-		}
-		injections[unique] = injection
 	}
 	return injections, nil
 }
@@ -73,19 +78,17 @@ func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace,
 // classifies as credential-bearing. A solution's public carrier names routes,
 // never credentials, so a sensitive public key means a secret was misfiled —
 // and a render is committed to a repository, so the only safe answer is to
-// stop. Self-endpoint carriers are the one exception, because their names
-// embed module, service and endpoint names ("auth-gateway") that trip the broad
-// markers exactly as the builder's own CODEFLY__ENDPOINT__ carriers do; their
-// values are addresses, and an address carrying credentials is refused instead.
+// stop. The key is judged by core's carrier-aware rule
+// (resources.IsSensitiveEnvironmentVariable): an endpoint or self-endpoint
+// carrier's name embeds module, service and endpoint names ("auth-gateway") that
+// a whole-name check reads as credentials, and its value is an address — so an
+// address carrying credentials is refused instead.
 func validateInjectionClassification(service string, injection serviceInjection) error {
 	for key, value := range injection.Public {
-		if strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") {
-			if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
-				return fmt.Errorf("service %q self endpoint %s carries credentials in its address", service, key)
-			}
-			continue
+		if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
+			return fmt.Errorf("service %q would render %s with credentials in its address", service, key)
 		}
-		if resources.IsSensitiveKey(key) {
+		if resources.IsSensitiveEnvironmentVariable(key) {
 			return fmt.Errorf("service %q would render the credential-named key %s as a plain value; it must be a secret reference", service, key)
 		}
 	}
@@ -108,19 +111,20 @@ func validateInjectionClassification(service string, injection serviceInjection)
 // A secret with no store to deliver it is refused rather than rendered: a
 // dangling secretKeyRef keeps the pod in CreateContainerConfigError, and the
 // only other way to carry the value would be plaintext in the tree.
-func projectServiceInjection(ctx context.Context, root, service string, env *environments.Environment, injection serviceInjection) error {
+
+func projectServiceInjectionInTree(ctx context.Context, tree *renderRoot, root, service string, env *environments.Environment, injection serviceInjection) error {
 	if len(injection.Public) == 0 && len(injection.Secrets) == 0 {
 		return nil
 	}
 	if err := validateInjectionClassification(service, injection); err != nil {
 		return err
 	}
-	if len(injection.Secrets) > 0 && env.ServiceSecrets == nil {
+	if len(injection.Secrets) > 0 && !env.ServiceSecrets.Stored() {
 		return fmt.Errorf(
 			"service %q needs %s, which a render carries only as references into the environment's secret store, and environment %q declares no service secret store",
 			service, strings.Join(sortedKeys(injection.Secrets), ", "), env.Name)
 	}
-	files, err := configurationSources(root, env.Name)
+	files, err := configurationSourcesInTree(tree, root, env.Name)
 	if err != nil {
 		return err
 	}
@@ -206,17 +210,21 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 		return fmt.Errorf("service %q derives %s but no rendered container declares %s=%s",
 			service, strings.Join(append(sortedKeys(injection.Public), sortedKeys(injection.Secrets)...), ", "), resources.ServicePrefix, service)
 	}
-	return writeChangedConfigurationFiles(ctx, paths, files, changed)
+	return writeChangedConfigurationFiles(ctx, tree, paths, files, changed)
 }
 
 // offeredOnly reports whether every carrier a service derives is one offered to
-// any Codefly-aware process of it — its own reachable address — rather than one
-// the render must deliver (a solution's consumed routes). A container that
-// declares no CODEFLY__SERVICE (a vendor image: postgres, redis) reads none of
-// them, so an unclaimed service may skip offered carriers.
+// any Codefly-aware process of it — its own reachable address, the
+// environment's telemetry intake — rather than one the render must deliver (a
+// solution's consumed routes). A container that declares no CODEFLY__SERVICE
+// (a vendor image: postgres, redis) reads none of them, so an unclaimed
+// service may skip offered carriers. The telemetry carriers are offered for
+// the same reason the self endpoint is: a vendor image has no SDK to export
+// with, and refusing it would stop every render composing one the moment an
+// environment declares an intake.
 func offeredOnly(injection serviceInjection) bool {
 	offered := func(key string) bool {
-		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__")
+		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") || environments.IsTelemetryCarrier(key)
 	}
 	for key := range injection.Public {
 		if !offered(key) {
@@ -233,7 +241,7 @@ func offeredOnly(injection serviceInjection) bool {
 
 // writeChangedConfigurationFiles re-encodes only the files holding a document a
 // binding changed; every other file keeps its bytes, comments included.
-func writeChangedConfigurationFiles(ctx context.Context, paths []string, files map[string][]manifest, changed map[uintptr]bool) error {
+func writeChangedConfigurationFiles(ctx context.Context, tree *renderRoot, paths []string, files map[string][]manifest, changed map[uintptr]bool) error {
 	for _, path := range paths {
 		if !slices.ContainsFunc(files[path], func(document manifest) bool {
 			return changed[reflect.ValueOf(document.value).Pointer()]
@@ -251,7 +259,10 @@ func writeChangedConfigurationFiles(ctx context.Context, paths []string, files m
 		if err := encoder.Close(); err != nil {
 			return err
 		}
-		if err := shared.WriteFileAtomic(ctx, path, []byte(out.String()), 0o644); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := tree.write(filepath.Dir(path), filepath.Base(path), []byte(out.String())); err != nil {
 			return err
 		}
 	}
@@ -339,11 +350,12 @@ func bindSecretInjection(container map[string]any, service string, secrets map[s
 // validateProjectedInjection checks the selected overlay, not only the files the
 // projection wrote: a patch can drop a derived value, repoint a reference or
 // shadow the ConfigMap after projection.
-func validateProjectedInjection(root, service string, env *environments.Environment, injection serviceInjection) error {
+
+func validateProjectedInjectionInTree(tree *renderRoot, root, service string, env *environments.Environment, injection serviceInjection) error {
 	if len(injection.Public) == 0 && len(injection.Secrets) == 0 {
 		return nil
 	}
-	documents, err := effectiveConfiguration(root, env.Name)
+	documents, err := effectiveConfigurationInTree(tree, root, env.Name)
 	if err != nil {
 		return fmt.Errorf("build configuration overlay for %q: %w", service, err)
 	}
@@ -412,4 +424,25 @@ func sortedKeys(values map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// telemetryCarriersForRender is the environment's telemetry carriers
+// (environments.Environment.TelemetryCarriers) for every rendered service,
+// keyed by unique: a render delivers them exactly as a native run does, so a
+// service exports to the same place however it is started.
+func telemetryCarriersForRender(env *environments.Environment, uniques []string) map[string]map[string]string {
+	if env == nil || env.Telemetry == nil {
+		return nil
+	}
+	carriers := map[string]map[string]string{}
+	for _, unique := range uniques {
+		module, service, found := strings.Cut(unique, "/")
+		if !found {
+			continue
+		}
+		if variables := env.TelemetryCarriers(module, service); len(variables) > 0 {
+			carriers[unique] = variables
+		}
+	}
+	return carriers
 }

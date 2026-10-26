@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 )
 
@@ -68,6 +69,9 @@ func (p *planeImpl) runDeploy(ctx context.Context, req *DeployRequest) (DeployRe
 	env, err := orchestration.SelectEnvironment(ws, envName)
 	if err != nil {
 		return DeployResult{}, fmt.Errorf("select environment %q: %w", envName, err)
+	}
+	if err = gitops.CheckCompositionPermissions(ctx, ws, env, true, module.Name); err != nil {
+		return DeployResult{}, err
 	}
 	var deploymentManager deployments.Manager
 	var evidenceProvider deployments.EvidenceProvider

@@ -91,7 +91,7 @@ func writeBootstrapTree(t *testing.T, root, environment, namespace string) {
 func TestProjectResourceQuotaInjectsPromotableManifests(t *testing.T) {
 	root := t.TempDir()
 	writeBootstrapTree(t, root, "staging", "lodestar")
-	projected, err := projectResourceQuota(root, "staging", "lodestar", fullResourceQuota())
+	projected, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "lodestar", fullResourceQuota())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestProjectResourceQuotaInjectsPromotableManifests(t *testing.T) {
 func TestProjectResourceQuotaNoOpWithoutDeclaration(t *testing.T) {
 	root := t.TempDir()
 	writeBootstrapTree(t, root, "staging", "lodestar")
-	projected, err := projectResourceQuota(root, "staging", "lodestar", nil)
+	projected, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "lodestar", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestProjectResourceQuotaNoOpWithoutDeclaration(t *testing.T) {
 func TestProjectResourceQuotaRejectsMissingNamespace(t *testing.T) {
 	root := t.TempDir()
 	writeBootstrapTree(t, root, "staging", "lodestar")
-	if _, err := projectResourceQuota(root, "staging", "", fullResourceQuota()); err == nil {
+	if _, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "", fullResourceQuota()); err == nil {
 		t.Fatal("expected an error when the environment has no namespace")
 	}
 }

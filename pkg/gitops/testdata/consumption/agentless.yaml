@@ -1,0 +1,18 @@
+# A composed solution that names no executor: Load refuses it (agent is
+# required), and it asks for no authority.
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+api:
+    exposes:
+        - id: http
+          protocol: http
+    consumes:
+        - id: assistant
+          protocol: http
+          module: assistant
+          service: chat
+          endpoint: http
+          as: assistant
+lifecycle:
+    package: true
+    render: true

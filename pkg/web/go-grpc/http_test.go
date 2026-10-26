@@ -1,15 +1,16 @@
 package go_grpc
 
 import (
-	"connectrpc.com/connect"
-	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
-	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"connectrpc.com/connect"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
+	"github.com/stretchr/testify/require"
 )
 
 // TestHandlerServesConnectUnary exercises a Connect unary call over the exact

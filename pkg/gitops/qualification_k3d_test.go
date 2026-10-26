@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
+	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 )
@@ -198,10 +199,7 @@ func TestLocalK3dDisposableGitQualification(t *testing.T) {
 		full := append([]string{"--kubeconfig", kubeconfig}, args...)
 		return runExternal(t, "", input, "kubectl", full...)
 	}
-	kubectl(nil, "create", "namespace", "argocd")
-	kubectl(nil, "apply", "--server-side", "--force-conflicts", "-n", "argocd", "-f",
-		"https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.1/manifests/install.yaml")
-	kubectl(nil, "wait", "--for=condition=Ready", "pod", "--all", "-n", "argocd", "--timeout=5m")
+	installArgoCD(t, kubeconfig)
 	kubectl(nil, "create", "namespace", "payments")
 
 	repository := "git://" + gitServer + "/" + filepath.Base(remote)
@@ -230,7 +228,7 @@ spec:
   source:
     repoURL: %s
     targetRevision: %s
-    path: environments/deployments/modules/payments/services/%s/overlays/local
+    path: environments/modules/payments/services/%s/overlays/local
   destination:
     server: https://kubernetes.default.svc
     namespace: payments
@@ -360,10 +358,7 @@ func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
 		full := append([]string{"--kubeconfig", kubeconfig}, args...)
 		return runExternal(t, "", input, "kubectl", full...)
 	}
-	kubectl(nil, "create", "namespace", "argocd")
-	kubectl(nil, "apply", "--server-side", "--force-conflicts", "-n", "argocd", "-f",
-		"https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.1/manifests/install.yaml")
-	kubectl(nil, "wait", "--for=condition=Ready", "pod", "--all", "-n", "argocd", "--timeout=5m")
+	installArgoCD(t, kubeconfig)
 
 	// The solution provisions its own namespace ("lastlogin-go"), distinct from the
 	// host namespace ("hello"): the AppProject whitelists the cluster-scoped
@@ -395,7 +390,7 @@ spec:
   source:
     repoURL: %s
     targetRevision: %s
-    path: environments/deployments/modules/lastlogin-go/solutions/lastlogin-go/overlays/local
+    path: environments/modules/lastlogin-go/solutions/lastlogin-go/overlays/local
   destination:
     server: https://kubernetes.default.svc
     namespace: lastlogin-go
@@ -565,7 +560,7 @@ func renderMindShapedFixture(t *testing.T, root, environment string) {
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(root, "deployments", "modules", "payments"),
 		Module:      "payments", UnitNames: services, Environment: environment,
-		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
+		AppProject: "payments", OwnedPath: "environments/modules/payments",
 		Units: graph, Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		for _, service := range services {
@@ -611,4 +606,19 @@ func runExternal(t *testing.T, dir string, input []byte, name string, args ...st
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// installArgoCD installs Argo CD into the disposable cluster with the one
+// installer a local cluster run uses (deployments.InstallArgoCD).
+func installArgoCD(t *testing.T, kubeconfig string) {
+	t.Helper()
+	kubectl := func(ctx context.Context, stdin string, args ...string) (string, error) {
+		command := exec.CommandContext(ctx, "kubectl", append([]string{"--kubeconfig", kubeconfig}, args...)...)
+		command.Stdin = strings.NewReader(stdin)
+		out, err := command.CombinedOutput()
+		return string(out), err
+	}
+	if err := deployments.InstallArgoCD(context.Background(), kubectl, nil); err != nil {
+		t.Fatal(err)
+	}
 }

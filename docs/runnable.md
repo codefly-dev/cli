@@ -20,6 +20,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
+| `codefly generate runnable-bindings [--env=<env>] [--naming-scope=<scope>] [--call-endpoint=<module>/<service>/<endpoint>] [--check]` | Resolve the environment's scope selections, owner endpoints and declared `runnable-call-endpoint` into prepared bindings |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -42,11 +43,25 @@ owns the option, the descriptor-to-bounded-schema projection and
 published contracts, the layout on disk and the drift gate. Nothing about the
 contract is authored twice — it is the projection of the method's own messages.
 
+Derivation is endpoint-specific: `catalog.codefly.json`'s
+`endpoints[].services[].procedures` declares the served surface; descriptor bytes
+supply each method's option and schema. Sharing a descriptor does not make every
+method callable on every listener. Unknown catalog methods are refused, and a
+marked method's paired Lookup must also be served on that endpoint. Removing a
+method from an endpoint removes its derived package; `--check` detects the change.
+Owners with restricted listeners generate the procedure inventory from their
+registration/routing tables and configure
+[the module's `contracts.codefly.yaml`](commands.md#generate-contracts) before exporting.
+
 This is a separate path from `build runnable`, not a branch in it. A SERVICE
 package has no archive and no launch command: the implementation is the method
 itself, reached on the owner's endpoint, inside the process the owner already
 operates. `pkg/runnable.assemble` only ever emits NATIVE artifacts and is
 untouched.
+
+Core message fields in `operation.json` use protobuf JSON, including named tool
+effects. Unknown nested fields are refused so a newer declaration cannot lose
+authority metadata silently.
 
 The package is the contract; the execution policy and the authority a binding
 is minted for sit **beside** it in `operation.json`, because they are installed
@@ -64,6 +79,202 @@ layout, the refusal rules and how the release version is derived. What this
 does *not* do is invoke anything: no CLI command invokes a Runnable, derived or
 authored. Preparing each operation's binding for an environment is
 [`generate runnable-bindings`](commands.md#generate-runnable-bindings).
+
+### Required scope slots and tool exposure
+
+`generate runnables` preserves every field of Core's `Operation` in
+`operation.json`, including `required_scope_slots` and optional `tool` exposure.
+A slot-only operation may declare no fixed scopes. Generation keeps its slots
+unresolved; it cannot choose resource IDs for the installing composition.
+
+The composition answers each slot in the existing `workspace.codefly.yaml`
+environment selected by `generate runnable-bindings --env`. Under
+`runnable-scope-selections`, the key is the output binding key:
+`<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters replaced
+by underscores. The operation name comes from `contracts/runnables/index.json`.
+Each value is a list of Core `ScopeSelection` messages (`slot`, `invoke`,
+`lookup`), using Core's scope fields. For example:
+
+```yaml
+environments:
+  - name: staging
+    runnable-scope-selections:
+      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
+        - slot: source
+          invoke:
+            - resource_kind: datasource.sources
+              actions: [invoke, read]
+              resource_ids: [source-a]
+          lookup:
+            - resource_kind: datasource.sources
+              actions: [read]
+              resource_ids: [source-a]
+```
+
+`source-a` is an illustrative ID; select the exact resources this installation
+may use. Quote IDs that look like YAML numbers. The owner of
+`InvokeSourceOperation` requires `source` with actions `invoke` and `read`, and
+`lookup: true`, so its lookup must cover the same exact IDs with action `read`.
+When an operation is actually served on several published endpoints, each index
+row is a binding and needs its own selection. Saas-starter serves this operation
+and its Lookup on `connect`; its `authority` listener does not serve them even
+though both endpoints carry the complete descriptor. Receipt pruning is a
+separate operation and selection key,
+`SAAS_STARTER__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
+
+```sh
+codefly generate runnables saas-starter
+codefly generate runnable-bindings --env staging
+codefly generate runnable-bindings --env staging --check
+```
+
+Preparation calls Core's `OperationSpec.ResolveScopeSlots` once per operation
+and delivers its `Policy()`: fixed scopes stay in place, selected scopes are
+appended, and no unresolved slot reaches a prepared binding. Missing selections
+name the operation, slot and `runnable-scope-selections` key to set. An owner
+declaring neither fixed scopes nor slots is still refused as declaring no
+authority. Wildcards (including omitted IDs), collisions with a fixed scope's
+kind or another slot's kind, duplicate/undeclared slots, unknown fields and
+selection keys naming no derived operation are refused. A failed preparation
+writes nothing and preserves the previous output.
+
+The generated `configurations/<profile>/runnable-bindings.env` carries Core's
+`codefly.runnable-prepared/v3` bindings: owner coordinates, the resolved JSON
+call target, bounded contract and digest, and concrete policy. Tool metadata
+survives preparation; absence remains `ErrNotATool`, and exposure grants no
+authority. A gRPC operation is called only on a Connect endpoint whose
+published served set contains both the operation and its Lookup; no match or
+multiple matches are refused. A directly published Connect operation uses that
+endpoint with the same membership checks. Legacy gRPC-only catalogs must publish
+the called Connect surface before binding. Endpoint addresses still come from
+the existing network resolver, in the run's naming scope; see [naming scope and
+a declared call endpoint](#naming-scope-and-a-declared-call-endpoint).
+
+An environment that prepares no binding has no file when no module derives an
+operation. That absence is an answer, not a missing file: a service that
+declares `runnable-bindings` receives nothing for the group on a run, a build
+and a render, and reads every key as not configured, and `codefly doctor
+workspace` accepts the group absent or empty exactly when the environment
+selects no binding. A selected binding the group does not hold fails there,
+naming `codefly generate runnable-bindings --env <env>`.
+
+Binding and selection keys contain the derived service/endpoint/method name.
+Moving a method between endpoints changes its key: update the composition's
+selections and consumers and regenerate. Old selection keys are refused as
+unused; they do not silently grant authority to the new identity. Publishing a
+method on two endpoints gives two identities with separate selections.
+
+#### Declining a binding in an environment
+
+A composition that cannot name the resources a slot needs answers the key with
+an explicitly empty list. The typical case is a base composition: the host's
+`InvokeSourceOperation` needs exact source IDs, but sources are tenant data
+created at runtime, so a composition of modules alone holds none. Composed as
+`saas`, it writes:
+
+```yaml
+environments:
+  - name: local
+    runnable-scope-selections:
+      SAAS__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: []
+```
+
+`[]` means "this environment installs this operation for no resource":
+
+- that operation gets no prepared binding: its key is absent from
+  `runnable-bindings.env`, and it receives no authority;
+- every other derived operation still prepares, so one operation the
+  composition cannot answer no longer fails every binding with it;
+- the file records the decline as a comment line naming the key — and no
+  environment, since the file belongs to a configuration profile several
+  environments may share, so two of them that resolve the same addresses and
+  decline the same key write the same bytes and `--check` agrees for both —
+  generation output names it, and `codefly doctor workspace --env <env>`
+  reports it as a `runnable_binding_declined` warning. The doctor judges each
+  decline with the rule generation applies: a decline generation refuses (see
+  below) is a `runnable_binding_decline_invalid` failure, never a warning.
+
+Only `[]` declines. An absent key is still refused exactly as before, so
+nothing is ever skipped by omission; a null value (`KEY:` or `KEY: ~`) is
+refused when the environment is read, because it would look like either.
+`[]` on an operation that declares no required scope slot is refused, since
+there is nothing to decline and it would hide a typo, and `[]` on a key that
+names no derived operation is refused as an unknown key.
+
+A module whose service installs prepared bindings asks for each one in its
+manifest's authority request, by its key, with the binding's audience, kinds
+and actions and no resource id; the module's installation scope narrows it to
+the resources an organization consents to
+([module manifests](module-manifests.md#what-a-module-asks-for)). A declined
+operation has no prepared binding, so nothing asks for it.
+
+A service that installs a declined operation is refused at its own point: the
+`runnable-bindings` key it names is not configured, and it reports that key.
+The decline is the environment's own answer, so the same operation can be
+selected in another environment that does hold resource IDs. To install it,
+replace `[]` with selections and regenerate.
+
+This is not a new vocabulary: the value is still a list of Core
+`ScopeSelection` messages, and the empty list is the one answer that selects
+nothing. Core's resolution is unchanged; a declined operation is simply never
+handed to it.
+
+Changing a selection requires regeneration, and `--check` detects that change,
+including a decline added or removed.
+The configuration profile chooses the output directory; selections belong to
+the named environment even when environments share a profile. These declarations
+are installation input and are not sent to agents as runtime configuration.
+There is no additional selection file, CLI policy vocabulary or CLI scope
+resolver. Tests verify the prepared binding and the identical policy as a Core
+resolved-policy receipt; this command emits the binding configuration only.
+
+### Naming scope and a declared call endpoint
+
+A local binding is read by a run, so its address is the one that run binds.
+`--naming-scope` follows `codefly run`: omitted, the environment's declared
+`naming-scope` applies; passed, it replaces it for this invocation; passed
+empty, it clears it. A live run of that scope answers with its concrete
+allocation, and with no run the address is the one a run of the scope will
+bind (the resolver `codefly endpoint` uses). Generate with the scope you run
+with:
+
+```sh
+codefly generate runnable-bindings --env local --naming-scope demo
+codefly run service ... --env local --naming-scope demo
+```
+
+An environment declares the endpoint every call prepared for it is sent to
+instead of the owner's listener — the composition's hop in front of its
+modules, for example:
+
+```yaml
+environments:
+  - name: local
+    runnable-call-endpoint: authority/hop/http
+```
+
+Declared there, a plain `codefly generate runnable-bindings` and its `--check`
+prepare through it, so the committed file depends on the workspace and not on a
+flag retyped per invocation. `--call-endpoint <module>/<service>/<endpoint>`
+overrides the declaration for one invocation (`--call-endpoint ""` sends each
+call to its owner), and an environment that declares nothing keeps working with
+the flag alone; `--check` names the flag in its regeneration command only when
+the file was prepared for an endpoint other than the declared one. The
+declaration is installation input: it is never sent to an agent. The coordinate
+is parsed as an endpoint
+reference, must name a declared endpoint of a workspace module, and must be
+HTTP-based (`http`, `connect`, `rest` or `mcp`), because a prepared call carries an
+HTTP base URL; it resolves in the same environment and scope as the owners.
+Nothing infers such an endpoint: the composition that runs the hop names it.
+
+Only the address moves. Each owner is still loaded and held to its served
+Connect surface (operation and Lookup) and its published contract before the
+address is replaced, so a hop never makes an unserved or stale operation look
+callable. The operation, the Connect procedure or REST verb and path, the
+contract, its digest and the policy stay the owner's. One generation names at
+most one call endpoint, and the output file is the profile's: two generations
+for different scopes into one profile overwrite each other, so parallel runs
+use separate workspaces or profiles.
 
 ### Identity and coexistence
 

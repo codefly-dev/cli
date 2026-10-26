@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# pre-commit: the staged Go files are gofmt-clean, the cheap half of what CI's
+# lint job refuses. Enabled by `make hooks`; `git commit --no-verify` skips it.
+set -euo pipefail
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+[ -z "$files" ] && exit 0
+unformatted=$(gofmt -l $files)
+if [ -n "$unformatted" ]; then
+  echo "pre-commit: gofmt would change these files — run: gofmt -w <file>" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi

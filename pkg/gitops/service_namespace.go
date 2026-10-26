@@ -3,6 +3,7 @@ package gitops
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,13 +61,18 @@ func elideProvisionedNamespaces(root string, opts *RenderOptions) ([]string, err
 	if !opts.Promotable || opts.Namespace == "" {
 		return nil, nil
 	}
-	units, err := serviceUnitTrees(root)
+	tree, err := inspectRenderRoot(root, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRenderRoot(tree, opts)
+	units, err := serviceUnitTreesInTree(tree, root)
 	if err != nil {
 		return nil, err
 	}
 	var elided []string
 	for _, unit := range units {
-		dropped, err := elideProvisionedNamespace(filepath.Join(root, unit), opts.Namespace)
+		dropped, err := elideProvisionedNamespaceInTree(tree, filepath.Join(root, unit), opts.Namespace)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", unit, err)
 		}
@@ -84,12 +90,10 @@ func elideProvisionedNamespaces(root string, opts *RenderOptions) ([]string, err
 // (moduleStageDestinations, serviceRenderDestinations), so a module render's
 // "services/<name>" and a single-service render's "modules/<module>/services/<name>"
 // are both found without either layout being restated here.
-func serviceUnitTrees(root string) ([]string, error) {
+
+func serviceUnitTreesInTree(tree *renderRoot, root string) ([]string, error) {
 	var units []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	err := tree.walk(root, func(path string, info fs.DirEntry) error {
 		if !info.IsDir() || path == root {
 			return nil
 		}
@@ -114,21 +118,22 @@ func serviceUnitTrees(root string) ([]string, error) {
 // Namespace manifest claiming namespace, and drops the matching entry from the
 // kustomization that referenced the file. It returns the unit-relative paths it
 // removed.
-func elideProvisionedNamespace(root, namespace string) ([]string, error) {
+
+func elideProvisionedNamespaceInTree(tree *renderRoot, root, namespace string) ([]string, error) {
 	if namespace == "" {
 		return nil, nil
 	}
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+	if info, err := tree.stat(root, "."); err != nil || !info.IsDir() {
 		// A managed or otherwise unrendered unit has no staged tree.
 		return nil, nil
 	}
 	var elided []string
 	removedByDirectory := make(map[string][]string)
-	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	err := tree.walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
 		if !isManifestFile(relative) || isKustomizationFile(relative) {
 			return nil
 		}
-		data, err := readWithin(root, relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", relative, err)
 		}
@@ -141,7 +146,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 		}
 		elided = append(elided, filepath.ToSlash(relative))
 		if len(kept) == 0 {
-			if removeErr := removeWithin(root, relative); removeErr != nil {
+			if removeErr := tree.remove(root, relative); removeErr != nil {
 				return fmt.Errorf("remove %s: %w", relative, removeErr)
 			}
 			directory := filepath.Dir(path)
@@ -152,7 +157,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 		if err != nil {
 			return fmt.Errorf("re-encode %s: %w", relative, err)
 		}
-		if err := writeWithin(root, relative, encoded); err != nil {
+		if err := tree.write(root, relative, encoded); err != nil {
 			return fmt.Errorf("write %s: %w", relative, err)
 		}
 		return nil
@@ -161,7 +166,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 		return nil, err
 	}
 	for directory, names := range removedByDirectory {
-		if err := dropKustomizationResources(directory, names); err != nil {
+		if err := dropKustomizationResourcesInTree(tree, directory, names); err != nil {
 			return nil, err
 		}
 	}
@@ -245,7 +250,8 @@ func encodeDocuments(documents []*yaml.Node) ([]byte, error) {
 // kustomization in directory. A kustomization still referencing a file the
 // elision removed would fail `kustomize build`, which is how the render checks
 // its own promotable output — so the two edits are one operation.
-func dropKustomizationResources(directory string, names []string) error {
+
+func dropKustomizationResourcesInTree(tree *renderRoot, directory string, names []string) error {
 	removed := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		removed[name] = struct{}{}
@@ -253,7 +259,7 @@ func dropKustomizationResources(directory string, names []string) error {
 	}
 	for _, candidate := range kustomizationFileNames {
 		path := filepath.Join(directory, candidate)
-		data, err := os.ReadFile(path)
+		data, err := tree.read(directory, candidate)
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -274,7 +280,7 @@ func dropKustomizationResources(directory string, names []string) error {
 		if err != nil {
 			return fmt.Errorf("re-encode %s: %w", path, err)
 		}
-		if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		if err := tree.write(directory, candidate, encoded); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}

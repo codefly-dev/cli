@@ -105,14 +105,14 @@ func TestEntryConsumes(t *testing.T) {
 		ID: "documents", Module: "documents", Service: "api",
 		Endpoint: "connect", Protocol: "connect", As: "documents",
 	}
-	if len(consumed) != 1 || consumed[0] != want {
+	if len(consumed) != 1 || !reflect.DeepEqual(consumed[0], want) {
 		t.Fatalf("consumed APIs mismatch: got %+v, want [%+v]", consumed, want)
 	}
 	decoded, err := manifest.ParseConsumedAPIs(value)
 	if err != nil {
 		t.Fatalf("cannot decode %s value %q: %v", manifest.APIConsumesEnvironmentVariable, value, err)
 	}
-	if len(decoded) != 1 || decoded[0] != want {
+	if len(decoded) != 1 || !reflect.DeepEqual(decoded[0], want) {
 		t.Fatalf("env value does not round-trip: got %+v", decoded)
 	}
 }

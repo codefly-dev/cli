@@ -1,0 +1,22 @@
+# A composed solution carrying a top-level section this core does not model:
+# Load refuses it (unknown field), and it asks for no authority.
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+sources:
+    - provider: git
+      repo: example/handbook
+      paths: [pages/]
+api:
+    exposes:
+        - id: http
+          protocol: http
+    consumes:
+        - id: documents
+          protocol: rest
+          module: documents
+          service: documents
+          endpoint: rest
+          as: documents
+lifecycle:
+    package: true
+    render: true

@@ -3,8 +3,11 @@ package generators
 import (
 	"bytes"
 	"slices"
+	"strings"
 	"testing"
 
+	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
+	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/languages"
 	"google.golang.org/protobuf/encoding/protowire"
 	googleproto "google.golang.org/protobuf/proto"
@@ -191,7 +194,7 @@ func TestMarkUpstreamModulesAsImportsReportsPythonPackages(t *testing.T) {
 
 	_, marked := markSet(t, set, languages.PYTHON)
 	got := pythonPackagesFor(marked)
-	want := []string{"googleapis-common-protos", "protovalidate"}
+	want := []string{"googleapis-common-protos"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("pythonPackagesFor = %v, want %v", got, want)
 	}
@@ -206,6 +209,38 @@ func TestMarkUpstreamModulesAsImportsReportsPythonPackages(t *testing.T) {
 	}, languages.PYTHON)
 	if got := pythonPackagesFor(wktOnly); len(got) != 0 {
 		t.Fatalf("pythonPackagesFor(well-known types only) = %v, want none", got)
+	}
+}
+
+// TestUpstreamModulesInReportsWhatMarkingWould pins the sources path against
+// the descriptor-set path: a library generated from proto sources leaves the
+// same shared modules to their distributions, so it must declare the same
+// packages, and its own first-party files declare none.
+func TestUpstreamModulesInReportsWhatMarkingWould(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{Name: googleproto.String("google/protobuf/timestamp.proto"), Package: googleproto.String("google.protobuf")},
+			{Name: googleproto.String("google/api/annotations.proto"), Package: googleproto.String("google.api")},
+			{Name: googleproto.String("google/api/http.proto"), Package: googleproto.String("google.api")},
+			{Name: googleproto.String("buf/validate/validate.proto"), Package: googleproto.String("buf.validate")},
+			{Name: googleproto.String("authority/v1/authority.proto"), Package: googleproto.String("authority.v1")},
+		},
+	}
+
+	_, marked := markSet(t, set, languages.PYTHON)
+	fromSources := upstreamModulesIn(set, languages.PYTHON)
+	if got, want := pythonPackagesFor(fromSources), pythonPackagesFor(marked); !slices.Equal(got, want) {
+		t.Fatalf("sources path declares %v, descriptor-set path %v", got, want)
+	}
+	if got := pythonPackagesFor(fromSources); !slices.Equal(got, []string{"googleapis-common-protos"}) {
+		t.Fatalf("pythonPackagesFor(upstreamModulesIn) = %v", got)
+	}
+
+	ownOnly := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		{Name: googleproto.String("authority/v1/authority.proto"), Package: googleproto.String("authority.v1")},
+	}}
+	if got := upstreamModulesIn(ownOnly, languages.PYTHON); len(got) != 0 {
+		t.Fatalf("upstreamModulesIn(first-party only) = %v, want none", got)
 	}
 }
 
@@ -377,4 +412,50 @@ func bufModuleIdentity(t *testing.T, fileName string, moduleInfo []byte) string 
 		name = name[tagLength+length:]
 	}
 	return segments[bufModuleNameRemoteField] + "/" + segments[bufModuleNameOwnerField] + "/" + segments[bufModuleNameRepositoryField]
+}
+
+// A service that vendors an upstream module's protos under its own tree does
+// not have them generated as its own files.
+func TestVendoredUpstreamProtosAreNotOwnSources(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		{Name: googleproto.String("documents/v1/api.proto"), Package: googleproto.String("documents.v1")},
+		{Name: googleproto.String("codefly/base/v0/agent.proto"), Package: googleproto.String("codefly.base.v0")},
+	}}
+	own := []coreproto.Source{{Path: "documents/v1/api.proto"}}
+	if vendorsUpstreamModules(own, set, languages.GO) {
+		t.Fatal("a service's own file is not an upstream module")
+	}
+	vendored := append(own, coreproto.Source{Path: "codefly/base/v0/agent.proto"})
+	if !vendorsUpstreamModules(vendored, set, languages.GO) {
+		t.Fatal("a vendored codefly/base file is an upstream module's")
+	}
+}
+
+// The hop's policy option is foreign to a Go library by its go_package, the
+// package whose bindings the CLI links: vendored under a module's tree it is
+// the hop's file, while a module's own file under the same path is its own.
+func TestTheVendoredHopOptionIsForeignByItsGoPackage(t *testing.T) {
+	policy := hopv1.File_authority_hop_v1_policy_proto
+	goPackage := policy.Options().(*descriptorpb.FileOptions).GetGoPackage()
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		{Name: googleproto.String("documents/v1/api.proto"), Package: googleproto.String("documents.v1")},
+		{Name: googleproto.String(policy.Path()), Package: googleproto.String(string(policy.Package())),
+			Options: &descriptorpb.FileOptions{GoPackage: googleproto.String(goPackage)}},
+		{Name: googleproto.String("authority/hop/v1/notes.proto"), Package: googleproto.String("authority.hop.v1"),
+			Options: &descriptorpb.FileOptions{GoPackage: googleproto.String("github.com/acme/documents/pkg/gen/authority/hop/v1;hopv1")}},
+	}}
+	own := []coreproto.Source{{Path: "documents/v1/api.proto"}, {Path: "authority/hop/v1/notes.proto"}}
+	if vendorsUpstreamModules(own, set, languages.GO) {
+		t.Fatal("a module's own file under the hop's path is its own")
+	}
+	if !vendorsUpstreamModules(append(own, coreproto.Source{Path: policy.Path()}), set, languages.GO) {
+		t.Fatal("the vendored hop option is the hop module's, imported by its go_package")
+	}
+	if vendorsUpstreamModules(append(own, coreproto.Source{Path: policy.Path()}), set, languages.PYTHON) {
+		t.Fatal("no Python distribution publishes the hop option, so a Python library owns it")
+	}
+	importPath, _, _ := strings.Cut(goPackage, ";")
+	if got := linkedGoBindings(); importPath == "" || !slices.Equal(got, []string{importPath}) {
+		t.Fatalf("linked Go bindings %v do not name the hop's go_package %q", got, goPackage)
+	}
 }

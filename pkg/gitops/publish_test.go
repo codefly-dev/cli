@@ -16,6 +16,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 )
 
 var preparedPermit = mutationauthority.NewPreparedPermit()
@@ -141,7 +142,7 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if plan.ID == "" || plan.Diff == "" || len(plan.Changed) == 0 {
 		t.Fatalf("publication plan is not inspectable: %+v", plan)
 	}
-	if plan.Path != "environments/deployments/modules/payments" {
+	if plan.Path != "environments/modules/payments" {
 		t.Fatalf("publication path = %q", plan.Path)
 	}
 	snapshotRef := "refs/heads/codefly/snapshot-payments-production"
@@ -205,7 +206,7 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 }
 
 // TestLocalGitopsPublishDeliversSignedCarriersAndTheJob runs the whole
-// publish path over a tree that declares presence to a host: the plan is
+// publish path over a tree that declares a module manifest to a host: the plan is
 // prepared through preparePublish (the host block shaping the delivery
 // options, the delivery target resolved, the groups held), the documents are
 // settled against the base branch and signed, the carriers and the Job are
@@ -224,7 +225,7 @@ func hostedPublishWorkspace(t *testing.T) (ctx context.Context, workspace *resou
 		t.Fatal(err)
 	}
 	hosted := strings.Replace(string(config), "  - name: production\n    cluster:\n      kind: k3d\n",
-		"  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n    host:\n      coordinate: example/prod/region-a\n      component: platform-host\n      domain: example\n      audience: accounts\n      trust_domain: cluster.example\n      envelope_revision: 1\n      delivery: payments/host/rest\n      release:\n        repository: codefly-test/payments\n        workflow: .github/workflows/release.yml\n        refs:\n          - refs/tags/v[0-9]+[.][0-9]+[.][0-9]+\n", 1)
+		"  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n    host:\n      coordinate: example/prod/region-a\n      component: platform-host\n      domain: example\n      audience: accounts\n      trust_domain: cluster.example\n      delivery: payments/host/rest\n      release:\n        key_id: release-v1\n", 1)
 	if hosted == string(config) {
 		t.Fatal("the fixture's environment was not found")
 	}
@@ -273,7 +274,7 @@ func TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity(t *testing.T) 
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
-	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY", "CODEFLY_RELEASE_KMS_KEY"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -281,38 +282,21 @@ func TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity(t *testing.T) 
 	}
 	request := PublishRequest{Module: "payments", Environment: "production", PromotionBranch: "codefly/promote-payments-production"}
 	_, err = PlanPublish(ctx, workspace, &request)
-	if err == nil || !strings.Contains(err.Error(), "run it from the release workflow") {
+	if err == nil || !strings.Contains(err.Error(), "VAULT_ADDR") {
 		t.Fatalf("a hosted release publish with no workflow identity was not refused: %v", err)
 	}
-	// An identity the reviewed policy does not admit — another repository,
-	// another workflow, a branch, a tag outside the pattern — is refused
-	// before anything is signed.
-	for name, identity := range map[string][2]string{
-		"another repository": {"codefly-test/manifests", "codefly-test/manifests/.github/workflows/release.yml@refs/tags/v1.0.0"},
-		"another workflow":   {"codefly-test/payments", "codefly-test/payments/.github/workflows/ci.yml@refs/tags/v1.0.0"},
-		"a branch":           {"codefly-test/payments", "codefly-test/payments/.github/workflows/release.yml@refs/heads/main"},
-		"a tag outside":      {"codefly-test/payments", "codefly-test/payments/.github/workflows/release.yml@refs/tags/nightly"},
-	} {
-		t.Setenv("GITHUB_REPOSITORY", identity[0])
-		t.Setenv("GITHUB_WORKFLOW_REF", identity[1])
-		_, err = PlanPublish(ctx, workspace, &request)
-		if err == nil || !strings.Contains(err.Error(), "release policy") {
-			t.Fatalf("%s: not refused by the release policy: %v", name, err)
-		}
-	}
-	t.Setenv("GITHUB_REPOSITORY", "codefly-test/payments")
-	t.Setenv("GITHUB_WORKFLOW_REF", "codefly-test/payments/.github/workflows/release.yml@refs/tags/v1.0.0")
+	// A supplied key still cannot bypass the reviewed declaration.
+	signer := &fakeSigner{}
+	request.Signer = signer
 	_, err = PlanPublish(ctx, workspace, &request)
-	if err == nil || strings.Contains(err.Error(), "run it from the release workflow") || strings.Contains(err.Error(), "release policy") {
-		t.Fatalf("with the admitted identity the publish must reach its signer, which this process does not hold: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "release-v1") || !strings.Contains(err.Error(), signer.KeyID()) || signer.signed != 0 {
+		t.Fatalf("unadmitted key was not refused before signing: %v", err)
 	}
-	if !strings.Contains(err.Error(), "sign") {
-		t.Fatalf("the error past the policy is not the signer's: %v", err)
-	}
+
 }
 
 func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
-	ctx, workspace, _, remote := hostedPublishWorkspace(t)
+	ctx, workspace, remote := developerPublishWorkspace(t)
 	signer := &fakeSigner{nonce: true}
 	request := PublishRequest{
 		Module: "payments", Environment: "production", Local: true, Signer: signer,
@@ -326,7 +310,7 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 		t.Fatalf("the plan does not report the settled, signed delivery: %+v", plan.Delivery)
 	}
 	if signer.signed != 1 {
-		t.Fatalf("the plan signed %d documents, want the one presence document", signer.signed)
+		t.Fatalf("the plan signed %d documents, want the one module manifest", signer.signed)
 	}
 	// The publish executes the inspected plan with the carriers it signed:
 	// every bundle this signer makes is different, so only reuse keeps the
@@ -338,10 +322,10 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 	if signer.signed != 1 {
 		t.Fatalf("the publish signed again (%d signatures): the plan's carriers were not reused", signer.signed)
 	}
-	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/production/"
-	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-presence.yaml")
+	overlay := result.Path + "/" + moduleManifestDir + "/overlays/production/"
+	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-manifest.yaml")
 	for _, want := range []string{
-		"name: deliver-presence-payments-production-", "serviceAccountName: delivery", "namespace: payments",
+		"name: deliver-manifest-payments-production-", "/platform/_delivery/manifest", "serviceAccountName: delivery", "namespace: payments",
 		"DELIVERY_IDENTITY_FILE", "http://host.payments.svc.cluster.local:8080", "audience: accounts",
 		"argocd.argoproj.io/hook: Sync",
 	} {
@@ -350,15 +334,15 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 		}
 	}
 	carrier := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"payments.production.payments.yaml")
-	if !strings.Contains(carrier, presenceCarrierKey) || !strings.Contains(carrier, "generation: 1") {
-		t.Fatalf("the published carrier is not the signed generation-1 document:\n%s", carrier)
+	if !strings.Contains(carrier, solutionhost.SignedFileName) || !strings.Contains(carrier, "generation: 1") {
+		t.Fatalf("the published carrier is not the signed generation-1 manifest:\n%s", carrier)
 	}
 	inventory := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/"+InventoryFilename)
 	if !strings.Contains(inventory, `"signed": true`) {
 		t.Fatalf("the published inventory does not record a signed delivery:\n%s", inventory)
 	}
 	// (The Argo Application that delivers the overlay is pinned by
-	// TestDeclaredBindingsReachArgo; a flat workspace generates no bootstrap.)
+	// TestDeclaredManifestReachesArgo; a flat workspace generates no bootstrap.)
 }
 
 func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
@@ -376,7 +360,7 @@ func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
 		Units:       graph,
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(_ context.Context, stage string) error {
@@ -481,7 +465,7 @@ func TestPublishRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
 		Units:       graph,
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(_ context.Context, stage string) error {
@@ -733,7 +717,7 @@ spec:
 		context.Background(),
 		config,
 		root,
-		"environments/deployments/modules/payments",
+		"environments/modules/payments",
 		inventory,
 		"production",
 		revision,
@@ -747,7 +731,7 @@ spec:
 	}
 	if !strings.Contains(string(applicationSet), "kind: ApplicationSet") ||
 		!strings.Contains(string(applicationSet), "targetRevision: "+revision) ||
-		!strings.Contains(string(applicationSet), "overlay: environments/deployments/modules/payments/services/store/overlays/production") ||
+		!strings.Contains(string(applicationSet), "overlay: environments/modules/payments/services/store/overlays/production") ||
 		!strings.Contains(string(applicationSet), "tenant: in-cluster") {
 		t.Fatalf("managed bootstrap ApplicationSet = %s", applicationSet)
 	}
@@ -904,12 +888,12 @@ EOF
 	)
 	if !strings.Contains(applicationSet, "kind: ApplicationSet") ||
 		!strings.Contains(applicationSet, "targetRevision: "+result.SnapshotRevision) ||
-		!strings.Contains(applicationSet, "overlay: environments/deployments/modules/payments/services/api/overlays/production") ||
-		!strings.Contains(applicationSet, "overlay: environments/deployments/modules/payments/module/overlays/production") ||
+		!strings.Contains(applicationSet, "overlay: environments/modules/payments/services/api/overlays/production") ||
+		!strings.Contains(applicationSet, "overlay: environments/modules/payments/module/overlays/production") ||
 		// The tenant registry the generator discovers lives outside the module path,
 		// so re-publishing never wipes or prunes an operator's tenant.
 		!strings.Contains(applicationSet, "tenants/production/*/cluster.json") ||
-		strings.Contains(applicationSet, "environments/deployments/modules/payments/tenants") ||
+		strings.Contains(applicationSet, "environments/modules/payments/tenants") ||
 		!strings.Contains(applicationSet, "tenant: in-cluster") {
 		t.Fatalf("generated ApplicationSet = %s", applicationSet)
 	}
@@ -978,12 +962,14 @@ EOF
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundleDestination := t.TempDir()
 	err = renderModuleBundle(
 		ctx,
 		workspace,
 		module,
 		environment,
-		t.TempDir(),
+		bundleDestination,
+		testRenderRoot(t, bundleDestination),
 		promotableServiceGraph("payments", []string{"api"}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "services [api auth-sidecar] differ from rendered in-cluster graph [api]") {
@@ -991,12 +977,14 @@ EOF
 	}
 
 	environment.Namespace = ""
+	bundleDestination = t.TempDir()
 	err = renderModuleBundle(
 		ctx,
 		workspace,
 		module,
 		environment,
-		t.TempDir(),
+		bundleDestination,
+		testRenderRoot(t, bundleDestination),
 		promotableServiceGraph("payments", []string{"api"}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "requires an explicit namespace") {
@@ -1005,12 +993,14 @@ EOF
 
 	environment.Namespace = "payments"
 	environment.Cluster = nil
+	bundleDestination = t.TempDir()
 	err = renderModuleBundle(
 		ctx,
 		workspace,
 		module,
 		environment,
-		t.TempDir(),
+		bundleDestination,
+		testRenderRoot(t, bundleDestination),
 		promotableServiceGraph("payments", []string{"api"}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "requires an explicit cluster kind") {
@@ -1132,6 +1122,110 @@ func TestPublishPreservesSnapshotLineageAfterSquashAndBranchDeletion(t *testing.
 	}
 }
 
+// A promotion whose pull request was squash-merged while its branch was kept
+// leaves a branch that does not contain the base. The next publish starts
+// again from the base and replaces that branch under a lease on its old tip,
+// rather than stacking a commit that forks from the old base and conflicts
+// add/add on every file the squash already delivered.
+func TestPublishRestartsAPromotionBranchItsSquashMergeLeftBehind(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureSSHSigning(t)
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	firstPlan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: firstPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "merge", "--squash", "origin/"+request.PromotionBranch)
+	gitRun(t, work, "commit", "-m", "squash promotion")
+	gitRun(t, work, "push", "origin", "main")
+
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "worker")
+	secondPlan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondPlan.ReplacesBranchRevision != first.Commit || secondPlan.BranchRevision != "" || secondPlan.ExistingCommit != "" {
+		t.Fatalf("plan replaces %q (branch %q, existing %q), want it to replace the squash-merged tip %s",
+			secondPlan.ReplacesBranchRevision, secondPlan.BranchRevision, secondPlan.ExistingCommit, first.Commit)
+	}
+	second, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: secondPlan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "refs/heads/" + request.PromotionBranch
+	if tip := gitOutput(t, "", "--git-dir", remote, "rev-parse", branch); tip != second.Commit {
+		t.Fatalf("promotion branch is at %s, want the new commit %s", tip, second.Commit)
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", "main", branch)
+	for _, changed := range strings.Split(gitOutput(t, "", "--git-dir", remote, "diff", "--name-only", "main", branch), "\n") {
+		if changed != secondPlan.Path && !strings.HasPrefix(changed, secondPlan.Path+"/") {
+			t.Fatalf("the replaced branch changes %q outside the module path %s", changed, secondPlan.Path)
+		}
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-tree", "--write-tree", "main", branch)
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", first.SnapshotRevision, second.SnapshotRevision)
+	if first.SnapshotRevision == second.SnapshotRevision {
+		t.Fatal("changed service tree reused the previous snapshot")
+	}
+}
+
+// A stale promotion branch is replaced only when it carries nothing but the
+// module's own path: one holding someone else's change is refused even after
+// the base moved past it, never overwritten.
+func TestPublishRefusesToReplaceAStaleBranchCarryingUnrelatedChanges(t *testing.T) {
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+
+	work := t.TempDir()
+	gitRun(t, "", "clone", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "checkout", "-b", "codefly/promote-payments-production")
+	if err := os.WriteFile(filepath.Join(work, "unrelated.txt"), []byte("outside promotion\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", "unrelated.txt")
+	gitRun(t, work, "commit", "-m", "unrelated")
+	gitRun(t, work, "push", "origin", "codefly/promote-payments-production")
+	stale := gitOutput(t, work, "rev-parse", "HEAD")
+	gitRun(t, work, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(work, "elsewhere.txt"), []byte("the base moves on\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, work, "add", "elsewhere.txt")
+	gitRun(t, work, "commit", "-m", "base moves")
+	gitRun(t, work, "push", "origin", "main")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unrelated change") {
+		t.Fatalf("plan error = %v", err)
+	}
+	if tip := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/codefly/promote-payments-production"); tip != stale {
+		t.Fatalf("the stale branch moved to %s, want it left at %s", tip, stale)
+	}
+}
+
 func TestPublishRejectsUnrelatedExistingPromotionChanges(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
@@ -1187,7 +1281,7 @@ func TestPlanPublishRejectsRepositorySymlinkWithoutTouchingItsTarget(t *testing.
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
 	gitRun(t, work, "config", "commit.gpgsign", "false")
-	targetParent := filepath.Join(work, "environments", "deployments", "modules")
+	targetParent := filepath.Join(work, "environments", "modules")
 	if err := os.MkdirAll(targetParent, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1298,27 +1392,34 @@ func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
 	}}
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
-	_, err := RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
-		Units:       graph,
-		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
-	}, func(_ context.Context, stage string) error {
-		return writePublishServiceFixture(stage, "production", "api")
-	})
-	if err != nil {
-		t.Fatal(err)
+	// Each promotion is reviewed and merged; the rollback then targets the
+	// first while the base delivers the second, so it has a tree to re-promote.
+	promote := func(service string) PublishResult {
+		t.Helper()
+		_, err := RenderOwnedTree(ctx, &RenderOptions{
+			Destination: destination, Module: "payments", UnitNames: []string{"api"},
+			OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
+			Units:       graph,
+			Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+		}, func(_ context.Context, stage string) error {
+			return writePublishServiceFixture(stage, "production", service)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := PlanPublish(ctx, workspace, &request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		published, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mergePromotionToMain(t, remote, request.PromotionBranch)
+		return published
 	}
-
-	plan, err := PlanPublish(ctx, workspace, &request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	published, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mergePromotionToMain(t, remote, request.PromotionBranch)
+	published := promote("api")
+	promote("worker")
 	if err := writeReceipt(workspace.Dir(), "evidence", "first.json", Evidence{
 		SchemaVersion: EvidenceSchemaVersion, Module: "payments", Environment: "production",
 		RenderDigest: published.RenderDigest, SignedCommit: published.Commit, Tree: published.Tree,
@@ -1332,7 +1433,7 @@ func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 	}
 
 	// saas is torn down after payments was reviewed and published against it.
-	removeGitopsPath(t, remote, "environments/deployments/modules/saas")
+	removeGitopsPath(t, remote, "environments/modules/saas")
 
 	rollbackRequest := RollbackRequest{PublishRequest: request, ToRevision: published.Commit}
 	rollbackPlan, err := PlanRollback(ctx, workspace, &rollbackRequest)
@@ -1493,7 +1594,7 @@ func seedHostModuleInventory(t *testing.T, remote, gitopsPath, module string, in
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
 	gitRun(t, work, "config", "commit.gpgsign", "false")
-	dir := filepath.Join(work, filepath.FromSlash(gitopsPath), "deployments", "modules", module)
+	dir := filepath.Join(work, filepath.FromSlash(deliveryModulePath(gitopsPath, module)))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1656,7 +1757,7 @@ func renderPublishFixture(t *testing.T, root, module, environment, name string) 
 	destination := filepath.Join(root, "deployments", "modules", module)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: module, UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", module)),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", module)),
 		Units:       promotableServiceGraph(module, []string{"api"}),
 		Environment: environment, Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
@@ -1682,7 +1783,7 @@ func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Work
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", moduleName)
 	_, err = RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: moduleName, UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", moduleName)),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", moduleName)),
 		ModulePath:  "module",
 		Units:       graph,
 		Environment: environmentName, Namespace: environment.Namespace,
@@ -1691,7 +1792,7 @@ func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Work
 		if err := writePublishServiceFixture(stage, environmentName, name); err != nil {
 			return err
 		}
-		return renderModuleBundle(ctx, workspace, module, environment, filepath.Join(stage, "module"), graph)
+		return renderModuleBundle(ctx, workspace, module, environment, filepath.Join(stage, "module"), testRenderRoot(t, stage), graph)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1777,7 +1878,6 @@ environments:
       domain: example
       audience: https://host.example
       trust_domain: cluster.example
-      envelope_revision: 1
       delivery: payments/api/rest
   - name: staging
     cluster:

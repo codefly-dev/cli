@@ -2,264 +2,161 @@ package signing
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"regexp"
 	"strings"
-	"sync/atomic"
 	"testing"
+
+	"github.com/codefly-dev/core/solutionhost"
 )
 
-func TestGitHubActionsPolicyPinsOneWorkflowOnReleaseTags(t *testing.T) {
-	policy, err := GitHubActionsPolicy("owner/repo", ".github/workflows/release.yaml", "refs/tags/v.*")
+// testManifest is a valid module manifest, so the verifier exercises the
+// document as well as the envelope.
+func testManifest(t *testing.T) *solutionhost.ModuleManifest {
+	t.Helper()
+	manifest := &solutionhost.ModuleManifest{
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.wiki", Alias: "wiki", Kind: solutionhost.KindModule,
+		Generation: 1, Host: solutionhost.HostTarget{Coordinate: "acme/local", Domain: "acme"},
+		Release:   solutionhost.Release{Publisher: "acme", Name: "wiki", Version: "0.1.0"},
+		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend"}},
+		Authority: &solutionhost.Authority{Principal: "wiki"},
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return manifest
+}
+
+func testSigner(t *testing.T) solutionhost.Signer {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("GitHubActionsPolicy: %v", err)
+		t.Fatal(err)
 	}
-	if policy.Issuer != GitHubActionsIssuer {
-		t.Fatalf("issuer = %q, want the GitHub Actions issuer %q", policy.Issuer, GitHubActionsIssuer)
-	}
-	pattern := regexp.MustCompile(policy.SubjectPattern)
-
-	admitted := []string{
-		"https://github.com/owner/repo/.github/workflows/release.yaml@refs/tags/v1.2.3",
-		"https://github.com/owner/repo/.github/workflows/release.yaml@refs/tags/v0.1.172",
-	}
-	for _, subject := range admitted {
-		if !pattern.MatchString(subject) {
-			t.Errorf("pattern %q should admit %q", policy.SubjectPattern, subject)
-		}
-	}
-	refused := map[string]string{
-		"a branch, not a tag":           "https://github.com/owner/repo/.github/workflows/release.yaml@refs/heads/main",
-		"another repository":            "https://github.com/owner/other/.github/workflows/release.yaml@refs/tags/v1.2.3",
-		"a repository sharing a prefix": "https://github.com/owner/repo2/.github/workflows/release.yaml@refs/tags/v1.2.3",
-		"another workflow":              "https://github.com/owner/repo/.github/workflows/ci.yaml@refs/tags/v1.2.3",
-		"an unquoted dot":               "https://githubXcom/owner/repo/.github/workflows/release.yaml@refs/tags/v1.2.3",
-		"a longer host":                 "https://github.com.evil.example/owner/repo/.github/workflows/release.yaml@refs/tags/v1.2.3",
-	}
-	for why, subject := range refused {
-		if pattern.MatchString(subject) {
-			t.Errorf("pattern %q should refuse %s: %q", policy.SubjectPattern, why, subject)
-		}
-	}
-
-	// The ref pattern is anchored at the end: a stricter pattern admits the tag and nothing after it.
-	strict, err := GitHubActionsPolicy("owner/repo", ".github/workflows/release.yaml", "refs/tags/v[0-9.]+")
+	signer, err := solutionhost.NewInMemorySigner("release", private)
 	if err != nil {
-		t.Fatalf("GitHubActionsPolicy: %v", err)
+		t.Fatal(err)
 	}
-	strictPattern := regexp.MustCompile(strict.SubjectPattern)
-	if !strictPattern.MatchString("https://github.com/owner/repo/.github/workflows/release.yaml@refs/tags/v1.2.3") {
-		t.Errorf("pattern %q should admit the release tag", strict.SubjectPattern)
-	}
-	for _, subject := range []string{
-		"https://github.com/owner/repo/.github/workflows/release.yaml@refs/tags/v1.2.3 extra",
-		"https://github.com/owner/repo/.github/workflows/release.yaml@refs/tags/v1.2.3-rc1",
-	} {
-		if strictPattern.MatchString(subject) {
-			t.Errorf("pattern %q should refuse trailing content: %q", strict.SubjectPattern, subject)
-		}
-	}
+	return signer
 }
 
-func TestGitHubActionsPolicyRefusesEmptyParts(t *testing.T) {
-	cases := map[string][3]string{
-		"empty repository":      {"", ".github/workflows/release.yaml", "refs/tags/v.*"},
-		"repository sans owner": {"repo", ".github/workflows/release.yaml", "refs/tags/v.*"},
-		"empty workflow path":   {"owner/repo", "", "refs/tags/v.*"},
-		"empty ref pattern":     {"owner/repo", ".github/workflows/release.yaml", ""},
-		"invalid ref pattern":   {"owner/repo", ".github/workflows/release.yaml", "refs/tags/v(.*"},
-	}
-	for name, parts := range cases {
-		_, err := GitHubActionsPolicy(parts[0], parts[1], parts[2])
-		if !errors.Is(err, ErrPolicy) {
-			t.Errorf("%s: err = %v, want ErrPolicy", name, err)
-		}
-	}
-}
-
-func TestFromEnvironmentWithoutAnIdentityCannotSign(t *testing.T) {
-	signer := FromEnvironment(func(string) (string, bool) { return "", false })
-	if _, isUnavailable := signer.(*Unavailable); !isUnavailable {
-		t.Fatalf("signer = %T, want *Unavailable", signer)
-	}
-	_, err := signer.Sign(context.Background(), []byte("document"))
-	if !errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("Sign err = %v, want ErrNoIdentity", err)
-	}
-	for _, want := range []string{"ACTIONS_ID_TOKEN_REQUEST_URL", "release workflow", "OIDC identity"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q should name %q", err, want)
-		}
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "private key") {
-		t.Errorf("error %q must not suggest supplying a key", err)
-	}
-}
-
-func TestFromEnvironmentInAGitHubActionsJobSignsKeylessly(t *testing.T) {
-	env := map[string]string{
-		"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://actions.example/token?api-version=2.0",
-		"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "runtime-authorization",
-	}
-	signer := FromEnvironment(func(name string) (string, bool) {
-		value, found := env[name]
-		return value, found
-	})
-	keyless, isKeyless := signer.(*Keyless)
-	if !isKeyless {
-		t.Fatalf("signer = %T, want *Keyless", signer)
-	}
-	if keyless.options.FulcioURL != DefaultFulcioURL || keyless.options.RekorURL != DefaultRekorURL {
-		t.Errorf("options = %+v, want the public-good defaults", keyless.options)
-	}
-	if keyless.options.TimestampURL != "" {
-		t.Errorf("TimestampURL = %q, want none by default", keyless.options.TimestampURL)
-	}
-	if keyless.options.IDToken == nil || keyless.options.HTTPClient == nil {
-		t.Errorf("IDToken and HTTPClient must be set: %+v", keyless.options)
-	}
-
-	// An empty value is as good as unset: GitHub never exports an empty endpoint.
-	env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = ""
-	if _, isUnavailable := FromEnvironment(func(name string) (string, bool) {
-		value, found := env[name]
-		return value, found
-	}).(*Unavailable); !isUnavailable {
-		t.Errorf("an empty ACTIONS_ID_TOKEN_REQUEST_TOKEN must leave the process without an identity")
-	}
-}
-
-func TestGitHubActionsIDTokenRequestsTheSigstoreAudience(t *testing.T) {
-	const token = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvOm93bmVyL3JlcG8ifQ.signature"
-	var seenAuthorization, seenQuery string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenAuthorization = r.Header.Get("Authorization")
-		seenQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"count":1,"value":"` + token + `"}`))
-	}))
-	defer server.Close()
-	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL+"/token?api-version=2.0")
-	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runtime-authorization")
-
-	got, err := GitHubActionsIDToken(context.Background(), server.Client())
+func TestKeyCheckVerifiesEnvelopeKeyAndOwnership(t *testing.T) {
+	document := testManifest(t)
+	payload, err := solutionhost.SignedPayload(document)
 	if err != nil {
-		t.Fatalf("GitHubActionsIDToken: %v", err)
+		t.Fatal(err)
 	}
-	if got != token {
-		t.Errorf("token = %q, want %q", got, token)
+	signer := testSigner(t)
+	for _, kind := range []solutionhost.KeyKind{solutionhost.KeyKindRelease, solutionhost.KeyKindPerson} {
+		check, err := KeyCheck(signer, kind, document.Host.Domain, signer.KeyID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelope, err := SignEnvelope(payload, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = check(context.Background(), envelope, payload); err != nil {
+			t.Fatal(err)
+		}
+		identity, err := ReadIdentity(envelope)
+		if err != nil || identity.KeyID != signer.KeyID() {
+			t.Fatalf("identity %v %v", identity, err)
+		}
+		wrongDomain, err := KeyCheck(signer, kind, "another-domain", signer.KeyID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = wrongDomain(context.Background(), envelope, payload); err == nil {
+			t.Fatal("foreign domain admitted")
+		}
+		_, private, _ := ed25519.GenerateKey(rand.Reader)
+		other, _ := solutionhost.NewInMemorySigner(signer.KeyID(), private)
+		wrong, err := SignEnvelope(payload, other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = check(context.Background(), wrong, payload); err == nil {
+			t.Fatal("same ID with another key admitted")
+		}
+		var tampered map[string]any
+		if err = json.Unmarshal(envelope, &tampered); err != nil {
+			t.Fatal(err)
+		}
+		tampered["signatures"].([]any)[0].(map[string]any)["keyid"] = "another-key"
+		wrong, _ = json.Marshal(tampered)
+		if err = check(context.Background(), wrong, payload); err == nil {
+			t.Fatal("unlisted key admitted")
+		}
+		// Parsing the claimed identity does not imply verification.
+		if id, err := ReadIdentity(wrong); err != nil || id.KeyID != "another-key" {
+			t.Fatal("claim unreadable")
+		}
 	}
-	if seenAuthorization != "bearer runtime-authorization" {
-		t.Errorf("Authorization = %q, want the runtime token as a bearer", seenAuthorization)
+	if _, err = KeyCheck(signer, solutionhost.KeyKindRelease, document.Host.Domain, "unlisted"); err == nil {
+		t.Fatal("custody mismatch accepted")
 	}
-	query := regexp.MustCompile(`(^|&)audience=sigstore(&|$)`)
-	if !query.MatchString(seenQuery) || !strings.Contains(seenQuery, "api-version=2.0") {
-		t.Errorf("query = %q, want audience=sigstore added to the endpoint's own query", seenQuery)
+	for _, raw := range []string{"", `{}`, `{"signatures":[{},{}]}`, `{"signatures":[{"keyid":""}]}`} {
+		if _, err = ReadIdentity([]byte(raw)); err == nil {
+			t.Fatal("malformed identity accepted")
+		}
 	}
-}
-
-func TestGitHubActionsIDTokenReportsARefusal(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"message":"bad audience"}`, http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	_, err := requestIDToken(context.Background(), server.Client(), server.URL+"/token?api-version=2.0", "runtime-authorization")
-	if err == nil {
-		t.Fatal("a 401 from the token endpoint must be an error")
-	}
-	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "bad audience") {
-		t.Errorf("error %q should carry the status and the endpoint's answer", err)
-	}
-	if errors.Is(err, ErrNoIdentity) {
-		t.Errorf("a refused request is not a missing identity: %v", err)
-	}
-
-	_, err = gitHubActionsIDToken(context.Background(), server.Client(), func(string) (string, bool) { return "", false })
-	if !errors.Is(err, ErrNoIdentity) {
-		t.Errorf("without the variables err = %v, want ErrNoIdentity", err)
-	}
-}
-
-func TestNewKeylessAppliesDefaultsAndKeepsOverrides(t *testing.T) {
-	defaults := NewKeyless(KeylessOptions{})
-	if defaults.options.FulcioURL != DefaultFulcioURL || defaults.options.RekorURL != DefaultRekorURL {
-		t.Errorf("defaults = %+v, want the public-good Fulcio and Rekor", defaults.options)
-	}
-	if defaults.options.HTTPClient != http.DefaultClient || defaults.options.IDToken == nil {
-		t.Errorf("defaults must use http.DefaultClient and the GitHub Actions token: %+v", defaults.options)
-	}
-
-	client := &http.Client{}
-	custom := NewKeyless(KeylessOptions{
-		FulcioURL:    "https://fulcio.internal",
-		RekorURL:     "https://rekor.internal",
-		TimestampURL: "https://tsa.internal/api/v1/timestamp",
-		HTTPClient:   client,
-		IDToken:      func(context.Context) (string, error) { return "jwt", nil },
-	})
-	if custom.options.FulcioURL != "https://fulcio.internal" || custom.options.RekorURL != "https://rekor.internal" ||
-		custom.options.TimestampURL != "https://tsa.internal/api/v1/timestamp" || custom.options.HTTPClient != client {
-		t.Errorf("overrides were not kept: %+v", custom.options)
-	}
-}
-
-// countingHandler fails the test's expectation of silence: any request is counted.
-type countingHandler struct{ hits atomic.Int32 }
-
-func (h *countingHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	h.hits.Add(1)
-	http.Error(w, "unexpected request", http.StatusInternalServerError)
-}
-
-func TestKeylessSignStopsBeforeAnyNetworkCallWithoutAToken(t *testing.T) {
-	handler := &countingHandler{}
-	server := httptest.NewServer(handler)
-	defer server.Close()
-
-	tokenErr := errors.New("ACTIONS_ID_TOKEN_REQUEST_URL is not set")
-	signer := NewKeyless(KeylessOptions{
-		FulcioURL: server.URL,
-		RekorURL:  server.URL,
-		IDToken: func(context.Context) (string, error) {
-			return "", errors.Join(tokenErr, ErrNoIdentity)
-		},
-	})
-	_, err := signer.Sign(context.Background(), []byte("document"))
-	if !errors.Is(err, ErrNoIdentity) || !errors.Is(err, tokenErr) {
-		t.Fatalf("Sign err = %v, want the token failure wrapped", err)
-	}
-	if hits := handler.hits.Load(); hits != 0 {
-		t.Errorf("Fulcio/Rekor were contacted %d time(s) without a token", hits)
-	}
-
-	empty := NewKeyless(KeylessOptions{
-		FulcioURL: server.URL,
-		RekorURL:  server.URL,
-		IDToken:   func(context.Context) (string, error) { return "", nil },
-	})
-	if _, err := empty.Sign(context.Background(), []byte("document")); !errors.Is(err, ErrNoIdentity) {
-		t.Errorf("an empty token err = %v, want ErrNoIdentity", err)
-	}
-	if _, err := empty.Sign(context.Background(), nil); err == nil {
-		t.Error("an empty document must not be signed")
-	}
-	if hits := handler.hits.Load(); hits != 0 {
-		t.Errorf("Fulcio/Rekor were contacted %d time(s)", hits)
+	unavailable := FromEnvironment(func(string) (string, bool) { return "", false })
+	if _, err = SignEnvelope(payload, unavailable); err == nil || !strings.Contains(err.Error(), "VAULT_TOKEN") {
+		t.Fatal("missing custody was not explained")
 	}
 }
 
-func TestUnavailableSignNamesTheReason(t *testing.T) {
-	_, err := Unavailable{Reason: "running on a laptop"}.Sign(context.Background(), []byte("document"))
-	if !errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("err = %v, want ErrNoIdentity", err)
+// testPayload is testManifest's canonical bytes: what a signer signs.
+func testPayload(t *testing.T) []byte {
+	t.Helper()
+	payload, err := solutionhost.SignedPayload(testManifest(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.HasPrefix(err.Error(), "running on a laptop: ") {
-		t.Errorf("error %q should lead with the reason", err)
+	return payload
+}
+
+// TestKeyCheckHoldsAnEnvelopeToARelease: a module envelope is held to the
+// verifier its host runs, which admits it only from a release key: the same
+// key pinned as a person's signs it and fails the check, so a publish never
+// writes an envelope carrier the host refuses.
+func TestKeyCheckHoldsAnEnvelopeToARelease(t *testing.T) {
+	document := &solutionhost.ModuleEnvelope{
+		Schema: solutionhost.SchemaModuleEnvelopeV1, Revision: 1,
+		Host:       solutionhost.HostTarget{Coordinate: "acme/local", Domain: "acme"},
+		Principals: map[string]json.RawMessage{"records": json.RawMessage(`{"operation_audiences":{}}`)},
 	}
-	if _, err := (&Unavailable{}).Sign(context.Background(), nil); !errors.Is(err, ErrNoIdentity) {
-		t.Errorf("a reasonless Unavailable err = %v, want ErrNoIdentity", err)
+	payload, err := document.CanonicalBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := testSigner(t)
+	envelope, err := SignEnvelope(payload, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := KeyCheck(signer, solutionhost.KeyKindRelease, "acme", signer.KeyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = release(context.Background(), envelope, payload); err != nil {
+		t.Fatalf("a release key's envelope refused: %v", err)
+	}
+	person, err := KeyCheck(signer, solutionhost.KeyKindPerson, "acme", signer.KeyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = person(context.Background(), envelope, payload); !errors.Is(err, solutionhost.ErrEnvelopeSignerNotRelease) || !errors.Is(err, ErrSignature) {
+		t.Fatalf("a person key's envelope = %v, want ErrEnvelopeSignerNotRelease", err)
+	}
+	foreign, err := KeyCheck(signer, solutionhost.KeyKindRelease, "another-domain", signer.KeyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = foreign(context.Background(), envelope, payload); err == nil {
+		t.Fatal("an envelope speaking for a domain its key is not pinned for admitted")
 	}
 }

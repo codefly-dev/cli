@@ -63,6 +63,11 @@ type PinnedResolution struct {
 // content-addressed module cache. It fails closed — any resolution, network,
 // or verification error is returned rather than falling back silently.
 func ResolvePinnedModule(ctx context.Context, workspaceDir string, ref *resources.ModuleReference) (*PinnedResolution, error) {
+	if commit, ok := CommitPin(ref.Version); ok {
+		// Said by name rather than as "not a valid semantic version": the pin is
+		// well-formed, it just names something no package is published for.
+		return nil, fmt.Errorf("module <%s> pins commit %s: no module package is published at a commit, so it cannot be verified; a commit pin is for validation and resolves by git clone — release from a tag", ref.Name, commit)
+	}
 	trust, packageID, pkg, err := loadTrustAndIdentity(workspaceDir, ref)
 	if err != nil {
 		return nil, err
@@ -894,12 +899,19 @@ const (
 	// happened to be verified — and a committed `git` declaration would take the
 	// module back on the very next run, undoing the opt-in after one run.
 	ResolutionModeOverlayVerified ResolutionMode = "overlay-verified"
+	// ResolutionModeCommit: cloned from the module's source at the exact commit
+	// the composition pins (a full 40-hex SHA as `version:`). Nothing is
+	// verified — no module package is published at a commit — so it is selected
+	// by the pin itself rather than by any opt-out: a commit pin is for
+	// validation, where a cell composes modules at commits and the tag is cut
+	// once the cell is green. A release still needs a tag.
+	ResolutionModeCommit ResolutionMode = "commit"
 )
 
 // Unverified reports whether mode materializes the module by cloning its source
 // — nothing signature- or digest-checked — however that clone was selected.
 func (mode ResolutionMode) Unverified() bool {
-	return mode == ResolutionModeGit || mode == ResolutionModeDeclaredGit
+	return mode == ResolutionModeGit || mode == ResolutionModeDeclaredGit || mode == ResolutionModeCommit
 }
 
 // SelectedByOverlay reports whether mode was chosen by a machine-local overlay
@@ -1057,8 +1069,14 @@ func SaveResolutionReceipts(ctx context.Context, dir string, receipts map[string
 //     said `declared-git` would otherwise keep cloning a module the workspace no
 //     longer asks to.
 //  4. Otherwise the module resolves verified, the default.
-func ResolutionModeFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt, declared WorkspaceResolution) ResolutionMode {
+//
+// A reference pinned at a commit precedes all four: there is no package to
+// verify at a commit, so no directive or declaration can make it resolve any
+// other way than by cloning that commit.
+func ResolutionModeFor(ref *resources.ModuleReference, directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt, declared WorkspaceResolution) ResolutionMode {
 	switch {
+	case ref != nil && IsCommitPin(ref.Version):
+		return ResolutionModeCommit
 	case directive != nil && directive.Git:
 		return ResolutionModeGit
 	case directive != nil && directive.Pinned:

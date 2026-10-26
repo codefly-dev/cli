@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/codefly-dev/core/solutionhost"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 )
@@ -39,62 +41,63 @@ func solutionModule(t *testing.T, name, entry string) *resources.Module {
 	}
 	module := &resources.Module{Name: name, ServiceEntry: entry}
 	module.WithDir(dir)
+	// The frontend the solution declares beside its entry service, which its
+	// manifest carries.
+	entryDir := filepath.Join(dir, "services", entry)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entryDir, solutionrun.FrontendFileName), []byte("title: CRM\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return module
 }
 
 func identityEnvironment() *environments.Environment {
-	return &environments.Environment{
-		Name:      "prod",
-		Namespace: "obin",
-		Host:      testHost(),
-		ServiceIdentity: &environments.EnvironmentServiceIdentity{
-			Default: &environments.EnvironmentWorkloadIdentity{Principal: "crm@obin.iam.example"},
-		},
-	}
+	return &environments.Environment{Name: "prod", Namespace: "obin", Host: testHost()}
+}
+
+// instanceOf is moduleInstanceOf over a composition that supplies no
+// configuration, for a module whose request needs none.
+func instanceOf(t *testing.T, module *resources.Module, services []*resources.Service, pkg *InventoryPackage, carriers map[string]string) (*ModuleInstance, string, error) {
+	t.Helper()
+	return moduleInstanceOf(context.Background(), &resources.Workspace{Name: "example"}, module, services, identityEnvironment(), pkg, nil, carriers)
 }
 
 func TestSolutionInstanceComesFromTheModuleTheRenderResolved(t *testing.T) {
 	module := solutionModule(t, "crm", "api")
 	services := []*resources.Service{{
-		Name:      "api",
+		Name: "api", ModuleIdentity: true,
 		Endpoints: []*resources.Endpoint{{Name: "grpc", API: "grpc", Visibility: "internal"}},
 	}}
-	options := &RenderOptions{
-		Module: "crm", Environment: "prod", Workspace: "obin",
-		Package: &InventoryPackage{ID: "obin/crm", Version: "1.4.0"},
-		Units:   promotableServiceGraph("crm", []string{"api"}),
+	carriers := map[string]string{
+		resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "crm", Service: "api", Name: "grpc", API: "grpc"}): "api.crm.svc.cluster.local:9090",
 	}
-	instance, undeclared, err := presenceInstanceOf(module, services, identityEnvironment(), options)
+	instance, undeclared, err := instanceOf(t, module, services, &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}, carriers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if instance == nil {
 		t.Fatalf("a module shipping a solution manifest is not a solution instance: %s", undeclared)
 	}
-	if instance.Kind != solutionhost.KindSolution || instance.Name != "crm" || instance.Alias != "crm" {
+	if instance.Kind != solutionhost.KindSolution || instance.Name != "crm" || instance.Package != "obin/crm" || instance.Version != "1.4.0" {
 		t.Fatalf("instance identity %+v", instance)
 	}
-	if !strings.HasPrefix(string(instance.ReleaseDigest), "sha256:") {
-		t.Fatalf("release digest %q", instance.ReleaseDigest)
+	if len(instance.Identities) != 1 || instance.Identities[0] != (IdentityWorkload{Service: "api"}) {
+		t.Fatalf("instance identities %+v", instance.Identities)
 	}
-	if instance.Package != "obin/crm" || instance.Version != "1.4.0" {
-		t.Fatalf("instance release %+v", instance)
-	}
-	if len(instance.Units) != 1 || instance.Units[0].Path != "services/api" || instance.Units[0].Subject != "crm@obin.iam.example" {
-		t.Fatalf("instance units %+v", instance.Units)
-	}
-	if len(instance.Endpoints) != 1 || instance.Endpoints[0].Module != "crm" || instance.Endpoints[0].Service != "api" {
+	if len(instance.Endpoints) != 1 || instance.Endpoints[0] != (solutionhost.Endpoint{Name: "grpc", Service: "api", API: "grpc", Address: "api.crm.svc.cluster.local:9090"}) {
 		t.Fatalf("instance endpoints %+v", instance.Endpoints)
 	}
-	if len(instance.Modules) != 1 || instance.Modules[0].Package != "obin/crm" {
-		t.Fatalf("instance module pins %+v", instance.Modules)
+	if instance.Frontend == nil || instance.Authority == nil || instance.Authority.Principal != "crm" {
+		t.Fatalf("instance frontend %+v authority %+v", instance.Frontend, instance.Authority)
 	}
 }
 
-// TestAModuleShippingNoSolutionManifestIsAModuleInstance pins presence for
-// modules: an ordinary module declares its presence with kind module and no
-// route, and a module with no package manifest names no release and declares
-// nothing, with the reason reported.
+// TestAModuleShippingNoSolutionManifestIsAModuleInstance: an ordinary module
+// declares kind module, its name its alias and principal; a module with no
+// package manifest names no release, and one with no identity service runs as
+// nothing — each declares no manifest, with the reason reported.
 func TestAModuleShippingNoSolutionManifestIsAModuleInstance(t *testing.T) {
 	module := &resources.Module{Name: "payments"}
 	dir := t.TempDir()
@@ -102,36 +105,22 @@ func TestAModuleShippingNoSolutionManifestIsAModuleInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	module.WithDir(dir)
-	instance, undeclared, err := presenceInstanceOf(module, nil, identityEnvironment(), &RenderOptions{Module: "payments"})
-	if err != nil {
-		t.Fatal(err)
+	identity := []*resources.Service{{Name: "api", ModuleIdentity: true}}
+	instance, undeclared, err := instanceOf(t, module, identity, nil, nil)
+	if err != nil || instance != nil || !strings.Contains(undeclared, "no package manifest") {
+		t.Fatalf("a module without a package was declared (%+v, %v) or the reason was not reported (%q)", instance, err, undeclared)
 	}
-	if instance != nil || !strings.Contains(undeclared, "no package manifest") {
-		t.Fatalf("a module without a package was declared (%+v) or the reason was not reported (%q)", instance, undeclared)
+	pkg := &InventoryPackage{ID: "example/payments", Version: "2.0.0"}
+	instance, undeclared, err = instanceOf(t, module, []*resources.Service{{Name: "api"}}, pkg, nil)
+	if err != nil || instance != nil || !strings.Contains(undeclared, "declares no module-identity service") {
+		t.Fatalf("a module nothing runs as was declared (%+v, %v) or the reason was not reported (%q)", instance, err, undeclared)
 	}
-	instance, undeclared, err = presenceInstanceOf(module, nil, identityEnvironment(), &RenderOptions{
-		Module: "payments", Package: &InventoryPackage{ID: "example/payments", Version: "2.0.0"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	instance, undeclared, err = instanceOf(t, module, identity, pkg, nil)
+	if err != nil || instance == nil || undeclared != "" {
+		t.Fatalf("a packaged module declares its instance: %+v %q %v", instance, undeclared, err)
 	}
-	if instance == nil || undeclared != "" {
-		t.Fatalf("a packaged module declares its presence: %+v %q", instance, undeclared)
-	}
-	if instance.Kind != solutionhost.KindModule || instance.Alias != "" || instance.Name != "payments" {
+	if instance.Kind != solutionhost.KindModule || instance.Name != "payments" || instance.Authority.Principal != "payments" {
 		t.Fatalf("module instance %+v", instance)
-	}
-}
-
-func TestSolutionInstanceRefusesAnEndpointWithNoDeclaredAPI(t *testing.T) {
-	module := solutionModule(t, "crm", "api")
-	services := []*resources.Service{{
-		Name:      "api",
-		Endpoints: []*resources.Endpoint{{Name: "mystery"}},
-	}}
-	_, _, err := presenceInstanceOf(module, services, identityEnvironment(), &RenderOptions{Module: "crm", Package: &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}})
-	if err == nil || !strings.Contains(err.Error(), "declares no api") {
-		t.Fatalf("an endpoint with no protocol was declared to the host: %v", err)
 	}
 }
 
@@ -139,28 +128,25 @@ func TestSolutionInstanceRefusesAnEndpointWithNoDeclaredAPI(t *testing.T) {
 // read off the composition rather than off bindingID: two composed modules
 // shipping the same solution manifest are two instances.
 func TestTwoInstancesOfOneSolutionAreTwoBindings(t *testing.T) {
-	env := identityEnvironment()
-	options := &RenderOptions{Environment: "prod", Workspace: "obin", Package: &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}}
-	first, _, err := presenceInstanceOf(solutionModule(t, "crm", "api"), nil, env, options)
+	pkg := &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}
+	identity := []*resources.Service{{Name: "api", ModuleIdentity: true}}
+	first, _, err := instanceOf(t, solutionModule(t, "crm", "api"), identity, pkg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := presenceInstanceOf(solutionModule(t, "crm-eu", "api"), nil, env, options)
+	second, _, err := instanceOf(t, solutionModule(t, "crm-eu", "api"), identity, pkg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstID, err := bindingID(options.Workspace, options.Environment, first.Name)
+	firstID, err := bindingID("obin", "prod", first.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondID, err := bindingID(options.Workspace, options.Environment, second.Name)
+	secondID, err := bindingID("obin", "prod", second.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstID == secondID {
-		t.Fatalf("two instances of one solution share binding ID %q", firstID)
-	}
-	if first.Alias == second.Alias {
-		t.Fatalf("two instances of one solution claim the same route alias %q", first.Alias)
+	if firstID == secondID || first.Name == second.Name {
+		t.Fatalf("two instances of one solution share binding %q or alias %q", firstID, first.Name)
 	}
 }

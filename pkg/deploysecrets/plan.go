@@ -7,12 +7,17 @@
 // from, and leaves the store to hold them. This package reads those names back
 // from the render and resolves each one to a source, in order:
 //
-//  1. keep — the store already holds it; a value is never rotated here;
+//  1. keep — the store already holds it; a stored value is never rotated
+//     unless the operator names its generated key with --rotate (rotate.go);
 //  2. propagate — a configuration value is one value however many services read
 //     it, so a key another remote secret already holds is copied from there;
-//  3. generate — a key the environment's `service-secrets.generate` declares
+//  3. configured — the environment's own configuration holds the value, in the
+//     `configurations/<profile>/<group>.secret.env` that `codefly config set`
+//     writes (see configured.go), so the operator's existing file seeds the
+//     store instead of being retyped into it;
+//  4. generate — a key the environment's `service-secrets.generate` declares
 //     random;
-//  4. require — anything else is supplied from outside, and named.
+//  5. require — anything else is supplied from outside, and named.
 //
 // Every one of those resolutions is named by the SECRET KEY the render reads —
 // the CODEFLY__… name core gives a configuration value — never by the property
@@ -50,15 +55,25 @@ const (
 	// ActionPropagate: the property is absent here and copied from the remote key
 	// that already holds the same configuration value.
 	ActionPropagate Action = "propagate"
+	// ActionConfigured: the property is absent and the environment's own
+	// configuration holds the value, in the file the Source names.
+	ActionConfigured Action = "configured"
 	// ActionGenerate: the property is absent and generated at random, as the
 	// environment declares.
 	ActionGenerate Action = "generate"
 	// ActionRequire: the property is absent and nothing can produce it; the
 	// operator supplies it.
 	ActionRequire Action = "require"
+	// ActionEmpty: the property is absent, nothing supplies it, and the
+	// environment declares in service-secrets.may-be-empty that its correct value
+	// here is empty; it is stored empty so the workload's secret materializes.
+	ActionEmpty Action = "empty"
 	// ActionUnverified: the remote key exists but was not read, so whether it
 	// holds the property is unknown. Source says what would happen if it does not.
 	ActionUnverified Action = "unverified"
+	// ActionRotate: the property is stored and replaced, because --rotate names
+	// its generated key or because its stored value is derived from one that is.
+	ActionRotate Action = "rotate"
 )
 
 // PropertyPlan is the plan for one property of one remote key. It carries no
@@ -97,12 +112,32 @@ type Plan struct {
 	Secrets []SecretPlan
 
 	writes []pendingWrite
+	// rotating makes Apply all-or-nothing: a rotation half-written is a source
+	// and its derived values disagreeing, so a failed write restores the rest.
+	rotating bool
 }
 
 type pendingWrite struct {
 	key      string
 	document map[string]string
 	create   bool
+	// changed names the properties this write sets; previous is the document it
+	// replaces (empty for a key it creates), which a failed rotation restores.
+	changed  []string
+	previous map[string]string
+	// version is the newest version the plan read; the write is refused when
+	// the key no longer has it.
+	version string
+}
+
+// Written is one remote key an apply wrote: the properties it set and the
+// version the store assigned. Restored marks the write of the previous document
+// after a rotation failed part-way. It carries no value.
+type Written struct {
+	Key        string
+	Properties []string
+	Version    string
+	Restored   bool
 }
 
 // Changes lists the remote keys an apply would write, in the order it would
@@ -162,6 +197,16 @@ type Inputs struct {
 	// empty, from service-secrets.may-be-empty. A present-but-empty property is
 	// otherwise refused.
 	MayBeEmpty []string
+	// Configured are the values the environment's own configuration files hold,
+	// by the secret key a render reads each one under — ReadConfigured. A
+	// property no remote key holds is resolved from here before a generator is
+	// considered, and reported as ActionConfigured naming the file. Nil plans
+	// without the operator's files, exactly as before they were read.
+	Configured map[string]ConfiguredValue
+	// Rotate are generated secret keys (RotationKey) whose stored value is
+	// replaced with a newly generated one, together with every stored value
+	// derived from it. A key no generator declares is refused.
+	Rotate []string
 }
 
 // remoteState is one remote key as the plan sees it.
@@ -212,6 +257,11 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 	// generated holds one value per stored configuration key, so every remote key
 	// reading it receives the same one.
 	generated := map[string]string{}
+	rotating, derived, err := planRotations(in, states, generators, generated, aliases)
+	if err != nil {
+		return nil, err
+	}
+	plan.rotating = len(rotating) > 0
 	for _, state := range states {
 		if !planning(&state.secret, in.Modules) {
 			continue
@@ -225,11 +275,18 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		}
 		changes := map[string]string{}
 		for _, property := range state.secret.Properties {
-			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, aliases[propertyLocation{state.secret.RemoteKey, property.Property}])
+			location := propertyLocation{state.secret.RemoteKey, property.Property}
+			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, in.Configured,
+				aliases[location], rotating, in.MayBeEmpty)
 			if err != nil {
 				return nil, err
 			}
-			if value != "" {
+			if rewrite, ok := derived[location]; ok {
+				propertyPlan = PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRotate,
+					Source: "derived: the stored URL's password follows rotated " + strings.Join(rewrite.from, ", ")}
+				value = rewrite.value
+			}
+			if value != "" || propertyPlan.Action == ActionEmpty {
 				changes[property.Property] = value
 			}
 			secretPlan.Properties = append(secretPlan.Properties, propertyPlan)
@@ -241,7 +298,8 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		if len(changes) > 0 && state.known() {
 			document := maps.Clone(state.document)
 			maps.Copy(document, changes)
-			plan.writes = append(plan.writes, pendingWrite{key: state.secret.RemoteKey, document: document, create: !state.description.Exists})
+			plan.writes = append(plan.writes, pendingWrite{key: state.secret.RemoteKey, document: document, create: !state.description.Exists,
+				changed: slices.Sorted(maps.Keys(changes)), previous: state.document, version: state.description.Version})
 		}
 	}
 	return plan, nil
@@ -417,6 +475,48 @@ func sharesConfigurationKey(a, b gitops.RenderedSecretProperty) bool {
 	return false
 }
 
+// refuseSharedSigningKey refuses an ed25519-pkcs8 value that more than one
+// remote key reads. A signing key is one workload's identity: filed in two
+// services' documents, either could sign as the other. Checked here, where the
+// readers are known, because a workspace group's readers are not known when
+// the environment loads.
+func refuseSharedSigningKey(state *remoteState, property gitops.RenderedSecretProperty, lookup gitops.RenderedSecretProperty,
+	states []*remoteState, declaredKey string) error {
+	// Counted by SERVICE, not by remote key: one remote key can be read by several
+	// services (a defaults template without {service}, or a remote-keys mapping),
+	// and each of them would be handed the same private key.
+	readers := map[string]struct{}{}
+	for _, other := range states {
+		for _, candidate := range other.secret.Properties {
+			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
+				continue
+			}
+			if len(candidate.Readers) == 0 {
+				for _, service := range other.secret.Services {
+					readers[service] = struct{}{}
+				}
+				if len(other.secret.Services) == 0 {
+					readers[other.secret.RemoteKey] = struct{}{}
+				}
+				continue
+			}
+			for _, reader := range candidate.Readers {
+				readers[reader.Service] = struct{}{}
+			}
+		}
+	}
+	if len(readers) > 1 {
+		names := make([]string, 0, len(readers))
+		for name := range readers {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return fmt.Errorf("%s is an ed25519-pkcs8 signing key read by %d services (%s): a signing key is one workload's, so exactly one may read it — remove the other readers; never re-mint it",
+			declaredKey, len(readers), strings.Join(names, ", "))
+	}
+	return nil
+}
+
 // planConfigured plans one property.
 //
 // The other keys holding the same configuration value are looked at before this
@@ -426,12 +526,30 @@ func sharesConfigurationKey(a, b gitops.RenderedSecretProperty) bool {
 // or not a third key needs it propagated. Keeping what each key happens to hold
 // would report the divergence as `keep`, which is the one reading an operator
 // cannot act on.
+//
+// A value the environment's own configuration holds is a holder of that same
+// configuration value, so the agreement rule covers it too: a stored or
+// propagated value that differs from the configured one is refused by name
+// rather than kept. What is NOT done is rotate anything — a store that already
+// holds the property keeps it, as it always has, and the configured file is
+// only consulted for a property nothing holds.
 func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
-	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string, keys []string) (PropertyPlan, string, error) {
+	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string,
+	configured map[string]ConfiguredValue, keys []string, rotating map[string]bool, mayBeEmpty []string) (PropertyPlan, string, error) {
 	lookup := property
 	lookup.Keys = keys
-	if _, _, err := declaredGenerator(lookup, generators); err != nil {
+	declaredKey, generator, err := declaredGenerator(lookup, generators)
+	if err != nil {
 		return PropertyPlan{}, "", err
+	}
+	configuredValue, hasConfigured, err := configuredFor(lookup, configured)
+	if err != nil {
+		return PropertyPlan{}, "", err
+	}
+	if declaredKey != "" && generator.Format == environments.SecretGeneratorFormatEd25519PKCS8 {
+		if err = refuseSharedSigningKey(state, property, lookup, states, declaredKey); err != nil {
+			return PropertyPlan{}, "", err
+		}
 	}
 	var holders, unread []string
 	var holderValue string
@@ -456,6 +574,23 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 			holderValue = value
 		}
 	}
+	// A configured value disagreeing with what the store holds is refused, on
+	// the rule that already covers two remote keys. `holders` includes this
+	// key's own stored property, so this is the stored-value case too — and it
+	// has to be refused rather than kept, because a stored value is never
+	// rotated: keeping it would leave the deployed workload on one value and
+	// every local run reading the same file on the other, reported as `keep`,
+	// the one reading that tells an operator nothing is wrong.
+	if hasConfigured && len(holders) > 0 && holderValue != configuredValue.value {
+		return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two, and a stored value is never rotated — change the configuration to match what is stored, or remove the stored property so the plan seeds it from the file",
+			strings.Join(property.Keys, ", "), strings.Join(holders, ", "), configuredValue.File)
+	}
+	if declaredKey != "" && rotating[declaredKey] {
+		if hasConfigured {
+			return PropertyPlan{}, "", fmt.Errorf("--rotate %s: the value is configured in %s, which the store must keep agreeing with; change the file instead", declaredKey, configuredValue.File)
+		}
+		return rotatedProperty(state, property, declaredKey, generated[declaredKey])
+	}
 	if state.known() {
 		if stored, present := state.document[property.Property]; present {
 			if len(holders) > 0 && stored != holderValue {
@@ -465,7 +600,7 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
 		}
 	}
-	fallback, value, err := fallbackSource(lookup, generators, generated)
+	fallback, value, err := fallbackSource(lookup, generators, generated, configuredValue, hasConfigured, mayBeEmpty)
 	if err != nil {
 		return PropertyPlan{}, "", err
 	}
@@ -487,8 +622,14 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 	}
 }
 
-// fallbackSource is what produces a property no remote key holds: a declared
-// generator, or the operator.
+// fallbackSource is what produces a property no remote key holds: the
+// environment's own configuration, a declared generator, or the operator.
+//
+// The configured value comes first. It is a value an operator chose for that
+// key, and a generator mints only what nothing supplies — the same reason a
+// stored value is kept rather than regenerated. A key that is both configured
+// and declared random is therefore seeded from the file, and the declaration
+// does nothing until the file stops holding it.
 //
 // A generator is declared over the secret key, which is the only name that says
 // what the value is; the property is where the environment files it. Looking a
@@ -499,17 +640,29 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 // A property read as two keys covered by two different generators has no answer:
 // whichever won would be an accident of ordering, so it is refused.
 func fallbackSource(property gitops.RenderedSecretProperty, generators map[string]environments.EnvironmentSecretGenerator,
-	generated map[string]string) (PropertyPlan, string, error) {
+	generated map[string]string, configured ConfiguredValue, hasConfigured bool, mayBeEmpty []string) (PropertyPlan, string, error) {
+	if hasConfigured {
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionConfigured,
+			Source: "configured in " + configured.File}, configured.value, nil
+	}
 	declaredKey, generator, err := declaredGenerator(property, generators)
 	if err != nil {
 		return PropertyPlan{}, "", err
 	}
+	if declaredKey == "" && declaredEmpty(property, mayBeEmpty) {
+		// The declaration is the value: an environment that says a key is
+		// legitimately empty here has said what to store. Requiring it instead
+		// leaves the property absent, and the ExternalSecret reading it never
+		// materializes its Secret.
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionEmpty,
+			Source: "service-secrets.may-be-empty declares " + strings.Join(property.Keys, ", ") + " empty here"}, "", nil
+	}
 	if declaredKey == "" {
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
-			Source: "no key holds it, and service-secrets.generate declares no generator for " +
+			Source: "no key holds it, no configuration file supplies it, and service-secrets.generate declares no generator for " +
 				strings.Join(property.Keys, ", ")}, "", nil
 	}
-	format, size := generatorFormat(&generator)
+	format, size := generator.Encoding()
 	// One value per stored key, so every remote key reading that key is handed
 	// the same one: a configuration value is one value however many properties
 	// file it.
@@ -524,21 +677,6 @@ func fallbackSource(property gitops.RenderedSecretProperty, generators map[strin
 	}
 	return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionGenerate,
 		Source: fmt.Sprintf("service-secrets.generate %s/%s for %s (%s, %d bytes)", generator.Scope, generator.Configuration, declaredKey, format, size)}, value, nil
-}
-
-func generatorFormat(generator *environments.EnvironmentSecretGenerator) (secretgen.Format, int) {
-	format := secretgen.Format(generator.Format)
-	if format == "" {
-		format = secretgen.FormatHex
-	}
-	size := generator.Bytes
-	if size == 0 {
-		size = 32
-		if format == secretgen.FormatIdentifier {
-			size = 12
-		}
-	}
-	return format, size
 }
 
 // generatorIndex maps every stored key a generator covers to it. A key two
@@ -557,23 +695,51 @@ func generatorIndex(generators []environments.EnvironmentSecretGenerator, servic
 	return index, nil
 }
 
-// Apply writes the plan's changes, in the render's order. It refuses a plan
-// that did not read the store — it would overwrite properties it never saw —
-// and, unless allowMissing, one that leaves a property the operator must
-// supply. It returns the keys written, which on error are the ones written
-// before it.
-func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]string, error) {
+// Apply writes the plan's changes, in the render's order, each as a new
+// version. It refuses a plan that did not read the store — it would overwrite
+// properties it never saw — and, unless allowMissing, one that leaves a
+// property the operator must supply. It returns what it wrote, which on error
+// is what it wrote before it — and, for a rotation, the restores (restore).
+func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]Written, error) {
 	if err := plan.ValidateApply(allowMissing); err != nil {
 		return nil, err
 	}
-	var written []string
-	for _, write := range plan.writes {
-		if err := store.Write(ctx, write.key, write.document, write.create); err != nil {
-			return written, fmt.Errorf("write %s: %w", write.key, err)
+	var written []Written
+	for i, write := range plan.writes {
+		if err := unchanged(ctx, store, &write); err != nil {
+			if plan.rotating {
+				return restore(ctx, store, written, plan.writes[:i], nil, err)
+			}
+			return written, err
 		}
-		written = append(written, write.key)
+		version, err := store.Write(ctx, write.key, write.document, write.create)
+		if err != nil {
+			err = fmt.Errorf("write %s: %w", write.key, err)
+			if plan.rotating {
+				// The failed write may still have landed, so it is restored too.
+				return restore(ctx, store, written, plan.writes[:i], &plan.writes[i], err)
+			}
+			return written, err
+		}
+		written = append(written, Written{Key: write.key, Properties: write.changed, Version: version})
 	}
 	return written, nil
+}
+
+// unchanged refuses a write to a key that is no longer as the plan read it: a
+// document built from what it used to hold would silently undo whatever was
+// written since. The store offers no conditional version add, so this narrows
+// the window to one describe; it does not close it.
+func unchanged(ctx context.Context, store Store, write *pendingWrite) error {
+	current, err := store.Describe(ctx, write.key)
+	if err != nil {
+		return wrapKeyError("describe", write.key, err)
+	}
+	if current.Exists != !write.create || current.Version != write.version {
+		return fmt.Errorf("remote key %s changed after the plan read it (version %q, now %q): re-run to plan against what it holds now",
+			write.key, write.version, current.Version)
+	}
+	return nil
 }
 
 // ValidateApply checks completeness before confirmation, no-op success or writes.
@@ -602,8 +768,8 @@ func declaredGenerator(property gitops.RenderedSecretProperty, generators map[st
 		if !declared {
 			continue
 		}
-		candidateFormat, candidateSize := generatorFormat(&candidate)
-		format, size := generatorFormat(&generator)
+		candidateFormat, candidateSize := candidate.Encoding()
+		format, size := generator.Encoding()
 		if declaredKey != "" && (candidateFormat != format || candidateSize != size) {
 			return "", environments.EnvironmentSecretGenerator{}, fmt.Errorf("property %s is read as both %s and %s, which service-secrets.generate declares differently",
 				property.Property, declaredKey, key)

@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"net/url"
@@ -21,9 +23,10 @@ import (
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
-	"sigs.k8s.io/kustomize/api/krusty"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
+	"sigs.k8s.io/kustomize/kyaml/openapi"
+	kyaml "sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
 var (
@@ -33,20 +36,16 @@ var (
 )
 
 const argoAPIGroup = "argoproj.io"
-
-var clusterScopedKinds = map[string]struct{}{
-	"APIService": {}, "CSIDriver": {}, "CSINode": {}, "ClusterIssuer": {},
-	"ClusterRole": {}, "ClusterRoleBinding": {}, "CustomResourceDefinition": {},
-	"IngressClass": {}, "MutatingWebhookConfiguration": {}, kindNamespace: {},
-	"Node": {}, "PersistentVolume": {}, "PriorityClass": {}, "RuntimeClass": {},
-	"StorageClass": {}, "ValidatingWebhookConfiguration": {}, "VolumeAttachment": {},
-}
+const overlaysDirectory = "overlays"
+const rbacAPIGroup = "rbac.authorization.k8s.io"
 
 type manifest struct {
 	path  string
 	group string
 	kind  string
 	value map[string]any
+	// Destination namespace supplied by the applying Application when output omits it.
+	namespace *string
 }
 
 type kustomization struct {
@@ -75,18 +74,34 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err = os.MkdirAll(parent, 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create render parent: %w", err)
 	}
-	stage, err := os.MkdirTemp(parent, ".codefly-render-")
+	parentRoot, err := os.OpenRoot(parent)
 	if err != nil {
-		return RenderResult{}, fmt.Errorf("create render staging directory: %w", err)
+		return RenderResult{}, err
 	}
-	defer os.RemoveAll(stage)
-
+	defer parentRoot.Close()
+	stageName := ".codefly-render-" + uuid.NewString()
+	if err = parentRoot.Mkdir(stageName, 0o755); err != nil {
+		return RenderResult{}, err
+	}
+	defer func() { _ = parentRoot.RemoveAll(stageName) }()
+	stage := filepath.Join(parent, stageName)
 	owned := filepath.Join(stage, "tree")
-	if err = os.Mkdir(owned, 0o755); err != nil {
+	if err = parentRoot.Mkdir(filepath.Join(stageName, "tree"), 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create staged owned tree: %w", err)
 	}
+	tree, err := newRenderRoot(owned)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	defer tree.Close()
+	opts.renderRoot = tree
+	defer func() { opts.renderRoot = nil }()
+	owned = tree.path
 	if err = generate(ctx, owned); err != nil {
 		return RenderResult{}, fmt.Errorf("generate staged manifests: %w", err)
+	}
+	if err = tree.inspect(owned); err != nil {
+		return RenderResult{}, err
 	}
 	// Before anything measures or validates the staged tree: a promotable render
 	// deploys into a namespace provisioned outside it, so no service unit may
@@ -95,22 +110,28 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
-	// Declared presence, before anything validates or measures the tree: the
-	// binding pins the digest of every rendered artifact, so it is written once
-	// the artifacts are final, and it is written BEFORE validateTree so the
-	// ConfigMaps that carry it are held to the same promotable ruleset as the
-	// rest of the tree, and before buildInventory so they are hashed into the
-	// render digest like any other delivered file.
-	bindings, err := renderSolutionHostBindings(owned, destination, opts)
+	// The workload credential is projected into each identity workload's
+	// declared container, and the module manifest written, BEFORE validateTree
+	// so the ConfigMap that carries it is held to the same promotable ruleset
+	// as the rest of the tree, and before buildInventory so both are hashed
+	// into the render digest like any other delivered file.
+	if err = projectWorkloadIdentity(tree, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
+	if err = projectServiceMesh(tree, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
+	// Before the manifest and the validation read the tree: a Job or CronJob
+	// an agent rendered without pod labels is given the two that name it,
+	// so every pod-producing workload is one the cell file can select.
+	if err = labelPodTemplates(ctx, owned); err != nil {
+		return RenderResult{}, err
+	}
+	declared, err := renderModuleManifest(owned, destination, opts)
 	if err != nil {
 		return RenderResult{}, err
 	}
-	opts.SolutionHostBindingPath = deliveredBindingPath(bindings)
-	authorities, err := renderAuthorityDocuments(owned, opts)
-	if err != nil {
-		return RenderResult{}, err
-	}
-	opts.SolutionAuthorityPath = deliveredAuthorityPath(authorities)
+	opts.ModuleManifestPath = deliveredManifestPath(declared)
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -136,7 +157,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	}
 	canonical = append(canonical, '\n')
 	// The inventory contains public manifest identities and must remain inspectable beside the rendered files.
-	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o600); err != nil {
+	if err := tree.write(owned, InventoryFilename, canonical); err != nil {
 		return RenderResult{}, fmt.Errorf("write render inventory: %w", err)
 	}
 	// A dev deployment is only ever cleared by a render; read what the tree
@@ -146,15 +167,16 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if previous, previousErr := LoadInventory(destination); previousErr == nil {
 		cleared = previous.Dev
 	}
-	if err := replaceOwnedTree(owned, destination); err != nil {
+	if err := tree.checkIdentity(); err != nil {
+		return RenderResult{}, err
+	}
+	if err := replaceOwnedTree(parentRoot, filepath.Join(stageName, "tree"), filepath.Base(destination)); err != nil {
 		return RenderResult{}, err
 	}
 	return RenderResult{
 		Path: destination, Inventory: inventory, Sizing: sizing,
 		ElidedNamespaces: elided, ClearedDev: cleared,
-		SolutionHostBindings: bindings,
-		UndeclaredPresence:   opts.UndeclaredPresence,
-		SolutionAuthorities:  authorities, UndeclaredAuthority: opts.UndeclaredAuthority,
+		ModuleManifest: declared, UndeclaredManifest: opts.UndeclaredManifest,
 	}, nil
 }
 
@@ -177,13 +199,20 @@ func loadInventory(directory, label string) (Inventory, error) {
 // refreshes the one module path it is republishing — every sibling module's
 // working-tree copy can be stale relative to the base branch — so it needs
 // the exact same canonical/schema validation without going through a path.
+// ErrUnsupportedInventorySchema is an inventory written at another schema
+// version: a tree rendered by another CLI, which this one cannot read and must
+// not vouch for. A reader that walks sibling trees reports such a tree as one
+// to render again rather than refusing to proceed, so a schema move converges
+// module by module instead of deadlocking on every sibling at once.
+var ErrUnsupportedInventorySchema = errors.New("unsupported render inventory schema")
+
 func decodeInventory(data []byte, label string) (Inventory, error) {
 	var inventory Inventory
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
 	if inventory.SchemaVersion != SchemaVersion {
-		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
+		return Inventory{}, fmt.Errorf("%w: %s inventory schema %d (this CLI reads %d)", ErrUnsupportedInventorySchema, label, inventory.SchemaVersion, SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
@@ -197,7 +226,17 @@ func decodeInventory(data []byte, label string) (Inventory, error) {
 }
 
 func ValidateRenderedTree(root, project string, promotable bool) error {
-	inventory, err := LoadInventory(root)
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	root = tree.path
+	data, err := tree.read(root, InventoryFilename)
+	if err != nil {
+		return err
+	}
+	inventory, err := decodeInventory(data, "render")
 	if err != nil {
 		return err
 	}
@@ -211,12 +250,15 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, Unit: inventory.Unit,
-		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		renderRoot:         tree,
+		ModuleManifestPath: inventory.ModuleManifestPath,
+		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: project, Promotable: promotable, Package: inventory.Package,
+		AppProject: project, Promotable: promotable, Package: inventory.Package, Pin: inventory.Pin,
 		CheckUnitDirectories: inventory.Unit == "",
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
 			opts.UnitNames = append(opts.UnitNames, unit.Name)
 		}
@@ -232,7 +274,17 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 }
 
 func ValidateServiceSnapshot(root string) error {
-	inventory, err := LoadInventory(root)
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	root = tree.path
+	data, err := tree.read(root, InventoryFilename)
+	if err != nil {
+		return err
+	}
+	inventory, err := decodeInventory(data, "render")
 	if err != nil {
 		return err
 	}
@@ -243,20 +295,19 @@ func ValidateServiceSnapshot(root string) error {
 	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
 	// The delivery overlays the inventory records are part of the snapshot:
 	// the Applications that deliver them read the snapshot revision.
-	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
-		if path != "" {
-			allowed[path] = struct{}{}
-		}
+	if inventory.ModuleManifestPath != "" {
+		allowed[inventory.ModuleManifestPath] = struct{}{}
 	}
 	rendered := renderedUnits(&inventory)
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("service snapshot unit %s has unknown kind %q", unit.Name, unit.Kind)
 		}
 		allowed[directory] = struct{}{}
 	}
-	entries, err := os.ReadDir(root)
+	entries, err := tree.readDir(root)
 	if err != nil {
 		return err
 	}
@@ -265,31 +316,30 @@ func ValidateServiceSnapshot(root string) error {
 			return fmt.Errorf("service snapshot contains unexpected path %s", entry.Name())
 		}
 	}
-	if err = validateUnitDirectories(root, rendered, inventory.Environment); err != nil {
+	if err = validateUnitDirectoriesInTree(tree, root, rendered, inventory.Environment); err != nil {
 		return err
-	}
-	for _, unit := range rendered {
-		opts := &RenderOptions{
-			Module: inventory.Module, Unit: unit.Name,
-			Environment: inventory.Environment, Namespace: inventory.Namespace,
-			AppProject: inventory.AppProject, Promotable: true,
-		}
-		if _, err = validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
-			return fmt.Errorf("validate unit %s: %w", unit.Name, err)
-		}
 	}
 	if err = validateSnapshotCoverage(&inventory); err != nil {
 		return err
 	}
 	names := make([]string, 0, len(rendered))
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		names = append(names, unit.Name)
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, UnitNames: names,
-		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		renderRoot:         tree,
+		ModuleManifestPath: inventory.ModuleManifestPath,
+		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package,
+		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package, Pin: inventory.Pin,
+	}
+	// Validate the applied graph with its original root. A service may import
+	// shared inputs outside its own directory, and independently applied units
+	// must be compared with one another, not checked in isolated subtrees.
+	if _, err = validateTree(root, opts); err != nil {
+		return err
 	}
 	actual, err := buildInventory(root, opts)
 	if err != nil {
@@ -300,9 +350,10 @@ func ValidateServiceSnapshot(root string) error {
 
 func renderedUnits(inventory *Inventory) []InventoryUnit {
 	rendered := make([]InventoryUnit, 0, len(inventory.Units))
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
-			rendered = append(rendered, unit)
+			rendered = append(rendered, *unit)
 		}
 	}
 	return rendered
@@ -313,12 +364,11 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	if inventory.ModulePath != "" {
 		covered[inventory.ModulePath] = false
 	}
-	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
-		if path != "" {
-			covered[path] = false
-		}
+	if inventory.ModuleManifestPath != "" {
+		covered[inventory.ModuleManifestPath] = false
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
 			covered[unit.Path] = false
 		}
@@ -354,11 +404,12 @@ func validateInventoryUnits(inventory *Inventory) error {
 		return nil
 	}
 	previous := ""
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Name == "" || unit.Module != inventory.Module {
 			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
 		}
-		if err := validateInventoryContracts(&unit); err != nil {
+		if err := validateInventoryContracts(unit); err != nil {
 			return err
 		}
 		directory, ok := unitDirectory(unit.Kind)
@@ -474,21 +525,25 @@ func validateInventory(inventory, actual *Inventory, label string) error {
 // truth callers reuse (e.g. sizing) instead of walking and building the tree a
 // second time.
 func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
-	if opts.Unit == "" && opts.CheckUnitDirectories {
-		if err := validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment); err != nil {
-			return nil, err
-		}
+	tree, err := inspectRenderRoot(root, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRenderRoot(tree, opts)
+	root = tree.path
+	if err = validateRenderDirectories(tree, root, opts); err != nil {
+		return nil, err
 	}
 	var manifests []manifest
 	var kustomizations []kustomization
-	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err = tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		// The render record at the tree root is not a manifest.
 		if relative == InventoryFilename {
 			return nil
 		}
-		data, err := readWithin(root, relative)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", relative, err)
+		data, readErr := tree.read(root, relative)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", relative, readErr)
 		}
 		if !utf8.Valid(data) {
 			return fmt.Errorf("%s is not UTF-8", relative)
@@ -536,21 +591,28 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 		contract.clusterResources["/Namespace"] = struct{}{}
 	}
 	for _, item := range manifests {
-		if err := validateManifest(item, contract, false); err != nil {
-			return nil, fmt.Errorf("%s: %w", item.path, err)
+		if validationErr := validateManifest(item, contract, false); validationErr != nil {
+			return nil, fmt.Errorf("%s: %w", item.path, validationErr)
 		}
 	}
 	if !opts.Promotable {
 		return manifests, nil
 	}
-	return promotableEffectiveManifests(root, manifests, kustomizations, contract)
+	effective, err := promotableEffectiveManifests(tree, root, manifests, kustomizations, contract, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateObjectIdentities(effective, opts.Namespace); err != nil {
+		return nil, err
+	}
+	return effective, nil
 }
 
 // promotableEffectiveManifests builds the kustomize output, validates the
 // promotable ruleset against both the built output and any manifests no
-// kustomization covers, and returns the deduplicated effective set.
-func promotableEffectiveManifests(root string, manifests []manifest, kustomizations []kustomization, contract *projectContract) ([]manifest, error) {
-	covered, effective, err := renderKustomizations(root, kustomizations)
+// kustomization covers, without counting covered source files a second time.
+func promotableEffectiveManifests(tree *renderRoot, root string, manifests []manifest, kustomizations []kustomization, contract *projectContract, opts *RenderOptions) ([]manifest, error) {
+	covered, effective, err := renderKustomizations(tree, root, manifests, kustomizations, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -573,9 +635,17 @@ func promotableEffectiveManifests(root string, manifests []manifest, kustomizati
 	return result, nil
 }
 
-func validateUnitDirectories(root string, units []InventoryUnit, environment string) error {
+func validateRenderDirectories(tree *renderRoot, root string, opts *RenderOptions) error {
+	if opts.Unit == "" && opts.CheckUnitDirectories {
+		return validateUnitDirectoriesInTree(tree, root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment)
+	}
+	return nil
+}
+
+func validateUnitDirectoriesInTree(tree *renderRoot, root string, units []InventoryUnit, environment string) error {
 	byDirectory := make(map[string]map[string]struct{})
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("rendered unit %s has unknown kind %q", unit.Name, unit.Kind)
@@ -592,7 +662,7 @@ func validateUnitDirectories(root string, units []InventoryUnit, environment str
 	sort.Strings(directories)
 	for _, directory := range directories {
 		unitRoot := filepath.Join(root, directory)
-		entries, err := os.ReadDir(unitRoot)
+		entries, err := tree.readDir(unitRoot)
 		if err != nil {
 			return fmt.Errorf("read rendered unit graph: %w", err)
 		}
@@ -618,7 +688,7 @@ func validateUnitDirectories(root string, units []InventoryUnit, environment str
 			return fmt.Errorf("rendered unit graph is missing units %v", missing)
 		}
 		for name := range byDirectory[directory] {
-			info, err := statWithin(unitRoot, filepath.Join(name, "overlays", environment))
+			info, err := tree.stat(unitRoot, filepath.Join(name, "overlays", environment))
 			if err != nil {
 				return fmt.Errorf("unit %s environment overlay %s: %w", name, environment, err)
 			}
@@ -756,70 +826,117 @@ func validateKustomization(path string, root map[string]any) ([]string, error) {
 	return references, nil
 }
 
-func renderKustomizations(root string, kustomizations []kustomization) (map[string]bool, []manifest, error) {
+func renderKustomizations(tree *renderRoot, root string, manifests []manifest, kustomizations []kustomization, opts *RenderOptions) (map[string]bool, []manifest, error) {
 	covered := map[string]bool{}
-	if len(kustomizations) == 0 {
-		return covered, nil, nil
-	}
 	byDirectory := map[string]kustomization{}
-	referencedDirectories := map[string]bool{}
 	for _, customization := range kustomizations {
 		byDirectory[customization.directory] = customization
-		for _, reference := range customization.references {
-			if info, err := statWithin(root, filepath.FromSlash(reference)); err == nil && info.IsDir() {
-				referencedDirectories[reference] = true
+	}
+	// Source documents are inputs, not independently applied manifests.
+	for _, customization := range kustomizations {
+		markKustomizationCoverage(customization, byDirectory, covered, map[string]bool{})
+	}
+	pending := map[appliedRoot]bool{}
+	for _, applied := range inventoryAppliedRoots(opts) {
+		if _, err := tree.stat(root, filepath.FromSlash(applied.directory)); os.IsNotExist(err) && !opts.CheckUnitDirectories {
+			// Older direct renders inventory a plain unit directory.
+			applied.directory = filepath.ToSlash(filepath.Dir(filepath.Dir(applied.directory)))
+			if opts.Unit != "" && applied.directory == filepath.ToSlash(serviceRenderPath(opts.Module, opts.Unit)) {
+				if _, statErr := tree.stat(root, filepath.FromSlash(applied.directory)); os.IsNotExist(statErr) {
+					// A directly supplied standalone unit occupies the root;
+					// RenderService uses the module-qualified flow layout.
+					applied.directory = "."
+				}
 			}
 		}
+		pending[applied] = true
 	}
-	var roots []kustomization
-	for _, customization := range kustomizations {
-		if !referencedDirectories[customization.directory] {
-			roots = append(roots, customization)
+	declared := map[appliedRoot]bool{}
+	applicationDirectories := map[string]bool{}
+	addApplications := func(documents []manifest) error {
+		for _, doc := range documents {
+			roots, err := applicationRoots(doc, opts)
+			if err != nil {
+				return err
+			}
+			for _, applied := range roots {
+				pending[applied] = true
+				declared[applied] = true
+				applicationDirectories[applied.directory] = true
+			}
+		}
+		return nil
+	}
+	var raw []manifest
+	for _, doc := range manifests {
+		if !covered[strings.SplitN(doc.path, "#", 2)[0]] {
+			raw = append(raw, doc)
 		}
 	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i].path < roots[j].path })
+	if err := addApplications(raw); err != nil {
+		return nil, nil, err
+	}
+	built := map[appliedRoot]bool{}
+	outputs := map[appliedRoot][]manifest{}
+	for {
+		progress := false
+		for _, applied := range sortedAppliedRoots(pending) {
+			if built[applied] {
+				continue
+			}
+			built[applied], progress = true, true
+			directory, err := tree.checkedPath(filepath.Join(root, filepath.FromSlash(applied.directory)))
+			if err != nil {
+				return nil, nil, err
+			}
+			decoded, err := overlayManifestsInTree(tree, directory)
+			if err != nil {
+				return nil, nil, err
+			}
+			for i := range decoded {
+				decoded[i].namespace = &applied.namespace
+				decoded[i].path = strings.ReplaceAll(decoded[i].path, root+string(filepath.Separator), "")
+				if strings.HasPrefix(decoded[i].path, "kustomize:") {
+					decoded[i].path = strings.Replace(decoded[i].path, "#", "/rendered.yaml#", 1)
+				}
+			}
+			// Plain directory sources also belong to their applying root only.
+			if _, customized := byDirectory[applied.directory]; !customized {
+				for _, doc := range decoded {
+					covered[strings.SplitN(doc.path, "#", 2)[0]] = true
+				}
+			}
+			outputs[applied] = decoded
+			if err := addApplications(decoded); err != nil {
+				return nil, nil, err
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	// A concrete Application owns destination defaulting for its root.
 	var effective []manifest
-	for _, customization := range roots {
-		markKustomizationCoverage(root, customization, byDirectory, covered, map[string]bool{})
-		kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-		resources, err := kustomizer.Run(filesys.MakeFsOnDisk(), filepath.Join(root, filepath.FromSlash(customization.directory)))
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: build Kustomize output: %w", customization.path, err)
+	for _, applied := range sortedAppliedRoots(pending) {
+		if applicationDirectories[applied.directory] && !declared[applied] {
+			continue
 		}
-		output, err := resources.AsYaml()
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: encode Kustomize output: %w", customization.path, err)
-		}
-		renderedPath := "kustomize:" + filepath.ToSlash(filepath.Join(customization.directory, "rendered.yaml"))
-		decoded, nested, err := decodeYAML(renderedPath, output)
-		if err != nil {
-			return nil, nil, err
-		}
-		if nested != nil {
-			return nil, nil, fmt.Errorf("%s: Kustomize output contains a Kustomization", customization.path)
-		}
-		effective = append(effective, decoded...)
+		effective = append(effective, outputs[applied]...)
 	}
 	return covered, effective, nil
 }
 
-func markKustomizationCoverage(root string, customization kustomization, byDirectory map[string]kustomization, covered, visiting map[string]bool) {
+func markKustomizationCoverage(customization kustomization, byDirectory map[string]kustomization, covered, visiting map[string]bool) {
 	if visiting[customization.directory] {
 		return
 	}
 	visiting[customization.directory] = true
 	for _, reference := range customization.references {
-		info, err := statWithin(root, filepath.FromSlash(reference))
-		if err != nil {
-			continue
+		if nested, ok := byDirectory[reference]; ok {
+			markKustomizationCoverage(nested, byDirectory, covered, visiting)
+		} else {
+			covered[reference] = true
 		}
-		if info.IsDir() {
-			if nested, ok := byDirectory[reference]; ok {
-				markKustomizationCoverage(root, nested, byDirectory, covered, visiting)
-			}
-			continue
-		}
-		covered[reference] = true
 	}
 	delete(visiting, customization.directory)
 }
@@ -904,7 +1021,7 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 			}
 		}
 	}
-	_, knownClusterScoped := clusterScopedKinds[item.kind]
+	knownClusterScoped := item.knownClusterScoped()
 	customClusterScoped := item.group != "" && !isBuiltInAPIGroup(item.group) &&
 		item.group != argoAPIGroup && metadataString(item.value, "namespace") == ""
 	if knownClusterScoped || customClusterScoped {
@@ -962,7 +1079,7 @@ func onlyExternalSecrets(manifests []manifest) bool {
 func externalSecretTemplateDataPath(path []string) bool {
 	return len(path) == 5 &&
 		path[0] == "spec" &&
-		path[1] == "target" &&
+		path[1] == keyPatchTarget &&
 		path[2] == "template" &&
 		path[3] == dataKey
 }
@@ -1026,9 +1143,7 @@ func validateApplicationSet(item manifest, contract *projectContract) error {
 		switch project {
 		case contract.name:
 		case "{{ .project }}":
-			// Stamped per component: every element names the selected project,
-			// or the authority project — and that one only into the authority
-			// namespace, which is the whole reason it is a separate project.
+			// Stamped per component: every element names the selected project.
 			if err := validateComponentProjects(spec, contract.name); err != nil {
 				return err
 			}
@@ -1040,10 +1155,8 @@ func validateApplicationSet(item manifest, contract *projectContract) error {
 }
 
 // validateComponentProjects walks the list generators' elements of a bootstrap
-// ApplicationSet and holds each component's project and namespace to the two
-// projects a module may stamp.
+// ApplicationSet and holds each component to the selected project.
 func validateComponentProjects(spec map[string]any, selected string) error {
-	authority := argoAuthorityProjectName(selected)
 	var walk func(value any) error
 	walk = func(value any) error {
 		switch typed := value.(type) {
@@ -1071,25 +1184,8 @@ func validateComponentProjects(spec map[string]any, selected string) error {
 					if component == "" || overlay == "" || project == "" || namespace == "" {
 						return fmt.Errorf("ApplicationSet component %q (overlay %q, project %q, namespace %q) lacks a component, overlay, project or namespace, or carries one that is not a string; every stamped Application needs all four", component, overlay, project, namespace)
 					}
-					// The authority overlay, the authority project and the
-					// authority namespace name each other: a component under
-					// the module's project may not point at the overlay, and
-					// one under the authority project may point at nothing else.
-					underAuthority := strings.Contains("/"+overlay+"/", "/"+solutionAuthorityDir+"/")
-					switch project {
-					case selected:
-						if underAuthority {
-							return fmt.Errorf("ApplicationSet component %q points at the authority overlay %s but is stamped under the module project %q; the authority overlay is delivered under %q only", component, overlay, selected, authority)
-						}
-					case authority:
-						if namespace != authorityNamespace {
-							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", component, namespace, authorityNamespace)
-						}
-						if !underAuthority {
-							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project %q but points at %s, which is not the authority overlay; that project delivers the authority overlay only", component, authority, overlay)
-						}
-					default:
-						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is neither the selected AppProject %q nor its authority project", element["component"], project, selected)
+					if project != selected {
+						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is not the selected AppProject %q", component, project, selected)
 					}
 				}
 			}
@@ -1151,7 +1247,7 @@ func isBuiltInAPIGroup(group string) bool {
 	switch group {
 	case "apps", "autoscaling", "batch", "coordination.k8s.io", "discovery.k8s.io",
 		"events.k8s.io", "extensions", "networking.k8s.io", "policy",
-		"rbac.authorization.k8s.io", "scheduling.k8s.io", "storage.k8s.io":
+		rbacAPIGroup, "scheduling.k8s.io", "storage.k8s.io":
 		return true
 	default:
 		return false
@@ -1320,21 +1416,103 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // Every key, configuration name or schema field, is also checked against the
 // camelCase field fragments above, and any key mentioning a token defers to
 // core, which keeps every TOKEN sensitive except a whole-word TOKENS count.
+//
+// A codefly configuration carrier is scanned on its configuration KEY alone,
+// read by core's one parser of a carrier (resources.ConfigurationCarrierKey):
+// the module, service and configuration-name segments in front of it are
+// structure, so a group called credential-policy or client-secret-policy
+// does not make its CLIENT_ID a credential, exactly as core classifies it.
+// Anything that is not a carrier is scanned whole, as before.
+//
+// One narrowing of core's classification is made here, and only here: a public
+// client identifier. See publicClientIdentifier.
 func isCredentialKey(key string, configurationName bool) bool {
 	classify := resources.IsSensitiveKey
+	scanned := key
 	if configurationName {
 		classify = resources.IsSensitiveEnvironmentVariable
-		if classify(key) {
+		if classify(key) && !publicClientIdentifier(key, true) {
 			return true
 		}
+		if configurationKey, ok := resources.ConfigurationCarrierKey(key); ok {
+			scanned = configurationKey
+		}
+	} else if publicClientIdentifier(key, false) {
+		return false
 	}
-	normalized := strings.ToLower(manifestFieldNormalizer.Replace(key))
+	normalized := strings.ToLower(manifestFieldNormalizer.Replace(scanned))
 	for _, fragment := range manifestFieldCredentialFragments {
 		if strings.Contains(normalized, fragment) {
 			return true
 		}
 	}
 	return strings.Contains(normalized, "token") && classify(key)
+}
+
+// clientIdentifierSuffix is the separator-free spelling a public OAuth client
+// identifier ends in, so `client_id`, `client-id`, `clientId` and
+// `OAUTH_CLIENT_ID` are one name. The suffix is required, not merely contained:
+// `CLIENT_ID_SECRET` and `OAUTH_CLIENT_KEY` name credentials and must keep
+// their refusal.
+const clientIdentifierSuffix = "clientid"
+
+// authMarkerStripper removes the AUTH marker so core can be asked whether
+// anything ELSE in a name is a credential. It is the same technique
+// pkg/orchestration uses to narrow the OIDC endpoint keys (isSecretEndpointKey):
+// strip the one marker in question and defer to core for everything else, so a
+// real credential marker — including one core adds later — is never narrowed by
+// a list kept here.
+var authMarkerStripper = strings.NewReplacer("AUTH", "", "auth", "")
+
+// publicClientIdentifier reports whether a key names an OAuth client
+// identifier, which is a PUBLIC value.
+//
+// A client id identifies the client to an authorization server; it is published
+// in redirects, in discovery documents and in browser requests. The matching
+// secret is the client SECRET. Refusing a client id as a credential has one
+// visible consequence: its value cannot be rendered into a committed ConfigMap,
+// so it is delivered as a `secretKeyRef` instead, and a public identifier ends
+// up occupying a secret-store entry that an operator must then fill by hand.
+//
+// Core classifies a bare CLIENT_ID as public already. What it still calls
+// sensitive is the spelling an operator actually writes — OAUTH_CLIENT_ID,
+// AUTH_CLIENT_ID — and only through the AUTH word in front of it (core's
+// authWordSensitive). So this narrows exactly that case, under three conditions
+// together:
+//
+//   - the name ends in the client-identifier spelling, so CLIENT_SECRET,
+//     CLIENT_ID_SECRET and OAUTH_CLIENT_KEY are untouched;
+//   - core classifies it today, so this only ever narrows core's reading and
+//     never widens it;
+//   - with the AUTH marker removed core no longer classifies it, so the AUTH
+//     word is the ONLY credential signal in the name. OAUTH_TOKEN_CLIENT_ID
+//     keeps its TOKEN marker and stays refused.
+//
+// A SECRET configuration carrier is never narrowed, whatever its key: the value
+// was authored as a secret, and that declaration outranks any reading of the
+// name it rides under. An operator who filed a client id in a `*.secret.env`
+// gets the refusal that says so.
+func publicClientIdentifier(key string, configurationName bool) bool {
+	scanned := key
+	if configurationName {
+		canonical := strings.ToUpper(key)
+		for _, prefix := range []string{
+			resources.WorkspaceSecretConfigurationPrefix + "__",
+			resources.ServiceSecretConfigurationPrefix + "__",
+			resources.SecretConfigurationDocumentPrefix,
+		} {
+			if strings.HasPrefix(canonical, prefix) {
+				return false
+			}
+		}
+		if carrierKey, ok := resources.ConfigurationCarrierKey(key); ok {
+			scanned = carrierKey
+		}
+	}
+	if !strings.HasSuffix(strings.ToLower(manifestFieldNormalizer.Replace(scanned)), clientIdentifierSuffix) {
+		return false
+	}
+	return resources.IsSensitiveKey(scanned) && !resources.IsSensitiveKey(authMarkerStripper.Replace(scanned))
 }
 
 // isConfigurationDataPath reports whether the map at path holds configuration
@@ -1386,13 +1564,13 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
-		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
-		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
-		HostsDelivery:           opts.HostsDelivery || hostsDeliveryAPI(opts),
-		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
-		Units:                   append([]InventoryUnit(nil), opts.Units...),
+		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package, Pin: opts.Pin,
+		ModuleManifestPath: filepath.ToSlash(opts.ModuleManifestPath),
+		HostsDelivery:      opts.HostsDelivery || hostsDeliveryAPI(opts),
+		Units:              append([]InventoryUnit(nil), opts.Units...),
 	}
 	inventory.Delivery = opts.Delivered
+	inventory.MeshEdges = opts.MeshEdges
 	if len(opts.WorkspaceConfigurationDigests) > 0 {
 		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
 		for group, digest := range opts.WorkspaceConfigurationDigests {
@@ -1416,20 +1594,25 @@ func inventoryHead(opts *RenderOptions) Inventory {
 }
 
 func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
+	tree, err := inspectRenderRoot(root, opts)
+	if err != nil {
+		return Inventory{}, err
+	}
+	defer releaseRenderRoot(tree, opts)
 	inventory := inventoryHead(opts)
 	hash := sha256.New()
-	err := walkRegularFiles(root, func(_, relative string, info os.FileInfo) error {
+	err = tree.walkRegularFiles(root, func(_, relative string, info os.FileInfo) error {
 		if relative == InventoryFilename {
 			return nil
 		}
-		file, err := openWithin(root, relative)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", relative, err)
+		file, openErr := tree.open(root, relative)
+		if openErr != nil {
+			return fmt.Errorf("open %s: %w", relative, openErr)
 		}
 		defer file.Close()
 		fileHash := sha256.New()
-		if _, err := io.Copy(fileHash, file); err != nil {
-			return fmt.Errorf("hash %s: %w", relative, err)
+		if _, copyErr := io.Copy(fileHash, file); copyErr != nil {
+			return fmt.Errorf("hash %s: %w", relative, copyErr)
 		}
 		digest := hex.EncodeToString(fileHash.Sum(nil))
 		inventory.Files = append(inventory.Files, InventoryFile{Path: filepath.ToSlash(relative), SHA256: "sha256:" + digest, Size: info.Size()})
@@ -1439,11 +1622,46 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		return Inventory{}, err
 	}
 	sort.Slice(inventory.Files, func(i, j int) bool { return inventory.Files[i].Path < inventory.Files[j].Path })
-	for _, file := range inventory.Files {
+	inventory.Digest = inventoryDigest(hash, inventory.Files)
+	return inventory, nil
+}
+
+// inventoryDigest is the render digest: one line per file, in path order.
+func inventoryDigest(hash hash.Hash, files []InventoryFile) string {
+	for _, file := range files {
 		fmt.Fprintf(hash, "%s\x00%s\x00%d\n", file.Path, file.SHA256, file.Size)
 	}
-	inventory.Digest = "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	return inventory, nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// filesOutside is the inventory's files that are not under directory.
+func filesOutside(files []InventoryFile, directory string) []InventoryFile {
+	if directory == "" {
+		return files
+	}
+	kept := make([]InventoryFile, 0, len(files))
+	for _, file := range files {
+		if file.Path == directory || strings.HasPrefix(file.Path, directory+"/") {
+			continue
+		}
+		kept = append(kept, file)
+	}
+	return kept
+}
+
+// validateInventoryOutside validates the tree against its inventory with one
+// directory left out of the comparison on both sides: the delivery overlay,
+// which publish owns and settles after a render (the signed manifest, its
+// delivery Job, the kustomization that lists them). A render records the
+// overlay as it provisionally wrote it; publish replaces it and the branch
+// carries publish's version, so a tree is "edited since its render" only
+// when a file the render owns moved.
+func validateInventoryOutside(inventory, actual *Inventory, directory, label string) error {
+	recorded := Inventory{Files: filesOutside(inventory.Files, directory)}
+	recorded.Digest = inventoryDigest(sha256.New(), recorded.Files)
+	measured := Inventory{Files: filesOutside(actual.Files, directory)}
+	measured.Digest = inventoryDigest(sha256.New(), measured.Files)
+	return validateInventory(&recorded, &measured, label)
 }
 
 func walkRegularFiles(root string, visit func(path, relative string, info os.FileInfo) error) error {
@@ -1480,19 +1698,19 @@ func walkRegularFiles(root string, visit func(path, relative string, info os.Fil
 	})
 }
 
-func replaceOwnedTree(stage, destination string) error {
-	if _, err := os.Stat(destination); err == nil {
-		if err = exchangeDirectories(stage, destination); err != nil {
+func replaceOwnedTree(root *os.Root, stage, destination string) error {
+	if _, err := root.Lstat(destination); err == nil {
+		if err = exchangeDirectoriesInRoot(root, stage, destination); err != nil {
 			return fmt.Errorf("atomically replace rendered owned tree: %w", err)
 		}
-		if err = os.RemoveAll(stage); err != nil {
+		if err = root.RemoveAll(stage); err != nil {
 			return fmt.Errorf("remove previous owned tree: %w", err)
 		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect previous owned tree: %w", err)
 	}
-	if err := os.Rename(stage, destination); err != nil {
+	if err := root.Rename(stage, destination); err != nil {
 		return fmt.Errorf("install rendered owned tree: %w", err)
 	}
 	return nil
@@ -1525,7 +1743,7 @@ func copyTreeEntry(destination, path, relative string, info os.FileInfo) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	input, err := os.Open(path)
+	input, err := openWithin(filepath.Dir(path), filepath.Base(path))
 	if err != nil {
 		return err
 	}
@@ -1560,4 +1778,28 @@ func hostsDeliveryAPI(opts *RenderOptions) bool {
 	}
 	module, _, _ := opts.Host.DeliveryEndpoint()
 	return module != "" && module == opts.Module
+}
+
+// Authority classification uses the schema Kustomize itself uses. Object
+// uniqueness never depends on this partial scope knowledge.
+func (item manifest) knownClusterScoped() bool {
+	apiVersion, _ := item.value[keyAPIVersion].(string)
+	typeMeta := kyaml.TypeMeta{APIVersion: apiVersion, Kind: item.kind}
+	if _, known := openapi.IsNamespaceScoped(typeMeta); !known {
+		return clusterScopedKyamlForgets[typeMeta]
+	}
+	return openapi.IsCertainlyClusterScoped(typeMeta)
+}
+
+// clusterScopedKyamlForgets holds the cluster-scoped kinds kyaml v0.21.3 knows
+// and the pinned v0.21.1 does not. kustomize v0.21.3's kube-openapi requires
+// structured-merge-diff/v7, which breaks every client-go build, so core v0.19.4
+// holds kustomize at v0.21.1; without this table an admission policy would
+// read as namespaced and escape the AppProject's cluster-resource check.
+// It is consulted only when kyaml has no answer, and
+// TestKyamlStillForgetsTheAdmissionPolicyScopes fails once it has one, at which
+// point this table is deleted.
+var clusterScopedKyamlForgets = map[kyaml.TypeMeta]bool{
+	{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingAdmissionPolicy"}:        true,
+	{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingAdmissionPolicyBinding"}: true,
 }

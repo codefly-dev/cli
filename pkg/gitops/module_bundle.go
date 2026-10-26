@@ -11,6 +11,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,6 +42,7 @@ func renderModuleBundle(
 	module *resources.Module,
 	environment *environments.Environment,
 	destination string,
+	tree *renderRoot,
 	graph []InventoryUnit,
 ) error {
 	binary, err := module.Agent.Path(ctx)
@@ -86,13 +88,16 @@ func renderModuleBundle(
 			filepath.ToSlash(filepath.Join("overlays", environment.Name)),
 		)
 	}
-	if err := copyEnvironmentBootstrap(root, environment.Name, destination); err != nil {
+	if err = tree.inspect(destination); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = copyEnvironmentBootstrapInTree(tree, root, environment.Name, destination); err != nil {
 		return fmt.Errorf("copy selected module bundle: %w", err)
 	}
-	if _, err := projectResourceQuota(destination, environment.Name, namespace, environment.ResourceQuota); err != nil {
+	if _, err := projectResourceQuota(tree, destination, environment.Name, namespace, environment.ResourceQuota); err != nil {
 		return fmt.Errorf("project module namespace resource quota: %w", err)
 	}
-	if err := validateTransportNeutralModuleBundle(destination); err != nil {
+	if err := validateTransportNeutralModuleBundleInTree(tree, destination); err != nil {
 		return err
 	}
 	return nil
@@ -159,6 +164,10 @@ type transportNeutralWorkspaceEnvironment struct {
 	Namespace             string                                            `yaml:"namespace,omitempty"`
 	Ingress               []environments.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
 	ManagedServices       map[string]environments.EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// Carried is the environment's module-owned keys (key-service, …), handed
+	// over verbatim: the generator is the agent that reads them. A managed
+	// service's own carried keys travel inside ManagedServices.
+	Carried environments.Carried `yaml:",inline"`
 }
 
 type transportNeutralModuleCluster struct {
@@ -193,6 +202,7 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, modul
 			Namespace:             environment.ModuleNamespace(workspace, module),
 			Ingress:               environment.Ingress,
 			ManagedServices:       moduleManagedServices(environment, module),
+			Carried:               environment.Carried,
 		}
 		if environment.Cluster != nil {
 			projected.Cluster = &transportNeutralModuleCluster{Kind: environment.Cluster.Kind}
@@ -337,7 +347,8 @@ func loadSelectedModuleBundle(
 
 	var expectedServices []string
 	var expectedManaged []string
-	for _, service := range graph {
+	for idx := range graph {
+		service := &graph[idx]
 		if service.Managed {
 			expectedManaged = append(expectedManaged, service.Name)
 		} else {
@@ -384,12 +395,21 @@ func equalStrings(left, right []string) bool {
 }
 
 func validateTransportNeutralModuleBundle(root string) error {
-	return walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return validateTransportNeutralModuleBundleInTree(tree, root)
+}
+
+func validateTransportNeutralModuleBundleInTree(tree *renderRoot, root string) error {
+	return tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
 		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := readWithin(root, relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return err
 		}
@@ -424,13 +444,26 @@ func retainManagedBundle(
 	root, service, environment, namespace string,
 	secretRefs []environments.EnvironmentManagedSecretReference,
 ) (bool, error) {
+	tree, err := newRenderRoot(filepath.Dir(root))
+	if err != nil {
+		return false, err
+	}
+	defer tree.Close()
+	return retainManagedBundleInTree(tree, root, service, environment, namespace, secretRefs)
+}
+
+func retainManagedBundleInTree(
+	tree *renderRoot,
+	root, service, environment, namespace string,
+	secretRefs []environments.EnvironmentManagedSecretReference,
+) (bool, error) {
 	var jobs []map[string]any
-	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := filepath.Ext(relative)
 		if extension != yamlExtension && extension != ymlExtension {
 			return nil
 		}
-		data, err := readWithin(root, relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return err
 		}
@@ -458,23 +491,24 @@ func retainManagedBundle(
 		return false, err
 	}
 	if len(jobs) == 0 && projection == nil {
-		if err = os.RemoveAll(root); err != nil {
+		if err = tree.removeAll(root); err != nil {
 			return false, err
 		}
 		return false, nil
 	}
 
-	replacement, err := os.MkdirTemp(filepath.Dir(root), ".managed-bootstrap-*")
+	replacement := filepath.Join(filepath.Dir(root), ".managed-bootstrap-"+uuid.NewString())
+	err = tree.mkdirAll(replacement)
 	if err != nil {
 		return false, err
 	}
-	defer os.RemoveAll(replacement)
+	defer func() { _ = tree.removeAll(replacement) }()
 	base := filepath.Join(replacement, "base")
 	overlay := filepath.Join(replacement, "overlays", environment)
-	if err = os.MkdirAll(base, 0o755); err != nil {
+	if err = tree.mkdirAll(base); err != nil {
 		return false, err
 	}
-	if err = os.MkdirAll(overlay, 0o755); err != nil {
+	if err = tree.mkdirAll(overlay); err != nil {
 		return false, err
 	}
 	var resourcesList []string
@@ -484,7 +518,7 @@ func retainManagedBundle(
 		if marshalErr != nil {
 			return false, marshalErr
 		}
-		if err = os.WriteFile(filepath.Join(base, name), encoded, 0o600); err != nil {
+		if err = tree.write(base, name, encoded); err != nil {
 			return false, err
 		}
 		resourcesList = append(resourcesList, name)
@@ -496,7 +530,7 @@ func retainManagedBundle(
 		}
 		// The projection is an ExternalSecret — a reference to remote keys, never a
 		// secret value — so it stays a world-readable manifest like its siblings.
-		if writeErr := os.WriteFile(filepath.Join(base, "external-secret.yaml"), projected, 0o600); writeErr != nil {
+		if writeErr := tree.write(base, "external-secret.yaml", projected); writeErr != nil {
 			return false, writeErr
 		}
 		resourcesList = append(resourcesList, "external-secret.yaml")
@@ -510,7 +544,7 @@ func retainManagedBundle(
 	if err != nil {
 		return false, err
 	}
-	if err = os.WriteFile(filepath.Join(base, "kustomization.yaml"), data, 0o600); err != nil {
+	if err = tree.write(base, "kustomization.yaml", data); err != nil {
 		return false, err
 	}
 	kustomization := map[string]any{
@@ -522,13 +556,13 @@ func retainManagedBundle(
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), data, 0o600); err != nil {
+	if err := tree.write(overlay, "kustomization.yaml", data); err != nil {
 		return false, err
 	}
-	if err := os.RemoveAll(root); err != nil {
+	if err := tree.removeAll(root); err != nil {
 		return false, err
 	}
-	if err := os.Rename(replacement, root); err != nil {
+	if err := tree.rename(replacement, root); err != nil {
 		return false, err
 	}
 	return true, nil

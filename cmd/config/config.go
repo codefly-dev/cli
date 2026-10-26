@@ -44,6 +44,14 @@ deploy time: <scope>/configurations/<profile>/<name>[.secret].env.
 Configuration is Codefly's, so provisioning it is a Codefly operation — not a
 shell script in your repository. Values are written but never printed.
 
+A workspace may add to an imported group with configuration-extensions in
+workspace.codefly.yaml. Env keys must be disjoint unless append explicitly
+names the key and its delimiter (for example edge: {append: {MODULES: ","}}).
+YAML mappings combine recursively and sequences append; duplicate scalar keys
+are refused by name. Both an own and an imported group must exist. Without
+this declaration, an own group replaces the imported group whole.
+See docs/commands.md#extending-imported-workspace-configuration.
+
 Secrets are refused when git would track the destination file, are stored 0600
 inside a 0700 directory, and are never overwritten without --force so re-running
 setup cannot rotate a credential another service already holds.`,
@@ -86,6 +94,11 @@ var setCmd = &cobra.Command{
 
 Existing keys are preserved unless --force is passed, so re-running a setup
 sequence is idempotent. The value is taken from the argument; nothing is echoed.
+
+A secret written here is read by a local run and, for a deployed environment, by
+` + "`codefly deploy secrets`" + `, which seeds the environment's secret store from this
+file rather than asking the operator to type the value into a store console. A
+key written with an empty value declares the key and supplies no value.
 
 Examples:
   codefly config set internal-auth CODEFLY_INTERNAL_TOKEN=$TOKEN
@@ -289,6 +302,19 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// SecretConfigurationNames lists the secret configuration names a profile
+// directory holds: the `<name>` of every `<name>.secret.env` in it, sorted. A
+// directory that does not exist holds none, which is not an error.
+//
+// It is exported so the symmetric reader of these files — `codefly deploy
+// secrets`, seeding the environment's store from them — selects them by the
+// same suffix this package writes them under, rather than spelling it again.
+// A reference-only manifest (`<name>.secret.ref.env`) is deliberately not
+// listed: its values are references into a backend, not values to store.
+func SecretConfigurationNames(dir string) ([]string, error) {
+	return configurationNames(dir, SecretSuffix)
 }
 
 // configurationNames lists configuration names in dir carrying the suffix. The

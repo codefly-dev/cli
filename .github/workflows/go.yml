@@ -190,6 +190,14 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestTwoServicesPinningOneRepositoryFetchWithoutGitMaintainingTheCache$' ./pkg/orchestration -v
 
+      # A locked git commit only the host's git configuration reaches is
+      # mirrored on the host, by id and through a host that refuses unadvertised
+      # commits, and an image build with no network fetches it from the mirror
+      # context and fails without it. Needs git and Docker; no provider toolchain.
+      - name: Prove a git source build needs no credential with its prefetched mirror
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^(TestALockedGitSourceIsMirroredWithTheHostsGitConfiguration|TestAGitSourceBuildNeedsNoCredentialWithThePrefetchedMirror)$' ./pkg/orchestration -v
+
       # Keep the tag in step with qualificationImage in
       # cmd/generate/container_recovery_docker_test.go.
       - name: Pull the interrupted-generate proof's image

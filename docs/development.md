@@ -132,14 +132,26 @@ codefly self build
 
 `go install` produces an operator-managed development build. It does not carry
 the authenticated release metadata and `codefly self update` will not replace
-it:
+it. It needs read access to `codefly-dev/authority`, a private repository whose
+libraries the CLI requires, so it is not supported from outside the codefly-dev
+organization; releases are the install path there:
 
 ```bash
-go install github.com/codefly-dev/cli/cmd/codefly@<version>
+GOPRIVATE=github.com/codefly-dev/authority \
+  go install github.com/codefly-dev/cli/cmd/codefly@<version>
 ```
 
 For a self-updating direct installation, use a signed release archive as
 described in [CLI releases and updates](cli-updates.md).
+
+CI downloads these private libraries with the existing organization `GH_PAT`
+secret, also used by companion checkout and release publication. The token is
+passed only to the module download/bootstrap step; the download helper scopes
+Git authentication to `codefly-dev/authority` without persisting Git settings.
+Build, lint and test steps consume the populated module cache. Missing access
+fails the download; no gate is skipped. The CI reader-app action remains
+available to callers that configure its app credentials, but CLI workflows do
+not depend on unconfigured reader-app secrets.
 
 ### 5. Run tests
 
@@ -352,3 +364,43 @@ make check-coverage   # Run tests with coverage report
 - **Context propagation** through all functions
 - **Signal handling** in all long-running commands
 - **Error wrapping** with `w.Wrapf(err, "context message")`
+
+## Detailed log ownership
+
+The CLI's existing JSON file logger allocates one exclusive invocation directory
+beneath the resolved Codefly home `logs` directory. Nested command contexts reuse
+that sink and register it with Core's agent log forwarding only once. Context
+completion does not close it: preparation, delegated service execution and final
+shutdown belong to the same invocation. The process owns its final descriptor
+lifetime. Explicitly closing a standalone logger is terminal and idempotent.
+
+Date/size rotation exclusively creates segments inside the original invocation
+directory. Log discovery selects the latest-started invocation, then its latest
+segment; delayed writes or rotations in an older process cannot change that
+selection. Legacy root-level daily files remain a fallback and explicit paths
+remain readable. A follower keeps its opened descriptor across rotation and later
+runs; it does not automatically switch to a different file.
+
+This isolates the detailed JSON files of separate CLI processes. It does not
+change caller-owned stdout/stderr capture, daemon/service logs, or establish
+per-flow isolation inside a long-lived control process whose agent forwarding is
+still global. Tests cover separate subprocesses, late writes and forced rotation,
+repeated contexts through Core's actual log fanout, legacy discovery and terminal
+close behavior.
+
+## Composition withdrawal policy
+
+The composition adapter sends a terminal signed withdrawal without an authority
+sidecar. It does not read the removed module's method policies, ceilings or
+solution roles: withdrawal must work after those source files disappear, and
+live declarations contradict the tombstone. Ordinary delivery still signs and
+pairs those policies with its carrier. Transport regressions cover both module
+and solution withdrawals through the generated composition client. Successful `ApplyManifest` responses must acknowledge the sent generation.
+The adapter retains the acknowledged request's digest, release and removal flag
+for the run's connection to the host. Native withdrawal completion uses the
+`Applied` callback and requires that exact identity; it does not contact a
+private HTTP route or mint an observer credential for an interface host. A
+host without the interface retains the legacy HTTP observer until that path
+is deleted. This is synchronous response evidence, not a remote-state query
+after a host restart. Live launcher
+shutdown/restart remains unqualified by these transport tests.

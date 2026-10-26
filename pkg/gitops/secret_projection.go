@@ -76,6 +76,16 @@ type externalSecretTemplate struct {
 type externalSecretData struct {
 	SecretKey string               `yaml:"secretKey"`
 	RemoteRef externalSecretRemote `yaml:"remoteRef"`
+	// SourceRef, when set, reads this one item through its own store instead
+	// of the ExternalSecret's secretStoreRef (External Secrets' per-item
+	// sourceRef.storeRef): how a key the environment declared with its own
+	// secret-store is resolved without a second ExternalSecret contending for
+	// the same target Secret.
+	SourceRef *externalSecretSourceRef `yaml:"sourceRef,omitempty"`
+}
+
+type externalSecretSourceRef struct {
+	StoreRef externalSecretStoreRef `yaml:"storeRef"`
 }
 
 type externalSecretRemote struct {
@@ -139,9 +149,12 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	if mapping.SecretStore != nil {
 		store = *mapping.SecretStore
 	}
+	if store == (environments.EnvironmentSecretStoreReference{}) {
+		return nil, fmt.Errorf("service %q reads %s, which a render carries only as references into a secret store, and its environment's service-secrets names none (generators alone are a local run's)", service, strings.Join(keys, ", "))
+	}
 	remotes := make(map[string]environments.EnvironmentSecretRemoteRef, len(keys))
 	read := func(key string, remote environments.EnvironmentSecretRemoteRef) error {
-		if prior, seen := remotes[key]; seen && prior != remote {
+		if prior, seen := remotes[key]; seen && !prior.Equal(remote) {
 			return fmt.Errorf("service %q reads secret key %s from two remote locations", service, key)
 		}
 		remotes[key] = remote
@@ -194,18 +207,9 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 			return nil, err
 		}
 	}
-	projected := make([]string, 0, len(remotes))
-	for key := range remotes {
-		projected = append(projected, key)
-	}
-	sort.Strings(projected)
-	data := make([]externalSecretData, 0, len(projected))
-	for _, key := range projected {
-		remote := remotes[key]
-		data = append(data, externalSecretData{
-			SecretKey: key,
-			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
-		})
+	data, err := externalSecretDataItems(service, store, remotes)
+	if err != nil {
+		return nil, err
 	}
 	projection, err := externalSecretProjection(service, namespace, store, data)
 	if err != nil {
@@ -264,6 +268,33 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	return projection, nil
 }
 
+// externalSecretDataItems renders one data item per secret key, in key order.
+// A key declared with its own store reads through it (the item's sourceRef);
+// one declared with the service's store, explicitly or by omission, needs none.
+func externalSecretDataItems(service string, store environments.EnvironmentSecretStoreReference, remotes map[string]environments.EnvironmentSecretRemoteRef) ([]externalSecretData, error) {
+	projected := make([]string, 0, len(remotes))
+	for key := range remotes {
+		projected = append(projected, key)
+	}
+	sort.Strings(projected)
+	data := make([]externalSecretData, 0, len(projected))
+	for _, key := range projected {
+		remote := remotes[key]
+		item := externalSecretData{
+			SecretKey: key,
+			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
+		}
+		if remote.SecretStore != nil && *remote.SecretStore != store {
+			if _, ok := externalSecretStoreKinds[remote.SecretStore.Kind]; !ok {
+				return nil, fmt.Errorf("service %q secret key %s names secret-store kind %q", service, key, remote.SecretStore.Kind)
+			}
+			item.SourceRef = &externalSecretSourceRef{StoreRef: externalSecretStoreRef{Name: remote.SecretStore.Name, Kind: remote.SecretStore.Kind}}
+		}
+		data = append(data, item)
+	}
+	return data, nil
+}
+
 // externalSecretProjection assembles the ExternalSecret shared by the managed- and
 // app-service projections: same target (secret-<service>), same rotation cadence,
 // same store-kind guard. An environment declaration naming a backend type
@@ -301,10 +332,19 @@ func externalSecretProjection(service, namespace string, store environments.Envi
 // Secret must hold. It is a no-op — reporting false — when the environment declares
 // no service secret store or the service references no such Secret.
 func projectServiceSecrets(serviceRoot string, scope unitScope, service, environment string, secrets *environments.EnvironmentServiceSecrets) (bool, error) {
+	tree, err := newRenderRoot(serviceRoot)
+	if err != nil {
+		return false, err
+	}
+	defer tree.Close()
+	return projectServiceSecretsInTree(tree, serviceRoot, scope, service, environment, secrets)
+}
+
+func projectServiceSecretsInTree(tree *renderRoot, serviceRoot string, scope unitScope, service, environment string, secrets *environments.EnvironmentServiceSecrets) (bool, error) {
 	if secrets == nil {
 		return false, nil
 	}
-	keys, err := serviceSecretKeys(serviceRoot, service)
+	keys, err := serviceSecretKeysInTree(tree, serviceRoot, service)
 	if err != nil {
 		return false, err
 	}
@@ -320,7 +360,7 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 		return false, segmentErr
 	}
 	overlay := filepath.Join(serviceRoot, "overlays", overlayName)
-	if info, statErr := statWithin(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
+	if info, statErr := tree.stat(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
 		return false, fmt.Errorf("service %q references secret-%s but has no %q environment overlay to project it into", service, service, environment)
 	}
 	projected, err := yaml.Marshal(projection)
@@ -329,23 +369,32 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 	}
 	// The projection is an ExternalSecret — a reference to remote keys, never a
 	// secret value — so it stays a world-readable manifest like its siblings.
-	if err := writeWithin(overlay, "external-secret.yaml", projected); err != nil {
+	if err := tree.write(overlay, "external-secret.yaml", projected); err != nil {
 		return false, err
 	}
-	return true, addKustomizationResource(overlay, "external-secret.yaml")
+	return true, addKustomizationResourceInTree(tree, overlay, "external-secret.yaml")
 }
 
 // serviceSecretKeys collects, sorted and de-duplicated, the keys a service's
 // rendered manifests reference from its secret-<service> Secret via secretKeyRef.
 func serviceSecretKeys(root, service string) ([]string, error) {
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer tree.Close()
+	return serviceSecretKeysInTree(tree, root, service)
+}
+
+func serviceSecretKeysInTree(tree *renderRoot, root, service string) ([]string, error) {
 	secretName := "secret-" + service
 	seen := map[string]struct{}{}
-	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
 		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := readWithin(root, relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return err
 		}
@@ -392,11 +441,20 @@ func collectSecretKeyRefs(value any, secretName string, seen map[string]struct{}
 // addKustomizationResource appends a resource to an existing overlay
 // kustomization, preserving its other fields.
 func addKustomizationResource(directory, resource string) error {
-	path, err := kustomizationPath(directory)
+	tree, err := newRenderRoot(directory)
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	defer tree.Close()
+	return addKustomizationResourceInTree(tree, tree.path, resource)
+}
+
+func addKustomizationResourceInTree(tree *renderRoot, directory, resource string) error {
+	path, err := kustomizationPathInTree(tree, directory)
+	if err != nil {
+		return err
+	}
+	data, err := tree.read(directory, filepath.Base(path))
 	if err != nil {
 		return err
 	}
@@ -410,15 +468,16 @@ func addKustomizationResource(directory, resource string) error {
 	if err != nil {
 		return err
 	}
-	// A kustomization is a plain manifest index, world-readable like its siblings.
-	return os.WriteFile(path, updated, 0o600)
+	return tree.write(directory, filepath.Base(path), updated)
 }
 
-func kustomizationPath(directory string) (string, error) {
+func kustomizationPathInTree(tree *renderRoot, directory string) (string, error) {
 	for _, name := range []string{"kustomization.yaml", "kustomization.yml", kindKustomization} {
 		path := filepath.Join(directory, name)
-		if info, err := statWithin(directory, name); err == nil && !info.IsDir() {
+		if info, err := tree.stat(directory, name); err == nil && !info.IsDir() {
 			return path, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", err
 		}
 	}
 	return "", fmt.Errorf("no kustomization in %s", directory)

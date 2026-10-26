@@ -90,7 +90,7 @@ func TestRenderModuleScopesNamespacePerModule(t *testing.T) {
 		require.NoError(t, copyTree(result.Path, bootstrap))
 		require.NoError(t, generateArgoBootstrap(
 			ctx, &repositoryConfig{RepoURL: "https://git.example.com/acme/manifests.git"},
-			bootstrap, "environments/deployments/modules/"+module, &result.Inventory, "staging", strings.Repeat("c", 40), "",
+			bootstrap, "environments/modules/"+module, &result.Inventory, "staging", strings.Repeat("c", 40), "",
 		))
 		project, err := os.ReadFile(filepath.Join(bootstrap, "bootstrap", "project.yaml"))
 		require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestProjectRenderedServiceConfigurationScopesEachModule(t *testing.T) {
 		writeServiceTreeReferencingKeys(t, root, env.Name, env.ModuleNamespace(workspace, module), "store", []string{"PASSWORD"})
 		graph[resources.ServiceUnique(module, "store")] = &resources.Service{Name: "store"}
 	}
-	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, workspace, env, graph, nil, nil))
+	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, workspace, env, graph, nil, nil, &RenderOptions{renderRoot: testRenderRoot(t, stage)}))
 
 	for module, namespace := range map[string]string{"saas": "platform-saas", "documents": "platform-documents"} {
 		data, err := os.ReadFile(filepath.Join(stage, "modules", module, serviceUnitDir, "store", "overlays", "staging", "external-secret.yaml"))

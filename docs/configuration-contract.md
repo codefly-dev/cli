@@ -51,6 +51,40 @@ Producers must supply:
   the identity webhook keys off a label. Unknown keys in either block are refused
   rather than dropped: a mistyped `services` would otherwise leave a valid
   `default` standing and silently collapse every override onto it.
+- Any labels the cell needs on a service's Service under `service-mesh`, keyed
+  `<module>/<service>`: today the waypoint attachment that puts the cell's
+  protected waypoint in front of a presenter. The values are the cell's
+  convention, so the render carries them verbatim and derives none of them:
+
+  ```yaml
+  service-mesh:
+    services:
+      shop/gateway:
+        labels:
+          istio.io/use-waypoint: <namespace>-waypoint
+          istio.io/use-waypoint-namespace: istio-waypoint
+  ```
+
+  The render stamps them as `metadata.labels` on that service's Service, as a
+  patch in the unit's environment overlay, and on no other Service: a Service
+  is the finest attachment there is, so every port of an attached Service goes
+  behind the waypoint's L7 hop. An entry is refused, naming the service, unless
+  the service declares a presenter endpoint under `cell:`; a service the
+  workspace does not have, an unknown key, a `codefly.dev/` label and a label
+  the rendered Service already carries are refused too.
+- Where every workload exports operational telemetry, under `telemetry`: the
+  OTLP intake the cell's infrastructure provides, resolved by the producer like
+  every other address, as an `https://` (or, declared `insecure`, `http://`) URL:
+
+  ```yaml
+  telemetry:
+    otlp-endpoint: https://otel.internal.ops.example:443
+  ```
+
+  The CLI delivers it to every service it runs or renders as
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, with `OTEL_SERVICE_NAME` and
+  `OTEL_RESOURCE_ATTRIBUTES` (`codefly run`, `docs/commands.md`: "Where a
+  service's telemetry goes"). No module declares a configuration group for it.
 - Any application secret mappings through the existing `service-secrets` model.
 - Any resolved non-secret values through `service-config`, keyed by consuming
   service and then by the exact key the service reads. The producer resolves the
@@ -80,6 +114,167 @@ identity on a managed service uses
 `requires_capabilities: ["managed-service-identity"]`; one declaring a consuming
 service's own identity uses `["service-identity"]`.
 Proxy containers, image choices and loopback routing are not part of this contract.
+
+## Module-owned keys
+
+A few keys on an environment belong to a **module agent**, not to the CLI. The
+CLI admits them, preserves them on load and save, and hands them verbatim to the
+module bundle generator in the workspace it stages for it; it never interprets
+them, never validates their values (the agent does, and refuses an unsupported
+one by name), and never sends them to a service agent: `Runtime()` projects
+none of them.
+
+| Block | Key | Meaning (the module agent's) |
+| --- | --- | --- |
+| environment | `key-service` | Which key service holds this environment's keys, in the `key-service` configuration group's `KEY_SERVICE_BACKEND` vocabulary. A module reads it to decide whether it composes a secrets store here at all. |
+| `managed-services.<svc>` | `auth-mode` | `password` (a connection secret through `secret-references`) or `external-identity` (the workload authenticates as its own identity). |
+| `managed-services.<svc>` | `egress-namespace` | For an in-cluster managed dependency, the namespace the caller's egress policy selects on. |
+| `managed-services.<svc>` | `instance-connection-name` | The `project:region:instance` coordinate a Cloud SQL instance is addressed by, which is not a DNS name. |
+
+```yaml
+environments:
+  - name: staging
+    key-service: kms
+    managed-services:
+      shop/store:
+        kind: cloud-sql-postgres
+        external-name: 127.0.0.1
+        port: 5432
+        auth-mode: external-identity
+        instance-connection-name: project:us-east1:store
+```
+
+The list is closed (`environments.CarriedEnvironmentKeys`,
+`environments.CarriedManagedServiceKeys`): every other key in either block is
+still refused by name at workspace load, so `key-servce` fails exactly as a
+mistyped CLI field does, and a module-owned key written on the wrong block is
+refused too. Admitting a new one is one entry in that list. A key written
+with no value is carried as null, which a module agent may read as unstated;
+refusing it is the agent's, as for any other value. Because the keys
+load, a declaration on one deployed environment no longer fails the whole
+workspace — including the local environment a `codefly run` selects.
+
+A module-owned key only reaches a module that renders its own bundle (a module
+whose `module.codefly.yaml` names a module agent). It does not change the
+service set the CLI itself renders for a module composed by version; that is
+`exclude-services`, below.
+
+## Excluding a service from one environment
+
+`exclude-services` withdraws named services of composed modules from one
+environment. The composition decides it; the module's own `services:` list is
+untouched, so every other environment — the local run included — still
+composes the service.
+
+```yaml
+environments:
+  - name: staging
+    key-service: kms          # the module's own word for why (module-owned key)
+    exclude-services:
+      - service: saas/vault
+        withdrawn-from: [saas/accounts]
+```
+
+A product whose hosted environment is imported can keep this decision in an
+**authored** `delivery.environments.yaml` and pass it alongside the producer's
+contract:
+
+```yaml
+environments:
+  blue:
+    exclude-services:
+      - service: saas/vault
+        withdrawn-from: [saas/accounts]
+  green:
+    exclude-services:
+      - service: saas/vault
+        withdrawn-from: [saas/accounts]
+```
+
+```bash
+codefly environment import blue --coordinate-contract blue.json --product-intent delivery.environments.yaml
+```
+
+This optional input accepts only `environments.<name>.exclude-services` and,
+optionally, `environments.<name>.service-secrets` with `generate` and
+`may-be-empty`:
+
+```yaml
+environments:
+  blue:
+    exclude-services: []
+    service-secrets:
+      generate:
+        - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [tracing/evidence]}
+      may-be-empty: [CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__ACCOUNTS__SENTRY__DSN]
+```
+
+Which keys are minted at random and which hold no value are decisions about the
+product's own configuration, which no cell producer can know; where the cell's
+store files each value is a cell fact. So the import merges the two: `secret-store`,
+`defaults` and `services` (remote keys, per-service stores, templates, refresh
+intervals) come from the contract, `generate` and `may-be-empty` from the intent,
+and a contract declaring either of those is refused. Once the intent is passed it
+is their only source: re-importing an intent that drops an entry withdraws it
+from the workspace. Each generator must name a secret configuration a composed
+service (or, for `scope: workspace`, the workspace) declares in the environment's
+profile, with keys that configuration declares, and each `may-be-empty` key a
+stored secret key of a declared configuration; anything else is refused by name.
+An intent declaring `service-secrets` for an environment with no secret store in
+the contract or the workspace is refused.
+
+It is not the historical full `delivery.intent.yaml` launch format: profiles,
+host and ingress are not interpreted here. The coordinate producer continues to
+own placement, runtime bindings, the secret store and `key-service`. Unknown fields,
+placement overrides, a missing target environment, malformed exclusions, an
+invalid withdrawal and exclusions declared by both inputs are refused before
+workspace or profile files are written. Only the selected environment is imported.
+Use `exclude-services: []` to clear an earlier exclusion; a missing or null list
+is refused. Omitting `--product-intent` preserves the existing importer behavior,
+including already imported exclusions omitted from the producer's contract.
+
+In that environment an excluded service is not in the dependency graph: it is
+not built, published, rendered or started, has no unit in the render
+inventory, no tree under `deployments/modules/<module>/services/`, no workload
+in the cell file and no mesh principal; `build module` and `deploy module`
+skip it there. A tree of the excluded service's own module rendered before the
+exclusion is refused by name — by the cell file and by publish — until that
+module is rendered again. (Another module's tree rendered before the
+exclusion is not re-checked: render the consumers again after excluding a
+service they reached.)
+
+Nothing may still consume what is withdrawn, so the render can never produce a
+graph with a hole in it. Each is refused before anything renders, builds or
+runs — every environment by the render's workspace validation, the selected
+environment by a run, build or deploy, and a configuration reference by the
+plan — naming the service and what holds on to it:
+
+- **A declared dependency.** A service whose `service-dependencies` name the
+  excluded one is refused unless `withdrawn-from` names it. Naming it withdraws
+  that edge with the service: the consumer is handed no address for it, and no
+  mesh edge or cell consumer is derived from it. Every consumer must be named,
+  and every name must be a consumer, so a stale entry is refused too. Withdraw
+  an edge only from a consumer that does not use it in that environment (in the
+  example, `accounts` on the cloud key service opens no Vault connection).
+- **A configuration reference.** A workspace configuration a rendered service
+  resolves — one it declares or one the composition root provides — that
+  carries `${endpoint:<module>/<service>/…}` for an excluded service is refused
+  at plan time, and by the cell file; drop the reference from that
+  configuration in this environment, or keep the service.
+- **A declaration of the environment.** `ingress`, `host.gateway`,
+  `host.delivery`, `cell`, `egress`, `service-mesh`, `service-identity`,
+  `service-config`, `service-secrets` (including a generator's `services`) and
+  `managed-services` naming the service are refused — a service is either
+  rendered, managed or excluded, never two of them.
+- **A module interface export, a service entry, a solution's consumption.** A
+  module whose `interface` exports one of the excluded service's endpoints, a
+  module naming it its `service-entry`, and a solution whose manifest
+  `api.consumes` one of its endpoints are refused: each promises the
+  composition what this environment does not have.
+
+Entries are `<module>/<service>`, never bare names; an unknown key in an entry
+is refused. A `codefly run`, build or deploy of the excluded service itself in
+that environment is refused: there is nothing to run there.
 
 ## Configuration and secret injection
 
@@ -160,6 +355,33 @@ never emitted into the consumer's Secret.
 Rendered manifests admit template delimiters, and credential-named keys, only at
 an ExternalSecret's `spec.target.template.data.<key>`, and only for a value that
 carries a template action.
+
+**What is credential-named is core's decision, narrowed in exactly one place: a
+public OAuth client identifier.** A client id identifies the client to an
+authorization server and is published in redirects, in discovery documents and
+in browser requests; the matching secret is the client **secret**. Core already
+calls a bare `CLIENT_ID` public; what it still classified was the spelling an
+operator writes — `OAUTH_CLIENT_ID`, `AUTH_CLIENT_ID` — and only through the
+`AUTH` word in front of it, so the render refused a public value and the only
+way to deliver it was a `secretKeyRef` into a store entry somebody had to fill.
+A key is read as a public client identifier only when all three hold: it ends in
+the client-identifier spelling (`client_id`, `client-id`, `clientId`), core
+classifies it today (this narrows core's reading and never widens it), and
+removing the `AUTH` marker makes core stop classifying it — so the `AUTH` word
+is the only credential signal in the name. `CLIENT_SECRET`, `OAUTH_ACCESS_TOKEN`,
+`AUTH_PASSWORD`, `OAUTH_CLIENT_KEY`, `CLIENT_ID_SECRET` and
+`OAUTH_TOKEN_CLIENT_ID` all keep their refusal, and a **secret** configuration
+carrier (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`) is sensitive whatever its
+key: the value was authored as a secret, and that declaration outranks any
+reading of its name. Both sides are pinned by
+`TestTheRenderGuardAcceptsAPublicClientIdAndRefusesACredential` and
+`TestRenderAcceptsAPlainClientIdAndRefusesAPlainClientSecret` (`pkg/gitops`).
+
+This narrows the render's own tree guard. Promotion to a `secretKeyRef`
+(`pkg/orchestration`) is unchanged and still routes such a key to the secret
+store, because core's restricted-deployment guard
+(`validateRestrictedDeploymentRequest`) refuses the inline value by the same
+classification; narrowing that half needs the change in core.
 
 Validation rebuilds the selected overlay and checks the complete CLI-owned
 ExternalSecret delivery specification, including its store, target, keys and

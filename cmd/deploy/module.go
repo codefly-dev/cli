@@ -56,6 +56,9 @@ var ModuleCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+			return err
+		}
 		if renderOnly {
 			cli.Header(2, "render-only mode — manifests written to disk, no kubectl apply")
 			result, resultErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
@@ -69,7 +72,7 @@ var ModuleCmd = &cobra.Command{
 			cli.Info("Digest %s", result.Inventory.Digest)
 			printSizingReport(result.Sizing)
 			printElidedNamespaces(result.ElidedNamespaces)
-			printSolutionHostBindings(&result)
+			printModuleManifest(&result)
 			printClearedDev(result.ClearedDev)
 			cli.Header(1, "Module render done!")
 			return nil
@@ -105,7 +108,8 @@ var ModuleCmd = &cobra.Command{
 		// module loop is the dependency walker now). Failure on any
 		// service aborts the module deploy — partial deploys are worse
 		// than a clean failure to investigate.
-		for _, ref := range module.ServiceReferences {
+		// A service the environment excludes is not deployed there.
+		for _, ref := range env.ComposedServices(module) {
 			cli.Header(2, "Deploying service %s", ref.Name)
 			if err := deployOneService(ctx, workspace, module, ref.Name, env, deploymentManager); err != nil {
 				reportCompletion(evidenceProvider)

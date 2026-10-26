@@ -25,11 +25,11 @@ edit ──▶ codefly run service          local, no image build       seconds
 |---|---|---|---|
 | Run it locally | `codefly run service <name>` | Starts the service and its dependency graph on this machine, injecting connection strings as env vars. No image is built — a docker-backed dependency runs from an image it already has. | Seconds. This is the inner loop; stay in it as long as you can. |
 | Render | `codefly deploy gitops render <module> --env <env>` | Resolves the module, builds and pushes every service image, writes the promotable tree under `deployments/modules/<module>/` and records `.codefly-render.json`. | Minutes — the image builds. Images whose inputs did not change are kept, so a configuration-only edit costs the render and no build. |
-| Seed secrets | `codefly deploy secrets --env <env>` | Reads the ExternalSecrets the render projected and resolves each remote property to a source — kept, derived, propagated, generated or required — then writes the store. Values are never printed. | One backend read per remote key, eight at a time: seconds for a small environment, longer for a large one. Run it after a render that added a service or a secret key. |
+| Seed secrets | `codefly deploy secrets --env <env>` | Reads the ExternalSecrets the render projected and resolves each remote property to a source — kept, derived, propagated, generated or required — then writes the store; `--rotate` replaces a generated value and every stored value derived from it. Values are never printed. | One backend read per remote key, eight at a time: seconds for a small environment, longer for a large one. Run it after a render that added a service or a secret key. |
 | Plan | `codefly deploy gitops plan <module> --env <env>` | Shows the exact publication diff — what publishing would change in the GitOps repository — and writes nothing. | Seconds. |
 | Publish | `codefly deploy gitops publish <module> --env <env>` | Creates a signed promotion commit and opens or updates its pull request. The cluster changes when that lands and Argo CD syncs it, never from this command. | Seconds. |
 | Observe | `codefly deploy gitops observe <module> --env <env>` | Verifies Argo CD reconciled the reviewed revision and stores the evidence. | As long as the rollout takes. See [deployment-completion.md](deployment-completion.md). |
-| Escape hatch | `codefly deploy dev <module>/<service> --env <env>` | Builds one service from local code and re-pins only that service's digest in an already-rendered tree. | One image build. The environment then runs code no release describes until the next full render. |
+| Escape hatch | `codefly deploy dev <module>/<service> --env <env>` | Builds one service from local code and re-pins only that service's digest in an already-rendered tree; in an environment with a `host:` block it re-derives the cell file too, since the cell admits only the builds that file names. | One image build. The environment then runs code no release describes until the next full render. |
 
 `render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
 verdict before doing any expensive work and refuse with `codefly doctor
@@ -166,6 +166,14 @@ every image from the workspace, drops the `dev` entries, and says which dev
 deployments it cleared.
 
 ---
+
+## Running a whole composition
+
+`codefly run workspace` starts the host and every solution of a composition as
+one graph, with the same build reuse as a single service. A rebuilt solution
+is nothing new to the host: its module manifest names its workloads, never
+their build, so a rebuild changes no generation. See
+[commands.md](commands.md#codefly-run-workspace).
 
 ## Related
 

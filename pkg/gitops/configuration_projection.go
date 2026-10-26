@@ -10,19 +10,29 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 // projectConfigurationValues binds exact producer keys to the service container.
 // Sidecars do not inherit the service's configuration or secret references.
 func projectConfigurationValues(ctx context.Context, root, service string, env *environments.Environment) error {
-	values := map[string]string{}
-	if env.ServiceConfig != nil {
-		values = env.ServiceConfig.Services[service].Values
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
 	}
+	defer tree.Close()
+	return projectConfigurationValuesInTree(ctx, tree, root, service, env)
+}
+
+func projectConfigurationValuesInTree(ctx context.Context, tree *renderRoot, root, service string, env *environments.Environment) error {
+	module, bare, qualified := strings.Cut(service, "/")
+	if qualified {
+		service = bare
+	} else {
+		module = ""
+	}
+	values := env.ServiceConfig.ValuesFor(module, service)
 	refs := map[string]environments.EnvironmentSecretRemoteRef{}
 	if env.ServiceSecrets != nil {
 		refs = env.ServiceSecrets.Services[service].RemoteKeys
@@ -42,7 +52,7 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	files, err := configurationSources(root, env.Name)
+	files, err := configurationSourcesInTree(tree, root, env.Name)
 	if err != nil {
 		return err
 	}
@@ -111,7 +121,10 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		if err := shared.WriteFileAtomic(ctx, path, pending[path], 0o644); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := tree.write(filepath.Dir(path), filepath.Base(path), pending[path]); err != nil {
 			return err
 		}
 	}
@@ -165,26 +178,32 @@ func bindContainerConfiguration(container map[string]any, service string, keys [
 // Check the selected overlay, not just the base we modified: a patch can remove
 // the workload or override its configuration after projection.
 func validateProjectedConfiguration(root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
-	values := map[string]string{}
-	if env.ServiceConfig != nil {
-		values = env.ServiceConfig.Services[service.Name].Values
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
 	}
+	defer tree.Close()
+	return validateProjectedConfigurationInTree(tree, root, service, env, scope)
+}
+
+func validateProjectedConfigurationInTree(tree *renderRoot, root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
+	values := env.ServiceConfig.ValuesFor(scope.Module, service.Name)
 	refs := map[string]environments.EnvironmentSecretRemoteRef{}
 	if env.ServiceSecrets != nil {
 		refs = env.ServiceSecrets.Services[service.Name].RemoteKeys
 	}
-	identity, err := soleWorkloadIdentity(service.Name, consumedManagedServices(service, scope.Module, env), env)
+	identity, err := soleWorkloadIdentity(scope.Module, service.Name, consumedManagedServices(service, scope.Module, env), env)
 	if err != nil {
 		return err
 	}
-	expectedSecret, err := expectedServiceSecret(root, scope, service.Name, env)
+	expectedSecret, err := expectedServiceSecretInTree(tree, root, scope, service.Name, env)
 	if err != nil {
 		return err
 	}
 	if len(values) == 0 && len(refs) == 0 && identity == nil && expectedSecret == nil {
 		return nil
 	}
-	documents, err := effectiveConfiguration(root, env.Name)
+	documents, err := effectiveConfigurationInTree(tree, root, env.Name)
 	if err != nil {
 		return fmt.Errorf("build configuration overlay for %q: %w", service.Name, err)
 	}
@@ -197,7 +216,7 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	}
 	accounts := map[namespacedName]map[string]any{}
 	for _, doc := range documents {
-		if doc.group == "" && doc.kind == "ServiceAccount" {
+		if doc.group == "" && doc.kind == kindServiceAccount {
 			key := namespacedName{namespace: metadataString(doc.value, "namespace"), name: metadataString(doc.value, "name")}
 			accounts[key] = doc.value
 		}
@@ -240,20 +259,24 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	return nil
 }
 
-func expectedServiceSecret(root string, scope unitScope, service string, env *environments.Environment) (*externalSecret, error) {
+func expectedServiceSecretInTree(tree *renderRoot, root string, scope unitScope, service string, env *environments.Environment) (*externalSecret, error) {
 	if env.ServiceSecrets == nil {
 		return nil, nil
 	}
-	keys, err := serviceSecretKeys(root, service)
+	keys, err := serviceSecretKeysInTree(tree, root, service)
 	if err != nil {
 		return nil, err
 	}
 	return serviceSecretProjection(scope, service, env.ServiceSecrets, keys)
 }
 
-func effectiveConfiguration(root, environment string) ([]manifest, error) {
+func effectiveConfigurationInTree(tree *renderRoot, root, environment string) ([]manifest, error) {
 	overlay := filepath.Join(root, "overlays", environment)
-	built, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesys.MakeFsOnDisk(), overlay)
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return nil, err
+	}
+	built, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesystem, overlay)
 	if err != nil {
 		return nil, err
 	}

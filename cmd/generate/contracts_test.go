@@ -3,6 +3,9 @@ package generate
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -206,7 +210,7 @@ func TestGenerateContractsSkipsNonContractEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunE: %v\noutput:\n%s", err, out)
 	}
-	if !strings.Contains(out, "no contract; skipped") {
+	if !strings.Contains(out, "api http) has no OpenAPI document; skipped") {
 		t.Fatalf("output missing skip notice:\n%s", out)
 	}
 
@@ -265,6 +269,70 @@ func TestGenerateContractsSkipsConnectWithoutProto(t *testing.T) {
 	}
 }
 
+// A package manifest without the contracts artifact root cannot carry what
+// generate contracts writes. The refusal is returned, not logged, and names
+// the manifest and the root to add; the manifest is left as it was.
+func TestGenerateContractsNamesTheMissingArtifactRoot(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveFixtureWorkspace(t, ctx, "billing",
+		&resources.ModuleInterface{
+			Endpoints: []*resources.InterfaceEndpoint{
+				{Service: "api", Endpoint: "http", Visibility: resources.VisibilityPublic},
+			},
+		},
+		&resources.Service{
+			Name:    "api",
+			Version: "0.0.1",
+			Endpoints: []*resources.Endpoint{
+				{Name: "http", API: "http", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
+			},
+		},
+	)
+	serviceDir := filepath.Join(moduleDir, "services", "api")
+	if err := os.MkdirAll(filepath.Join(serviceDir, filepath.Dir(standards.OpenAPIPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `{"swagger":"2.0","info":{"title":"billing backend","version":"0.0.1"},"paths":{"/v1/billing/pages":{"get":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
+	if err := os.WriteFile(filepath.Join(serviceDir, standards.OpenAPIPath), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schema: codefly/module-package/v2
+kind: module-package
+id: codefly/billing
+version: 0.1.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - services
+contracts:
+  composition: ">=2.0.0 <3.0.0"
+services:
+  - name: api
+    endpoints: [http]
+`
+	manifestPath := filepath.Join(moduleDir, composition.PackageManifestFileName)
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(root)
+	resetContractsFlags(t)
+	_, err := captureStdout(t, func() error { return ContractsCmd.RunE(ContractsCmd, []string{"billing"}) })
+	if err == nil {
+		t.Fatal("expected a refusal for a manifest without the contracts artifact root")
+	}
+	if !errors.Is(err, composition.ErrContract) {
+		t.Fatalf("error %v does not wrap composition.ErrContract", err)
+	}
+	for _, want := range []string{manifestPath, `artifact root "contracts"`, "contracts/api/api/http/openapi.json"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+	if got, readErr := os.ReadFile(manifestPath); readErr != nil || string(got) != manifest {
+		t.Errorf("manifest changed by a refused run (err=%v):\n%s", readErr, got)
+	}
+}
+
 // The tests below scaffold a real go-grpc service and run buf inside the
 // proto companion, so they need Docker and network access. Gated like the
 // other agent-backed qualification tests (see docs/commands.md
@@ -308,6 +376,97 @@ func TestGenerateContractsSkipsRestWithoutOpenAPI(t *testing.T) {
 	}
 	if len(catalog.Endpoints) != 0 {
 		t.Fatalf("catalog.Endpoints = %+v, want none", catalog.Endpoints)
+	}
+}
+
+// A solution backend serves plain HTTP and publishes its routes, each with its
+// x-codefly-authority-policy, in the OpenAPI document its service carries. That
+// document is the http endpoint's contract, exported as a rest endpoint's is,
+// so the package names it and the solution's route policy rows are derived
+// from it the same way: "<VERB> <path>" as served, with the declared policy.
+// No agent is loaded, since an http endpoint reports no API details at Load.
+func TestGenerateContractsPublishesAnHTTPEndpointsOpenAPIDocument(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveFixtureWorkspace(t, ctx, "billing",
+		&resources.ModuleInterface{
+			Endpoints: []*resources.InterfaceEndpoint{
+				{Service: "api", Endpoint: "http", Visibility: resources.VisibilityPublic},
+			},
+		},
+		&resources.Service{
+			Name:    "api",
+			Version: "0.0.1",
+			Endpoints: []*resources.Endpoint{
+				{Name: "http", API: "http", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
+			},
+		},
+	)
+	document := `{"swagger":"2.0","info":{"title":"billing backend","version":"0.0.1"},"paths":{
+		"/v1/billing/upload-access":{"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"billing.page","actions":["read"]}]}}},
+		"/v1/billing/modules/robin/{path=**}":{"post":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
+	serviceDir := filepath.Join(moduleDir, "services", "api")
+	if err := os.MkdirAll(filepath.Join(serviceDir, filepath.Dir(standards.OpenAPIPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serviceDir, standards.OpenAPIPath), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schema: codefly/module-package/v2
+kind: module-package
+id: codefly/billing
+version: 0.1.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - contracts
+  - services
+contracts:
+  composition: ">=2.0.0 <3.0.0"
+services:
+  - name: api
+    endpoints: [http]
+`
+	if err := os.WriteFile(filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(root)
+	resetContractsFlags(t)
+	if out, err := captureStdout(t, func() error { return ContractsCmd.RunE(ContractsCmd, []string{"billing"}) }); err != nil {
+		t.Fatalf("RunE: %v\noutput:\n%s", err, out)
+	}
+
+	catalog, err := composition.LoadAPIContractCatalog(moduleDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Endpoints) != 1 {
+		t.Fatalf("catalog.Endpoints = %+v, want the http endpoint", catalog.Endpoints)
+	}
+	entry := catalog.Endpoints[0]
+	if entry.API != standards.HTTP || entry.Kind != composition.APIContractKindOpenAPI || entry.Package != "billing backend" ||
+		entry.Path != "contracts/api/api/http/openapi.json" || entry.Digest != composition.APIContractDigest([]byte(document)) || len(entry.Routes) != 2 {
+		t.Fatalf("catalog entry = %+v", entry)
+	}
+
+	methods, ok, err := gitops.MethodPolicies(moduleDir)
+	if err != nil || !ok {
+		t.Fatalf("MethodPolicies: ok=%v err=%v", ok, err)
+	}
+	got := map[string]string{}
+	for _, m := range methods {
+		got[m.GetMethod()] = fmt.Sprintf("any=%v requires=%v", m.GetAnyCheckedCaller(), m.GetRequires())
+	}
+	want := map[string]string{
+		"GET /v1/billing/upload-access":            `any=false requires=[resource_kind:"billing.page" actions:"read"]`,
+		"POST /v1/billing/modules/robin/{path=**}": `any=true requires=[]`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("route rows = %v, want %v", got, want)
+	}
+	for method, policy := range want {
+		if strings.Join(strings.Fields(got[method]), " ") != policy {
+			t.Fatalf("row %s = %q, want %q (all rows %v)", method, got[method], policy, got)
+		}
 	}
 }
 
@@ -527,12 +686,12 @@ func TestGenerateContractsCheckDetectsDrift(t *testing.T) {
 }
 
 func TestEndpointCarriesContract(t *testing.T) {
-	for _, api := range []string{standards.GRPC, standards.CONNECT, standards.REST} {
+	for _, api := range []string{standards.GRPC, standards.CONNECT, standards.REST, standards.HTTP} {
 		if !endpointCarriesContract(api) {
 			t.Errorf("endpointCarriesContract(%q) = false, want true", api)
 		}
 	}
-	for _, api := range []string{standards.HTTP, standards.TCP} {
+	for _, api := range []string{standards.TCP, standards.MCP} {
 		if endpointCarriesContract(api) {
 			t.Errorf("endpointCarriesContract(%q) = true, want false", api)
 		}
@@ -543,7 +702,14 @@ func TestServiceContractPackage(t *testing.T) {
 	// protoDir holds the service's own files; imports buf pulls in live
 	// elsewhere and must be ignored even when they declare services.
 	protoDir := t.TempDir()
-	for _, rel := range []string{"saas/acct/v1/api.proto", "saas/shared/v1/types.proto"} {
+	// witness.proto stands for a client facade the service generates stubs from
+	// but does not serve. A subtest only sees it when its own descriptor set
+	// names it, so its presence here changes nothing for the others.
+	for _, rel := range []string{
+		"saas/acct/v1/api.proto",
+		"saas/shared/v1/types.proto",
+		"saas/policylog/v1/witness.proto",
+	} {
 		full := filepath.Join(protoDir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			t.Fatal(err)
@@ -568,7 +734,7 @@ func TestServiceContractPackage(t *testing.T) {
 			// an import: has a service but is not one of the service's own files.
 			file("google/protobuf/descriptor.proto", "google.protobuf", true),
 		}}
-		pkg, err := serviceContractPackage(set, protoDir)
+		pkg, err := serviceContractPackage(set, protoDir, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -582,7 +748,7 @@ func TestServiceContractPackage(t *testing.T) {
 			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
 		}}
-		if _, err := serviceContractPackage(set, protoDir); err == nil {
+		if _, err := serviceContractPackage(set, protoDir, nil); err == nil {
 			t.Fatal("expected an error when no own file declares a service")
 		}
 	})
@@ -592,8 +758,75 @@ func TestServiceContractPackage(t *testing.T) {
 			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
 		}}
-		if _, err := serviceContractPackage(set, protoDir); err == nil {
+		if _, err := serviceContractPackage(set, protoDir, nil); err == nil {
 			t.Fatal("expected an error when services span multiple packages")
+		}
+	})
+
+	t.Run("a declared surface scopes the package, so a client facade in a foreign package is not a second contract package", func(t *testing.T) {
+		// The shape that sent this to a CLI issue: a service whose own tree
+		// carries BOTH its served API and a client facade for another
+		// service's API. The facade has to sit in the owned tree for codegen to
+		// reach it, and it declares a service in its own package, so the
+		// unscoped rule reports a multi-package endpoint for a contract that is
+		// in fact single-package. The declared surface already says which
+		// services the endpoint serves.
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/policylog/v1/witness.proto", "saas.policylog.v1", true),
+		}}
+		surface := []composition.APIContractService{
+			{Name: "AcctService", FullName: "saas.acct.v1.AcctService"},
+		}
+		pkg, err := serviceContractPackage(set, protoDir, surface)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg != "saas.acct.v1" {
+			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
+		}
+		// Without the surface the same set is still refused, so the rule is
+		// scoped by a declaration rather than removed.
+		if _, err = serviceContractPackage(set, protoDir, nil); err == nil {
+			t.Fatal("expected the unscoped call to still refuse two service packages")
+		}
+	})
+
+	t.Run("a surface naming no declared package is refused by name", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
+		}}
+		surface := []composition.APIContractService{
+			{Name: "Absent", FullName: "saas.absent.v1.Absent"},
+		}
+		if _, err := serviceContractPackage(set, protoDir, surface); err == nil || !strings.Contains(err.Error(), "saas.absent.v1") {
+			t.Fatalf("expected the absent inventory package to be named: %v", err)
+		}
+	})
+
+	t.Run("a listener may exclusively implement an imported package", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
+			file("host/authority/v1/api.proto", "host.authority.v1", true),
+		}}
+		pkg, err := serviceContractPackage(set, protoDir, []composition.APIContractService{{Name: "Svc", FullName: "host.authority.v1.Svc"}})
+		if err != nil || pkg != "host.authority.v1" {
+			t.Fatalf("imported interface package: %q, %v", pkg, err)
+		}
+	})
+
+	t.Run("a surface whose service name carries no package qualifier narrows nothing", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+		}}
+		surface := []composition.APIContractService{{Name: "Acct", FullName: "Acct"}}
+		pkg, err := serviceContractPackage(set, protoDir, surface)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg != "saas.acct.v1" {
+			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
 		}
 	})
 
@@ -605,7 +838,7 @@ func TestServiceContractPackage(t *testing.T) {
 			file("acct/v1/api.proto", "saas.acct.v1", true),
 			file("shared/v1/types.proto", "saas.shared.v1", false),
 		}}
-		_, err := serviceContractPackage(set, protoDir)
+		_, err := serviceContractPackage(set, protoDir, nil)
 		if err == nil {
 			t.Fatal("expected an error when no descriptor file matches an own path")
 		}
@@ -613,4 +846,15 @@ func TestServiceContractPackage(t *testing.T) {
 			t.Fatalf("error = %v, want it to name the file-name remap cause", err)
 		}
 	})
+}
+
+// A route's path is the full path; the group's path is never prepended to it.
+func TestContractRoutesAreNotDoubledByTheirGroupPath(t *testing.T) {
+	routes := contractRoutes([]*basev0.RestRouteGroup{{Path: "/v1/robin/chat/bounded", Routes: []*basev0.RestRoute{
+		{Path: "/v1/robin/chat/bounded/cancel", Method: basev0.HTTPMethod_POST},
+		{Path: "/v1/robin/chat/bounded/facets", Method: basev0.HTTPMethod_GET},
+	}}})
+	if len(routes) != 2 || routes[0].Path != "/v1/robin/chat/bounded/cancel" || routes[0].Method != "POST" || routes[1].Path != "/v1/robin/chat/bounded/facets" {
+		t.Fatalf("routes: %+v", routes)
+	}
 }

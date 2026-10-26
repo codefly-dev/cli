@@ -9,12 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+
+	"github.com/codefly-dev/cli/pkg/redact"
 )
 
 // goModulePrefetch downloads the Go module graphs a flow's recipes declare
@@ -226,13 +227,26 @@ func (p *goModulePrefetch) Close() error {
 // repaired (a downloaded toolchain ignores -modcacherw; removeTree covers it).
 // The one thing it does impose on git is gitPrefetchConfig.
 func goPrefetchEnv(base []string, modCache string) []string {
+	env := make([]string, 0, len(base)+3)
+	for _, entry := range base {
+		switch key, _, _ := strings.Cut(entry, "="); key {
+		case "GOMODCACHE", "GOFLAGS", "GOWORK":
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env, "GOMODCACHE="+modCache, "GOFLAGS=-mod=readonly -modcacherw", "GOWORK=off")
+	return withGitPrefetchConfig(env)
+}
+
+// withGitPrefetchConfig is base with gitPrefetchConfig appended after the git
+// configuration entries the host already passes in the environment.
+func withGitPrefetchConfig(base []string) []string {
 	configured := hostGitConfigCount(base)
-	env := make([]string, 0, len(base)+4+2*len(gitPrefetchConfig))
+	env := make([]string, 0, len(base)+1+2*len(gitPrefetchConfig))
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
 		switch {
-		case key == "GOMODCACHE", key == "GOFLAGS", key == "GOWORK":
-			continue
 		case key == "GIT_CONFIG_COUNT":
 			// Re-emitted below with the prefetch's own entries counted in.
 			continue
@@ -244,7 +258,6 @@ func goPrefetchEnv(base []string, modCache string) []string {
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GOMODCACHE="+modCache, "GOFLAGS=-mod=readonly -modcacherw", "GOWORK=off")
 	for _, setting := range gitPrefetchConfig {
 		env = append(env,
 			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", configured, setting[0]),
@@ -332,18 +345,9 @@ func runGoCommand(ctx context.Context, dir string, env []string, args ...string)
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, redactURLCredentials(lastLines(output.String(), 40)))
+		return fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, redact.URLCredentials(lastLines(output.String(), 40)))
 	}
 	return nil
-}
-
-// urlCredentials matches the userinfo of a URL. A git remote rewritten with a
-// token (a CI job's insteadOf) can surface in the go tool's error output, and a
-// wool field is logged verbatim.
-var urlCredentials = regexp.MustCompile(`://[^/\s@]+@`)
-
-func redactURLCredentials(text string) string {
-	return urlCredentials.ReplaceAllString(text, "://***@")
 }
 
 func lastLines(text string, n int) string {

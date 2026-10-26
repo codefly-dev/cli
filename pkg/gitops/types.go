@@ -5,19 +5,18 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/core/composition"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 7
-	// There is no prior schema a loader still accepts. Schema 7 carries the
-	// settled, signed delivery record and the workspace configuration group
-	// digests; a tree without them is one an older CLI rendered, and reading
-	// it would deliver its documents unsettled and unsigned, and let a consumer
-	// of a changed group through with no digest to hold it against. The
-	// intermediate schema 6 was never released, so nothing is owed a read.
+	SchemaVersion     = 8
+	// There is no prior schema a loader still accepts. Schema 8 delivers one
+	// module manifest per module (moduleManifestPath) where schema 7 delivered
+	// presence, authority and endpoint documents, which no host reads any
+	// more: a tree an older CLI rendered is rendered again, never read.
 	EvidenceSchemaVersion = 1
 )
 
@@ -90,23 +89,21 @@ type Inventory struct {
 	AppProject    string `json:"appProject"`
 	OwnedPath     string `json:"ownedPath"`
 	ModulePath    string `json:"modulePath,omitempty"`
-	// SolutionHostBindingPath is the render subdirectory holding the declared
-	// SolutionHostBinding documents, when this render declared any. Publish
-	// points an Argo Application at its environment overlay and derives the
-	// promotion's authority from it, exactly as it does for a unit.
-	SolutionHostBindingPath string `json:"solutionHostBindingPath,omitempty"`
+	// ModuleManifestPath is the render subdirectory holding the module's
+	// manifest, when this render declared one. Publish points an Argo
+	// Application at its environment overlay and derives the promotion's
+	// authority from it, exactly as it does for a unit.
+	ModuleManifestPath string `json:"moduleManifestPath,omitempty"`
 	// HostsDelivery is true for the module that serves the environment's
 	// delivery API: its own delivery cannot precede the API it posts to, so
 	// it is ordered after the module's units where every other module's
 	// delivery goes beside them.
 	HostsDelivery bool `json:"hostsDelivery,omitempty"`
-	// SolutionAuthorityPath is the render subdirectory holding the declared
-	// authority documents, when this render declared any. Delivered into the
-	// platform's authority namespace, through its own Argo component.
-	SolutionAuthorityPath string `json:"solutionAuthorityPath,omitempty"`
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
+	// Pin records how the composition pinned this module (see InventoryPin).
+	Pin *InventoryPin `json:"pin,omitempty"`
 	// Delivery records the delivery documents publish settled and signed into
 	// this tree: each document's identity, generation and whether it is a
 	// tombstone, and the identity that signed them. A render records none; the
@@ -118,9 +115,14 @@ type Inventory struct {
 	// and recording another digest was rendered against another value, and the
 	// render refuses to deliver two values of one group.
 	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
-	Units                         []InventoryUnit   `json:"units"`
-	Files                         []InventoryFile   `json:"files"`
-	Digest                        string            `json:"digest"`
+	// MeshEdges are the L4 edges into this module's workloads, as the
+	// composition declares them: the data the cell's applier compiles into
+	// its mesh policy (mesh_edges.go). Absent when the environment declares
+	// no host.
+	MeshEdges *MeshEdges      `json:"meshEdges,omitempty"`
+	Units     []InventoryUnit `json:"units"`
+	Files     []InventoryFile `json:"files"`
+	Digest    string          `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -130,6 +132,28 @@ type Inventory struct {
 type InventoryPackage struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
+}
+
+// Pin modes, as the inventory spells how the composition pinned a module.
+const (
+	// PinModeTag: the version is one a tag answers — an exact version, a
+	// range or `latest`.
+	PinModeTag = "tag"
+	// PinModeCommit: the version is a full commit SHA, carried in Commit.
+	PinModeCommit = "commit"
+)
+
+// InventoryPin records how the composition pinned the rendered module: the
+// identity the workspace composes it by, the version it asked for, and
+// whether that version is a tag or a commit. It is the fact a cell's loader
+// judges a delivery on — a commit pin is for validation, so a non-validation
+// cell refuses one — and it is absent for a module the workspace composes
+// from its own tree, which pins nothing.
+type InventoryPin struct {
+	Source  string `json:"source"`
+	Version string `json:"version"`
+	Mode    string `json:"mode"`
+	Commit  string `json:"commit,omitempty"`
 }
 
 type InventoryUnit struct {
@@ -144,6 +168,20 @@ type InventoryUnit struct {
 	// contracts/api catalog) and consumes (from the libraries its service
 	// declares in library-dependencies with a sources[] block).
 	Contracts []InventoryContract `json:"contracts,omitempty"`
+	// Endpoints are the ports the render resolved for each endpoint the unit
+	// serves in-cluster — the Service port a consumer connects to and the
+	// container port the mesh authorizes — from the flow's network mappings
+	// and the unit's rendered pods. Recorded for every pod-producing unit, a
+	// managed store included, so the cell file reads them back and keeps no
+	// port matcher of its own.
+	Endpoints []InventoryEndpoint `json:"endpoints,omitempty"`
+}
+
+// InventoryEndpoint is one in-cluster endpoint of a unit with its resolved ports.
+type InventoryEndpoint struct {
+	Name       string `json:"name"`
+	Port       uint32 `json:"port,omitempty"`
+	TargetPort uint32 `json:"targetPort,omitempty"`
 }
 
 // InventoryContract records one API contract a unit exposes or consumes,
@@ -255,12 +293,18 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
-	// Workspace is the composing workspace's name. A solution host binding ID
+	// Pin is how the composition pinned the module, recorded in the inventory.
+	Pin *InventoryPin
+	// ReleaseArtifacts is what the module's package manifest declares the
+	// release publishes; the runtime artifact named frontend among them is
+	// the bundle a module manifest's generated frontend.payload names.
+	ReleaseArtifacts []composition.ReleaseArtifact
+	// Workspace is the composing workspace's name. A module manifest's binding ID
 	// is scoped by it, so two workspaces delivering to one host never claim the
 	// same binding.
 	Workspace string
 	// Host is the deployment host this render delivers to, as the environment
-	// declares it. Absent, no solution host binding is rendered: a binding names
+	// declares it. Absent, no module manifest is rendered: a manifest names
 	// a host, and a derived coordinate is a guess the host refuses later.
 	Host *environments.EnvironmentHost
 	// Target is the environment a hosted render delivers to: the delivery
@@ -274,31 +318,28 @@ type RenderOptions struct {
 	// WorkspaceConfigurationDigests are the digests of the workspace
 	// configuration groups this render bakes in, recorded in the inventory.
 	WorkspaceConfigurationDigests map[string]string
-	// SolutionHostBindingPath is set by the render once it has written binding
-	// documents, so the inventory records the delivered path rather than the
+	// ModuleManifestPath is set by the render once it has written the
+	// manifest, so the inventory records the delivered path rather than the
 	// intent to write one.
-	SolutionHostBindingPath string
+	ModuleManifestPath string
 	// HostsDelivery carries Inventory.HostsDelivery across a publish's
 	// re-render of the inventory.
 	HostsDelivery bool
-	// SolutionInstances are the solution instances of the resolved composition
-	// whose workloads this render delivers, resolved by the caller from the same
-	// resolution the workloads came from. One SolutionHostBinding is rendered
-	// per entry.
-	SolutionInstances []SolutionInstance
-	// UndeclaredPresence is why this render declares no presence for the
-	// module, when it declares none for a reason other than the environment
-	// naming no host.
-	UndeclaredPresence string
-	// AuthorityInstances are the authority documents this render declares, one
-	// per module-identity service of a module publishing a contract.
-	AuthorityInstances []AuthorityInstance
-	// SolutionAuthorityPath is set by the render once it has written authority
-	// documents, so the inventory records the delivered path.
-	SolutionAuthorityPath string
-	// UndeclaredAuthority is why this render declares no authority, when the
-	// reason is the module's own.
-	UndeclaredAuthority string
+	// Instance is the module instance whose workloads this render delivers,
+	// resolved by the caller from the same resolution the workloads came from;
+	// its manifest is rendered from it.
+	Instance *ModuleInstance
+	// UndeclaredManifest is why this render declares no module manifest, when
+	// it declares none for a reason other than the environment naming no host.
+	UndeclaredManifest string
+	// MeshEdges are the edges into this module's workloads, recorded in the
+	// inventory for the cell's applier.
+	MeshEdges *MeshEdges
+	// EndpointCarriers are the render's in-cluster addresses of the module's
+	// routed endpoints, keyed as the gateway reads them: what its manifest's
+	// endpoints carry.
+	EndpointCarriers map[string]string
+	renderRoot       *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
@@ -325,7 +366,14 @@ func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKub
 }
 
 type RenderResult struct {
-	Path      string       `json:"path"`
+	Path string `json:"path"`
+	// Cell is the environment's cell file as re-rendered after this module,
+	// when the environment declares a host.
+	Cell *CellResult `json:"cell,omitempty"`
+	// CellError says why the cell file could not be re-derived after this
+	// render — a sibling module's tree this CLI cannot read, typically. The
+	// module render stands; the cell file is stale until the named render.
+	CellError string       `json:"cellError,omitempty"`
 	Inventory Inventory    `json:"inventory"`
 	Sizing    SizingReport `json:"sizing"`
 	// ElidedNamespaces are the tree-relative manifest paths the render dropped
@@ -337,18 +385,13 @@ type RenderResult struct {
 	// ClearedDev are the dev deployments the tree this render replaced carried.
 	// A full render re-derives every image, so they no longer run.
 	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
-	// SolutionHostBindings are the SolutionHostBinding documents this render
-	// declared: what it says should be present on the host, one per solution
-	// instance.
-	SolutionHostBindings []DeclaredSolutionHostBinding `json:"solutionHostBindings,omitempty"`
-	// UndeclaredPresence says why the module declares no presence when the
-	// reason is the module's own — no package manifest to name a release from.
-	UndeclaredPresence string `json:"undeclaredPresence,omitempty"`
-	// SolutionAuthorities are the authority documents this render declared.
-	SolutionAuthorities []DeclaredAuthority `json:"solutionAuthorities,omitempty"`
-	// UndeclaredAuthority says why the module declares no authority: no
-	// contract, no module-identity service, or no presence to be effective from.
-	UndeclaredAuthority string `json:"undeclaredAuthority,omitempty"`
+	// ModuleManifest is the module manifest this render declared: what it
+	// says should be present on the host.
+	ModuleManifest *DeclaredModuleManifest `json:"moduleManifest,omitempty"`
+	// UndeclaredManifest says why the module declares no manifest when the
+	// reason is the module's own: no package manifest to name a release from,
+	// or no service that runs as the module.
+	UndeclaredManifest string `json:"undeclaredManifest,omitempty"`
 	// StaleGroupConsumers maps a workspace configuration group this render
 	// consumes to the sibling modules whose rendered trees bake in another
 	// value of it: rendered before the group changed, to be rendered next.
@@ -364,20 +407,18 @@ type InventoryDelivery struct {
 	// documents are delivered only to a local qualification environment, and a
 	// host refuses them.
 	Signed bool `json:"signed"`
-	// Identity is who signed — the certificate subject and its issuer — when
-	// Signed. It is reporting, read from the bundle's certificate, and not a
-	// verification: the host verifies.
+	// Identity is the envelope's claimed key ID when Signed. This field is
+	// reporting only; the publisher and host verify the envelope separately.
 	Identity string `json:"identity,omitempty"`
-	// Documents are the documents delivered, presence and authority alike.
+	// Documents are the module manifests delivered.
 	Documents []InventoryDeliveredDocument `json:"documents,omitempty"`
 }
 
 // InventoryDeliveredDocument is one delivered document.
 type InventoryDeliveredDocument struct {
-	// Kind is "presence" or "authority".
+	// Kind is "manifest".
 	Kind string `json:"kind"`
-	// ID is the binding ID of a presence document or the authority ID of an
-	// authority document.
+	// ID is the binding the manifest declares.
 	ID         string `json:"id"`
 	Generation uint64 `json:"generation"`
 	// Removed marks a tombstone.
@@ -386,17 +427,10 @@ type InventoryDeliveredDocument struct {
 	Digest string `json:"digest"`
 }
 
-// DeclaredSolutionHostBinding is one rendered binding document: where it was
-// written, which binding it declares, and at which generation.
-//
-// The generation is reported rather than left in the file because a reset is
-// otherwise invisible. The prior generation comes from the tree this render
-// replaced, and that tree is per module and not per environment — rendering
-// another environment replaces it whole. So rendering staging and then
-// production again finds no prior production document and starts at 1, which
-// the production host refuses as stale. Printing the generation is what turns
-// that into something an operator sees at the render instead of at the host.
-type DeclaredSolutionHostBinding struct {
+// DeclaredModuleManifest is the rendered module manifest: where it was
+// written, which binding it declares, and at which provisional generation
+// (publish settles the real one against the delivery repository).
+type DeclaredModuleManifest struct {
 	Path       string `json:"path"`
 	Binding    string `json:"binding"`
 	Generation uint64 `json:"generation"`
@@ -415,7 +449,7 @@ type PublishRequest struct {
 	// violation to a skipped check, for bootstrap ordering.
 	AllowUnresolvedContracts bool
 	// Signer signs the delivery documents this publish settles. nil means the
-	// process environment decides: the publishing workflow's OIDC identity, or
+	// process environment decides: the platform's Vault Transit key, or
 	// none — in which case only a Local publish may deliver unsigned.
 	Signer signing.Signer `json:"-"`
 	// Carriers are the carriers an inspected plan signed, for the publish
@@ -426,25 +460,37 @@ type PublishRequest struct {
 	// release policy no longer admits — after a signing identity rotated.
 	// Deliberate: without it such a carrier refuses the publish by name.
 	Resign bool `json:"resign,omitempty"`
+	// AllowCellRemovals names the modules whose removal from the hosted
+	// environment's cell file this publish intends: a namespace, workload,
+	// endpoint or consumer the delivery base branch's cell file carries and
+	// the workspace's does not. Any other removal refuses the publish.
+	AllowCellRemovals []string `json:"allowCellRemovals,omitempty"`
 }
 
 type PublishPlan struct {
-	ID               string          `json:"id"`
-	Repository       string          `json:"repository"`
-	RepositorySlug   string          `json:"repositorySlug,omitempty"`
-	Path             string          `json:"path"`
-	BaseBranch       string          `json:"baseBranch"`
-	BaseRevision     string          `json:"baseRevision"`
-	PromotionBranch  string          `json:"promotionBranch"`
-	BranchRevision   string          `json:"branchRevision,omitempty"`
-	ExistingCommit   string          `json:"existingCommit,omitempty"`
-	Module           string          `json:"module"`
-	Environment      string          `json:"environment"`
-	RenderDigest     string          `json:"renderDigest"`
-	SnapshotRevision string          `json:"snapshotRevision"`
-	Changed          []string        `json:"changed"`
-	Diff             string          `json:"diff"`
-	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
+	ID              string `json:"id"`
+	Repository      string `json:"repository"`
+	RepositorySlug  string `json:"repositorySlug,omitempty"`
+	Path            string `json:"path"`
+	BaseBranch      string `json:"baseBranch"`
+	BaseRevision    string `json:"baseRevision"`
+	PromotionBranch string `json:"promotionBranch"`
+	BranchRevision  string `json:"branchRevision,omitempty"`
+	ExistingCommit  string `json:"existingCommit,omitempty"`
+	// ReplacesBranchRevision is the tip of a stale promotion branch this
+	// publish replaces: a branch that does not contain the base branch (its
+	// pull request was squash-merged and the branch kept, or the base moved
+	// past it), which the publish restarts from the base and pushes over with
+	// a lease on exactly this revision. Part of the plan's identity, so a
+	// branch that moves after review refuses the publish.
+	ReplacesBranchRevision string          `json:"replacesBranchRevision,omitempty"`
+	Module                 string          `json:"module"`
+	Environment            string          `json:"environment"`
+	RenderDigest           string          `json:"renderDigest"`
+	SnapshotRevision       string          `json:"snapshotRevision"`
+	Changed                []string        `json:"changed"`
+	Diff                   string          `json:"diff"`
+	ContractChecks         []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
 	// reader and the result.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 	// StaleConsumers names the modules the delivery base branch holds at
@@ -453,10 +499,21 @@ type PublishPlan struct {
 	// Reported rather than refused: refusing would hold every consumer's
 	// publish on every other's.
 	StaleConsumers []string `json:"staleConsumers,omitempty"`
+	// CellRemovals are the removals from the base branch's cell file the
+	// request named (AllowCellRemovals), for the reviewer to see.
+	CellRemovals []string `json:"cellRemovals,omitempty"`
 	// Carriers are the carriers this plan signed, keyed by kind, ID and
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.
 	Carriers map[string][]byte `json:"carriers,omitempty"`
+	// SelfPromotes marks a local publish to a k3d environment whose host
+	// lists developers: there is no reviewer, the developer's signed publish
+	// is the approval, and the publish fast-forwards the local delivery
+	// repository's base branch to its commit itself (see promoteLocally).
+	SelfPromotes bool `json:"selfPromotes,omitempty"`
+	// LocalRepository is the repository on disk a self-promoting plan is
+	// bound to; part of the plan's identity.
+	LocalRepository *LocalRepositoryIdentity `json:"localRepository,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract
@@ -493,10 +550,12 @@ type PublishResult struct {
 	PullRequest      string          `json:"pullRequest"`
 	PullRequestID    int             `json:"pullRequestId,omitempty"`
 	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
-	// Delivery is what this publish settled and signed: every presence and
-	// authority document at its settled generation, and the identity that
-	// signed them.
+	// Delivery is what this publish settled and signed: every module manifest
+	// at its settled generation, and the identity that signed them.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// Promoted reports that this publish advanced the base branch itself: a
+	// developer-signed local promotion (PublishPlan.SelfPromotes).
+	Promoted bool `json:"promoted,omitempty"`
 }
 
 type RollbackRequest struct {

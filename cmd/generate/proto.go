@@ -258,12 +258,10 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	w.Info("Generating proto code...")
 
-	// The input, template and path filters are absolute: a custom template may
-	// live outside the proto directory, and the staged template always does.
-	pathArgs := protoGenerationPathArgs(containerProto, true)
-	args := make([]string, 0, 4+len(pathArgs))
-	args = append(args, "generate", containerProto, "--template", path.Join(protoStagingRoot, protoStagedTemplateName))
-	args = append(args, pathArgs...)
+	args, err := protoGenerationArgs(containerProto, path.Join(protoStagingRoot, protoStagedTemplateName), stagedTemplate)
+	if err != nil {
+		return err
+	}
 	proc, err = runner.NewProcess("buf", args...)
 	if err != nil {
 		return w.Wrapf(err, "cannot create process")
@@ -945,6 +943,29 @@ func protoGenerationPathArgs(protoDir string, absolute bool) []string {
 		args = append(args, "--path", path)
 	}
 	return args
+}
+
+// The template's inputs are used as declared, with their input-level options
+// (paths, types, exclude_paths), unless a caller's --path meets more than one
+// of them. buf applies a --path flag to every input, and an input that does not
+// hold the path targets no file and fails the whole run ("no .proto files were
+// targeted"), so a caller's --path over several inputs selects --proto, whose
+// files it names, as the one input. A positional input replaces the template's,
+// as buf itself defines. Relative template inputs resolve in the template's
+// working dir.
+func protoGenerationArgs(protoDir, templatePath string, template []byte) ([]string, error) {
+	var selection struct {
+		Inputs []yaml.Node `yaml:"inputs"`
+	}
+	if err := yaml.Unmarshal(template, &selection); err != nil {
+		return nil, fmt.Errorf("cannot read generation template inputs: %w", err)
+	}
+	args := []string{"generate"}
+	if len(selection.Inputs) == 0 || (len(protoPaths) > 0 && len(selection.Inputs) > 1) {
+		args = append(args, protoDir)
+	}
+	args = append(args, "--template", templatePath)
+	return append(args, protoGenerationPathArgs(protoDir, true)...), nil
 }
 
 func init() {

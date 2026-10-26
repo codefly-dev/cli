@@ -27,7 +27,7 @@ func TestGenerateArgoBootstrapEmitsTenantApplicationSet(t *testing.T) {
 		writeOverlay(t, filepath.Join(root, component, "overlays", "production"))
 	}
 	config := &repositoryConfig{RepoURL: "https://github.com/codefly-dev/manifests.git"}
-	targetPath := "environments/deployments/modules/payments"
+	targetPath := "environments/modules/payments"
 	if err := generateArgoBootstrap(
 		context.Background(), config, root, targetPath, inventory, "production", revision, "",
 	); err != nil {
@@ -105,7 +105,7 @@ func TestGenerateArgoBootstrapEmitsTenantApplicationSet(t *testing.T) {
 func TestGenerateArgoBootstrapStampsSolutionUnit(t *testing.T) {
 	root := t.TempDir()
 	revision := strings.Repeat("c", 40)
-	targetPath := "environments/deployments/modules/hello"
+	targetPath := "environments/modules/hello"
 	inventory := &Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        "hello",
@@ -157,7 +157,7 @@ func TestGenerateArgoBootstrapBoundsApplicationName(t *testing.T) {
 	writeOverlay(t, filepath.Join(root, "services", longService, "overlays", "production"))
 	config := &repositoryConfig{RepoURL: "https://github.com/codefly-dev/manifests.git"}
 	if err := generateArgoBootstrap(
-		context.Background(), config, root, "environments/deployments/modules/"+longModule, inventory, "production", revision, "",
+		context.Background(), config, root, "environments/modules/"+longModule, inventory, "production", revision, "",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestGenerateArgoBootstrapOrdersSchemaPreparationBeforeConsumers(t *testing.
 		writeOverlay(t, filepath.Join(root, component, "overlays", "production"))
 	}
 	config := &repositoryConfig{RepoURL: "https://github.com/codefly-dev/manifests.git"}
-	targetPath := "environments/deployments/modules/payments"
+	targetPath := "environments/modules/payments"
 	if err := generateArgoBootstrap(
 		context.Background(), config, root, targetPath, inventory, "production", revision, "",
 	); err != nil {

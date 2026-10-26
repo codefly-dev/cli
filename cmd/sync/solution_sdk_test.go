@@ -224,11 +224,11 @@ func loadFixtureWorkspace(t *testing.T, wsDir string) *resources.Workspace {
 
 func resetSolutionSDKFlags(t *testing.T) {
 	t.Helper()
-	prevLangs, prevCheck, prevApply, prevSkip := solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, skipGenerateForTests
-	solutionSDKLanguages, solutionSDKCheck, solutionSDKApply = nil, false, false
+	prevLangs, prevCheck, prevApply, prevForce, prevSkip := solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce, skipGenerateForTests
+	solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce = nil, false, false, false
 	skipGenerateForTests = true
 	t.Cleanup(func() {
-		solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, skipGenerateForTests = prevLangs, prevCheck, prevApply, prevSkip
+		solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce, skipGenerateForTests = prevLangs, prevCheck, prevApply, prevForce, prevSkip
 	})
 }
 

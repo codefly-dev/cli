@@ -20,18 +20,17 @@ side** of the capability and the owner of its **carriers** — the HTTP header
 and the gRPC metadata the capability travels in, with the sealed installation
 beside it as a pre-check (`x-codefly-work-context`,
 `x-codefly-installation-id`, `x-codefly-installation-revision`, and the
-operation id). It mints nothing and verifies nothing: what it exports as a
-verification entry point is core's, by alias, and it deliberately does not
-re-export core's verify-only `Authenticator` (a client holds no issuer
-sources). The gateway reads the carrier through
+operation id). It mints nothing and has no check of its own: its one
+verification entry point, `NewVerifier` → `*PinnedVerifier`, wraps core's
+`Verifier` (kept unexported, so an unpinned one cannot be built), and it
+deliberately does not re-export core's verify-only `Authenticator` (a client
+holds no issuer sources). The gateway reads the carrier through
 `sdk-go/workcontext/grpctransport` and verifies through core — one carrier,
-one verifier, each in the repository that owns it. The leaf has no tag by
-design; it is pinned by commit, and only from the commit where its own
-earlier second implementation (a hand-written JSON payload signed beside
+one verifier, each in the repository that owns it. The leaf is pinned at its
+first release tag, `workcontext/v0.1.0`, which is past the commit where its
+own earlier second implementation (a hand-written JSON payload signed beside
 core's proto encoding, what core's `ErrNotACoreToken` exists to name) was
-deleted. `TestNoSecondWorkContextImplementation` holds both: the pin at or
-after that commit, and nothing in this module naming the deleted verifier's
-surface.
+deleted.
 
 `Authenticator` is the entrypoint for a party that verifies **without
 minting**. It assembles core's `Verifier` and calls `Verify`, so there is one

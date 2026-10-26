@@ -71,11 +71,30 @@ func TestSecretGeneratorsRefuseAMalformedDeclaration(t *testing.T) {
 		"workspace services": "        - scope: workspace\n          configuration: x\n          keys: [A]\n          services: [a/b]\n",
 		"bad service":        "        - scope: service\n          configuration: x\n          keys: [A]\n          services: [store]\n",
 		"bad format":         "        - scope: workspace\n          configuration: x\n          keys: [A]\n          format: uuid\n",
+		"sized ed25519":      "        - scope: service\n          configuration: x\n          services: [a/b]\n          keys: [A]\n          format: ed25519-pkcs8\n          bytes: 64\n",
+		"ed25519 for all":    "        - scope: service\n          configuration: x\n          keys: [A]\n          format: ed25519-pkcs8\n",
+		"ed25519 for two":    "        - scope: service\n          configuration: x\n          services: [a/b, a/c]\n          keys: [A]\n          format: ed25519-pkcs8\n",
+		"two ed25519 keys":   "        - scope: service\n          configuration: x\n          services: [a/b]\n          keys: [A, B]\n          format: ed25519-pkcs8\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadGenerators(t, declaration); err == nil || !strings.Contains(err.Error(), "generate") {
 				t.Errorf("loaded %q, want a refusal naming the generate block: %v", declaration, err)
 			}
 		})
+	}
+}
+
+func TestAnEd25519KeyGeneratorLoadsWithoutASize(t *testing.T) {
+	generators, err := loadGenerators(t, `        - scope: service
+          configuration: signing
+          services: [witness/log]
+          keys: [SIGNING_KEY]
+          format: ed25519-pkcs8
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generators[0].Format != environments.SecretGeneratorFormatEd25519PKCS8 {
+		t.Fatalf("format = %q", generators[0].Format)
 	}
 }

@@ -90,3 +90,73 @@ func (inputs *DeployInputs) public(unique, key, value string) {
 	injection.Public[key] = value
 	inputs.Services[unique] = injection
 }
+
+// Consumption is one endpoint a composed solution consumes, as its manifest's
+// api.consumes names it.
+type Consumption struct {
+	// Solution is the consuming solution's module.
+	Solution string
+	manifest.ConsumedAPI
+}
+
+// ConsumedEndpoints lists, for every solution the workspace composes, the
+// endpoints its api.consumes names — the same manifests, read the same way,
+// that DerivedDeployInputs projects. A manifest the run would refuse fails the
+// same way, naming the solution.
+func ConsumedEndpoints(ctx context.Context, workspace *resources.Workspace) ([]Consumption, error) {
+	var out []Consumption
+	solutions, err := composedSolutions(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	for _, solution := range solutions {
+		for _, consumed := range solution.manifest.ConsumedAPIs() {
+			out = append(out, Consumption{Solution: solution.module.Name, ConsumedAPI: consumed})
+		}
+	}
+	return out, nil
+}
+
+// ComposedSolutions lists the solutions the workspace composes, in the
+// workspace's order: every composed module that names a service-entry and
+// ships a solution manifest. A module that cannot be read is a refusal, not
+// a module with no solution: every route the host forwards is derived from
+// this set.
+func ComposedSolutions(ctx context.Context, workspace *resources.Workspace) ([]*resources.Module, error) {
+	solutions, err := composedSolutions(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	modules := make([]*resources.Module, 0, len(solutions))
+	for _, solution := range solutions {
+		modules = append(modules, solution.module)
+	}
+	return modules, nil
+}
+
+type composedSolution struct {
+	module   *resources.Module
+	manifest *manifest.Manifest
+}
+
+func composedSolutions(ctx context.Context, workspace *resources.Workspace) ([]composedSolution, error) {
+	var out []composedSolution
+	for _, ref := range workspace.Modules {
+		mod, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("read composed module %s: %w", ref.Name, err)
+		}
+		if mod.ServiceEntry == "" {
+			continue
+		}
+		solutionManifest, err := moduleManifest(mod)
+		if err != nil {
+			return nil, fmt.Errorf("solution %s: %w", mod.Name, err)
+		}
+		if solutionManifest == nil {
+			continue
+		}
+		out = append(out, composedSolution{module: mod, manifest: solutionManifest})
+	}
+	return out, nil
+}
