@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -376,17 +375,16 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 			return nil, nil, nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
 		}
-		descriptorSet, err := buildDescriptorSet(ctx, protoDir)
+		// buf compiles the descriptor set and names its own source set in the
+		// same companion run, so Sources are exactly the files and import names
+		// the descriptor set was built from.
+		descriptorSet, protoSources, err := compileProtoDir(ctx, protoDir, true)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot build descriptor set: %w", err)
 		}
 		var set descriptorpb.FileDescriptorSet
 		if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
-		}
-		protoSources, err := collectProtoSources(protoDir)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot read proto sources: %w", err)
 		}
 		// The contract's package is the one the service's own protos declare
 		// their services in, as `generate contracts` settles it; an endpoint
@@ -429,36 +427,6 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		}, nil, nil
 	}
 	return nil, nil, nil, fmt.Errorf("endpoint %s reports neither a grpc nor a rest contract", endpoint.Name)
-}
-
-// collectProtoSources reads every .proto file directly (and doubly) under
-// protoDir into proto.GenerateClient's Sources form, path relative to
-// protoDir — the same files buildDescriptorSet compiled, so generation from
-// Sources produces the same code the persisted descriptor set describes.
-func collectProtoSources(protoDir string) ([]coreproto.Source, error) {
-	var sources []coreproto.Source
-	err := filepath.WalkDir(protoDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".proto") {
-			return err
-		}
-		rel, err := filepath.Rel(protoDir, p)
-		if err != nil {
-			return err
-		}
-		content, err := os.ReadFile(p) //nolint:gosec // p is walked from a service's own committed proto directory
-		if err != nil {
-			return err
-		}
-		sources = append(sources, coreproto.Source{Path: filepath.ToSlash(rel), Content: content})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(sources) == 0 {
-		return nil, fmt.Errorf("no .proto files under %s", protoDir)
-	}
-	return sources, nil
 }
 
 // resolvePackageSource handles --from package:<id>@<version>: it finds the

@@ -16,8 +16,10 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
+	"github.com/codefly-dev/cli/pkg/generators"
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
+	"github.com/codefly-dev/core/languages"
 	"github.com/codefly-dev/core/resources"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -270,13 +272,166 @@ func TestGenerateClientPythonMapsUpstreamProtoModules(t *testing.T) {
 		}
 	}
 
+	// A shared module a message's fields use is imported from its
+	// distribution, which the library declares. One used only for an option
+	// (buf/validate, google/api) is dropped by the companion's Python plugin
+	// (companion 0.0.17), so the bindings neither import nor depend on it.
 	bindings := filepath.Join(genDir, "accounts", "v1", "accounts_pb2.py")
-	assertFileContains(t, bindings, "from buf.validate import validate_pb2")
-	assertFileContains(t, bindings, "from google.api import annotations_pb2")
+	assertFileContains(t, bindings, "from google.rpc import status_pb2")
+	assertFileContains(t, bindings, "from google.type import money_pb2")
+	assertFileLacks(t, bindings, "buf.validate")
+	assertFileLacks(t, bindings, "from google.api import")
 
 	pyproject := filepath.Join(clientOutput, "python", "pyproject.toml")
-	assertFileContains(t, pyproject, `"protovalidate"`)
 	assertFileContains(t, pyproject, `"googleapis-common-protos"`)
+	assertFileLacks(t, pyproject, `"protovalidate"`)
+}
+
+// TestGenerateClientPythonFromSourcesResolvesProtovalidate: a local service
+// whose proto validates its fields with buf/validate generates a Python
+// client from its own sources (#1163). Python's buf configuration used to
+// resolve googleapis alone, so the import did not exist for Python while Go
+// and TypeScript generated the same contract; the companion's configuration
+// now gives every language the same dependencies, and this holds the CLI's
+// Python path to it.
+func TestGenerateClientPythonFromSourcesResolvesProtovalidate(t *testing.T) {
+	requireQualify(t)
+	output := filepath.Join(t.TempDir(), "lib")
+	entry := localProtoEntry(t, validatedAccountsProto)
+	if len(entry.ProtoSources) == 0 {
+		t.Fatal("the local entry carries no proto sources, so this would not exercise the sources path")
+	}
+
+	if err := generatePythonLibrary(output, entry); err != nil {
+		t.Fatalf("generate python client: %v", err)
+	}
+
+	// The import is used only for a field option, which the companion's
+	// Python plugin drops, so the bindings stand alone and import.
+	pythonDir := filepath.Join(output, "python")
+	bindings := filepath.Join(pythonDir, "accounts_client", "_gen", "accounts", "v1", "accounts_pb2.py")
+	assertFileContains(t, bindings, "source: accounts/v1/accounts.proto")
+	if _, err := os.Stat(filepath.Join(pythonDir, "accounts_client", "_gen", "buf")); !os.IsNotExist(err) {
+		t.Errorf("_gen/buf was generated: protovalidate is the upstream distribution's (stat error: %v)", err)
+	}
+	assertPythonImports(t, pythonDir, "accounts_client._gen.accounts.v1.accounts_pb2")
+}
+
+// TestGenerateClientFailureLeavesLibraryUntouched: a generation the companion
+// fails leaves the library byte for byte as it was (#1163) — its generated
+// bindings and facade, the contract it records, and the developer's own
+// modules and tests beside them. It used to wipe the generated tree, and
+// before that every module at the package root, before the companion ran.
+func TestGenerateClientFailureLeavesLibraryUntouched(t *testing.T) {
+	requireQualify(t)
+	output := filepath.Join(t.TempDir(), "lib")
+	if err := generatePythonLibrary(output, localProtoEntry(t, validatedAccountsProto)); err != nil {
+		t.Fatalf("first generation: %v", err)
+	}
+	pythonDir := filepath.Join(output, "python")
+	for path, content := range map[string]string{
+		filepath.Join(pythonDir, "accounts_client", "work_context.py"): "def stamp(ctx):\n    return ctx\n",
+		filepath.Join(pythonDir, "tests", "test_work_context.py"):      "def test_stamp():\n    pass\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := hashTree(t, output)
+
+	// The descriptor compiles, and the sources the companion is handed import
+	// a file nothing provides: generation fails inside the companion, after
+	// the contract is known, which is where a wipe-first run lost the tree.
+	broken := localProtoEntry(t, validatedAccountsProto)
+	source := &broken.ProtoSources[0]
+	source.Content = []byte(strings.Replace(string(source.Content),
+		`import "buf/validate/validate.proto";`,
+		`import "buf/validate/validate.proto";`+"\nimport \"absent/nowhere.proto\";", 1))
+	if err := generatePythonLibrary(output, broken); err == nil {
+		t.Fatal("generating from sources importing a missing file succeeded")
+	}
+	if after := hashTree(t, output); after != before {
+		t.Fatal("a failed generation changed the library")
+	}
+	assertFileContains(t, filepath.Join(pythonDir, "accounts_client", "work_context.py"), "def stamp")
+}
+
+// validatedAccountsProto validates a field with buf/validate, as the
+// authority interface's protos do.
+const validatedAccountsProto = `syntax = "proto3";
+
+package accounts.v1;
+
+import "buf/validate/validate.proto";
+
+message Account {
+  string id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+service Accounts {
+  rpc Get(Account) returns (Account);
+}
+`
+
+// localProtoEntry builds the contract entry --from module/service builds for
+// a live service, through the same buildLocalContractEndpoint, for a service
+// whose proto/ holds accounts/v1/accounts.proto with content and a buf.yaml
+// declaring the shared modules it imports.
+func localProtoEntry(t *testing.T, content string) generators.ContractEntry {
+	t.Helper()
+	ctx := context.Background()
+	serviceDir := filepath.Join(t.TempDir(), "api")
+	protoDir := filepath.Join(serviceDir, "proto")
+	if err := os.MkdirAll(filepath.Join(protoDir, "accounts", "v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bufYAML := "version: v1\ndeps:\n  - buf.build/googleapis/googleapis\n  - buf.build/bufbuild/protovalidate\n"
+	if err := os.WriteFile(filepath.Join(protoDir, "buf.yaml"), []byte(bufYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(protoDir, "accounts", "v1", "accounts.proto"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&resources.Service{Name: "api", Version: "0.0.1"}).SaveAtDir(ctx, serviceDir); err != nil {
+		t.Fatal(err)
+	}
+	service, err := resources.LoadServiceFromDir(ctx, serviceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &basev0.Endpoint{
+		Name: "grpc", Service: "api", Api: standards.GRPC,
+		ApiDetails: &basev0.API{Value: &basev0.API_Grpc{Grpc: &basev0.GrpcAPI{}}},
+	}
+	descriptorSet, contract, sources, err := buildLocalContractEndpoint(ctx, service, endpoint)
+	if err != nil {
+		t.Fatalf("buildLocalContractEndpoint: %v", err)
+	}
+	return generators.ContractEntry{
+		Endpoint:            *contract,
+		ContractBytes:       descriptorSet,
+		PackageID:           "local",
+		PackageVersion:      "0.0.1",
+		ModuleName:          "accounts",
+		FacadeModuleDefault: generators.DefaultFacadeModuleName(contract),
+		ProtoSources:        sources,
+	}
+}
+
+// generatePythonLibrary generates entry's Python bindings, no facade, into
+// output as the accounts-client library.
+func generatePythonLibrary(output string, entry generators.ContractEntry) error {
+	return generators.GenerateClientLibrary(context.Background(), &generators.ClientLibraryRequest{
+		Name:      "accounts-client",
+		Output:    output,
+		Languages: []languages.Language{languages.PYTHON},
+		Entries:   []generators.ContractEntry{entry},
+		NoFacade:  true,
+		Force:     true,
+	})
 }
 
 // writeUpstreamModulesContractsFixture compiles a proto importing the
@@ -467,6 +622,22 @@ func TestGenerateClientPreservesHandEditedFiles(t *testing.T) {
 	}
 	if afterFields["private"] != true {
 		t.Fatalf("hand-edited package.json was overwritten: %s", afterPackageJSON)
+	}
+	// The client is published under the library's version, the producer's
+	// own, never the scaffold's 0.0.1.
+	libraryManifest, err := os.ReadFile(filepath.Join(output, resources.LibraryConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var library struct {
+		Version string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(libraryManifest, &library); err != nil {
+		t.Fatal(err)
+	}
+	if library.Version == "" || library.Version == "0.0.1" || afterFields["version"] != library.Version {
+		t.Fatalf("package.json version = %v, library.codefly.yaml version = %q: the client must carry the library's version",
+			afterFields["version"], library.Version)
 	}
 }
 
@@ -765,6 +936,17 @@ func assertFileContains(t *testing.T, path, substr string) {
 	}
 }
 
+func assertFileLacks(t *testing.T, path, substr string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if strings.Contains(string(data), substr) {
+		t.Errorf("%s contains %q", path, substr)
+	}
+}
+
 func goVetLibrary(t *testing.T, goDir string) {
 	t.Helper()
 	cmd := exec.Command("go", "vet", "./...")
@@ -789,7 +971,7 @@ func assertPythonImports(t *testing.T, pythonDir, dottedModule string) {
 		t.Fatalf("CompanionImage: %v", err)
 	}
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"-v", pythonDir+":/out", "-w", "/out", image.Name+":"+image.Tag,
+		"-v", pythonDir+":/out", "-w", "/out", image.FullName(),
 		"/venv/bin/python", "-c", "import "+dottedModule)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("import %s failed: %v\n%s", dottedModule, err, out)
