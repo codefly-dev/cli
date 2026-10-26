@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -109,7 +110,11 @@ func mergeTypeScriptEntry(langDir, raw string) error {
 		if err != nil {
 			return err
 		}
-		rewritten := relImportRe.ReplaceAll(data, []byte(`${1}./gen/`+filepath.ToSlash(relDir)+`/`))
+		// path.Join cleans the facade's directory into the specifier: a facade
+		// at raw's root (a proto with no package-derived subdirectory) has
+		// relDir ".", which spliced in verbatim reads "./gen/./x".
+		prefix := "./" + path.Join("gen", relDir) + "/"
+		rewritten := relImportRe.ReplaceAll(data, []byte("${1}"+prefix))
 		if err := os.WriteFile(facadePath, rewritten, 0o644); err != nil { //nolint:gosec
 			return err
 		}
