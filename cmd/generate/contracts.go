@@ -661,6 +661,14 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	return descriptor, err
 }
 
+// ListProtoSources names protoDir's source set as buf compiles it: the one
+// source-set mechanism, shared by `generate client` and `publish clients`
+// (over a published contract's proto tree, which carries its buf.yaml).
+func ListProtoSources(ctx context.Context, protoDir string) ([]proto.Source, error) {
+	_, sources, err := compileProtoDir(ctx, protoDir, true)
+	return sources, err
+}
+
 // compileProtoDir has buf, in the pinned proto companion, build protoDir's
 // descriptor set and, when listSources is set, name the source set it built
 // it from (`buf ls-files --format json`): every file buf compiles, read from
@@ -796,18 +804,34 @@ func protoSourcesFromListing(root string, listing []byte) ([]proto.Source, error
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("buf lists no .proto files to compile")
 	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
 	return sources, nil
 }
 
 // copyTree copies the file tree rooted at src into dst, creating dst as
 // needed. A symlink is copied as what it points at, so a symlinked module
-// folder reaches buf in the container, where the link's target is not mounted.
+// folder reaches buf in the container, where the link's target is not mounted,
+// and the published contract's proto tree is self-contained. A linked folder
+// may live outside src (a module shared between services is the reason to link
+// one), but a link to a folder that holds it, or to one already being copied,
+// is a loop and is refused by name.
 func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, entry os.DirEntry, walkErr error) error {
+	root, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	return copyResolvedTree(root, dst, []string{root})
+}
+
+// copyResolvedTree copies root, a directory with no symlink in its path, into
+// dst. copying holds every resolved folder whose copy is in progress, outermost
+// first and root last.
+func copyResolvedTree(root, dst string, copying []string) error {
+	return filepath.WalkDir(root, func(p string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(src, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
@@ -822,7 +846,13 @@ func copyTree(src, dst string) error {
 				if linkErr != nil {
 					return linkErr
 				}
-				return copyTree(resolved, target)
+				// WalkDir follows no link, so p's folder is already resolved.
+				for _, held := range append([]string{filepath.Dir(p)}, copying...) {
+					if folderHolds(resolved, held) {
+						return fmt.Errorf("symlink %s points at %s, which holds it: a looping link cannot be copied", p, resolved)
+					}
+				}
+				return copyResolvedTree(resolved, target, append(copying[:len(copying):len(copying)], resolved))
 			}
 		}
 		if entry.IsDir() {
@@ -834,6 +864,12 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(target, data, 0o644) //nolint:gosec
 	})
+}
+
+// folderHolds reports whether dir is folder or lies beneath it.
+func folderHolds(folder, dir string) bool {
+	rel, err := filepath.Rel(folder, dir)
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // runContractsCheck regenerates contracts into a throwaway directory and

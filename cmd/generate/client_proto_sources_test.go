@@ -3,6 +3,7 @@ package generate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +43,48 @@ func TestProtoSourcesFromListingRefusesWhatItCannotRead(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "escape.proto")); !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+}
+
+// A linked folder outside the tree is copied as what it holds; a link to a
+// folder that holds it, or to one already being copied, is refused by name
+// rather than recursed into.
+func TestCopyTreeFollowsLinkedFoldersAndRefusesLoops(t *testing.T) {
+	root := t.TempDir()
+	src, shared := filepath.Join(root, "proto"), filepath.Join(root, "shared")
+	writeTestFile(t, filepath.Join(src, "acme/v1/api.proto"), "a")
+	writeTestFile(t, filepath.Join(shared, "upstream/base.proto"), "b")
+	if err := os.Symlink(shared, filepath.Join(src, "vendor")); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dst, "vendor/upstream/base.proto")); err != nil || string(data) != "b" {
+		t.Fatalf("linked folder not copied: %q, %v", data, err)
+	}
+
+	for name, link := range map[string]struct{ at, to string }{
+		"to its own folder":      {"acme/loop", "acme"},
+		"to the copied root":     {"acme/v1/up", "."},
+		"back through a link":    {"../shared/upstream/back", "."},
+		"to a folder above root": {"acme/out", ".."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			at := filepath.Join(src, filepath.FromSlash(link.at))
+			if err := os.Symlink(filepath.Join(src, link.to), at); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(at) })
+			err := copyTree(src, filepath.Join(t.TempDir(), "copy"))
+			if err == nil || !strings.Contains(err.Error(), "looping link") {
+				t.Fatalf("copyTree = %v, want a looping link refused", err)
+			}
+			resolved, _ := filepath.EvalSymlinks(at)
+			if !strings.Contains(err.Error(), resolved) {
+				t.Fatalf("refusal %q does not name the link's target %s", err, resolved)
+			}
+		})
 	}
 }
