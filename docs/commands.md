@@ -3434,14 +3434,23 @@ limitation in the facade plugin currently means `--services` filtering does not
 work over a multi-file descriptor set from these two sources; use the local
 source, or omit `--services` to generate the full contract's facade.
 
-TypeScript's generated entry point exports each binding and facade as a module
-namespace, so equal message names in different proto packages remain distinct.
-Names start with `module_` followed by the relative source path without its
-extension; non-ASCII-identifier characters are escaped as `$<hex code point>$`
-(including `$`). For example, import `{ module_gen$2f$api_pb }` to access
-`module_gen$2f$api_pb.Settings`, or `{ module_accounts_facade }` for
-`module_accounts_facade.accounts`. Regenerate consumers together with this
-entry-point change; direct imports from generated files retain their shape.
+TypeScript's generated entry point (`src/index.ts`) has three parts. Each facade
+is re-exported flat under the name its plugin gives it (`accounts`,
+`AccountsClient`). Each proto package is one namespace named from the package —
+its components joined by `_`, an underscore inside a component doubled, and
+`_pb` appended — so `saas.accounts.v1` is `saas_accounts_v1_pb` and `a_b.v1`
+(`a__b_v1_pb`) stays distinct from `a.b_v1` (`a_b__v1_pb`); moving a message
+between files of one package renames nothing. Every name only one package
+declares is also re-exported flat, so `import { Installation, AuditService }`
+keeps working. A name two packages declare (protobuf keeps names unique within a
+package, not across the dependency graph) is not exported flat: a comment at the
+top of the entry point lists it with each namespace that reaches it, for example
+`codefly_base_v0_pb.WorkContextV1` and `host_authority_v1_pb.WorkContextV1`.
+Generation refuses, naming both, when two facades or package-less files would
+claim one name, since nothing else would reach either. The package barrels live
+in `src/packages/<package>.ts`. The scaffolded `package.json` exports only `.`,
+so the entry point is a package consumer's only way in; paths under `src/gen/`
+are reachable only from inside the library.
 
 ##### Library layout
 
@@ -3452,17 +3461,18 @@ libraries/saas-starter-accounts-client/
     catalog.codefly.json         # the endpoint's catalog entry (subset if --services)
     contract.binpb | openapi.json
   go/        go.mod, gen/…, accounts_facade.pb.go
-  typescript/ package.json, tsconfig.json, src/index.ts, src/gen/…, src/accounts_facade.ts
+  typescript/ package.json, tsconfig.json, src/index.ts, src/packages/…, src/gen/…, src/accounts_facade.ts
   python/    pyproject.toml, <pkg>/_gen/…, <pkg>/accounts.py
 ```
 
 The TypeScript library is an ESM package whose root resolves to `dist/index.js`
 (types `dist/index.d.ts`). `src/index.ts` is generated output, rewritten on
-every run: a barrel re-exporting every facade and every generated binding, so
-the package name alone reaches every client and message schema. The scaffold
-(`package.json`, `tsconfig.json`) is written once and declares a `typescript`
-dev dependency and a `build` script (`tsc -p tsconfig.json`) that produces
-`dist/` — the only directory, with the README, that the package ships.
+every run: a barrel re-exporting every facade and every generated binding
+(shaped as above), so the package name alone reaches every client and message
+schema. The scaffold (`package.json`, `tsconfig.json`) is written once and
+declares a `typescript` dev dependency and a `build` script (`tsc -p
+tsconfig.json`) that produces `dist/` — the only directory, with the README,
+that the package ships.
 
 The Python package root is not a purely generated directory either. A run
 replaces `<pkg>/_gen/` whole and, at the root, only the files a protoc plugin's
