@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -656,22 +657,40 @@ func printContractLine(endpoint *composition.APIContractEndpoint) {
 // included. It works from a temporary copy of protoDir so buf's dependency
 // resolution never mutates the service's committed buf.lock.
 func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
+	descriptor, _, err := compileProtoDir(ctx, protoDir, false)
+	return descriptor, err
+}
+
+// ListProtoSources names protoDir's source set as buf compiles it: the one
+// source-set mechanism, shared by `generate client` and `publish clients`
+// (over a published contract's proto tree, which carries its buf.yaml).
+func ListProtoSources(ctx context.Context, protoDir string) ([]proto.Source, error) {
+	_, sources, err := compileProtoDir(ctx, protoDir, true)
+	return sources, err
+}
+
+// compileProtoDir has buf, in the pinned proto companion, build protoDir's
+// descriptor set and, when listSources is set, name the source set it built
+// it from (`buf ls-files --format json`): every file buf compiles, read from
+// where buf found it and named by its import path. buf.yaml's modules,
+// includes, excludes and symlinks are buf's to interpret, never this CLI's.
+func compileProtoDir(ctx context.Context, protoDir string, listSources bool) ([]byte, []proto.Source, error) {
 	if !runners.DockerEngineRunning(ctx) {
-		return nil, fmt.Errorf("docker is not running; please start Docker first")
+		return nil, nil, fmt.Errorf("docker is not running; please start Docker first")
 	}
 	image, err := proto.CompanionImage(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("cannot get companion image: %w", err)
+		return nil, nil, fmt.Errorf("cannot get companion image: %w", err)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "codefly-contract-proto")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	if err = copyTree(protoDir, tmpDir); err != nil {
-		return nil, fmt.Errorf("cannot copy proto sources: %w", err)
+		return nil, nil, fmt.Errorf("cannot copy proto sources: %w", err)
 	}
 
 	projectContainerRecovery(ctx)
@@ -679,7 +698,7 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	name := fmt.Sprintf("contracts-%d", time.Now().UnixMilli())
 	runner, err := runners.NewDockerEnvironment(ctx, image, tmpDir, name)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create docker runner: %w", err)
+		return nil, nil, fmt.Errorf("cannot create docker runner: %w", err)
 	}
 	// A descriptor-set container holds no state worth preserving across runs: it
 	// is created, driven once and shut down in the defer below. Marking it
@@ -705,41 +724,137 @@ func buildDescriptorSet(ctx context.Context, protoDir string) ([]byte, error) {
 	}()
 
 	if err = runner.Init(ctx); err != nil {
-		return nil, fmt.Errorf("cannot init runner: %w", err)
+		return nil, nil, fmt.Errorf("cannot init runner: %w", err)
 	}
 
 	depProc, err := runner.NewProcess("buf", "dep", "update")
 	if err != nil {
-		return nil, fmt.Errorf("cannot create process: %w", err)
+		return nil, nil, fmt.Errorf("cannot create process: %w", err)
 	}
 	if err = depProc.Run(ctx); err != nil {
-		return nil, fmt.Errorf("cannot update buf dependencies: %w", err)
+		return nil, nil, fmt.Errorf("cannot update buf dependencies: %w", err)
 	}
 
 	const descriptorFile = ".codefly-contract.binpb"
 	buildProc, err := runner.NewProcess("buf", "build", "--as-file-descriptor-set", "-o", "/workspace/"+descriptorFile)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create process: %w", err)
+		return nil, nil, fmt.Errorf("cannot create process: %w", err)
 	}
 	if err = buildProc.Run(ctx); err != nil {
-		return nil, fmt.Errorf("cannot build descriptor set: %w", err)
+		return nil, nil, fmt.Errorf("cannot build descriptor set: %w", err)
 	}
 
-	return os.ReadFile(filepath.Join(tmpDir, descriptorFile))
+	descriptor, err := os.ReadFile(filepath.Join(tmpDir, descriptorFile))
+	if err != nil || !listSources {
+		return descriptor, nil, err
+	}
+	lsProc, err := runner.NewProcess("buf", "ls-files", "--format", "json")
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot create process: %w", err)
+	}
+	stdout, err := lsProc.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read buf ls-files: %w", err)
+	}
+	if err = lsProc.Start(ctx); err != nil {
+		return nil, nil, fmt.Errorf("cannot list proto sources: %w", err)
+	}
+	listing, readErr := io.ReadAll(stdout)
+	if err = lsProc.Wait(ctx); err != nil {
+		return nil, nil, fmt.Errorf("cannot list proto sources: %w", err)
+	}
+	if readErr != nil {
+		return nil, nil, fmt.Errorf("cannot read buf ls-files: %w", readErr)
+	}
+	sources, err := protoSourcesFromListing(tmpDir, listing)
+	return descriptor, sources, err
+}
+
+// bufListedFile is one line of `buf ls-files --format json`.
+type bufListedFile struct {
+	Path       string `json:"path"`
+	ImportPath string `json:"import_path"`
+	IsImport   bool   `json:"is_import"`
+}
+
+// protoSourcesFromListing reads every file buf listed, from its path under
+// root, as a Source named by its import path — the name every importer spells
+// and the descriptor set records. Files buf lists only as imports are not
+// sources.
+func protoSourcesFromListing(root string, listing []byte) ([]proto.Source, error) {
+	var sources []proto.Source
+	decoder := json.NewDecoder(bytes.NewReader(listing))
+	for decoder.More() {
+		var file bufListedFile
+		if err := decoder.Decode(&file); err != nil {
+			return nil, fmt.Errorf("cannot parse buf ls-files: %w", err)
+		}
+		if file.IsImport {
+			continue
+		}
+		if file.Path == "" || file.ImportPath == "" || !filepath.IsLocal(filepath.FromSlash(file.Path)) {
+			return nil, fmt.Errorf("buf ls-files listed an unusable file %q (%q)", file.Path, file.ImportPath)
+		}
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file.Path))) //nolint:gosec // a local path buf listed under root
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, proto.Source{Path: file.ImportPath, Content: content})
+	}
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("buf lists no .proto files to compile")
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
+	return sources, nil
 }
 
 // copyTree copies the file tree rooted at src into dst, creating dst as
-// needed.
+// needed. A symlink is copied as what it points at, so a symlinked module
+// folder reaches buf in the container, where the link's target is not mounted,
+// and the published contract's proto tree is self-contained. A linked folder
+// may live outside src (a module shared between services is the reason to link
+// one), but a link to a folder that holds it, or to one already being copied,
+// is a loop and is refused by name.
 func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(p string, entry os.DirEntry, walkErr error) error {
+	root, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	return copyResolvedTree(root, dst, []string{root})
+}
+
+// copyResolvedTree copies root, a directory with no symlink in its path, into
+// dst. copying holds every resolved folder whose copy is in progress, outermost
+// first and root last.
+func copyResolvedTree(root, dst string, copying []string) error {
+	return filepath.WalkDir(root, func(p string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(src, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
+		if entry.Type()&os.ModeSymlink != 0 {
+			info, statErr := os.Stat(p)
+			if statErr != nil {
+				return statErr
+			}
+			if info.IsDir() {
+				resolved, linkErr := filepath.EvalSymlinks(p)
+				if linkErr != nil {
+					return linkErr
+				}
+				// WalkDir follows no link, so p's folder is already resolved.
+				for _, held := range append([]string{filepath.Dir(p)}, copying...) {
+					if folderHolds(resolved, held) {
+						return fmt.Errorf("symlink %s points at %s, which holds it: a looping link cannot be copied", p, resolved)
+					}
+				}
+				return copyResolvedTree(resolved, target, append(copying[:len(copying):len(copying)], resolved))
+			}
+		}
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
@@ -749,6 +864,12 @@ func copyTree(src, dst string) error {
 		}
 		return os.WriteFile(target, data, 0o644) //nolint:gosec
 	})
+}
+
+// folderHolds reports whether dir is folder or lies beneath it.
+func folderHolds(folder, dir string) bool {
+	rel, err := filepath.Rel(folder, dir)
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // runContractsCheck regenerates contracts into a throwaway directory and

@@ -135,3 +135,44 @@ plugins:
 		require.ErrorIs(t, err, os.ErrNotExist)
 	}
 }
+
+// The document store's layout: a template declaring two inputs (its own protos
+// with a path selection, and a sibling tree of client contracts), generated
+// with a caller --path. buf applies --path to every input, so keeping both
+// inputs failed with "no .proto files were targeted"; the caller's selection
+// makes --proto the one input.
+func TestProtoTwoInputTemplateWithCallerPathThroughPinnedCompanion(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "workspace.codefly.yaml"), "name: example\n")
+	input := filepath.Join(root, "proto")
+	for _, dir := range []string{"proto", "deps"} {
+		writeTestFile(t, filepath.Join(root, dir, "buf.yaml"), "version: v2\nmodules:\n  - path: .\n")
+	}
+	for _, name := range []string{"proto/api/v1/api", "proto/api/v1/other", "deps/client/v1/client"} {
+		writeTestFile(t, filepath.Join(root, name+".proto"), `syntax = "proto3";
+package example.v1;
+option go_package = "example.com/generated;example";
+message `+filepath.Base(name)+` { string value = 1; }
+`)
+	}
+	writeTestFile(t, filepath.Join(input, "buf.gen.yaml"), `version: v2
+inputs:
+  - directory: .
+    paths: [api/v1/api.proto]
+  - directory: ../deps
+plugins:
+  - local: protoc-gen-go
+    out: ../code/gen
+    opt: paths=source_relative
+`)
+	oldTemplate, oldLocal, oldPaths := protoTemplate, protoLocal, protoPaths
+	t.Cleanup(func() { protoTemplate, protoLocal, protoPaths = oldTemplate, oldLocal, oldPaths })
+	protoTemplate, protoLocal, protoPaths = "", false, []string{"api/v1/api.proto"}
+	require.NoError(t, generateProtoCode(t.Context(), input, input))
+	_, err := os.Stat(filepath.Join(root, "code/gen/api/v1/api.pb.go"))
+	require.NoError(t, err, "the caller's file is generated")
+	for _, name := range []string{"api/v1/other.pb.go", "client/v1/client.pb.go"} {
+		_, err := os.Stat(filepath.Join(root, "code/gen", name))
+		require.ErrorIs(t, err, os.ErrNotExist, "only the caller's selection is generated: %s", name)
+	}
+}
