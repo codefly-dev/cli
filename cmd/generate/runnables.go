@@ -35,19 +35,23 @@ var (
 // published contracts mark as an operation.
 var RunnablesCmd = &cobra.Command{
 	Use:   "runnables [module]",
-	Short: "Derive SERVICE-facility Runnable packages from the methods a module's contracts mark",
+	Short: "Derive SERVICE-facility Runnable packages, and so tools, from a module's served methods",
 	Long: `Derive a Runnable package for every gRPC method a module's published contracts
-mark with the codefly.runnable.v0.operation option.
+serve behind the authority hop. Every Runnable is a tool.
 
-A unary, idempotent method an owner service already publishes becomes a
-Runnable by derivation, not by authoring: the method option says which methods
-are operations and under what execution policy, and the message descriptors say
-what the contract is. Nothing is written twice.
+A method that declares its authority policy (authority.hop.v1.policy) is an
+operation with nothing added: a policy requiring only "read" derives a
+read-only tool that is safe to re-run and carries no receipt; anything else
+derives a mutation resolved by its effect receipt through the SDK's generic
+lookup. The codefly.runnable.v0.operation option overrides those defaults, and
+codefly.runnable.v0.exclude keeps a method from every agent. The message
+descriptors say what the contract is, by their proto3 JSON. Nothing is written
+twice.
 
 The input is what ` + "`codefly generate contracts`" + ` already wrote — each endpoint's
 served procedures in the API catalog and its serialized FileDescriptorSet.
-Run that first. Only served methods carrying the option are derived; their
-paired Lookup must be served on the same endpoint. No flag names a method.
+Run that first. Only served methods are derived; a declared Lookup must be
+served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 
@@ -55,12 +59,13 @@ For each marked method this writes, under contracts/runnables:
   <service>/<endpoint>/<Method>/operation.json          its execution policy and authority
   index.json                                            one row per operation
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. A module with no marked method writes an empty index, not an error.
+The tree is fully owned: a method that is no longer an operation loses its
+directory. A module with no operation writes an empty index, not an error.
 
-A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named and skipped, and the command exits non-zero after
-reporting every one of them.
+A method derived by default that cannot be one — a stream, a policy requiring
+nothing, a payload proto3 JSON cannot carry — is listed and left a plain call.
+A method carrying the option that core refuses is named and skipped, and the
+command exits non-zero after reporting every one of them.
 
 --check is the CI drift gate: it regenerates into a temporary directory and
 prints a unified diff of what differs, without writing anything.
@@ -121,6 +126,9 @@ Examples:
 		for _, entry := range derived.index.Operations {
 			cli.Info("runnables: %s  %s  %s", entry.Name, entry.Method, entry.Digest)
 		}
+		for _, notice := range derived.notices {
+			cli.Info("runnables: not an operation: %s", notice)
+		}
 		cli.Header(1, "Derived %d runnable operation(s)", len(derived.index.Operations))
 		return nil
 	},
@@ -144,6 +152,8 @@ type derivation struct {
 	// give one release a different digest per machine.
 	workspaceDir string
 	refusals     []string
+	// notices are methods a default derivation left plain calls, and why.
+	notices []string
 }
 
 // refusal reports every method that could not be derived. They are collected
@@ -309,6 +319,10 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 	pkg, spec, err := corerunnable.PackageFromMethod(files, location, owner, fullMethod)
 	if err != nil {
 		if errors.Is(err, corerunnable.ErrNotAnOperation) {
+			return nil
+		}
+		if errors.Is(err, corerunnable.ErrNotDerivable) {
+			derived.notices = append(derived.notices, fmt.Sprintf("%s: %v", fullMethod, err))
 			return nil
 		}
 		derived.refusals = append(derived.refusals, fmt.Sprintf("%s: %v", fullMethod, err))

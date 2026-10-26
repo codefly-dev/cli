@@ -115,7 +115,7 @@ func loadContractSurfaces(service *resources.Service, endpoints []*basev0.Endpoi
 // descriptor. A descriptor supplies schemas and options, including transitive
 // imports; the catalog says which of those methods this listener serves.
 func endpointProcedures(set *descriptorpb.FileDescriptorSet, endpoint *composition.APIContractEndpoint) ([]string, error) {
-	methods, err := composition.ProtobufProcedures(set, endpoint.Services)
+	methods, err := composition.ProtobufProcedures(set, *endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("endpoint %s/%s: %w", endpoint.Service, endpoint.Endpoint, err)
 	}

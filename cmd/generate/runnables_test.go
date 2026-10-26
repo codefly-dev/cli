@@ -341,10 +341,10 @@ func TestGenerateRunnablesRefusalLeavesTheCommittedTreeAlone(t *testing.T) {
 		t.Fatalf("expected the generated tree to hold 3 files, got %d", len(committed))
 	}
 
-	// The owner breaks ApplyText's payload with a uint64, outside the bounded
-	// profile. The method still carries the option.
+	// The owner breaks ApplyText's payload with a recursive field, outside the
+	// bounded profile. The method still carries the option.
 	broken := ingestionFile(conformingOperation())
-	broken.MessageType[0].Field = append(broken.MessageType[0].Field, uint64Field("total", 99))
+	broken.MessageType[0].Field = append(broken.MessageType[0].Field, selfField("total", 99, ".documents.ingest.v1."+broken.MessageType[0].GetName()))
 	publishContract(t, moduleDir, descriptorSet(t, broken))
 
 	err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"})

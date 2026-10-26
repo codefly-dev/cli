@@ -27,6 +27,7 @@ func slotOperation(fixed bool) *runnablev0.Operation {
 	}
 	declared.RequiredScopeSlots = []*runnablev0.ScopeSlot{{Name: "source", RequiredActions: []string{"invoke", "read"}, Lookup: true}}
 	declared.Tool = &runnablev0.ToolExposure{Name: "invoke_source", Description: "Invoke a selected source.", Effect: runnablev0.ToolExposure_EFFECT_MUTATION}
+	declared.Recovery = basev0.RunnableExecution_RECOVERY_RECEIPT
 	return declared
 }
 
@@ -147,11 +148,11 @@ func verifyResolvedBinding(t *testing.T, value string, tool *runnablev0.ToolExpo
 	require.NoError(t, err)
 	require.NoError(t, corerunnable.VerifyPrepared(prepared))
 	require.Empty(t, prepared.Policy.RequiredScopeSlots)
+	// Every runnable is a tool: one whose policy names none is presented
+	// from its operation.
 	exposure, err := corerunnable.ToolFromPrepared(prepared)
-	if tool == nil {
-		require.ErrorIs(t, err, corerunnable.ErrNotATool)
-	} else {
-		require.NoError(t, err)
+	require.NoError(t, err)
+	if tool != nil {
 		require.True(t, proto.Equal(tool, exposure))
 	}
 	// The host receipt and the caller binding consume the SAME resolution.
@@ -200,9 +201,12 @@ func TestGenerateRunnableBindingsResolvesThreeOperationFixtures(t *testing.T) {
 		switch {
 		case strings.HasSuffix(operation.Entry.Method, "/FixedOnly"):
 			// The old path wrote the declared policy directly. Its canonical
-			// output stays byte-identical, not just semantically equivalent.
+			// output stays byte-identical, not just semantically equivalent,
+			// beside the tool presentation every runnable now carries.
+			require.NotNil(t, prepared.Policy.Tool)
 			baseline := proto.CloneOf(prepared)
-			baseline.Policy = fixed
+			baseline.Policy = proto.CloneOf(fixed)
+			baseline.Policy.Tool = prepared.Policy.Tool
 			before, err := corerunnable.EncodePrepared(baseline)
 			require.NoError(t, err)
 			require.Equal(t, string(before), values[key])
