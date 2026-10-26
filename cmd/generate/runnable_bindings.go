@@ -59,7 +59,7 @@ For each derived operation the value is one JSON document
 (` + corerunnable.PreparedSchemaV3 + `):
 
   operation        the owner coordinates, and the operation as the owner spells
-                   it: /pkg.Service/Method, or "POST /path"
+                   it: /pkg.Service/Method, or "GET /path" for a route
   call             where one call is sent: the resolved base URL, and a typed
                    route — connect (the procedure, POSTed as JSON on the owner's
                    Connect endpoint) or rest (the owner's own verb and path)
@@ -76,6 +76,9 @@ A gRPC owner is therefore called on its **Connect** endpoint: a service that
 publishes a runnable-marked method and declares no connect endpoint is refused
 here, by name, rather than at a call.
 An operation published directly on a Connect endpoint uses that endpoint.
+A solution's route is called on the http (or rest) endpoint whose OpenAPI
+document published it, with its own verb and path, and keyed by the solution's
+name exactly as a module operation is by its module's (SOLUTION__OPERATION).
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. Locally that is the address of the run's
@@ -661,7 +664,10 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 			Address: address,
 			Route:   &runnablev0.PreparedCall_Connect{Connect: &runnablev0.ConnectProcedure{Procedure: spelling}},
 		}, composition.APIContractKindProtobuf, nil
-	case standards.REST:
+	case standards.REST, standards.HTTP:
+		// A solution's backend serves its routes on an http endpoint and
+		// publishes them as OpenAPI, which verifyPublishedContract holds it to:
+		// it is called exactly as a REST owner is.
 		address, err := r.address(ctx, identity, endpoints, published)
 		if err != nil {
 			return nil, "", err
@@ -675,8 +681,8 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 			Route:   &runnablev0.PreparedCall_Rest{Rest: &runnablev0.HTTPRoute{Verb: verb, Path: path}},
 		}, composition.APIContractKindOpenAPI, nil
 	default:
-		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s, %s or %s",
-			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.CONNECT, standards.REST)
+		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s, %s, %s or %s",
+			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.CONNECT, standards.REST, standards.HTTP)
 	}
 }
 
