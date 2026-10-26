@@ -36,7 +36,10 @@ var embeddedMatrix []byte
 type Status string
 
 const (
-	// StatusQualified means CI drives the row end to end on every change.
+	// StatusQualified means CI drives the row end to end on every change and
+	// requires it in CODEFLY_CONFORMANCE_REQUIRED, so its tests cannot skip.
+	// The job may pass over a change that touches only documentation, which
+	// cannot alter the row's outcome (docs/supported-matrix.md).
 	StatusQualified Status = "qualified"
 	// StatusNotYetQualified means the row has a real gate and real tests, but
 	// nothing proves it outside a developer machine. It is not supported.

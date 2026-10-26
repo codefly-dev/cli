@@ -1,28 +1,65 @@
 #!/usr/bin/env bash
 # Compile once per package, then run every discovered top-level test in its
 # own process: Cobra flags and other package globals survive between tests.
+#
+# The row comes from CODEFLY_CONFORMANCE_REQUIRED, the claim the job already
+# makes. Its build tag and packages come from pkg/conformance/matrix.json and
+# the tagged sources, never from a list kept here: `--list` prints them.
 set -euo pipefail
 
-shard=${1:-0}
-shards=${2:-1}
-if [[ ! "$shard" =~ ^[0-9]+$ || ! "$shards" =~ ^[1-9][0-9]*$ ]] || (( shard >= shards )); then
-  echo "expected a zero-based shard index smaller than the positive shard count" >&2
+row=${CODEFLY_CONFORMANCE_REQUIRED:-}
+if [[ -z "$row" || "$row" == *,* ]]; then
+  echo "CODEFLY_CONFORMANCE_REQUIRED must name exactly one conformance row, got '${row}'" >&2
   exit 1
 fi
-index=0
-selected=0
-root=$(pwd)
-evidence="${root}/generate-evidence"
-mkdir -p "$evidence"
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
-failed=0
-printf 'package\ttest\tseconds\tstatus\n' > "$evidence/timings.tsv"
+# A command substitution under set -e fails the script when the helper does;
+# process substitution would hide that failure.
+derived=$(go run ./scripts/conformance-packages "$row")
+tag=$(head -n 1 <<<"$derived")
+packages=()
+while IFS= read -r package; do
+  packages+=("$package")
+done < <(tail -n +2 <<<"$derived")
+if (( ${#packages[@]} == 0 )); then
+  echo "row $row derived no packages" >&2
+  exit 1
+fi
+tags=()
+if [[ -n "$tag" ]]; then
+  tags=(-tags "$tag")
+fi
+# --list walks the same loop as a run and prints what it would compile, so a
+# repository test can hold the loop itself to the matrix.
+list=0
+if [[ "${1:-}" == "--list" ]]; then
+  list=1
+  echo "$tag"
+else
+  shard=${1:-0}
+  shards=${2:-1}
+  if [[ ! "$shard" =~ ^[0-9]+$ || ! "$shards" =~ ^[1-9][0-9]*$ ]] || (( shard >= shards )); then
+    echo "expected a zero-based shard index smaller than the positive shard count" >&2
+    exit 1
+  fi
+  index=0
+  selected=0
+  failed=0
+  root=$(pwd)
+  evidence="${root}/generate-evidence"
+  mkdir -p "$evidence"
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  printf 'package\ttest\tseconds\tstatus\n' > "$evidence/timings.tsv"
+fi
 
-for package in cmd/generate cmd/publish cmd/sync pkg/generators; do
+for package in "${packages[@]}"; do
+  if (( list )); then
+    echo "$package"
+    continue
+  fi
   name=${package//\//-}
   binary="$work/$name.test"
-  go test -tags proto_companion_required -c -o "$binary" "./$package"
+  go test ${tags[@]+"${tags[@]}"} -c -o "$binary" "./$package"
   # Do not hide discovery failures behind process substitution. A package
   # with no tests must fail instead of silently claiming qualification.
   "$binary" -test.list '^Test' > "$work/tests"
@@ -49,6 +86,9 @@ for package in cmd/generate cmd/publish cmd/sync pkg/generators; do
     echo '::endgroup::'
   done < "$work/selected"
 done
+if (( list )); then
+  exit 0
+fi
 if (( selected == 0 )); then
   echo "shard $shard/$shards selected no tests" >&2
   exit 1
