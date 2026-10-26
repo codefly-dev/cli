@@ -76,6 +76,16 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 	require.Equal(t, coreFields.Len()+1, reflect.TypeFor[runnablespkg.Operation]().NumField())
 }
 
+// undeclarableFields are Core fields an operation may never declare: Core
+// refuses the policy that sets one, so the document has nothing to carry and
+// the fixture cannot populate it. Each is earned by a test proving the refusal
+// reaches this command, never by being hard to populate.
+var undeclarableFields = map[protoreflect.FullName]string{
+	// An owner is the authority's to select for an installation (core#845);
+	// TestRunnablesRefusesADeclaredResourceOwner proves the refusal.
+	"codefly.base.v0.WorkScopeV1.resource_owner_id": "never declared",
+}
+
 // Descend into every message, including repeated scopes and slots. A future
 // nested field must be populated before proto.Equal can prove it survived.
 func requireEveryMessageFieldPopulated(t *testing.T, message protoreflect.Message) {
@@ -83,6 +93,10 @@ func requireEveryMessageFieldPopulated(t *testing.T, message protoreflect.Messag
 	fields := message.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		field := fields.Get(i)
+		if _, undeclarable := undeclarableFields[field.FullName()]; undeclarable {
+			require.Falsef(t, message.Has(field), "%s is never declared; leave it out of the fixture", field.FullName())
+			continue
+		}
 		require.Truef(t, message.Has(field), "populate %s in the round-trip fixture", field.FullName())
 		if field.Message() == nil {
 			continue
@@ -101,6 +115,20 @@ func requireEveryMessageFieldPopulated(t *testing.T, message protoreflect.Messag
 			requireEveryMessageFieldPopulated(t, message.Get(field).Message())
 		}
 	}
+}
+
+// A policy that declares a field Core never lets an operation declare is
+// refused by the derivation with Core's reason, so the document's silence on
+// that field is the contract rather than a loss.
+func TestRunnablesRefusesADeclaredResourceOwner(t *testing.T) {
+	declared := slotOperation(true)
+	declared.InvokeScopes[0].ResourceOwnerId = "principal-u"
+	root, _ := saveConnectRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(declared)), "0.1.0")
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+	err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"})
+	require.ErrorContains(t, err, `selects resource owner "principal-u"`)
+	require.ErrorContains(t, err, undeclarableFields["codefly.base.v0.WorkScopeV1.resource_owner_id"])
 }
 
 func TestOperationDocumentRefusesUnknownNestedCoreFields(t *testing.T) {

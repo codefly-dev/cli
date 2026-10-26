@@ -55,7 +55,7 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 		filepath.Join("modules", "assistant", resources.ModuleConfigurationName):                     "kind: module\nname: assistant\nservices:\n  - name: api\n",
 		filepath.Join("modules", "assistant", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "assistant") + "module-identity: true\n",
 		filepath.Join("modules", "assistant", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/assistant\nversion: 1.0.0\n",
-		filepath.Join("configurations", "staging", "assistant.env"):                                  "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nEVIDENCE_BINDING=evidence\nANNOTATIONS_PREFIX=annotations\n",
+		filepath.Join("configurations", "staging", "assistant.env"):                                  "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nEVIDENCE_BINDING=evidence\nANNOTATIONS_PREFIX=annotations\nDOCUMENTS_AUDIENCE=documents\nREPLICA_AUDIENCE=documents\nCOLLECTIONS_AUDIENCE=documents\n",
 	} {
 		full := filepath.Join(workspace.Dir(), rel)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
