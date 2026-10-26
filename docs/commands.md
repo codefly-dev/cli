@@ -2434,6 +2434,7 @@ lodestar derives from the manifest.
 | `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
 | `--check` | Do not write; exit 1 if the library or `service-dependencies` are out of date |
 | `--apply-dependencies` | Add any `service-dependencies` entry missing for a bound consume entry to the entry service's `service.codefly.yaml`; without it, missing entries are printed as a warning. Existing entries are never removed. |
+| `--force` | Overwrite a library generated from a different version of a consumed contract (its recorded `sources[].contract-digest` differs) |
 
 Each bound entry is resolved against the workspace's own composition: the
 composed module named by `module` (workspace `add module` first), its
@@ -3446,19 +3447,26 @@ catalog entry) and generate from its descriptor bytes.
 generated. The contract it persists under `contract/` keeps the named services
 and the declarations they reach: their methods' messages and, transitively,
 every message and enum those name (a nested type keeps the top-level message
-holding it). A file defining a custom option those declarations set is kept
-whole, as is a shared upstream file (`google/protobuf`, `google/api`,
-`google/rpc`, `google/type`, `buf/validate`). No other service is declared
-anywhere, so the catalog, the manifest's `sources[].services`, the bindings and
-the facade of every language carry the named services alone; the catalog and
-`sources[].contract-digest` record the narrowed contract's digest. A name the
-contract does not declare is refused, naming the services it does declare.
-Narrowing is deterministic, so regenerating a library reproduces it byte for
-byte. A library generated from a local source with `--services` is generated
-from the narrowed descriptor set rather than the proto sources. When `sync
-solution-sdk` aggregates several contracts into one library, the declarations
-kept are computed across all of them, so a file two entries carry comes out the
-same for both; an entry naming no services keeps its whole contract.
+holding it), and every extension of a kept message. A file defining a custom
+option those declarations set — on any element, extension ranges included, or
+nested inside another option's value — is kept whole, as is a shared upstream
+file (`google/protobuf`, `google/api`, `google/rpc`, `google/type`,
+`buf/validate`). No other service is declared anywhere, so the catalog, the
+manifest's `sources[].services`, the bindings and the facade of every language
+carry the named services alone. The catalog's digest is the persisted
+(narrowed) contract's; `sources[].contract-digest` stays the producer's, the
+same digest `publish clients` records, so it keeps identifying the contract the
+library was generated from: changing `--services` regenerates in place, and only
+a new producer contract needs `--force`. A name the contract does not declare is
+refused, naming the services it does declare. Narrowing is deterministic, so
+regenerating a library reproduces it byte for byte. A library generated from a
+local source with `--services` is generated from the narrowed descriptor set
+rather than the proto sources. When `sync solution-sdk` aggregates several
+contracts into one library, each entry persists its own narrowed contract, while
+the bindings are generated from the closure of every entry at once, so a file
+two entries carry is generated the same for both; an entry naming no services
+keeps its whole contract, and two entries carrying different versions of one
+file are refused, naming the file and both entries.
 
 TypeScript's generated entry point (`src/index.ts`) has three parts. Each facade
 is re-exported flat under the name its plugin gives it (`accounts`,

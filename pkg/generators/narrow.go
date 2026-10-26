@@ -17,38 +17,32 @@ import (
 
 // narrowEntries narrows a library to the services its entries select.
 //
-// A protobuf entry naming Services binds those services and nothing else, so
-// its contract is rewritten to declare only them before anything is generated:
-// the persisted descriptor set, the catalog and the manifest describe the
-// narrowed contract, and the bindings and facade are generated from it. The
-// narrowed set keeps, from the files declaring the selected services and the
-// files those reach, the top-level declarations the services need: their
-// methods' messages and, transitively, every message and enum a kept message
-// names (a nested type keeps the top-level message holding it). A file
-// defining a custom option a kept declaration sets is kept whole, with its
-// imports, and so is a file of a shared upstream module: neither is the
-// library's own, and the upstream ones keep the shape their distributions
-// publish. No file declares a service that is not selected.
+// A protobuf entry naming Services binds those services and nothing else. Its
+// persisted contract (contract.binpb and its catalog) declares only them: the
+// files declaring them and, of the files those reach, the top-level
+// declarations they need — their methods' messages and, transitively, every
+// message and enum a kept message names (a nested type keeps the top-level
+// message holding it), and every extension of a kept message. A file defining
+// a custom option a kept declaration sets is kept whole, with its imports, and
+// so is a file of a shared upstream module: neither is the library's own, and
+// the upstream ones keep the shape their distributions publish. No file
+// declares a service that is not selected.
 //
-// The narrowing is the library's, not one entry's: an aggregated library
+// Bindings are the library's, not one entry's: an aggregated library
 // generates every entry into one tree, so a file two entries carry must come
-// out the same for both. The kept declarations are computed across every
-// entry at once, and an entry naming no Services keeps its whole contract
-// (and is returned untouched). A library in which no entry names Services is
-// returned as is.
+// out the same for both. Each entry is therefore generated from the library's
+// narrowing — the closure of every entry's selection at once, where an entry
+// naming no Services keeps its whole contract — while its persisted contract
+// is its own closure. For a library of one entry the two are the same set.
+//
+// The entry's Endpoint keeps the producer's digest: it identifies the contract
+// the library was generated from, which a selection change does not move. A
+// library in which no entry names Services is returned as is.
 func narrowEntries(entries []ContractEntry) ([]ContractEntry, error) {
 	if !slices.ContainsFunc(entries, func(entry ContractEntry) bool { return selectsServices(&entry) }) {
 		return entries, nil
 	}
-	n := &narrowing{
-		files:      map[string]*descriptorpb.FileDescriptorProto{},
-		upstream:   map[string]bool{},
-		types:      map[string]declaration{},
-		services:   map[string]string{},
-		extensions: map[extensionKey]string{},
-		selected:   map[string]bool{},
-		kept:       map[string]*keptFile{},
-	}
+	library := newNarrowing()
 	sets := make([]*descriptorpb.FileDescriptorSet, len(entries))
 	for i := range entries {
 		if entries[i].Endpoint.Kind != composition.APIContractKindProtobuf {
@@ -61,7 +55,9 @@ func narrowEntries(entries []ContractEntry) ([]ContractEntry, error) {
 			return nil, fmt.Errorf("entry %s: cannot parse contract descriptor set: %w", entryLabel(&entries[i]), err)
 		}
 		sets[i] = set
-		n.index(set)
+		if err := library.index(set, entryLabel(&entries[i])); err != nil {
+			return nil, err
+		}
 	}
 
 	selections := make([][]composition.APIContractService, len(entries))
@@ -70,12 +66,7 @@ func narrowEntries(entries []ContractEntry) ([]ContractEntry, error) {
 			continue
 		}
 		if !selectsServices(&entries[i]) {
-			for _, file := range sets[i].GetFile() {
-				n.keepWhole(file.GetName())
-				for _, service := range file.GetService() {
-					n.selected[qualify(file.GetPackage(), service.GetName())] = true
-				}
-			}
+			library.selectWhole(sets[i])
 			continue
 		}
 		selected, err := selectedServices(&entries[i])
@@ -83,20 +74,10 @@ func narrowEntries(entries []ContractEntry) ([]ContractEntry, error) {
 			return nil, err
 		}
 		selections[i] = selected
-		for _, service := range selected {
-			n.selected[service.FullName] = true
-		}
+		library.selectServices(selected)
 	}
-	roots := make([]string, 0, len(n.selected))
-	for fullName := range n.selected {
-		roots = append(roots, fullName)
-	}
-	sort.Strings(roots)
-	for _, fullName := range roots {
-		n.keepService(fullName)
-	}
-	if n.err != nil {
-		return nil, fmt.Errorf("cannot narrow the contract to its selected services: %w", n.err)
+	if err := library.close(); err != nil {
+		return nil, err
 	}
 
 	narrowed := slices.Clone(entries)
@@ -105,13 +86,25 @@ func narrowEntries(entries []ContractEntry) ([]ContractEntry, error) {
 			continue
 		}
 		entry := &narrowed[i]
-		data, err := n.emit(sets[i])
+		own := newNarrowing()
+		if err := own.index(sets[i], entryLabel(entry)); err != nil {
+			return nil, err
+		}
+		own.selectServices(selections[i])
+		if err := own.close(); err != nil {
+			return nil, err
+		}
+		contract, err := own.emit(sets[i])
 		if err != nil {
 			return nil, fmt.Errorf("entry %s: %w", entryLabel(entry), err)
 		}
-		entry.ContractBytes = data
+		generated, err := library.emit(sets[i])
+		if err != nil {
+			return nil, fmt.Errorf("entry %s: %w", entryLabel(entry), err)
+		}
+		entry.ContractBytes = contract
+		entry.generateFrom = generated
 		entry.Endpoint.Services = selections[i]
-		entry.Endpoint.Digest = composition.APIContractDigest(data)
 		// The proto sources declare the whole contract; the narrowed
 		// descriptor set is what is generated from.
 		entry.ProtoSources = nil
@@ -166,22 +159,41 @@ func selectedServices(entry *ContractEntry) ([]composition.APIContractService, e
 	return selected, nil
 }
 
-// narrowing is the closure of what a library's selected services need, over
-// every file its entries' contracts carry (by name, first seen).
+// narrowing is the closure of what a set of selected services needs, over
+// every file the contracts it indexes carry.
 type narrowing struct {
-	files      map[string]*descriptorpb.FileDescriptorProto
-	upstream   map[string]bool
-	types      map[string]declaration // message or enum full name -> its top-level declaration
-	services   map[string]string      // service full name -> file
-	extensions map[extensionKey]string
-	selected   map[string]bool // service full names
-	kept       map[string]*keptFile
-	err        error
+	files        map[string]*descriptorpb.FileDescriptorProto
+	origin       map[string]string // file -> the entry it was first indexed from
+	upstream     map[string]bool
+	types        map[string]declaration // message or enum full name -> its top-level declaration
+	messages     map[string]*descriptorpb.DescriptorProto
+	services     map[string]string // service full name -> file
+	extensions   map[extensionKey]extensionDefinition
+	extensionsOf map[string][]extensionDeclaration // extendee full name -> its extensions
+	selected     map[string]bool                   // service full names
+	kept         map[string]*keptFile
+	err          error
+}
+
+func newNarrowing() *narrowing {
+	return &narrowing{
+		files:        map[string]*descriptorpb.FileDescriptorProto{},
+		origin:       map[string]string{},
+		upstream:     map[string]bool{},
+		types:        map[string]declaration{},
+		messages:     map[string]*descriptorpb.DescriptorProto{},
+		services:     map[string]string{},
+		extensions:   map[extensionKey]extensionDefinition{},
+		extensionsOf: map[string][]extensionDeclaration{},
+		selected:     map[string]bool{},
+		kept:         map[string]*keptFile{},
+	}
 }
 
 // declaration is a top-level message or enum of a file.
 type declaration struct {
 	file    string
+	name    string // its full name
 	message *descriptorpb.DescriptorProto
 	enum    *descriptorpb.EnumDescriptorProto
 }
@@ -191,13 +203,29 @@ type extensionKey struct {
 	number   int32
 }
 
+// extensionDefinition is where an extension is declared and, when its value
+// is a message, that message's full name.
+type extensionDefinition struct {
+	file        string
+	messageType string
+}
+
+// extensionDeclaration is one extension of a message: a file's top-level
+// extension, or one nested in a message (container), which keeps it.
+type extensionDeclaration struct {
+	file      string
+	field     *descriptorpb.FieldDescriptorProto
+	container *declaration
+}
+
 // keptFile is what a file keeps: everything when whole, otherwise the named
 // top-level declarations, and the imports they need.
 type keptFile struct {
-	whole    bool
-	messages map[string]bool
-	enums    map[string]bool
-	imports  map[string]bool
+	whole      bool
+	messages   map[string]bool
+	enums      map[string]bool
+	extensions map[string]bool
+	imports    map[string]bool
 }
 
 func qualify(pkg, name string) string {
@@ -213,45 +241,93 @@ func (n *narrowing) fail(format string, args ...any) {
 	}
 }
 
-func (n *narrowing) index(set *descriptorpb.FileDescriptorSet) {
+// index adds set's files. A file another entry already carries must be the
+// same file: one library generates one copy of it.
+func (n *narrowing) index(set *descriptorpb.FileDescriptorSet, entry string) error {
 	for _, file := range set.GetFile() {
 		name := file.GetName()
-		if _, seen := n.files[name]; seen {
+		if seen, ok := n.files[name]; ok {
+			if !googleproto.Equal(seen, file) {
+				return fmt.Errorf("entries %s and %s carry different versions of %s; one library generates one copy of a file", n.origin[name], entry, name)
+			}
 			continue
 		}
 		n.files[name] = file
+		n.origin[name] = entry
 		if _, upstream := matchUpstreamModule(file); upstream {
 			n.upstream[name] = true
 		}
 		pkg := file.GetPackage()
 		for _, message := range file.GetMessageType() {
-			n.indexMessage(qualify(pkg, message.GetName()), declaration{file: name, message: message}, message)
+			fullName := qualify(pkg, message.GetName())
+			n.indexMessage(fullName, declaration{file: name, name: fullName, message: message}, message)
 		}
 		for _, enum := range file.GetEnumType() {
-			n.types[qualify(pkg, enum.GetName())] = declaration{file: name, enum: enum}
+			fullName := qualify(pkg, enum.GetName())
+			n.types[fullName] = declaration{file: name, name: fullName, enum: enum}
 		}
 		for _, service := range file.GetService() {
 			n.services[qualify(pkg, service.GetName())] = name
 		}
-		n.indexExtensions(name, file.GetExtension())
+		n.indexExtensions(name, nil, file.GetExtension())
 	}
+	return nil
 }
 
 func (n *narrowing) indexMessage(fullName string, top declaration, message *descriptorpb.DescriptorProto) {
 	n.types[fullName] = top
+	n.messages[fullName] = message
 	for _, nested := range message.GetNestedType() {
 		n.indexMessage(fullName+"."+nested.GetName(), top, nested)
 	}
 	for _, enum := range message.GetEnumType() {
 		n.types[fullName+"."+enum.GetName()] = top
 	}
-	n.indexExtensions(top.file, message.GetExtension())
+	n.indexExtensions(top.file, &top, message.GetExtension())
 }
 
-func (n *narrowing) indexExtensions(file string, extensions []*descriptorpb.FieldDescriptorProto) {
+func (n *narrowing) indexExtensions(file string, container *declaration, extensions []*descriptorpb.FieldDescriptorProto) {
 	for _, extension := range extensions {
-		n.extensions[extensionKey{strings.TrimPrefix(extension.GetExtendee(), "."), extension.GetNumber()}] = file
+		extendee := strings.TrimPrefix(extension.GetExtendee(), ".")
+		definition := extensionDefinition{file: file}
+		if extension.GetType() == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
+			definition.messageType = strings.TrimPrefix(extension.GetTypeName(), ".")
+		}
+		n.extensions[extensionKey{extendee, extension.GetNumber()}] = definition
+		n.extensionsOf[extendee] = append(n.extensionsOf[extendee], extensionDeclaration{file: file, field: extension, container: container})
 	}
+}
+
+// selectWhole keeps every file of set whole, with every service it declares.
+func (n *narrowing) selectWhole(set *descriptorpb.FileDescriptorSet) {
+	for _, file := range set.GetFile() {
+		n.keepWhole(file.GetName())
+		for _, service := range file.GetService() {
+			n.selected[qualify(file.GetPackage(), service.GetName())] = true
+		}
+	}
+}
+
+func (n *narrowing) selectServices(services []composition.APIContractService) {
+	for _, service := range services {
+		n.selected[service.FullName] = true
+	}
+}
+
+// close keeps what every selected service needs.
+func (n *narrowing) close() error {
+	roots := make([]string, 0, len(n.selected))
+	for fullName := range n.selected {
+		roots = append(roots, fullName)
+	}
+	sort.Strings(roots)
+	for _, fullName := range roots {
+		n.keepService(fullName)
+	}
+	if n.err != nil {
+		return fmt.Errorf("cannot narrow the contract to its selected services: %w", n.err)
+	}
+	return nil
 }
 
 // file is name's kept state, created (and its file options visited) the first
@@ -260,7 +336,7 @@ func (n *narrowing) file(name string) *keptFile {
 	if kept, ok := n.kept[name]; ok {
 		return kept
 	}
-	kept := &keptFile{messages: map[string]bool{}, enums: map[string]bool{}, imports: map[string]bool{}}
+	kept := &keptFile{messages: map[string]bool{}, enums: map[string]bool{}, extensions: map[string]bool{}, imports: map[string]bool{}}
 	n.kept[name] = kept
 	if file := n.files[name]; file != nil {
 		n.visitOptions(name, file.GetOptions())
@@ -276,8 +352,15 @@ func (n *narrowing) keepWhole(name string) {
 		return
 	}
 	kept.whole = true
-	for _, dependency := range n.files[name].GetDependency() {
+	file := n.files[name]
+	for _, dependency := range file.GetDependency() {
 		n.keepWhole(dependency)
+	}
+	if n.upstream[name] {
+		return
+	}
+	for _, message := range file.GetMessageType() {
+		n.followExtensions(qualify(file.GetPackage(), message.GetName()), message)
 	}
 }
 
@@ -312,6 +395,10 @@ func (n *narrowing) useType(from, typeName string) {
 		return
 	}
 	n.require(from, decl.file)
+	n.keep(decl)
+}
+
+func (n *narrowing) keep(decl declaration) {
 	kept := n.file(decl.file)
 	switch {
 	case kept.whole:
@@ -320,9 +407,31 @@ func (n *narrowing) useType(from, typeName string) {
 	case decl.message != nil && !kept.messages[decl.message.GetName()]:
 		kept.messages[decl.message.GetName()] = true
 		n.visitMessage(decl.file, decl.message)
+		n.followExtensions(decl.name, decl.message)
 	case decl.enum != nil && !kept.enums[decl.enum.GetName()]:
 		kept.enums[decl.enum.GetName()] = true
 		n.visitEnum(decl.file, decl.enum)
+	}
+}
+
+// followExtensions keeps every extension of a kept message (and of the types
+// nested in it), wherever it is declared: the message's readers rely on them.
+func (n *narrowing) followExtensions(fullName string, message *descriptorpb.DescriptorProto) {
+	for _, extension := range n.extensionsOf[fullName] {
+		if extension.container != nil {
+			n.keep(*extension.container)
+			continue
+		}
+		kept := n.file(extension.file)
+		if kept.whole || kept.extensions[extension.field.GetName()] {
+			continue
+		}
+		kept.extensions[extension.field.GetName()] = true
+		n.visitField(extension.file, extension.field)
+		n.useType(extension.file, extension.field.GetExtendee())
+	}
+	for _, nested := range message.GetNestedType() {
+		n.followExtensions(fullName+"."+nested.GetName(), nested)
 	}
 }
 
@@ -334,6 +443,9 @@ func (n *narrowing) visitMessage(file string, message *descriptorpb.DescriptorPr
 	for _, extension := range message.GetExtension() {
 		n.visitField(file, extension)
 		n.useType(file, extension.GetExtendee())
+	}
+	for _, extensionRange := range message.GetExtensionRange() {
+		n.visitOptions(file, extensionRange.GetOptions())
 	}
 	for _, oneof := range message.GetOneofDecl() {
 		n.visitOptions(file, oneof.GetOptions())
@@ -361,40 +473,90 @@ func (n *narrowing) visitEnum(file string, enum *descriptorpb.EnumDescriptorProt
 }
 
 // visitOptions keeps, whole, every file defining a custom option set in
-// options: a field the options message does not declare is an extension.
+// options, however deep in a message-valued option it is set.
 func (n *narrowing) visitOptions(from string, options googleproto.Message) {
 	if options == nil || !options.ProtoReflect().IsValid() {
 		return
 	}
-	descriptor := options.ProtoReflect().Descriptor()
+	name := string(options.ProtoReflect().Descriptor().FullName())
 	data, err := googleproto.MarshalOptions{Deterministic: true}.Marshal(options)
 	if err != nil {
-		n.fail("%s: cannot read %s: %w", from, descriptor.FullName(), err)
+		n.fail("%s: cannot read %s: %w", from, name, err)
 		return
 	}
+	n.visitValue(from, name, data)
+}
+
+// visitValue walks the encoded value of message: a field the message does not
+// declare is an extension, whose defining file is kept whole, and a
+// message-valued field (declared or extension) is walked in turn.
+func (n *narrowing) visitValue(from, message string, data []byte) {
 	for len(data) > 0 {
 		number, kind, length := protowire.ConsumeTag(data)
 		if length < 0 {
-			n.fail("%s: malformed %s", from, descriptor.FullName())
+			n.fail("%s: malformed %s", from, message)
 			return
 		}
 		data = data[length:]
 		if length = protowire.ConsumeFieldValue(number, kind, data); length < 0 {
-			n.fail("%s: malformed %s", from, descriptor.FullName())
+			n.fail("%s: malformed %s", from, message)
 			return
 		}
+		value := data[:length]
 		data = data[length:]
-		if descriptor.Fields().ByNumber(number) != nil {
+		declared, messageType, known := n.fieldOf(message, number)
+		if !known {
+			n.fail("%s sets an option of type %s, which neither the contract nor the protobuf runtime describes", from, message)
+			return
+		}
+		if !declared {
+			definition, ok := n.extensions[extensionKey{message, int32(number)}]
+			if !ok {
+				n.fail("%s sets option %d of %s, which no file of the contract defines", from, number, message)
+				continue
+			}
+			n.require(from, definition.file)
+			n.keepWhole(definition.file)
+			messageType = definition.messageType
+		}
+		if messageType == "" || kind != protowire.BytesType {
 			continue
 		}
-		defining, ok := n.extensions[extensionKey{string(descriptor.FullName()), int32(number)}]
-		if !ok {
-			n.fail("%s sets option %d of %s, which no file of the contract defines", from, number, descriptor.FullName())
-			continue
+		if inner, length := protowire.ConsumeBytes(value); length >= 0 {
+			n.visitValue(from, messageType, inner)
 		}
-		n.require(from, defining)
-		n.keepWhole(defining)
 	}
+}
+
+// fieldOf is whether message declares field number and, when it is
+// message-valued, its message type; known is false when neither the contract
+// nor the protobuf runtime describes message.
+func (n *narrowing) fieldOf(message string, number protowire.Number) (declared bool, messageType string, known bool) {
+	if descriptor, ok := n.messages[message]; ok {
+		for _, field := range descriptor.GetField() {
+			if field.GetNumber() != int32(number) {
+				continue
+			}
+			if field.GetType() == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
+				messageType = strings.TrimPrefix(field.GetTypeName(), ".")
+			}
+			return true, messageType, true
+		}
+		return false, "", true
+	}
+	found, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(message))
+	descriptor, ok := found.(protoreflect.MessageDescriptor)
+	if err != nil || !ok {
+		return false, "", false
+	}
+	field := descriptor.Fields().ByNumber(number)
+	if field == nil {
+		return false, "", true
+	}
+	if field.Message() != nil {
+		messageType = string(field.Message().FullName())
+	}
+	return true, messageType, true
 }
 
 // require records that from needs target: the import of from that reaches it,
@@ -470,7 +632,9 @@ func (n *narrowing) narrowFile(file *descriptorpb.FileDescriptorProto, kept *kep
 	services := keptIndexes(len(file.GetService()), func(i int) bool {
 		return n.selected[qualify(file.GetPackage(), file.GetService()[i].GetName())]
 	})
-	extensions := keptIndexes(len(file.GetExtension()), func(int) bool { return kept.whole })
+	extensions := keptIndexes(len(file.GetExtension()), func(i int) bool {
+		return kept.whole || kept.extensions[file.GetExtension()[i].GetName()]
+	})
 	dependencies := keptIndexes(len(file.GetDependency()), func(i int) bool {
 		return kept.whole || kept.imports[file.GetDependency()[i]]
 	})

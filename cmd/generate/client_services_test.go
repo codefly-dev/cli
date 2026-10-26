@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/core/composition"
+	"github.com/codefly-dev/core/languages"
 	"github.com/codefly-dev/core/resources"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -138,7 +140,8 @@ func qualifyWorkspace(t *testing.T) {
 // TestGenerateClientServicesNarrowsTheWholeLibrary: a library generated for
 // one service of a contract carries that service alone (#1173). Its persisted
 // descriptor set declares that service and the declarations it reaches, its
-// catalog and manifest list only it, and no language's bindings or facade
+// catalog and manifest list only it (the manifest at the producer's digest,
+// which identifies the source), and no language's bindings or facade
 // mention the other service or what only the other service needs — and each
 // still builds.
 func TestGenerateClientServicesNarrowsTheWholeLibrary(t *testing.T) {
@@ -217,8 +220,12 @@ func TestGenerateClientServicesNarrowsTheWholeLibrary(t *testing.T) {
 	if err := yaml.Unmarshal(manifestData, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if source := manifest.Sources[0]; !slices.Equal(source.Services, []string{"WantedService"}) || source.ContractDigest != endpoint.Digest {
-		t.Errorf("manifest source = %+v, want services [WantedService] at the persisted contract's digest %s", source, endpoint.Digest)
+	producer, err := composition.LoadAPIContractCatalog(filepath.Dir(filepath.Dir(contractsDir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source := manifest.Sources[0]; !slices.Equal(source.Services, []string{"WantedService"}) || source.ContractDigest != producer.Endpoints[0].Digest {
+		t.Errorf("manifest source = %+v, want services [WantedService] at the producer's digest %s", source, producer.Endpoints[0].Digest)
 	}
 
 	for _, lang := range []string{"go", "typescript", "python"} {
@@ -275,4 +282,91 @@ func assertTreeLacks(t *testing.T, root string, words ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestGenerateClientServicesSelectionChangesRegenerateWithoutForce: what a
+// library records as its source is the producer's contract, so editing an
+// entry's services and adding an entry regenerate in place without --force
+// (sync solution-sdk does both on every api.consumes edit). Each entry's
+// persisted contract declares its own selection alone, both record the
+// producer digest `publish clients` records, and regenerating is stable.
+// Python, because one Go package cannot hold two facades of different names.
+func TestGenerateClientServicesSelectionChangesRegenerateWithoutForce(t *testing.T) {
+	requireQualify(t)
+	contractsDir := writeTwoServicesContractsFixture(t)
+	catalog, err := composition.LoadAPIContractCatalog(filepath.Dir(filepath.Dir(contractsDir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer := catalog.Endpoints[0]
+	contract, err := generators.ReadCatalogContractBytes(filepath.Dir(filepath.Dir(contractsDir)), &producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := func(endpoint, as string, services ...string) generators.ContractEntry {
+		e := producer
+		e.Endpoint = endpoint
+		return generators.ContractEntry{
+			Endpoint: e, ContractBytes: contract, PackageID: catalog.Package, PackageVersion: catalog.Version,
+			ModuleName: "acme", FacadeModuleDefault: generators.DefaultFacadeModuleName(&e), Services: services, As: as,
+		}
+	}
+	output := filepath.Join(t.TempDir(), "lib")
+	generate := func(entries ...generators.ContractEntry) {
+		t.Helper()
+		if err := generators.GenerateClientLibrary(context.Background(), &generators.ClientLibraryRequest{
+			Name: "acme-sdk", Output: output, Languages: []languages.Language{languages.PYTHON}, Entries: entries,
+		}); err != nil {
+			t.Fatalf("regenerate without --force: %v", err)
+		}
+	}
+
+	generate(entry("connect", "", "WantedService"))
+	generate(entry("connect", "", "WantedService", "OtherService"))
+	both := []generators.ContractEntry{entry("connect", "", "WantedService"), entry("connect-other", "other", "OtherService")}
+	generate(both...)
+	first := hashTree(t, output)
+	generate(both...)
+	if again := hashTree(t, output); again != first {
+		t.Fatalf("regenerating the aggregated library drifted: %s != %s", again, first)
+	}
+
+	for dir, want := range map[string]string{"acme-api-connect": "acme.v1.WantedService", "acme-api-connect-other": "acme.v1.OtherService"} {
+		data, err := os.ReadFile(filepath.Join(output, "contract", dir, "contract.binpb"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var set descriptorpb.FileDescriptorSet
+		if err := googleproto.Unmarshal(data, &set); err != nil {
+			t.Fatal(err)
+		}
+		var services []string
+		for _, file := range set.GetFile() {
+			for _, service := range file.GetService() {
+				services = append(services, file.GetPackage()+"."+service.GetName())
+			}
+		}
+		if !slices.Equal(services, []string{want}) {
+			t.Errorf("%s persists services %v, want only %s", dir, services, want)
+		}
+	}
+	var manifest struct {
+		Sources []struct {
+			ContractDigest string `yaml:"contract-digest"`
+		} `yaml:"sources"`
+	}
+	manifestData, err := os.ReadFile(filepath.Join(output, resources.LibraryConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range manifest.Sources {
+		if source.ContractDigest != producer.Digest {
+			t.Errorf("manifest records contract-digest %s, want the producer's %s", source.ContractDigest, producer.Digest)
+		}
+	}
+	assertPythonImports(t, filepath.Join(output, "python"), "acme_sdk.acme")
+	assertPythonImports(t, filepath.Join(output, "python"), "acme_sdk.other")
 }

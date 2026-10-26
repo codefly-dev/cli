@@ -62,6 +62,12 @@ type ContractEntry struct {
 	// As overrides this entry's facade entry-point name (default:
 	// FacadeModuleDefault, else defaultFacadeModule).
 	As string
+
+	// generateFrom, when set, is the descriptor set this entry's bindings are
+	// generated from instead of ContractBytes: the library's narrowing, which
+	// in an aggregated library also holds what its other entries need from a
+	// file they share (see narrowEntries).
+	generateFrom []byte
 }
 
 // ClientLibraryRequest is one library-generation run: N contract entries
@@ -386,8 +392,12 @@ func (s *stagedLanguage) apply(goModule, npmPackage, pyPackage string) (generate
 // stageProtobufEntry generates one contract entry into a scratch directory of
 // its own, which the caller owns once this returns without error.
 func stageProtobufEntry(ctx context.Context, lang languages.Language, entry *ContractEntry, facade bool) (_ stagedEntry, err error) {
+	contract := entry.ContractBytes
+	if entry.generateFrom != nil {
+		contract = entry.generateFrom
+	}
 	var set descriptorpb.FileDescriptorSet
-	if err = googleproto.Unmarshal(entry.ContractBytes, &set); err != nil {
+	if err = googleproto.Unmarshal(contract, &set); err != nil {
 		return stagedEntry{}, fmt.Errorf("cannot parse contract descriptor set: %w", err)
 	}
 	raw, err := os.MkdirTemp("", "codefly-client-raw")
@@ -840,8 +850,11 @@ func writeOneContractDir(ctx context.Context, contractDir string, entry *Contrac
 		return err
 	}
 
+	// The catalog describes the contract persisted beside it, which --services
+	// narrows; the manifest's contract-digest stays the producer's.
 	catalogEntry := entry.Endpoint
 	catalogEntry.Path = filename
+	catalogEntry.Digest = composition.APIContractDigest(entry.ContractBytes)
 	packageID := entry.PackageID
 	if packageID == "" {
 		packageID = localPackageID

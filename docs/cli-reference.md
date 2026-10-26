@@ -4932,6 +4932,7 @@ Flags:
 ```
       --apply-dependencies   add missing service-dependencies entries for every bound consume entry
       --check                do not write; exit 1 if the library or service-dependencies are out of date
+      --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
 ```
 

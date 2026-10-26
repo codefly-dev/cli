@@ -267,8 +267,11 @@ func TestNarrowEntriesKeepsOnlyTheSelectedServiceAndWhatItNeeds(t *testing.T) {
 	if len(entry.Endpoint.Services) != 1 || entry.Endpoint.Services[0].FullName != "acme.v1.Wanted" {
 		t.Errorf("catalog services = %+v, want only acme.v1.Wanted", entry.Endpoint.Services)
 	}
-	if entry.Endpoint.Digest != composition.APIContractDigest(entry.ContractBytes) {
-		t.Error("the catalog digest is not the narrowed contract's")
+	if entry.Endpoint.Digest != composition.APIContractDigest(contract) {
+		t.Error("the entry no longer records the producer's contract digest")
+	}
+	if !bytes.Equal(entry.generateFrom, entry.ContractBytes) {
+		t.Error("a library of one entry is not generated from the contract it persists")
 	}
 	if entry.ProtoSources != nil {
 		t.Error("a narrowed entry still generates from the whole contract's sources")
@@ -319,22 +322,159 @@ func TestNarrowEntriesLeavesALibrarySelectingNothingAsIs(t *testing.T) {
 }
 
 // Entries of one library are generated into one tree, so a file two entries
-// carry comes out the same for both, holding what either needs.
+// carry is generated the same for both, holding what either needs; each
+// entry's persisted contract still declares its own selection alone, and
+// records the producer's digest, which neither selection moves.
 func TestNarrowEntriesNarrowsAnAggregatedLibraryAsOne(t *testing.T) {
 	contract := narrowFixture(t)
 	narrowed, err := narrowEntries([]ContractEntry{narrowEntry(contract, "Wanted"), narrowEntry(contract, "Other")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wanted, other := parseNarrowed(t, narrowed[0].ContractBytes), parseNarrowed(t, narrowed[1].ContractBytes)
+	wanted, other := parseNarrowed(t, narrowed[0].generateFrom), parseNarrowed(t, narrowed[1].generateFrom)
 	if !googleproto.Equal(wanted["acme/v1/common.proto"], other["acme/v1/common.proto"]) {
-		t.Fatal("the shared file differs between the two entries")
+		t.Fatal("the shared file is generated differently for the two entries")
 	}
 	messages, _, services := declared(wanted["acme/v1/common.proto"])
 	if !slices.Equal(messages, []string{"Unused", "Shared", "Leaf", "Holder"}) || len(services) != 0 {
 		t.Fatalf("common.proto = %v %v, want what Wanted and Other need and no service", messages, services)
 	}
-	if narrowed[0].Endpoint.Services[0].Name != "Wanted" || narrowed[1].Endpoint.Services[0].Name != "Other" {
-		t.Fatal("each entry's catalog lists its own selection")
+
+	alone, err := narrowEntries([]ContractEntry{narrowEntry(contract, "Wanted")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"Wanted", "Other"} {
+		entry := narrowed[i]
+		var services []string
+		for _, file := range parseNarrowed(t, entry.ContractBytes) {
+			_, _, s := declared(file)
+			services = append(services, s...)
+		}
+		if !slices.Equal(services, []string{want}) || entry.Endpoint.Services[0].Name != want {
+			t.Errorf("entry %d persists services %v with catalog %v, want only %s", i, services, entry.Endpoint.Services, want)
+		}
+		if entry.Endpoint.Digest != composition.APIContractDigest(contract) {
+			t.Errorf("entry %d does not record the producer's digest", i)
+		}
+	}
+	if !bytes.Equal(narrowed[0].ContractBytes, alone[0].ContractBytes) {
+		t.Error("adding an entry changed another entry's persisted contract")
+	}
+}
+
+func TestNarrowEntriesRefusesTwoVersionsOfOneFile(t *testing.T) {
+	contract := narrowFixture(t)
+	var set descriptorpb.FileDescriptorSet
+	if err := googleproto.Unmarshal(contract, &set); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range set.GetFile() {
+		if file.GetName() == "acme/v1/common.proto" {
+			leaf := file.GetMessageType()[2]
+			leaf.Field = append(leaf.Field, messageField("extra", 9, ".acme.v1.Shared"))
+		}
+	}
+	changed, err := googleproto.Marshal(&set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := narrowEntry(changed, "Other")
+	other.Endpoint.Endpoint = "connect-other"
+	_, err = narrowEntries([]ContractEntry{narrowEntry(contract, "Wanted"), other})
+	if err == nil || !strings.Contains(err.Error(), "acme/v1/common.proto") || !strings.Contains(err.Error(), "acme/api/connect-other") {
+		t.Fatalf("err = %v, want a refusal naming the file and both entries", err)
+	}
+}
+
+func proto2File(name string, deps []string, messages ...*descriptorpb.DescriptorProto) *descriptorpb.FileDescriptorProto {
+	file := protoFile(name, deps, messages, nil)
+	file.Syntax = googleproto.String("proto2")
+	return file
+}
+
+func stringExtension(name string, number int32, extendee string) *descriptorpb.FieldDescriptorProto {
+	return &descriptorpb.FieldDescriptorProto{
+		Name:     googleproto.String(name),
+		Number:   googleproto.Int32(number),
+		Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+		Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+		Extendee: googleproto.String(extendee),
+	}
+}
+
+func extensionRange(start, end int32) *descriptorpb.DescriptorProto_ExtensionRange {
+	return &descriptorpb.DescriptorProto_ExtensionRange{Start: googleproto.Int32(start), End: googleproto.Int32(end)}
+}
+
+// TestNarrowEntriesFollowsExtensionsAndNestedOptions covers what a proto2
+// contract adds: an option set on an extension range, an extension of a kept
+// message declared in another file, and an extension set inside a
+// message-valued option. Each defining file is kept; a declaration of those
+// files nothing reaches is not.
+func TestNarrowEntriesFollowsExtensionsAndNestedOptions(t *testing.T) {
+	rangeOption := proto2File("acme/v1/rangeopt.proto", []string{"google/protobuf/descriptor.proto"})
+	rangeOption.Extension = []*descriptorpb.FieldDescriptorProto{stringExtension("range_note", 50002, ".google.protobuf.ExtensionRangeOptions")}
+
+	carrier := message("P2", messageField("self", 1, ".acme.v1.P2"))
+	carrier.Field[0].Label = descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	carrier.ExtensionRange = []*descriptorpb.DescriptorProto_ExtensionRange{extensionRange(100, 201)}
+	carrier.ExtensionRange[0].Options = &descriptorpb.ExtensionRangeOptions{}
+	carrier.ExtensionRange[0].Options.ProtoReflect().SetUnknown(protowire.AppendString(protowire.AppendTag(nil, 50002, protowire.BytesType), "note"))
+	p2 := proto2File("acme/v1/p2.proto", []string{"acme/v1/rangeopt.proto"}, carrier)
+
+	more := messageField("more", 100, ".acme.v1.Extra")
+	more.Extendee = googleproto.String(".acme.v1.P2")
+	extending := proto2File("acme/v1/ext.proto", []string{"acme/v1/p2.proto"}, message("Extra"), message("Unrelated"))
+	extending.Extension = []*descriptorpb.FieldDescriptorProto{more}
+
+	rule := message("Rule")
+	rule.Field = []*descriptorpb.FieldDescriptorProto{stringExtension("name", 1, "")}
+	rule.Field[0].Extendee = nil
+	rule.ExtensionRange = []*descriptorpb.DescriptorProto_ExtensionRange{extensionRange(10, 21)}
+	ruleOption := messageField("rule", 50003, ".acme.v1.Rule")
+	ruleOption.Extendee = googleproto.String(".google.protobuf.MethodOptions")
+	optionMessage := proto2File("acme/v1/optmsg.proto", []string{"google/protobuf/descriptor.proto"}, rule)
+	optionMessage.Extension = []*descriptorpb.FieldDescriptorProto{ruleOption}
+	ruleExtension := proto2File("acme/v1/ruleext.proto", []string{"acme/v1/optmsg.proto"})
+	ruleExtension.Extension = []*descriptorpb.FieldDescriptorProto{stringExtension("tag", 10, ".acme.v1.Rule")}
+
+	value := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), "n")
+	value = protowire.AppendString(protowire.AppendTag(value, 10, protowire.BytesType), "t")
+	do := method("Do", ".acme.v1.Req", ".acme.v1.Req")
+	do.Options = &descriptorpb.MethodOptions{}
+	do.Options.ProtoReflect().SetUnknown(protowire.AppendBytes(protowire.AppendTag(nil, 50003, protowire.BytesType), value))
+	service := proto2File("acme/v1/svc.proto", []string{"acme/v1/p2.proto", "acme/v1/optmsg.proto", "acme/v1/ruleext.proto"}, message("Req", messageField("p", 1, ".acme.v1.P2")))
+	service.Service = []*descriptorpb.ServiceDescriptorProto{{Name: googleproto.String("S"), Method: []*descriptorpb.MethodDescriptorProto{do}}}
+
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		protodesc.ToFileDescriptorProto(descriptorpb.File_google_protobuf_descriptor_proto),
+		rangeOption, p2, extending, optionMessage, ruleExtension, service,
+	}}
+	if _, err := protodesc.NewFiles(set); err != nil {
+		t.Fatalf("fixture does not resolve: %v", err)
+	}
+	contract, err := googleproto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowed, err := narrowEntries([]ContractEntry{narrowEntry(contract, "S")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := parseNarrowed(t, narrowed[0].ContractBytes)
+	want := []string{"acme/v1/ext.proto", "acme/v1/optmsg.proto", "acme/v1/p2.proto", "acme/v1/rangeopt.proto", "acme/v1/ruleext.proto", "acme/v1/svc.proto", "google/protobuf/descriptor.proto"}
+	if got := keys(files); !slices.Equal(got, want) {
+		t.Fatalf("files = %v, want %v", got, want)
+	}
+	if got := files["acme/v1/p2.proto"].GetDependency(); !slices.Equal(got, []string{"acme/v1/rangeopt.proto"}) {
+		t.Errorf("p2.proto imports %v, want the file defining its extension-range option", got)
+	}
+	if got := files["acme/v1/svc.proto"].GetDependency(); !slices.Contains(got, "acme/v1/ruleext.proto") {
+		t.Errorf("svc.proto imports %v, want the file defining the extension set inside its rule option", got)
+	}
+	ext := files["acme/v1/ext.proto"]
+	if messages, _, _ := declared(ext); !slices.Equal(messages, []string{"Extra"}) || len(ext.GetExtension()) != 1 {
+		t.Errorf("ext.proto keeps %v and %d extensions, want Extra and the extension of P2", messages, len(ext.GetExtension()))
 	}
 }
