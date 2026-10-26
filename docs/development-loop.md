@@ -35,7 +35,7 @@ edit ──▶ codefly run service          local, no image build       seconds
 verdict before doing any expensive work and refuse with `codefly doctor
 workspace`'s diagnostics, so a missing configuration fails in seconds instead of
 after the images are built. Every flag of every verb is in
-[commands.md](commands.md) and [cli-reference.md](cli-reference.md).
+[commands.md](commands.md) and [cli-reference.md](generated/cli-reference.md).
 
 ---
 

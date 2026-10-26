@@ -13,10 +13,10 @@ import (
 	"github.com/spf13/pflag"
 )
 
-var updateReference = flag.Bool("update-reference", false, "rewrite docs/cli-reference.md from the command tree")
+var updateReference = flag.Bool("update-reference", false, "rewrite docs/generated/cli-reference.md from the command tree")
 
 // referencePath is the generated reference every non-hidden command appears in.
-const referencePath = "../docs/cli-reference.md"
+const referencePath = "../docs/generated/cli-reference.md"
 
 // TestCLIReferenceIsCurrent is the completeness guard for the command
 // documentation. docs/commands.md is narrative — it explains the chains a verb
@@ -36,7 +36,14 @@ const referencePath = "../docs/cli-reference.md"
 func TestCLIReferenceIsCurrent(t *testing.T) {
 	generated := renderCLIReference(RootCmd)
 	if *updateReference {
+		if err := os.MkdirAll(filepath.Dir(referencePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Clean(referencePath), []byte(generated), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Retire the old generated location only after its replacement is written.
+		if err := os.Remove("../docs/cli-reference.md"); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 		t.Log("rewrote " + referencePath)
@@ -82,7 +89,7 @@ func renderCLIReference(root *cobra.Command) string {
 	out.WriteString("Generated from the command tree by\n")
 	out.WriteString("`go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`. Do not edit by hand:\n")
 	out.WriteString("a command's text lives on the command, so `--help` and this page always agree.\n\n")
-	out.WriteString("This page is the complete list. [commands.md](commands.md) is the narrative guide —\n")
+	out.WriteString("This page is the complete list. [commands.md](../commands.md) is the narrative guide —\n")
 	out.WriteString("what a verb is for, and the chains it takes part in.\n")
 	renderCommand(&out, root, "")
 	return out.String()

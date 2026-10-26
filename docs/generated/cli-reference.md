@@ -4,7 +4,7 @@ Generated from the command tree by
 `go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`. Do not edit by hand:
 a command's text lives on the command, so `--help` and this page always agree.
 
-This page is the complete list. [commands.md](commands.md) is the narrative guide —
+This page is the complete list. [commands.md](../commands.md) is the narrative guide —
 what a verb is for, and the chains it takes part in.
 
 ## `codefly`

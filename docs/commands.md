@@ -4,7 +4,7 @@ Codefly formalizes development operations as typed gRPC APIs. The CLI is the use
 
 This page is the narrative guide: what a verb is for, and the chains it takes
 part in. For the complete list of every command and flag, see
-[cli-reference.md](cli-reference.md), which is generated from the command tree —
+[cli-reference.md](generated/cli-reference.md), which is generated from the command tree —
 a command cannot exist without appearing there, and its text is the same one
 `--help` prints.
 
