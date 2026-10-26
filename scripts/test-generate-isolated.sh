@@ -3,6 +3,14 @@
 # own process: Cobra flags and other package globals survive between tests.
 set -euo pipefail
 
+shard=${1:-0}
+shards=${2:-1}
+if [[ ! "$shard" =~ ^[0-9]+$ || ! "$shards" =~ ^[1-9][0-9]*$ ]] || (( shard >= shards )); then
+  echo "expected a zero-based shard index smaller than the positive shard count" >&2
+  exit 1
+fi
+index=0
+selected=0
 root=$(pwd)
 evidence="${root}/generate-evidence"
 mkdir -p "$evidence"
@@ -20,6 +28,12 @@ for package in cmd/generate cmd/publish cmd/sync pkg/generators; do
   "$binary" -test.list '^Test' > "$work/tests"
   grep '^Test' "$work/tests" > "$work/selected"
   while IFS= read -r test; do
+    slot=$((index % shards))
+    index=$((index + 1))
+    if (( slot != shard )); then
+      continue
+    fi
+    selected=$((selected + 1))
     echo "::group::$package/$test"
     started=$SECONDS
     status=passed
@@ -35,4 +49,9 @@ for package in cmd/generate cmd/publish cmd/sync pkg/generators; do
     echo '::endgroup::'
   done < "$work/selected"
 done
+if (( selected == 0 )); then
+  echo "shard $shard/$shards selected no tests" >&2
+  exit 1
+fi
+echo "shard $shard/$shards ran $selected of $index discovered tests"
 exit "$failed"

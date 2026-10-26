@@ -33,7 +33,13 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Round-robin over discovered tests. Separate runners also isolate the
+        # Docker daemon; each runner pulls the published image only once.
+        shard: [0, 1, 2]
     env:
       GOWORK: 'off'
       GOFLAGS: -mod=mod
@@ -74,7 +80,7 @@ jobs:
           "$RUNNER_TEMP/generate-bin/buf" --version
           echo "$RUNNER_TEMP/generate-bin" >> "$GITHUB_PATH"
       - name: Run tagged and qualification tests in isolated processes
-        run: ./scripts/test-generate-isolated.sh
+        run: ./scripts/test-generate-isolated.sh "${{ matrix.shard }}" "${{ strategy.job-total }}"
       - name: Verify conformance receipts
         if: always()
         run: ./scripts/verify-conformance-receipts.sh
@@ -82,7 +88,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: docker-generate-evidence
+          name: docker-generate-evidence-${{ matrix.shard }}
           path: |
             generate-evidence/
             conformance-receipts/

@@ -88,8 +88,9 @@ Keep the required rows and receipt verifier enabled; absence is still a failure.
 The Docker generate job runs `cmd/generate`, `cmd/publish`, `cmd/sync` and
 `pkg/generators` with `-tags proto_companion_required` and
 `CODEFLY_GENERATE_QUALIFY=1`. It pulls the published proto image resolved by
-Core once, and extracts that image's `buf` for the SDK fixture. Each package
-is compiled once; every discovered top-level test runs in a fresh process
+Core once per runner, and extracts that image's `buf` for the SDK fixture. Each package
+is compiled once per shard; three runners split the discovered tests
+round-robin, and every top-level test runs in a fresh process
 with its own Codefly home, so package globals cannot leak between tests.
 The job retains per-test output, timings and required conformance receipts.
 Changes to generation, publishing, SDK sync, companions, dependencies, or

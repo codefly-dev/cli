@@ -971,8 +971,10 @@ func assertPythonImports(t *testing.T, pythonDir, dottedModule string) {
 		t.Fatalf("CompanionImage: %v", err)
 	}
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"-v", pythonDir+":/out", "-w", "/out", image.FullName(),
-		"/venv/bin/python", "-c", "import "+dottedModule)
+		// This is a read-only probe. Root-owned __pycache__ directories on a
+		// writable bind mount prevent the Linux runner from cleaning t.TempDir.
+		"-v", pythonDir+":/out:ro", "-w", "/out", image.FullName(),
+		"/venv/bin/python", "-B", "-c", "import "+dottedModule)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("import %s failed: %v\n%s", dottedModule, err, out)
 	}
