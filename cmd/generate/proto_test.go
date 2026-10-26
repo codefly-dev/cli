@@ -44,7 +44,10 @@ func TestProtoGenerationArgsPreserveBufInputSelection(t *testing.T) {
 		{"v2 default", "version: v2\n", nil, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml"}},
 		{"empty inputs", "version: v2\ninputs: []\n", nil, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml"}},
 		{"declared selection", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n  - directory: ../other\n", nil, []string{"generate", "--template", "/staging/template.yaml"}},
-		{"caller override", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n", []string{"chosen.proto"}, []string{"generate", "--template", "/staging/template.yaml", "--path", "/workspace/proto/chosen.proto"}},
+		{"caller override", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n", []string{"chosen.proto"}, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml", "--path", "/workspace/proto/chosen.proto"}},
+		// buf applies --path to every input: a second input that does not hold
+		// the caller's file would target nothing and fail the run.
+		{"caller selection over two inputs", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n  - directory: ../deps\n", []string{"api.proto"}, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml", "--path", "/workspace/proto/api.proto"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			protoPaths = tc.paths
