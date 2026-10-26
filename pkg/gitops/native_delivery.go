@@ -24,16 +24,18 @@ import (
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/workloadidentity"
+	"google.golang.org/grpc/codes"
 )
 
 // Native delivery: a laptop run delivers to the host what a cell's delivery
-// Job delivers — the same module manifest, signed with the developer key,
-// POSTed to the same route with a delivery credential the run issues — so the
-// host's registry, mint and installation run their one code path. What
-// differs is where the manifest's facts come from: its workloads are the
-// identity services admitted to this run (or its started services when no
-// explicit declaration is supplied), each with the account a cell would give
-// it. Endpoints carry allocated addresses only for the ready subset.
+// delivers — the same module manifest, signed with the developer key, carried
+// with a delivery credential the run issues through the codefly.dev/composition
+// interface the host declares, or, for a host that declares none, POSTed to the
+// legacy HTTP delivery route — so the host's registry, mint and installation
+// run their one code path. What differs is where the manifest's facts come
+// from: its workloads are the identity services this run started, each with
+// the account a cell would give it, and its endpoints the addresses this run
+// allocated.
 
 // NativeIdentity is one workload a native run issues a credential for and
 // lists in its module's manifest: a service that declares module-identity,
@@ -108,23 +110,24 @@ type NativeDeliverer struct {
 	// StateDir keeps the generations reserved so far: changed content is the
 	// next generation, unchanged content is replayed.
 	StateDir string
-	// DeliveryURL is the host's delivery listener (the accounts REST address).
-	DeliveryURL string
 	// Token issues the delivery account's credential in a namespace.
 	Token func(module string) (string, error)
-	// ObserverToken belongs to the separate read-only applied-state publisher.
-	ObserverToken func() (string, error)
-	Client        *http.Client
-
-	// Post, when set, carries a signed manifest to the host instead of the HTTP
-	// delivery route: a host that implements codefly.dev/composition receives it
-	// through ApplyManifest. Applied, when set, answers the applied state the
-	// same way. Both nil is the saas HTTP delivery, the transition's.
-	Post DeliveryPost
 	// Prepare captures transport-owned content before generation reservation.
-	// Its Post must send exactly that captured content with the settled carrier.
+	// Its Post sends exactly that captured content with the settled carrier:
+	// a host that implements codefly.dev/composition receives it through
+	// ApplyManifest (CompositionDelivery.Prepare). Applied answers the host's
+	// applied state of a binding, the same way.
 	Prepare func(ctx context.Context, module string, removed bool) (*PreparedDelivery, error)
 	Applied func(ctx context.Context, binding string) (*AppliedManifest, bool, error)
+
+	// The legacy HTTP delivery, for a host whose delivery endpoint implements
+	// no codefly.dev/composition (the saas host on main): with Prepare nil the
+	// carrier is POSTed to DeliveryURL's manifest route, and with Applied nil
+	// the applied state is read from its read-only route as the observer.
+	// Removed once no composition delivers to such a host.
+	DeliveryURL   string
+	ObserverToken func() (string, error)
+	Client        *http.Client
 }
 
 // DeliveryPost sends a carrier whose generation has already been settled.
@@ -262,32 +265,31 @@ func (d *NativeDeliverer) saveGenerations(ctx context.Context, record *nativeGen
 
 // settle assigns a manifest its generation: the one it had when its content is
 // unchanged, the next one otherwise. Content includes the canonical Core payload
-// at generation 1 and any prepared transport declaration; withdrawals are terminal.
-func settle(record *nativeGenerations, key string, content []byte, removed bool) (uint64, error) {
+// at generation 1 and any prepared transport declaration. A delivery after a
+// withdrawal is a new generation like any other: whether a withdrawal is
+// terminal is the host's to say, since only the host knows whether it still
+// holds it (the local authority keeps applied deliveries in memory, so a host
+// started again accepts the binding afresh). The record never refuses.
+func settle(record *nativeGenerations, key string, content []byte, removed bool) uint64 {
 	hash := sha256.Sum256(content)
 	digest := hex.EncodeToString(hash[:])
 	entry, known := record.Entries[key]
 	if known && entry.Content == digest {
-		// Old records did not retain terminality. An exact withdrawal replay
-		// can record it without advancing the immutable terminal generation.
-		entry.Removed = entry.Removed || removed
+		entry.Removed = removed
 		record.Entries[key] = entry
-		return entry.Generation, nil
-	}
-	if entry.Removed {
-		return 0, fmt.Errorf("%w: binding %s has a reserved withdrawal; replay it or use a new binding", solutionhost.ErrWithdrawn, key)
+		return entry.Generation
 	}
 	next := uint64(1)
 	if known {
 		next = entry.Generation + 1
 	}
 	record.Entries[key] = nativeGeneration{Generation: next, Content: digest, Removed: removed}
-	return next, nil
+	return next
 }
 
-// Receipt is the host's answer to one delivered manifest: 200 with the
-// disposition (accepted or replayed) and the generation it holds, or a refusal
-// with its reason.
+// Receipt is the host's answer to one delivered manifest: the disposition
+// (accepted or replayed) and the generation it holds, or, over the legacy
+// HTTP route, a refusal with its status and reason.
 type Receipt struct {
 	Status      int    `json:"-"`
 	Disposition string `json:"disposition"`
@@ -295,17 +297,20 @@ type Receipt struct {
 	Error       string `json:"error"`
 }
 
-// Deliver settles the manifest's generation, signs it and POSTs it to the
+// Deliver settles the manifest's generation, signs it and sends it to the
 // host as the delivery account of namespace — the namespace of the manifest's
 // workloads, or for a withdrawal the one its binding was delivered in.
 func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.ModuleManifest) (Receipt, error) {
 	if err := ctx.Err(); err != nil {
 		return Receipt{}, err
 	}
+	if d.Prepare == nil && d.DeliveryURL == "" {
+		return Receipt{}, errors.New("a native delivery needs the host's codefly.dev/composition interface or its legacy HTTP delivery route, and neither was given")
+	}
 	if err := os.MkdirAll(d.StateDir, 0o700); err != nil {
 		return Receipt{}, err
 	}
-	post := d.Post
+	var post DeliveryPost
 	// Source preparation and reservation share one short transaction. No
 	// credential acquisition, signing or network operation holds this lock.
 	err := runcomposition.WithFileLockContext(ctx, d.generationsPath()+".lock", 30*time.Second, func() error {
@@ -318,6 +323,7 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.Mo
 		if err != nil {
 			return err
 		}
+		// The legacy HTTP delivery carries Core alone, and settles on it.
 		if d.Prepare != nil {
 			prepared, prepareErr := d.Prepare(ctx, manifest.Alias, manifest.Removed)
 			if prepareErr != nil {
@@ -327,8 +333,8 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.Mo
 				return errors.New("delivery preparation supplied no send operation")
 			}
 			post = prepared.Post
-			// Withdrawals retain their old Core-only identity: a terminal
-			// binding cannot accept a migration to a later generation.
+			// Withdrawals retain their Core-only identity: a withdrawal carries
+			// no authority declaration.
 			if !manifest.Removed {
 				content, err = json.Marshal(struct {
 					Version      int
@@ -339,10 +345,7 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.Mo
 				}
 			}
 		}
-		manifest.Generation, err = settle(record, manifest.Binding, content, manifest.Removed)
-		if err != nil {
-			return err
-		}
+		manifest.Generation = settle(record, manifest.Binding, content, manifest.Removed)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -372,16 +375,22 @@ func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byt
 	if err != nil {
 		return Receipt{}, err
 	}
-	body, err := solutionhost.MarshalSigned(signed)
-	if err != nil {
-		return Receipt{}, err
-	}
 	token, err := d.Token(module)
 	if err != nil {
 		return Receipt{}, err
 	}
 	if post != nil {
 		return post(ctx, module, signed, token)
+	}
+	return d.postHTTP(ctx, signed, token)
+}
+
+// postHTTP is the legacy HTTP delivery: the carrier POSTed to the host's
+// manifest route with the delivery credential.
+func (d *NativeDeliverer) postHTTP(ctx context.Context, signed *solutionhost.Signed, token string) (Receipt, error) {
+	body, err := solutionhost.MarshalSigned(signed)
+	if err != nil {
+		return Receipt{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(d.DeliveryURL, "/")+manifestDeliveryPath, bytes.NewReader(body))
 	if err != nil {
@@ -406,27 +415,75 @@ func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byt
 		if message == "" {
 			message = strings.TrimSpace(string(answer))
 		}
-		return receipt, &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("the host refused the module manifest (%s): %s", response.Status, message)}
+		refusal := &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("the host refused the module manifest (%s): %s", response.Status, message)}
+		if response.StatusCode == http.StatusConflict && withdrawnRefusal(message) {
+			refusal.Reason = solutionhost.ErrWithdrawn
+		}
+		return receipt, refusal
 	}
 	return receipt, nil
 }
 
-// HostStatusError is an answer the host or its gateway gave with a status
-// other than success. The status is kept, not only printed, so the caller
-// that retries can tell a host that is not serving yet from one that refused
-// for good (a policy refusal, a stale or mismatched document). Gateway marks
-// a request made through the host's gateway (the fixture sign-in, the module
-// envelope), where a 404 is a route the gateway has not exposed yet; a 404
-// from the host's own delivery endpoint is a wrong endpoint. Envelope marks a
-// read or write of the module envelope, where a 409 is a lost revision race.
+// withdrawnRefusal reports whether a host's refusal says it still holds the
+// binding's withdrawal, which core's admission keeps terminal
+// (solutionhost.ErrWithdrawn).
+//
+// STOPGAP: neither codefly.dev/composition nor the legacy HTTP route carries a
+// typed signal for it, so it is recognized by core's own wording, which both
+// hosts pass through (the authority host as a FailedPrecondition message, the
+// saas host in its 409 body). Rewording on either side drops back to a
+// generic refusal. The interface gap is codefly-dev/authority#2.
+func withdrawnRefusal(message string) bool {
+	return strings.Contains(message, solutionhost.ErrWithdrawn.Error())
+}
+
+// HostStatusError is a refusal the host answered, with its gRPC code — or,
+// over the legacy HTTP delivery, its status — kept, not only printed, so the
+// caller that retries can tell a host that is not serving yet from one that
+// refused for good (a policy refusal, a stale or mismatched document, an
+// interface it does not serve). Gateway marks an HTTP request made through the
+// host's gateway (the fixture sign-in, the module envelope), where a 404 is a
+// route the gateway has not exposed yet; a 404 from the host's own delivery
+// endpoint is a wrong endpoint. Envelope marks a read or write of the module
+// envelope, where a 409 is a lost revision race.
 type HostStatusError struct {
+	Code     codes.Code
 	Status   int
 	Gateway  bool
 	Envelope bool
 	Message  string
+	// Reason is the refusal's kind when the run recognizes it
+	// (solutionhost.ErrWithdrawn), for errors.Is.
+	Reason error
 }
 
 func (e *HostStatusError) Error() string { return e.Message }
+
+func (e *HostStatusError) Unwrap() error { return e.Reason }
+
+// Transient reports whether the refusal only says the host is not serving
+// yet: unavailable, out of time or out of capacity. Every other code is the
+// host's answer, and asking again gets the same one. Over the legacy HTTP
+// delivery: a 5xx, a 404 from the gateway before it exposes the route, or a
+// 409 on the envelope (a lost revision race).
+func (e *HostStatusError) Transient() bool {
+	if e.Status != 0 {
+		switch {
+		case e.Status >= http.StatusInternalServerError:
+			return true
+		case e.Status == http.StatusNotFound:
+			return e.Gateway
+		case e.Status == http.StatusConflict:
+			return e.Envelope
+		}
+		return false
+	}
+	switch e.Code {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+		return true
+	}
+	return false
+}
 
 // EnvelopeGrant is what the administrator grants one module principal, in the
 // host's own grant shape, as a composition states it beside itself

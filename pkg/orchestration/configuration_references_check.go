@@ -343,7 +343,7 @@ func WorkspaceConfigurationsForChecking(
 	if workspace == nil || env == nil {
 		return nil, nil, nil
 	}
-	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	reader, err := NewWorkspaceConfigurationReader(ctx, workspace)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot build a configuration reader, so the workspace configurations this invocation resolves cannot be checked: %w", err)
 	}

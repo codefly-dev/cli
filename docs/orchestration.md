@@ -399,17 +399,15 @@ Whether a producer is in *this* run is not a plan-time question.
 
 A group a consumer **declares** is judged against the plan's graph and, beyond
 it, every other service of the workspace except one this run excludes. A
-module-closure run's graph holds the seeds' modules and the modules their
-service dependencies reach — never a module only a configuration value names —
-so `codefly run service authority/hop` alone does not contain the producers its
-own group references. Such a producer is not a plan-time fault: the resolution
-drops the value at WARN, naming the consumer, the value, which reference of it
-and the producer, exactly as for a root group. Only membership is relaxed: the
-endpoint must still exist and be visible to the consumer, a producer the
-workspace does not have is still "not a service of this workspace", and a
-producer the run **excludes** (`--exclude-dependency`, a run profile) still
-refuses the run naming the exclusion — the exclusion and the group that
-references it are coupled, and a value is never dropped because of one.
+module-closure run includes producers of groups its services declare, using
+Core's configuration-reference closure option with the same invocation snapshot
+used for graph edges and validation. Thus a hop's generated routes bring their
+producers into the run. Root-only groups do not grow the module closure; a
+reference to a producer outside that run is dropped at WARN with its consumer,
+value and producer named. Endpoint existence and visibility still apply. A
+producer the workspace lacks is refused, and an explicit run exclusion
+(`--exclude-dependency` or a run profile) coupled to a declared reference is
+refused rather than silently dropping that value.
 
 ##### What this refuses that used to be tolerated
 
@@ -867,14 +865,6 @@ At each transition, the policy checks the dependency graph: if service B depends
 
 If an action fails (executor returns `Wait`), the action is marked as `Failing` and the PauseManager handles retry.
 
-`World.BeforeRuntimeStart`, when supplied by the run's composition owner, runs
-synchronously after request validation and immediately before each local agent
-`Runtime.Start` RPC, including restarts. Refusal or cancellation prevents that RPC.
-Remote services and actions that only initialize or validate never invoke it.
-The callback is an admission boundary; it neither schedules prerequisites nor
-establishes host readiness by itself. Native manifest delivery is not yet wired
-to this callback and still follows the Running hook.
-
 ### RuntimeTestPolicy
 
 The agent's test dependency mode selects what starts before the target's test:
@@ -1199,3 +1189,44 @@ advertisement never grants a skip. A supported operation that returns Unimplemen
 remains a contract failure. CI records unsupported operations as skipped with
 `agent_no_lint_capability`, `agent_no_compile_capability`, or
 `agent_no_test_capability`, rather than reporting a successful check.
+## Published hop routes
+
+A hop declaring the `hop-routes` workspace group receives a generated route
+snapshot for the principals named by `hop/MODULES`. Do not author that group or
+an RPC-to-address table. Codefly reads the selected modules' published API catalogs,
+checks their package identity and contract digests, and derives exact endpoint
+references. Run and render feed those references through the same Core loader,
+dependency graph, visibility checks and address resolver. Only the declaring
+consumer receives the generated group; it is not a composition-root group.
+
+This requires published catalogs from `codefly generate contracts`. A source
+file that has not been exported does not create a route. Unknown principals,
+stale contract artifacts, conflicting destinations, and unreachable exact
+endpoints refuse before a hop starts. The hop keeps authority enforcement:
+routes identify a listener and policy method, never grants or readiness.
+
+Each listener's methods are the method policy table delivered to the
+authority for that listener, read by the same reader from the digest-checked
+contract bytes: a protobuf listener's served procedures, an OpenAPI listener's
+operations, `<VERB> <basePath><path>` (a Swagger 2.0 `basePath` prefixes both
+sides alike). The catalog's own route list never names a route, so a catalog
+that omits a stricter route its document declares cannot make the hop check that
+call against a looser template. Which procedures a protobuf listener serves is
+the catalog's record, for the routes and the delivered table alike. Inventory
+comes from `codefly generate contracts`. This path does not
+prove that unexported source is current or that a running listener registers
+every published method; generation checks and live module qualification remain
+separate requirements.
+
+The snapshot lasts for one run. Ordinary source reload keeps accepted endpoint
+addresses. Changing the published route inventory or a used address requires
+stopping and restarting the run. `SIGUSR1`, withdrawal, extension, loader
+reload, source-watch admission, startup admission and readiness delivery reject
+a changed snapshot before stopping services, adopting declarations or
+delivering a policy table read since; endpoint publication cannot
+replace an address already handed to a snapshot. An address first learned from
+an agent's Init response is rejected before publication; this does not undo that
+agent's process effects. This is an explicit restart
+boundary, not live route reconfiguration. Existing hop versions that do not
+declare `hop-routes` keep their existing configuration mode; a new hop requires
+both the CLI projection and the generated group.

@@ -48,12 +48,17 @@ const CompositionInterface = "codefly.dev/composition"
 // implements the named Codefly interface at any version. The endpoint is the
 // one manifests are sent to, so another endpoint of the same service that
 // implements the interface does not change how they are delivered: a host
-// whose delivery is its signed REST route keeps receiving them there. A host
-// module the workspace does not compose declares nothing here.
-func HostImplements(ctx context.Context, workspace *resources.Workspace, hostModule, hostService, hostEndpoint, name string) bool {
+// whose delivery endpoint does not declare it does not receive them through it.
+// A host module that cannot be loaded is an error with its reason, never a
+// "no": what the host implements decides how manifests travel and whether
+// every method must declare a policy, so not knowing it decides nothing.
+func HostImplements(ctx context.Context, workspace *resources.Workspace, hostModule, hostService, hostEndpoint, name string) (bool, error) {
 	module, err := workspace.LoadModuleFromName(ctx, hostModule)
-	if err != nil || module.Interface == nil {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("cannot tell whether host %s/%s implements %s: its module does not load: %w", hostModule, hostService, name, err)
+	}
+	if module.Interface == nil {
+		return false, nil
 	}
 	for _, endpoint := range module.Interface.Endpoints {
 		if endpoint.Service != hostService || endpoint.Endpoint != hostEndpoint {
@@ -61,11 +66,11 @@ func HostImplements(ctx context.Context, workspace *resources.Workspace, hostMod
 		}
 		for _, implemented := range endpoint.Implements {
 			if implemented == name || strings.HasPrefix(implemented, name+"@") {
-				return true
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // methodPoliciesRequired answers whether every method the module publishes
@@ -80,18 +85,33 @@ func HostImplements(ctx context.Context, workspace *resources.Workspace, hostMod
 // receives, so the host clause does not hold it (its own
 // require_method_policies still does). Every other module in the composition
 // is held. host.component names the host's instance, not a module, so it is
-// never read here.
-func methodPoliciesRequired(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, moduleName string, request authorityRequest) (string, bool) {
+// never read here. A host that cannot be read never drops the requirement: one
+// the workspace does not compose is held to receive every policy, and one that
+// does not load is an error with its reason.
+func methodPoliciesRequired(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, moduleName string, request authorityRequest) (string, bool, error) {
 	if request.contract != nil && request.contract.RequireMethodPolicies {
-		return "its " + modulecontract.FileName + " sets require_method_policies", true
+		return "its " + modulecontract.FileName + " sets require_method_policies", true, nil
 	}
 	if env != nil && env.Host != nil {
 		hostModule, hostService, hostEndpoint := env.Host.DeliveryEndpoint()
-		if hostModule != moduleName && HostImplements(ctx, workspace, hostModule, hostService, hostEndpoint, CompositionInterface) {
-			return fmt.Sprintf("its policies are delivered to host %s/%s, which implements %s", hostModule, hostService, CompositionInterface), true
+		if hostModule == moduleName {
+			return "", false, nil
+		}
+		implements, err := HostImplements(ctx, workspace, hostModule, hostService, hostEndpoint, CompositionInterface)
+		switch {
+		case err != nil && isModuleNotFound(err):
+			// A host this workspace does not compose (a module deployed from
+			// its own repository to a cell) cannot be read here, so it is
+			// held to the strictest host: one that receives every policy.
+			return fmt.Sprintf("host %s/%s is not composed in this workspace, so whether it consumes method policies cannot be read and it is assumed to", hostModule, hostService), true, nil
+		case err != nil:
+			return "", false, fmt.Errorf("module %s permissions: %w", moduleName, err)
+		}
+		if implements {
+			return fmt.Sprintf("its policies are delivered to host %s/%s, which implements %s", hostModule, hostService, CompositionInterface), true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // ValidateModulePermissions runs before render/build/publication effects. Hop
@@ -112,7 +132,10 @@ func validateModulePermissions(ctx context.Context, workspace *resources.Workspa
 	if err != nil {
 		return err
 	}
-	reason, required := methodPoliciesRequired(ctx, workspace, env, module.Name, request)
+	reason, required, err := methodPoliciesRequired(ctx, workspace, env, module.Name, request)
+	if err != nil {
+		return err
+	}
 	if err = ValidateMethodPolicies(methods, required); err != nil {
 		if required {
 			return fmt.Errorf("module %s permissions (every published method declares a policy: %s): %w", module.Name, reason, err)

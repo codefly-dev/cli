@@ -293,6 +293,22 @@ func TestSolutionPublicationDoesNotRequireAModuleResource(t *testing.T) {
 	}
 }
 
+// A publication of a module the workspace does not hold is refused for its
+// own reason — the unit that is not the solution's — never for the module
+// load that sent it down the solution path.
+func TestSolutionPublicationRefusalNamesTheUnit(t *testing.T) {
+	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
+	mixed := []InventoryUnit{{Kind: UnitKindService, Module: "checkout", Name: "api", Path: "services/api"}}
+	err := validatePublicationPermissions(context.Background(), workspace, "checkout", nil, mixed)
+	if err == nil || !strings.Contains(err.Error(), `non-solution unit "api"`) || strings.Contains(err.Error(), "cannot find module") {
+		t.Fatalf("refusal = %v, want the non-solution unit named", err)
+	}
+	solution := []InventoryUnit{{Kind: UnitKindSolution, Module: "checkout", Name: "checkout", Path: "solutions/checkout"}}
+	if err := validatePublicationPermissions(context.Background(), workspace, "checkout", nil, solution); err != nil {
+		t.Fatalf("a solution's own units pass: %v", err)
+	}
+}
+
 // TestLocalGitopsPublishSolutionGeneratesBootstrap drives the real publish path
 // for a solution and asserts the CLI generates the Argo ApplicationSet — the
 // transport a solution has no service module or module-agent to trigger. Without

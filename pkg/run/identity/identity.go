@@ -96,6 +96,12 @@ func (l *Launcher) WriteAnchor(path string) error {
 	return l.issuer.Anchor().WriteFile(path)
 }
 
+// ProjectionPath resolves the credential carrier without issuing or refreshing
+// authority. Init may prepare the environment before a process is started.
+func (l *Launcher) ProjectionPath(workload workloadidentity.Workload) string {
+	return filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential")
+}
+
 // Project issues the credential of unique's workload once, to a file the
 // process reads, and returns it. A second Project of the same unique returns
 // the same credential.
@@ -108,7 +114,7 @@ func (l *Launcher) Project(unique string, workload workloadidentity.Workload) (C
 	workload.Instance = workload.Service + "-" + l.runID
 	credential := Credential{
 		Workload: workload, Container: workload.Service,
-		File: filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential"),
+		File: l.ProjectionPath(workload),
 	}
 	if err := l.writeCredential(&credential); err != nil {
 		return Credential{}, err

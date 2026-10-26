@@ -385,9 +385,10 @@ live declarations contradict the tombstone. Ordinary delivery still signs and
 pairs those policies with its carrier. Transport regressions cover both module
 and solution withdrawals through the generated composition client. Successful `ApplyManifest` responses must acknowledge the sent generation.
 The adapter retains the acknowledged request's digest, release and removal flag
-for that delivery attempt. Native withdrawal completion uses the existing
+for the run's connection to the host. Native withdrawal completion uses the
 `Applied` callback and requires that exact identity; it does not contact a
-private HTTP route or mint an observer credential for an interface host. Hosts
-without the callback retain the legacy HTTP observer. This is synchronous
-response evidence, not a remote-state query after a host restart. Live launcher
+private HTTP route or mint an observer credential for an interface host. A
+host without the interface retains the legacy HTTP observer until that path
+is deleted. This is synchronous response evidence, not a remote-state query
+after a host restart. Live launcher
 shutdown/restart remains unqualified by these transport tests.

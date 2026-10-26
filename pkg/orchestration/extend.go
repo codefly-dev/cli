@@ -53,6 +53,9 @@ func (flow *Flow) Extend(ctx context.Context, workspace *resources.Workspace, ro
 	}
 	flow.extendMu.Lock()
 	defer flow.extendMu.Unlock()
+	if err := flow.CheckRoutingSnapshot(ctx, workspace); err != nil {
+		return nil, err
+	}
 	added, err := flow.admitRoots(ctx, workspace, roots)
 	if err != nil || len(added) == 0 {
 		return nil, err
@@ -97,6 +100,9 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	}
 	flow.extendMu.Lock()
 	defer flow.extendMu.Unlock()
+	if err := flow.CheckRoutingSnapshot(ctx, workspace); err != nil {
+		return nil, err
+	}
 	// Keep the admission visible until every requested stop succeeds. A stop
 	// RPC can fail after other dependents were already stopped; retaining the
 	// original composition lets the next SIGUSR1 rediscover the failed root
@@ -139,7 +145,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	}
 	*flow.workspace = *workspace
 	if flow.graphWorkspace != nil {
-		closure, closureErr := runModuleClosure(ctx, flow.workspace, seeds)
+		closure, closureErr := runModuleClosure(ctx, flow.workspace, retainedSeeds(seeds, flow.retainedModules), flow.providedWorkspaceConfigurations)
 		if closureErr != nil {
 			return nil, closureErr
 		}
@@ -194,6 +200,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	flow.services = slices.DeleteFunc(flow.services, func(service *resources.Service) bool {
 		return service != nil && !kept[resources.WithUnique(service).Unique()]
 	})
+	flow.publishRuntimeServices()
 	w.Info("narrowed the running composition", wool.Field("roots", withdrawn), wool.Field("stopped", stopped))
 	return stopped, nil
 }
@@ -231,7 +238,7 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 	// the same corrected workspace look already admitted on the next signal.
 	candidate := *workspace
 	if flow.graphWorkspace != nil {
-		closure, err := runModuleClosure(ctx, &candidate, seeds)
+		closure, err := runModuleClosure(ctx, &candidate, retainedSeeds(seeds, flow.retainedModules), flow.providedWorkspaceConfigurations)
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +260,10 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 // returns the remotes and the services the run does not manage yet, in
 // dependency order.
 func (flow *Flow) rebuildExtendedGraph(ctx context.Context) (map[string]*Remote, []string, error) {
-	remotes, options := flow.dependencyGraphOptions()
+	remotes, options, err := flow.dependencyGraphOptions(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	dependencies, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), options...)
 	if err != nil {
 		return nil, nil, err
@@ -325,7 +335,11 @@ func (flow *Flow) spawnAdmitted(ctx context.Context, fresh []string, remotes map
 		manager.DoSetCallback(flow.playbook.Seed)
 		manager.DoSetFailureSink(flow.reportFailure)
 	}
-	return flow.resolveDockerFallback(ctx)
+	if err := flow.resolveDockerFallback(ctx); err != nil {
+		return err
+	}
+	flow.publishRuntimeServices()
+	return nil
 }
 
 // createManagers spawns the run manager of every service named, in order,

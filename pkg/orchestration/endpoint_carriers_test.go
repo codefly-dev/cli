@@ -32,6 +32,20 @@ func TestEndpointCarriersAreTheComponentsOwnRoutes(t *testing.T) {
 	require.Empty(t, carriers, "the host's own endpoint is not a route")
 }
 
+func TestReadyEndpointCarriersFilterBeforeAddressResolution(t *testing.T) {
+	world, _ := hostRoutesWorld(t, SnapshotMode, nil)
+	flow := &Flow{world: world}
+	carriers, err := flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), nil)
+	require.NoError(t, err)
+	require.Empty(t, carriers)
+	carriers, err = flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), []string{"wiki/backend"})
+	require.NoError(t, err)
+	require.Empty(t, carriers)
+	carriers, err = flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), []string{"docs/documents"})
+	require.NoError(t, err)
+	require.Len(t, carriers, 1)
+}
+
 func keysOf(carriers map[string]string) []string {
 	var keys []string
 	for key := range carriers {

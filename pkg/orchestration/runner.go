@@ -349,13 +349,12 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
 	}
-	runner.networkMappings = accepted
-	runner.pinAcceptedPorts(accepted)
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = accepted
+	runner.pinAcceptedPorts(accepted)
 
 	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Identity, resp.RuntimeConfigurations...)
 	if err != nil {
@@ -888,12 +887,11 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
-	runner.networkMappings = networkMappings
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = networkMappings
 	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
@@ -908,6 +906,19 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	if runner.remoteEnvironment != nil {
 		return runner.StartRemote(ctx)
+	}
+
+	started := false
+	var attempt *RuntimeStartAttempt
+	if begin := runner.world.BeginRuntimeStart; begin != nil {
+		var err error
+		attempt, err = begin(ctx, runner.instance.Service)
+		if attempt != nil && attempt.Complete != nil {
+			defer func() { attempt.Complete(started) }()
+		}
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot prepare runtime start attempt")
+		}
 	}
 
 	err := runner.StopIfNeeded(ctx)
@@ -1000,16 +1011,16 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot validate start request")
 	}
 
-	if err = ctx.Err(); err != nil {
-		return nil, err
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
 	}
-	if before := runner.world.BeforeRuntimeStart; before != nil {
-		if err = before(ctx, runner.instance.Service); err != nil {
-			return nil, w.Wrapf(err, "cannot admit service before runtime start")
+	if attempt != nil && attempt.Admit != nil {
+		if admitErr := attempt.Admit(ctx); admitErr != nil {
+			return nil, w.Wrapf(admitErr, "cannot admit service before runtime start")
 		}
 	}
-	if err = ctx.Err(); err != nil {
-		return nil, err
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
 	}
 	resp, err := runner.instance.Runtime.Start(ctx, req)
 
@@ -1039,6 +1050,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	runner.markStarted()
+	started = true
 	return outputProperty, nil
 }
 
@@ -1476,6 +1488,13 @@ func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev0.De
 	if runner.callback == nil {
 		runner.cancelRestarts()
 		return errors.New("restart requested before the orchestration callback was initialized")
+	}
+
+	if runner.world != nil && runner.world.beforeSourceRestart != nil {
+		if err := runner.world.beforeSourceRestart(ctx); err != nil {
+			runner.cancelRestarts()
+			return err
+		}
 	}
 
 	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)

@@ -3,7 +3,6 @@ package gitops
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sync"
 
 	"github.com/codefly-dev/core/solutionhost"
@@ -54,20 +53,6 @@ func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.S
 	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, applied: map[string]AppliedManifest{}}
 }
 
-// Post sends an already-settled carrier, reading its policy now. Native runs
-// use Prepare instead so policy participates in generation settlement.
-func (c *CompositionDelivery) Post(ctx context.Context, module string, signed *solutionhost.Signed, token string) (Receipt, error) {
-	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
-	if err != nil {
-		return Receipt{}, err
-	}
-	prepared, err := c.Prepare(ctx, module, manifest.Removed)
-	if err != nil {
-		return Receipt{}, err
-	}
-	return prepared.Post(ctx, module, signed, token)
-}
-
 func (c *CompositionDelivery) post(ctx context.Context, module string, signed *solutionhost.Signed, token string, declaration []byte) (Receipt, error) {
 	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
 	if err != nil {
@@ -82,8 +67,7 @@ func (c *CompositionDelivery) post(ctx context.Context, module string, signed *s
 	}
 	out, err := c.client.ApplyManifest(ctx, request)
 	if err != nil {
-		return Receipt{Status: httpStatusOf(err), Error: err.Error()}, &HostStatusError{Status: httpStatusOf(err),
-			Message: fmt.Sprintf("the host refused the module manifest of %s through the composition interface: %v", module, err)}
+		return Receipt{}, refusal(module, manifest, err)
 	}
 	if out.GetGeneration() != manifest.Generation {
 		return Receipt{}, fmt.Errorf("the composition host acknowledged generation %d for binding %s, sent %d", out.GetGeneration(), manifest.Binding, manifest.Generation)
@@ -97,7 +81,7 @@ func (c *CompositionDelivery) post(ctx context.Context, module string, signed *s
 		c.applied[manifest.Binding] = AppliedManifest{Binding: manifest.Binding, Generation: manifest.Generation, Digest: digest, Release: manifest.Release.Identity(), Removed: manifest.Removed}
 	}
 	c.mu.Unlock()
-	return Receipt{Status: http.StatusOK, Disposition: "accepted", Generation: out.GetGeneration()}, nil
+	return Receipt{Disposition: "accepted", Generation: out.GetGeneration()}, nil
 }
 
 // Prepare captures one declaration. Deterministic bytes both identify its
@@ -187,21 +171,19 @@ func (c *CompositionDelivery) Applied(_ context.Context, binding string) (*Appli
 	return &applied, true, nil
 }
 
-// httpStatusOf maps a refusal's code onto the status the run's classification
-// reads: a lower generation and a refused carrier are final, an unreachable host
-// is transient.
-func httpStatusOf(err error) int {
-	switch status.Code(err) {
-	case codes.FailedPrecondition:
-		return http.StatusConflict
-	case codes.NotFound:
-		return http.StatusNotFound
-	case codes.PermissionDenied, codes.Unauthenticated:
-		return http.StatusForbidden
-	case codes.InvalidArgument:
-		return http.StatusBadRequest
-	case codes.Unavailable, codes.DeadlineExceeded:
-		return http.StatusServiceUnavailable
+// refusal is the host's answer to ApplyManifest as the run reports it: its
+// code kept for the retry classification (HostStatusError.Transient), and its
+// reason. A host that still holds the binding's withdrawal keeps it terminal
+// (core's admission, solutionhost.ErrWithdrawn): the refusal then says what
+// the person can do, since the binding is derived from the workspace, the
+// environment and the module and is not theirs to choose.
+// The withdrawal is recognized by a stopgap (withdrawnRefusal).
+func refusal(module string, manifest *solutionhost.ModuleManifest, err error) error {
+	code := status.Code(err)
+	if code == codes.FailedPrecondition && withdrawnRefusal(status.Convert(err).Message()) {
+		return &HostStatusError{Code: code, Reason: solutionhost.ErrWithdrawn, Message: fmt.Sprintf(
+			"the host refused module %s at generation %d: it still holds the withdrawal of binding %s from earlier in its life and keeps a withdrawal terminal (%v). "+
+				"The local authority holds applied deliveries in memory only: stop the run and start it again, and the host accepts the module afresh", module, manifest.Generation, manifest.Binding, err)}
 	}
-	return http.StatusInternalServerError
+	return &HostStatusError{Code: code, Message: fmt.Sprintf("the host refused the module manifest of %s through the composition interface: %v", module, err)}
 }

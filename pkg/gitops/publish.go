@@ -450,20 +450,28 @@ func loadRenderedPublication(
 	if err != nil {
 		return Inventory{}, err
 	}
-	module, loadErr := workspace.LoadModuleFromName(ctx, request.Module)
-	if loadErr == nil {
-		if err = ValidateModulePermissions(ctx, workspace, module, env); err != nil {
-			return Inventory{}, err
-		}
-	} else if !isModuleNotFound(loadErr) {
-		return Inventory{}, loadErr
-	} else if err = validateSolutionUnits(request.Module, inventory.Units); err != nil {
-		return Inventory{}, loadErr
+	if err = validatePublicationPermissions(ctx, workspace, request.Module, env, inventory.Units); err != nil {
+		return Inventory{}, err
 	}
 	if err = holdRenderedGroups(ctx, workspace, request, env, &inventory); err != nil {
 		return Inventory{}, err
 	}
 	return inventory, nil
+}
+
+// validatePublicationPermissions checks the permissions of the module a
+// publication carries, when the workspace holds it; a module it does not hold
+// is a solution's render, whose units must all be that solution's. Each
+// refusal names its own reason.
+func validatePublicationPermissions(ctx context.Context, workspace *resources.Workspace, moduleName string, env *environments.Environment, units []InventoryUnit) error {
+	module, err := workspace.LoadModuleFromName(ctx, moduleName)
+	switch {
+	case err == nil:
+		return ValidateModulePermissions(ctx, workspace, module, env)
+	case !isModuleNotFound(err):
+		return err
+	}
+	return validateSolutionUnits(moduleName, units)
 }
 
 // isModuleNotFound tells a workspace that holds no module of the name from a

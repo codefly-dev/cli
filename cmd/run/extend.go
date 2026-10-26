@@ -72,6 +72,14 @@ func watchForExtensions(ctx context.Context, flow *orchestration.Flow, baseline 
 		case <-ctx.Done():
 			return
 		case <-signals:
+			workspace, loadErr := common.LoadWorkspace(ctx)
+			if loadErr == nil {
+				loadErr = flow.CheckRoutingSnapshot(ctx, workspace)
+			}
+			if loadErr != nil {
+				cli.Warning("the running composition was not changed: %v", loadErr)
+				continue
+			}
 			if err := withdrawDroppedRoots(ctx, flow, pinned); err != nil {
 				cli.Warning("composition withdrawal is incomplete; the next SIGUSR1 retries it: %v", err)
 				continue
@@ -122,6 +130,9 @@ func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned 
 	if err != nil {
 		return fmt.Errorf("reload the workspace: %w", err)
 	}
+	if err = flow.CheckRoutingSnapshot(ctx, workspace); err != nil {
+		return err
+	}
 	roots, err := CompositionRoots(ctx, workspace)
 	if err != nil {
 		return err
@@ -154,6 +165,9 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 	workspace, err := common.LoadWorkspace(ctx)
 	if err != nil {
 		return fmt.Errorf("reload the workspace: %w", err)
+	}
+	if err = flow.CheckRoutingSnapshot(ctx, workspace); err != nil {
+		return err
 	}
 	roots, err := CompositionRoots(ctx, workspace)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
@@ -186,7 +187,7 @@ func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, req
 	if err != nil {
 		return nil, err
 	}
-	flow, err := orchestration.NewFlow(ctx, prepared.Workspace, prepared.Module, prepared.Service, env, orchestration.TestMode)
+	flow, err := orchestration.NewFlow(ctx, prepared.Workspace, prepared.Module, prepared.Service, env, orchestration.TestMode, run.NativeAuthorityPrerequisites(env, sourceRuntimeContext))
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +195,9 @@ func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, req
 	flow.WithRuntimeContext(sourceRuntimeContext)
 	flow.WithTestRequest(request)
 	if err := flow.InitManagers(ctx); err != nil {
+		return flow, err
+	}
+	if err := run.AttachNativeLauncher(ctx, flow, prepared.Workspace, env, sourceRuntimeContext, ""); err != nil {
 		return flow, err
 	}
 	if err := flow.Load(ctx); err != nil {
