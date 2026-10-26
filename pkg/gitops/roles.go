@@ -59,6 +59,17 @@ func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 	return out, nil
 }
 
+// OwnerAware reads the module's explicit declaration that it checks resource
+// owners. No contract or an omitted declaration means false, never an inference
+// from the presence of roles or installation-owned scopes.
+func OwnerAware(dir string) (bool, error) {
+	contract, err := ownContract(dir)
+	if err != nil || contract == nil {
+		return false, err
+	}
+	return contract.OwnerAware, nil
+}
+
 // workScopes spells contract scopes as the authority's: a kind and actions,
 // never ids.
 func workScopes(scopes []modulecontract.CeilingScope) []*authorityv1.WorkScopeV1 {

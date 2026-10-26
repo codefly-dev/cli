@@ -34,6 +34,8 @@ type CompositionDelivery struct {
 	// roles reads the roles a solution declares, from its module contract;
 	// none for a module, which declares no roles.
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
+	// ownerAware reads the module's explicit owner-selector enforcement declaration.
+	ownerAware func(ctx context.Context, module string) (bool, error)
 
 	mu      sync.Mutex
 	applied map[string]AppliedManifest
@@ -45,12 +47,13 @@ type CompositionDelivery struct {
 // actions on each of its own resource kinds, read by ceilings from its module
 // contract (core's manifest names the kinds alone), and the roles a solution
 // declares, read by roles from its module contract too (core's manifest
-// carries none).
+// carries none), and its explicit owner-aware declaration.
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),
-	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)) *CompositionDelivery {
-	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, applied: map[string]AppliedManifest{}}
+	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error),
+	ownerAware func(ctx context.Context, module string) (bool, error)) *CompositionDelivery {
+	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, ownerAware: ownerAware, applied: map[string]AppliedManifest{}}
 }
 
 func (c *CompositionDelivery) post(ctx context.Context, module string, signed *solutionhost.Signed, token string, declaration []byte) (Receipt, error) {
@@ -129,11 +132,18 @@ func (c *CompositionDelivery) declaration(ctx context.Context, module string) ([
 			return nil, err
 		}
 	}
-	if !declared && len(ceilings) == 0 && len(roles) == 0 {
+	var ownerAware bool
+	if c.ownerAware != nil {
+		var err error
+		if ownerAware, err = c.ownerAware(ctx, module); err != nil {
+			return nil, err
+		}
+	}
+	if !declared && len(ceilings) == 0 && len(roles) == 0 && !ownerAware {
 		return nil, nil
 	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
-		Methods: methods, ScopeCeilings: ceilings, Roles: roles,
+		Methods: methods, ScopeCeilings: ceilings, Roles: roles, OwnerAware: ownerAware,
 	})
 }
 

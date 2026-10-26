@@ -62,7 +62,7 @@ func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	delivery := NewCompositionDelivery(conn, nil, nil, nil, nil)
+	delivery := NewCompositionDelivery(conn, nil, nil, nil, nil, nil)
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: solutionhost.KindModule, Generation: 2,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"},
@@ -188,7 +188,8 @@ func TestCompositionWithdrawalDoesNotReadOrDeliverLivePolicies(t *testing.T) {
 					return nil, false, missing()
 				},
 				func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return nil, missing() },
-				func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, missing() })
+				func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, missing() },
+				func(context.Context, string) (bool, error) { return false, missing() })
 			manifest := &solutionhost.ModuleManifest{Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: kind, Generation: 2, Removed: true,
 				Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"}}
 			payload, err := solutionhost.SignedPayload(manifest)
@@ -232,7 +233,7 @@ func TestCompositionDeliveryRefusesAMismatchedAcknowledgement(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = conn.Close() })
-			delivery := NewCompositionDelivery(conn, nil, nil, nil, nil)
+			delivery := NewCompositionDelivery(conn, nil, nil, nil, nil, nil)
 			manifest := &solutionhost.ModuleManifest{Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: solutionhost.KindModule, Generation: 2, Removed: true, Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"}}
 			document, err := solutionhost.SignedPayload(manifest)
 			if err != nil {

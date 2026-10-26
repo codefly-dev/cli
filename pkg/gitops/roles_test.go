@@ -224,13 +224,15 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
 	_, private, _ := ed25519.GenerateKey(nil)
 	signer, err := solutionhost.NewInMemorySigner("release", private)
 	require.NoError(t, err)
 	d := NewCompositionDelivery(conn, signer,
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
 		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
-		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) })
+		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) },
+		func(context.Context, string) (bool, error) { return OwnerAware(dir) })
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},
