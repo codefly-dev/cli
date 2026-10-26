@@ -105,6 +105,9 @@ func narrowEntries(entries []ContractEntry) ([]ContractEntry, error) {
 		entry.ContractBytes = contract
 		entry.generateFrom = generated
 		entry.Endpoint.Services = selections[i]
+		// The companion filters by short name. The descriptor has already
+		// selected exact service identities, so this cannot widen the output.
+		entry.Services = protobufServiceNames(selections[i])
 		// The proto sources declare the whole contract; the narrowed
 		// descriptor set is what is generated from.
 		entry.ProtoSources = nil
@@ -123,36 +126,45 @@ func entryLabel(entry *ContractEntry) string {
 // selectedServices is the catalog entries of the services entry names, in
 // catalog order. A name the contract does not declare is refused by name.
 func selectedServices(entry *ContractEntry) ([]composition.APIContractService, error) {
-	declared := map[string]bool{}
-	for _, service := range entry.Endpoint.Services {
-		declared[service.Name] = true
+	declared := map[string][]string{}
+	services := slices.Clone(entry.Endpoint.Services)
+	for i := range services {
+		service := &services[i]
+		if service.FullName == "" {
+			service.FullName = qualify(entry.Endpoint.Package, service.Name)
+		}
+		declared[service.FullName] = []string{service.FullName}
+		if service.Name != service.FullName {
+			declared[service.Name] = append(declared[service.Name], service.FullName)
+		}
 	}
 	wanted := map[string]bool{}
 	var unknown []string
 	for _, name := range entry.Services {
 		name = strings.TrimSpace(name)
-		if !declared[name] {
+		matches := declared[name]
+		if len(matches) == 0 {
 			unknown = append(unknown, fmt.Sprintf("%q", name))
+			continue
 		}
-		wanted[name] = true
+		if len(matches) > 1 {
+			sort.Strings(matches)
+			return nil, fmt.Errorf("entry %s: service %q is ambiguous; select a fully qualified name: %s",
+				entryLabel(entry), name, strings.Join(matches, ", "))
+		}
+		wanted[matches[0]] = true
 	}
 	if len(unknown) > 0 {
-		names := make([]string, 0, len(declared))
-		for name := range declared {
-			names = append(names, name)
-		}
+		names := protobufServiceNames(services)
 		sort.Strings(names)
 		sort.Strings(unknown)
 		return nil, fmt.Errorf("entry %s: services %s are not declared by contract %s, which declares %s",
 			entryLabel(entry), strings.Join(unknown, ", "), entry.Endpoint.Package, strings.Join(names, ", "))
 	}
 	var selected []composition.APIContractService
-	for _, service := range entry.Endpoint.Services {
-		if !wanted[service.Name] {
+	for _, service := range services {
+		if !wanted[service.FullName] {
 			continue
-		}
-		if service.FullName == "" {
-			service.FullName = qualify(entry.Endpoint.Package, service.Name)
 		}
 		selected = append(selected, service)
 	}
