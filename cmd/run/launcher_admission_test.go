@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 )
@@ -214,56 +216,57 @@ func writeTargetBinding(t *testing.T, cluster *launcher, audience string) {
 	require.NoError(t, os.WriteFile(path, []byte(contract), 0600))
 }
 
-// A binding to a module the run selects but declares to no authority (the
-// host's own) could never be served: admission refuses the whole selection
+// A binding to the host's own module could never be served: the run declares
+// that module to no authority, so admission refuses the whole selection
 // before sending any manifest.
-func TestAdmissionRefusesUndeliveredBindingBeforeSending(t *testing.T) {
+func TestAdmissionRefusesBindingToHostBeforeSending(t *testing.T) {
 	cluster, peer := admissionLauncher(t)
 	writeTargetBinding(t, cluster, "model")
 	err := cluster.admitSelected(t.Context())
-	require.ErrorContains(t, err, "binding read-target targets model")
+	require.ErrorContains(t, err, "binding read-target targets model, the host's own module")
 	require.Empty(t, peer.snapshots(), "validate the entire selection before applying any manifest")
 }
 
 // A run composes a unit and only the modules it consumes: a binding to a
-// module outside the run does not stop startup. The delivered manifest
-// carries no grant through it, every selected module is still admitted with
-// its own workloads only, and the selected target's binding is kept.
-func TestAdmissionWithholdsBindingToUnselectedModule(t *testing.T) {
-	for _, tc := range []struct {
-		audience string
-		kept     bool
-	}{{"missing", false}, {"beta", true}} {
-		t.Run(tc.audience, func(t *testing.T) {
+// module outside the run, or to one selected only through services with no
+// identity workload, does not stop startup. It is delivered as declared, for
+// the authority to decide at call time; every selected module is admitted
+// with its own workloads only; a binding outside the run is said once.
+func TestAdmissionDeliversBindingsOutsideTheRunAsDeclared(t *testing.T) {
+	for _, audience := range []string{"missing", "store", "beta"} {
+		t.Run(audience, func(t *testing.T) {
 			cluster, peer := admissionLauncher(t)
-			writeTargetBinding(t, cluster, tc.audience)
-			require.NoError(t, cluster.admitSelected(t.Context()))
-			snapshots := peer.snapshots()
-			require.Len(t, snapshots, 2, "every selected module is admitted")
-			for _, m := range snapshots {
+			flow, ok := cluster.flow.(*admissionFlow)
+			require.True(t, ok)
+			flow.selected = append(flow.selected, "store/db") // a datastore: selected, no identity workload
+			writeTargetBinding(t, cluster, audience)
+			capture := &refreshLogCapture{}
+			provider := wool.New(context.Background(), &wool.Resource{}).WithLogger(capture)
+			defer provider.Done()
+			ctx := provider.Inject(t.Context())
+			for range 2 { // admission repeats on every start
+				require.NoError(t, cluster.admitSelected(ctx))
+			}
+			admitted := map[string]bool{}
+			for _, m := range peer.snapshots() {
+				admitted[m.Alias] = true
 				require.NotNil(t, m.Authority)
-				for _, w := range m.Workloads {
-					require.Equal(t, "api", w.Service, "an identity is declared for a selected workload only")
-				}
+				require.Len(t, m.Workloads, 1)
+				require.Equal(t, "api", m.Workloads[0].Service, "an identity is declared for a selected workload only")
 				if m.Alias != "alpha" {
 					continue
 				}
-				var audiences []string
-				for _, binding := range m.Authority.Bindings {
-					audiences = append(audiences, binding.Audience)
-				}
-				if tc.kept {
-					require.Equal(t, []string{tc.audience}, audiences, "a binding to a selected module is delivered")
-				} else {
-					require.Empty(t, audiences, "a binding to a module outside the run carries no grant")
-				}
+				require.Len(t, m.Authority.Bindings, 1)
+				require.Equal(t, "read-target", m.Authority.Bindings[0].ID)
+				require.Equal(t, audience, m.Authority.Bindings[0].Audience, "the binding is delivered as declared")
 			}
-			// The ready delivery renders through the same path and withholds it too.
-			cluster.running["alpha/api"] = true
-			require.NoError(t, cluster.deliverReadiness(t.Context(), "alpha", false))
-			latest := peer.snapshots()[len(peer.snapshots())-1]
-			require.Equal(t, "alpha", latest.Alias)
-			require.Equal(t, tc.kept, len(latest.Authority.Bindings) == 1)
+			require.Equal(t, map[string]bool{"alpha": true, "beta": true}, admitted, "only selected modules with an identity workload are admitted")
+			said := strings.Count(strings.Join(capture.messages, "\n"), "binding read-target targets "+audience+", which is not part of this run")
+			if audience == "missing" {
+				require.Equal(t, 1, said, "a binding outside the run is said, once")
+			} else {
+				require.Zero(t, said, "a binding to a selected module is part of the run")
+			}
 		})
 	}
 }

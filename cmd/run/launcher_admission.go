@@ -84,7 +84,17 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		return err
 	}
 	defer cluster.delivery.Release(1)
-	modules, _ := cluster.runModules()
+	// One snapshot of the selection decides both what is admitted and which
+	// binding targets are part of the run.
+	modules, selected := map[string]bool{}, map[string]bool{}
+	for _, unique := range cluster.flow.LocalRuntimeServices() {
+		if ref, err := resources.ParseServiceWithOptionalModule(unique); err == nil {
+			selected[ref.Module] = true
+		}
+		if identity, ok := cluster.identity(unique); ok && cluster.delivers(identity) {
+			modules[identity.Module] = true
+		}
+	}
 	names := make([]string, 0, len(modules))
 	for module := range modules {
 		names = append(names, module)
@@ -109,15 +119,8 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// renderDelivery withheld every binding to a module outside the run, so
-		// what remains targets the run; one whose target this run declares to
-		// no authority (the host's own module) could never be served.
-		if manifest.Authority != nil {
-			for _, binding := range manifest.Authority.Bindings {
-				if !modules[binding.Audience] {
-					return fmt.Errorf("module %s binding %s targets %s, which has no selected local identity workload; authority admission requires its target declaration", module, binding.ID, binding.Audience)
-				}
-			}
+		if err := cluster.checkBindingTargets(ctx, module, manifest, selected); err != nil {
+			return err
 		}
 		manifests = append(manifests, manifest)
 	}
@@ -129,41 +132,35 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 	return nil
 }
 
-// runModules names the modules of the run's selected services (selected) and
-// those whose manifests the run delivers (delivered): every selected module
-// with an identity workload but the host's own.
-func (cluster *launcher) runModules() (delivered, selected map[string]bool) {
-	delivered, selected = map[string]bool{}, map[string]bool{}
-	for _, unique := range cluster.flow.LocalRuntimeServices() {
-		if ref, err := resources.ParseServiceWithOptionalModule(unique); err == nil {
-			selected[ref.Module] = true
-		}
-		if identity, ok := cluster.identity(unique); ok && cluster.delivers(identity) {
-			delivered[identity.Module] = true
-		}
+// checkBindingTargets decides, at admission, a module's bindings by where they
+// point. A binding to the host's own module could never be served, since the
+// run declares that module to no authority, so admission refuses it before
+// any manifest is sent. Every other binding is delivered as declared: a run
+// composes a unit and only the modules it consumes, and the authority decides
+// a binding at call time, serving it when its audience is composed (by this
+// run, or by the fixture's stand-in for a process the run does not supervise)
+// and refusing a call through it by name when nothing composes it. A binding
+// to a module outside the run is said once, since admission repeats per start.
+// Caller holds delivery.
+func (cluster *launcher) checkBindingTargets(ctx context.Context, module string, manifest *solutionhost.ModuleManifest, selected map[string]bool) error {
+	if manifest.Authority == nil {
+		return nil
 	}
-	return delivered, selected
-}
-
-// withholdUnselectedBindings drops from a manifest every binding addressed to
-// a module this run does not select. A run composes a unit and only the
-// modules it consumes, so such a binding is not a fault of the run: the
-// delivered document carries no grant through it, and the authority refuses a
-// call through it by name. Nothing is granted in its place.
-func (cluster *launcher) withholdUnselectedBindings(ctx context.Context, manifest *solutionhost.ModuleManifest) {
-	if manifest == nil || manifest.Authority == nil {
-		return
-	}
-	_, selected := cluster.runModules()
-	kept := make([]solutionhost.AuthorityBinding, 0, len(manifest.Authority.Bindings))
 	for _, binding := range manifest.Authority.Bindings {
-		if selected[binding.Audience] {
-			kept = append(kept, binding)
+		if binding.Audience == cluster.hostModule {
+			return fmt.Errorf("module %s binding %s targets %s, the host's own module, which this run declares to no authority; authority admission requires its target declaration", module, binding.ID, binding.Audience)
+		}
+		key := module + "/" + binding.ID
+		if selected[binding.Audience] || cluster.outsideTargets[key] {
 			continue
 		}
-		wool.Get(ctx).In("launcher.deliver").Warn(
-			fmt.Sprintf("module %s binding %s is withheld from the delivered manifest: %s is not part of this run, so a call through it is refused", manifest.Alias, binding.ID, binding.Audience),
-			wool.Field("module", manifest.Alias), wool.Field("binding", binding.ID), wool.Field("target", binding.Audience))
+		if cluster.outsideTargets == nil {
+			cluster.outsideTargets = map[string]bool{}
+		}
+		cluster.outsideTargets[key] = true
+		wool.Get(ctx).In("launcher.admit").Warn(
+			fmt.Sprintf("module %s binding %s targets %s, which is not part of this run: it is delivered as declared, and the authority refuses a call through it (audience %q is not composed) unless something else composes %s, such as a fixture's stand-in", module, binding.ID, binding.Audience, binding.Audience, binding.Audience),
+			wool.Field("module", module), wool.Field("binding", binding.ID), wool.Field("target", binding.Audience))
 	}
-	manifest.Authority.Bindings = kept
+	return nil
 }

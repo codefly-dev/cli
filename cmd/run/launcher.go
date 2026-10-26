@@ -94,6 +94,9 @@ type launcher struct {
 	// delivered is the last manifest delivered per module, a withdrawal
 	// included; protected by delivery rather than the short-lived state lock.
 	delivered map[string]*solutionhost.ModuleManifest
+	// outsideTargets are the bindings to a module outside the run that
+	// admission has reported, so each is said once; protected by delivery.
+	outsideTargets map[string]bool
 	// pendingWithdrawals are modules whose withdrawal the host has not applied
 	// yet: retried on the next composition refresh, even with no gone roots.
 	pendingWithdrawals map[string]bool
@@ -872,8 +875,7 @@ func (cluster *launcher) deliverReadiness(ctx context.Context, module string, ea
 
 // renderDelivery renders a loaded module's manifest. An early delivery keeps
 // the page payload previously published, since deferral removes a page; a
-// ready one names the bundle its caller built. A binding to a module outside
-// the run is withheld (withholdUnselectedBindings).
+// ready one names the bundle its caller built.
 func (cluster *launcher) renderDelivery(ctx context.Context, deliverer *gitops.NativeDeliverer, loaded *resources.Module, early bool, bundle *solutionhost.FrontendPayload) (*solutionhost.ModuleManifest, error) {
 	module := loaded.Name
 	services := make([]*resources.Service, 0, len(loaded.ServiceReferences))
@@ -900,15 +902,10 @@ func (cluster *launcher) renderDelivery(ctx context.Context, deliverer *gitops.N
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := deliverer.Render(ctx, &gitops.NativeWorkload{
+	return deliverer.Render(ctx, &gitops.NativeWorkload{
 		Module: loaded, Services: services, Declared: cluster.declaredIdentities(module),
 		Started: started, Carriers: carriers, FrontendBundle: bundle, DeferFrontend: early && bundle == nil,
 	})
-	if err != nil {
-		return nil, err
-	}
-	cluster.withholdUnselectedBindings(ctx, manifest)
-	return manifest, nil
 }
 
 // Caller holds delivery across rendering, generation reservation and Applied.
