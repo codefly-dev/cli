@@ -78,14 +78,16 @@ func HostImplements(ctx context.Context, workspace *resources.Workspace, hostMod
 // required where it is consumed: by a host implementing codefly.dev/composition,
 // which receives the policies with each manifest, or wherever the module's own
 // contract opts in (require_method_policies). Toward any other host an unmarked
-// method passes, as MethodPolicies lists it: the hop refuses it per call.
+// method passes, as HostMethodPolicies lists it: the hop refuses it per call.
 //
 // The host's own module — the module of the host.delivery service — is not
 // behind the hop: its methods are the host's, never fronted by the policies it
 // receives, so the host clause does not hold it (its own
 // require_method_policies still does). Every other module in the composition
-// is held. host.component names the host's instance, not a module, so it is
-// never read here. A host that cannot be read never drops the requirement: one
+// is held, on the table its manifest carries (HostMethodPolicies): a service
+// of it that stands in for the host is the host's in the same way and is not
+// in that table, while every service that runs as the module is. host.component
+// names the host's instance, not a module, so it is never read here. A host that cannot be read never drops the requirement: one
 // the workspace does not compose is held to receive every policy, and one that
 // does not load is an error with its reason.
 func methodPoliciesRequired(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, moduleName string, request authorityRequest) (string, bool, error) {
@@ -123,11 +125,13 @@ func ValidateModulePermissions(ctx context.Context, workspace *resources.Workspa
 
 // selectedSource is an explicit development deployment input, already resolved
 // through loadDevService, which must be checked even atop a published package.
+//
+// The methods held are the table the module's manifest carries to the host
+// (HostMethodPolicies); a module whose own contract sets
+// require_method_policies holds every method its package publishes, the
+// services that stand in for the host included, since it asked for exactly
+// that.
 func validateModulePermissions(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, selectedSource *resources.Service) error {
-	methods, _, err := MethodPolicies(module.Dir())
-	if err != nil {
-		return err
-	}
 	request, err := authorityRequestOf(module)
 	if err != nil {
 		return err
@@ -136,9 +140,18 @@ func validateModulePermissions(ctx context.Context, workspace *resources.Workspa
 	if err != nil {
 		return err
 	}
+	var methods []*compositionv1.MethodPolicyV1
+	if request.contract != nil && request.contract.RequireMethodPolicies {
+		methods, _, err = MethodPolicies(module.Dir())
+	} else {
+		methods, _, err = HostMethodPolicies(ctx, workspace, env, module)
+	}
+	if err != nil {
+		return err
+	}
 	if err = ValidateMethodPolicies(methods, required); err != nil {
 		if required {
-			return fmt.Errorf("module %s permissions (every published method declares a policy: %s): %w", module.Name, reason, err)
+			return fmt.Errorf("module %s permissions (every method it delivers declares a policy: %s): %w", module.Name, reason, err)
 		}
 		return fmt.Errorf("module %s permissions: %w", module.Name, err)
 	}

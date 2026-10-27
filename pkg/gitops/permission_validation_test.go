@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
+	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
@@ -372,4 +374,129 @@ func TestPreflightUsesSelectedClosureRatherThanEveryPinnedModule(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "local")
 	require.NoError(t, CheckCompositionPermissions(t.Context(), workspace, env, true, "good"))
 	require.ErrorContains(t, CheckCompositionPermissions(t.Context(), workspace, env, true, "bad"), "declares both requirements and any_checked_caller")
+}
+
+// addHostStandIn adds the local authority's shape to shop: a service "local"
+// whose exported grpc endpoint implements implemented — the interface the
+// host's delivery service implements, for a stand-in — and publishes
+// LocalService, two methods declaring nothing. route, when set, binds one of
+// them to that HTTP route; identity declares module-identity on it.
+func addHostStandIn(t *testing.T, workspace *resources.Workspace, implemented, route string, identity bool) *resources.Workspace {
+	t.Helper()
+	dir := filepath.Join(workspace.Dir(), "modules", "shop")
+	service := &descriptorpb.ServiceDescriptorProto{Name: proto.String("LocalService")}
+	for _, name := range []string{"Check", "Current"} {
+		m := &descriptorpb.MethodDescriptorProto{Name: proto.String(name), InputType: proto.String(".host.Empty"), OutputType: proto.String(".host.Empty")}
+		if name == "Current" && route != "" {
+			m.Options = &descriptorpb.MethodOptions{}
+			proto.SetExtension(m.Options, annotations.E_Http, &annotations.HttpRule{Pattern: &annotations.HttpRule_Get{Get: route}})
+		}
+		service.Method = append(service.Method, m)
+	}
+	set, err := proto.Marshal(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name: proto.String("local.proto"), Package: proto.String("host"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Empty")}}, Service: []*descriptorpb.ServiceDescriptorProto{service},
+	}}})
+	require.NoError(t, err)
+	local := hostedServiceYAML("local")
+	if identity {
+		local += "module-identity: true\n"
+	}
+	source := "syntax = \"proto3\";\npackage host;\n"
+	files := map[string]string{
+		resources.ModuleConfigurationName: "kind: module\nname: shop\nservices:\n  - name: api\n  - name: local\ninterface:\n  endpoints:\n" +
+			"    - service: api\n      endpoint: grpc\n    - service: api\n      endpoint: http\n      visibility: public\n" +
+			"    - service: local\n      endpoint: grpc\n      implements: [" + implemented + "]\n",
+		filepath.Join("services", "local", resources.ServiceConfigurationName):     local,
+		filepath.Join("services", "local", "proto", "local.proto"):                 source,
+		filepath.Join("contracts", "api", "local", "grpc", "proto", "local.proto"): source,
+		filepath.Join("contracts", "api", "local", "grpc", "contract.binpb"):       string(set),
+	}
+	for rel, content := range files {
+		full := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	manifestPath := filepath.Join(dir, "module.package.codefly.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	if !strings.Contains(string(manifest), "  - name: local\n") {
+		published := strings.Replace(string(manifest), "\ncontracts:\n", fmt.Sprintf(`
+  - name: local
+    endpoints: [grpc]
+    api-contracts:
+      - endpoint: grpc
+        kind: protobuf
+        package: host
+        path: contracts/api/local/grpc/contract.binpb
+        digest: sha256:%x
+contracts:
+`, sha256.Sum256(set)), 1)
+		require.NotEqual(t, string(manifest), published)
+		manifest = []byte(published)
+	} else {
+		manifest = regexp.MustCompile(`(path: contracts/api/local/grpc/contract.binpb\n\s+digest: )sha256:[0-9a-f]+`).ReplaceAll(manifest, []byte(fmt.Sprintf("${1}sha256:%x", sha256.Sum256(set))))
+	}
+	require.NoError(t, os.WriteFile(manifestPath, manifest, 0o644))
+	reloaded, err := resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+	require.NoError(t, err)
+	return reloaded
+}
+
+// A service that stands in for the host — it implements the interface the
+// host's delivery service implements, and does not run as the module, as the
+// local authority does beside its hop — is the host's code: a call to it is
+// never one the host decides for the module. So the table the module's
+// manifest carries to that host, which the preflight holds and a caller's
+// binding resolves against, leaves it out: its unmarked methods are not
+// refused, and a route it binds differently from the module's own service is
+// no conflict there, though the whole package still declares it twice. Every
+// service that runs as the module stays held by name — the module's own api,
+// and the stand-in itself once it declares module-identity — and a service
+// implementing an interface the host does not implement stands in for nothing.
+func TestAServiceStandingInForTheHostIsNotInTheTableItsManifestCarries(t *testing.T) {
+	const composition = CompositionInterface + "@1.0.0"
+	ctx := t.Context()
+	workspace, _, _ := sourcePolicyWorkspace(t)
+	workspace = composeCompositionHost(t, workspace)
+	workspace = addHostStandIn(t, workspace, composition, "/v1/console/whoami", false)
+	env := selectedEnvironment(t, workspace, "staging")
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+
+	_, _, err = MethodPolicies(module.Dir())
+	require.ErrorContains(t, err, "conflicting policies for GET /v1/console/whoami")
+	methods, ok, err := HostMethodPolicies(ctx, workspace, env, module)
+	require.NoError(t, err)
+	require.True(t, ok)
+	var names []string
+	for _, m := range methods {
+		names = append(names, m.GetMethod())
+	}
+	require.Contains(t, names, "/api.ApiService/WhoAmI")
+	require.Contains(t, names, "GET /v1/console/whoami")
+	require.NotContains(t, names, "/host.LocalService/Check")
+	require.NoError(t, ValidateModulePermissions(ctx, workspace, module, env))
+	require.NoError(t, CheckCompositionPermissions(ctx, workspace, env, true, "shop"))
+
+	// The module's own service still declares a policy on every method.
+	markPlain(t, module.Dir(), nil)
+	err = CheckCompositionPermissions(ctx, workspace, env, true, "shop")
+	require.ErrorContains(t, err, "/api.ApiService/Plain declares no permission policy")
+	require.NotContains(t, err.Error(), "LocalService")
+	markPlain(t, module.Dir(), &hopv1.Policy{AnyCheckedCaller: true})
+
+	// A stand-in that runs as the module is what the host fronts.
+	workspace = addHostStandIn(t, workspace, composition, "", true)
+	module, err = workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	err = ValidateModulePermissions(ctx, workspace, module, env)
+	require.ErrorContains(t, err, "/host.LocalService/Check declares no permission policy")
+	require.ErrorContains(t, err, "/host.LocalService/Current declares no permission policy")
+
+	// An interface the host does not implement makes no stand-in.
+	workspace = addHostStandIn(t, workspace, "codefly.dev/session@0.2.0", "", false)
+	module, err = workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	require.ErrorContains(t, ValidateModulePermissions(ctx, workspace, module, env), "/host.LocalService/Check declares no permission policy")
 }
