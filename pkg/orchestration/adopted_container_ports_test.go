@@ -25,6 +25,7 @@ func keptContainer(name string, port uint16) container.Summary {
 		State: "running",
 		Labels: map[string]string{
 			dockerrun.LabelCodeflyOwner:             "true",
+			dockerrun.LabelCodeflyService:           "web/gateway",
 			dockerrun.LabelCodeflyName:              name,
 			dockerrun.LabelCodeflyRecoveryScope:     testRecoveryScope,
 			dockerrun.LabelCodeflyRecoveryNamespace: testRecoveryNamespace,
@@ -52,6 +53,44 @@ func TestFirstInitAdoptsItsOwnKeptContainerAndRefusesAnyOtherHolder(t *testing.T
 		{name: "another service's name", mutate: func(c *container.Summary) {
 			c.Names = []string{"/codefly-other"}
 			c.Labels[dockerrun.LabelCodeflyName] = "codefly-other"
+			c.Labels[dockerrun.LabelCodeflyService] = "other/service"
+		}, refused: true},
+		// An agent may run several containers for one service and names each
+		// after itself: service-object-storage publishes the service's own
+		// grpc port from `<unique>-gateway`, beside `<unique>-minio` and
+		// a separate `<unique>-network` Docker network. Each container belongs
+		// to this service.
+		{name: "its agent's gateway container", mutate: func(c *container.Summary) {
+			suffixed(c, "-gateway")
+		}, refused: false},
+		{name: "its agent's minio container", mutate: func(c *container.Summary) {
+			suffixed(c, "-minio")
+		}, refused: false},
+		// A sibling service is still not this one, suffix or no suffix.
+		{name: "a sibling service's container", mutate: func(c *container.Summary) {
+			c.Names = []string{"/codefly-other-web-gateway-minio"}
+			c.Labels[dockerrun.LabelCodeflyName] = "codefly-other-web-gateway-minio"
+			c.Labels[dockerrun.LabelCodeflyService] = "other/gateway"
+		}, refused: true},
+		{name: "distinct sibling sharing the name prefix", mutate: func(c *container.Summary) {
+			suffixed(c, "-admin")
+			c.Labels[dockerrun.LabelCodeflyService] = "web/gateway-admin"
+		}, refused: true},
+		{name: "label and concrete name disagree", mutate: func(c *container.Summary) {
+			c.Names[0] += "-other"
+		}, refused: true},
+		{name: "legacy exact bare name", mutate: func(c *container.Summary) {
+			delete(c.Labels, dockerrun.LabelCodeflyService)
+		}},
+		{name: "legacy suffix proves no parent", mutate: func(c *container.Summary) {
+			suffixed(c, "-gateway")
+			delete(c.Labels, dockerrun.LabelCodeflyService)
+		}, refused: true},
+		{name: "malformed parent on exact bare name", mutate: func(c *container.Summary) {
+			c.Labels[dockerrun.LabelCodeflyService] = "web/gateway/other"
+		}, refused: true},
+		{name: "conflicting parent on exact bare name", mutate: func(c *container.Summary) {
+			c.Labels[dockerrun.LabelCodeflyService] = "web/other"
 		}, refused: true},
 		{name: "ephemeral", mutate: func(c *container.Summary) { c.Labels[dockerrun.LabelCodeflyEphemeral] = "true" }, refused: true},
 		{name: "not running", mutate: func(c *container.Summary) { c.State = "exited" }, refused: true},
@@ -106,6 +145,14 @@ func TestFirstInitAdoptsItsOwnKeptContainerAndRefusesAnyOtherHolder(t *testing.T
 func TestAdoptedContainerAddressesExcuseNothingWithoutARecoveryIdentity(t *testing.T) {
 	runner := &Runner{}
 	require.False(t, runner.adoptedContainerAddresses(context.Background())("127.0.0.1:5432"))
+}
+
+// suffixed renames a kept container the way an agent that runs more than one
+// container for a service does, through Core's own ContainerName.
+func suffixed(c *container.Summary, suffix string) {
+	name := c.Labels[dockerrun.LabelCodeflyName] + suffix
+	c.Names = []string{"/" + name}
+	c.Labels[dockerrun.LabelCodeflyName] = name
 }
 
 // A publication covers only its own loopback family.

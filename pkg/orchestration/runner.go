@@ -1126,8 +1126,8 @@ type portCollision struct {
 // of both families before the service binds sees either squatter.
 //
 // adopted excuses an address whose listener is the service's own: the
-// container its agent will adopt (Runner.adoptedContainerAddresses). nil
-// excuses nothing.
+// container attributed by Runner.adoptedContainerAddresses. The agent decides
+// actual reuse during Init. nil excuses nothing.
 func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, adopted func(address string) bool) []string {
 	var collisions []portCollision
 	for _, mapping := range mappings {
@@ -1282,7 +1282,7 @@ func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed
 		return nil
 	}
 	// A listener that is the service's own kept container is not a ghost: its
-	// agent adopts it (keep-running), and 'codefly clear' would delete it.
+	// agent decides its reuse (keep-running); this guard must not delete it.
 	if held := boundNativePorts(ctx, proposed, runner.adoptedContainerAddresses(ctx)); len(held) > 0 {
 		// The holder is whoever bound the port first — it may be a leftover
 		// codefly run, but it may equally be the user's own server, so the
