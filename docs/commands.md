@@ -135,6 +135,20 @@ writer follows the gateway's current address. The `--output-env` file is a map
 of the run's current environment, rewritten whole: a key written again
 replaces its line, so a reader never meets two values for one key.
 
+**What `--output-env` writes, and for which environment.** The file is the
+service's process environment as the agent receives it, owner-only (`0600`):
+its own configuration and runtime configurations, the workspace groups it is
+handed, and — written once at Start, after the dependency barrier — its
+dependencies' configurations; secret values are in it, which is why it is
+owner-only and never committed. A workspace group that is one YAML or JSON
+**structured document** rather than key/value pairs (the composition root's
+merged `fixture-composition`, for example) is carried under a key that hashes
+the group's origin, its name and the **selected run environment** — the same
+key the SDK derives to read it back — so every write names the environment the
+run selected (`--env`), the excluded root's file included. A writer handed no
+environment refuses by name rather than writing a document no reader could
+find.
+
 **The delivery host's federation surface.** In a host environment the native
 run hands the service `host.delivery` names, when it declares the `federation`
 workspace configuration, the three keys that turn its delivery surface on,
