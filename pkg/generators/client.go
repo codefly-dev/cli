@@ -5,6 +5,7 @@ package generators
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,8 @@ const defaultFacadeModule = "client"
 // an entry generated from a live local service rather than a composed module
 // package (no producer package to name).
 const localPackageID = "local"
+
+var errInvalidLibraryManifest = errors.New("invalid generated library manifest")
 
 // ContractEntry is one API contract a generated library binds: an endpoint's
 // catalog entry, the raw contract bytes it points to, the package/module that
@@ -152,41 +155,9 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		return fmt.Errorf("cannot aggregate an OpenAPI contract with other entries in one library")
 	}
 
-	existingSources, err := readExistingLibrarySources(req.Output)
+	existingLanguages, err := existingLibraryLanguages(req, entries)
 	if err != nil {
 		return err
-	}
-	existingByKey := make(map[[3]string]librarySource, len(existingSources))
-	for i := range existingSources {
-		s := &existingSources[i]
-		existingByKey[[3]string{s.Module, s.Service, s.Endpoint}] = *s
-	}
-	anyDigestChanged := false
-	for i := range entries {
-		entry := &entries[i]
-		key := [3]string{entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint}
-		prior, ok := existingByKey[key]
-		if !ok || prior.ContractDigest == entry.Endpoint.Digest {
-			continue
-		}
-		if !req.Force {
-			return fmt.Errorf("library %s already has %s/%s (module %s) at a different contract (digest %s, generating %s); use --force to overwrite",
-				req.Name, entry.Endpoint.Service, entry.Endpoint.Endpoint, entry.ModuleName, prior.ContractDigest, entry.Endpoint.Digest)
-		}
-		anyDigestChanged = true
-	}
-
-	// Only carry a previously-declared language forward when every entry this
-	// run generated is the same contract that produced it (no digest changed):
-	// a --force digest override means at least one contract changed, so a
-	// language directory this run does not touch is now stale relative to it
-	// and the manifest must stop vouching for it.
-	var existingLanguages []generatedLanguageExport
-	if !anyDigestChanged {
-		existingLanguages, err = readExistingLanguageExports(req.Output)
-		if err != nil {
-			return err
-		}
 	}
 
 	pyPackage := strings.ReplaceAll(req.Name, "-", "_")
@@ -251,6 +222,59 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 
 	cli.Header(1, "Library %s generated at %s", req.Name, req.Output)
 	return nil
+}
+
+// existingLibraryLanguages retains language declarations only when the stored
+// manifest is readable and still describes the selected contracts. Forced
+// single-contract recovery discards declarations the broken manifest cannot vouch for.
+func existingLibraryLanguages(req *ClientLibraryRequest, entries []ContractEntry) ([]generatedLanguageExport, error) {
+	existingSources, err := readExistingLibrarySources(req.Output)
+	rebuildManifest := req.Force && len(entries) == 1 && errors.Is(err, errInvalidLibraryManifest)
+	if err != nil && !rebuildManifest {
+		return nil, err
+	}
+	if rebuildManifest {
+		existingSources = nil
+	}
+	existingByKey := make(map[[3]string]librarySource, len(existingSources))
+	for i := range existingSources {
+		s := &existingSources[i]
+		existingByKey[[3]string{s.Module, s.Service, s.Endpoint}] = *s
+	}
+	// A malformed manifest cannot vouch for previously generated languages.
+	// One explicit contract supplies its replacement identity and version.
+	anyDigestChanged := rebuildManifest
+	for i := range entries {
+		entry := &entries[i]
+		key := [3]string{entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint}
+		prior, ok := existingByKey[key]
+		if !ok || prior.ContractDigest == entry.Endpoint.Digest {
+			continue
+		}
+		if !req.Force {
+			return nil, fmt.Errorf("library %s already has %s/%s (module %s) at a different contract (digest %s, generating %s); use --force to overwrite",
+				req.Name, entry.Endpoint.Service, entry.Endpoint.Endpoint, entry.ModuleName, prior.ContractDigest, entry.Endpoint.Digest)
+		}
+		anyDigestChanged = true
+	}
+
+	// Only carry a previously-declared language forward when every entry this
+	// run generated is the same contract that produced it (no digest changed):
+	// a --force digest override means at least one contract changed, so a
+	// language directory this run does not touch is now stale relative to it
+	// and the manifest must stop vouching for it.
+	var existingLanguages []generatedLanguageExport
+	if !anyDigestChanged {
+		existingLanguages, err = readExistingLanguageExports(req.Output)
+		if err != nil {
+			if !req.Force || len(entries) != 1 || !errors.Is(err, errInvalidLibraryManifest) {
+				return nil, err
+			}
+			existingLanguages = nil
+		}
+	}
+
+	return existingLanguages, nil
 }
 
 // checkContractDiamond groups entries by protobuf package and errors when a
@@ -767,7 +791,7 @@ func readExistingLibrarySources(outputDir string) ([]librarySource, error) {
 		Sources []librarySource `yaml:"sources"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
+		return nil, fmt.Errorf("cannot parse existing %s: %w: %w", resources.LibraryConfigurationName, errInvalidLibraryManifest, err)
 	}
 	return doc.Sources, nil
 }
@@ -786,7 +810,7 @@ func readExistingLanguageExports(outputDir string) ([]generatedLanguageExport, e
 		Languages []generatedLanguageExport `yaml:"languages"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("cannot parse existing %s: %w", resources.LibraryConfigurationName, err)
+		return nil, fmt.Errorf("cannot parse existing %s: %w: %w", resources.LibraryConfigurationName, errInvalidLibraryManifest, err)
 	}
 	return doc.Languages, nil
 }

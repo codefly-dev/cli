@@ -4,7 +4,7 @@ Codefly formalizes development operations as typed gRPC APIs. The CLI is the use
 
 This page is the narrative guide: what a verb is for, and the chains it takes
 part in. For the complete list of every command and flag, see
-[cli-reference.md](cli-reference.md), which is generated from the command tree —
+[cli-reference.md](generated/cli-reference.md), which is generated from the command tree —
 a command cannot exist without appearing there, and its text is the same one
 `--help` prints.
 
@@ -3485,7 +3485,7 @@ with no caller and no way to detect drift.
 | `--module-name` | Facade entry-point name (default: derived from the contract's proto package) |
 | `--no-facade` | Bindings only |
 | `--output` | Output directory (default `<workspace>/libraries/<name>`) |
-| `--force` | Overwrite an existing library whose recorded contract digest differs |
+| `--force` | Overwrite a different contract, or rebuild a malformed single-contract library manifest |
 | `--go-module` | Go module path for `go/` (default `github.com/codefly-dev/<name>-go`) |
 | `--npm-scope` | npm package name for `typescript/` (default `@codefly-dev/<name>`) |
 
@@ -3496,6 +3496,12 @@ digest is the drift signal between a library and the contract it was generated
 from. `library.codefly.yaml` always carries a `sources:` list (one element for
 `generate client`, one per aggregated contract for `sync solution-sdk` below) so
 both commands share one schema.
+
+For one explicit contract, `--force` can also rebuild a malformed generated
+manifest, including unresolved merge conflicts. Its source and version come from
+that contract; only the requested, freshly generated languages are recorded.
+Filesystem errors and an aggregate library's unknown version still refuse the
+run. Package validation and generation must succeed before any output changes.
 
 Every requested language is generated into scratch directories before anything
 under the library is written. A run that fails in the proto companion (a

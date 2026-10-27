@@ -2,7 +2,7 @@
 
 Add a Cobra command (or subcommand) to the CLI and wire up help, docs, and — where relevant —
 MCP exposure. See [../commands.md](../commands.md) for the narrative command guide and
-[../cli-reference.md](../cli-reference.md) for the generated list of every command and flag.
+[../generated/cli-reference.md](../generated/cli-reference.md) for the generated list of every command and flag.
 
 ## When to use
 
@@ -90,7 +90,7 @@ provider — so the static text is the contract; keep it accurate.
 
 Two documents, two jobs.
 
-[../cli-reference.md](../cli-reference.md) is generated from the command tree and lists every
+[../generated/cli-reference.md](../generated/cli-reference.md) is generated from the command tree and lists every
 command and flag. Regenerate it — `go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`
 — and commit the result. `TestCLIReferenceIsCurrent` fails otherwise, naming your command: that is
 the guard, and it is why a new verb can no longer ship undocumented. Its text is the `Short`,
@@ -131,7 +131,7 @@ go test ./cmd/...
 - [ ] Registered in `cmd/root.go` (top-level) or the parent's `init()`
 - [ ] Parent groups reject unknown subcommands
 - [ ] `Short`/`Long`/`Example` complete and network-free
-- [ ] `docs/cli-reference.md` regenerated and committed (`go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`)
+- [ ] `docs/generated/cli-reference.md` regenerated and committed (`go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`)
 - [ ] Written up in `docs/commands.md` under the right category
 - [ ] MCP tool added or consciously skipped (no `deploy` verb is exposed — see step 5)
 - [ ] Tests pass; `--help` and `explain` render

@@ -81,7 +81,7 @@ func init() {
 	ClientCmd.Flags().StringVar(&clientModuleName, "module-name", "", "facade entry-point name (default: derived from the contract)")
 	ClientCmd.Flags().BoolVar(&clientNoFacade, "no-facade", false, "generate bindings only, no facade")
 	ClientCmd.Flags().StringVar(&clientOutput, "output", "", "output directory (default: <workspace>/libraries/<name>)")
-	ClientCmd.Flags().BoolVar(&clientForce, "force", false, "overwrite an existing library with a different contract digest")
+	ClientCmd.Flags().BoolVar(&clientForce, "force", false, "overwrite a different contract or rebuild a malformed single-contract library manifest")
 	ClientCmd.Flags().StringVar(&clientEndpoint, "endpoint", "", "select an endpoint when --from package:/contracts: resolves to more than one: service/endpoint (a local --from names its endpoint as its own third segment instead)")
 	ClientCmd.Flags().StringVar(&clientGoModule, "go-module", "", "Go module path for the generated go/ library (default: github.com/codefly-dev/<name>-go)")
 	ClientCmd.Flags().StringVar(&clientNpmScope, "npm-scope", "", "npm package name for the generated typescript/ library (default: @codefly-dev/<name>)")
