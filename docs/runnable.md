@@ -53,6 +53,15 @@ Owners with restricted listeners generate the procedure inventory from their
 registration/routing tables and configure
 [the module's `contracts.codefly.yaml`](commands.md#generate-contracts) before exporting.
 
+A solution's routes are the same derivation read from its OpenAPI document
+rather than from descriptors: `generate runnables` derives every route marked
+`x-codefly-operation` with core's `runnable.PackageFromOpenAPIOperation`, into
+the same tree and index, and `generate runnable-bindings` prepares each keyed
+`<SOLUTION>__<OPERATION>` with a `rest` route — the verb and path — at the
+solution's `http` endpoint. solution-runtime-go marks every read a backend
+serves, so a solution's `GET` reads become read-only Runnables, and so tools,
+with nothing hand-written (codefly-dev/cli#1184).
+
 This is a separate path from `build runnable`, not a branch in it. A SERVICE
 package has no archive and no launch command: the implementation is the method
 itself, reached on the owner's endpoint, inside the process the owner already

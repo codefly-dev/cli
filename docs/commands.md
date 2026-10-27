@@ -3721,8 +3721,27 @@ person without the grant. The message descriptors say what the contract is,
 spelled as the Connect wire carries it — JSON member names, 64-bit integers as
 strings (core docs/runnable.md).
 
-The run reports each operation with its origin (`option` or `default`) and
-effect, lists the methods left plain calls and why, and — when any operation
+**A solution's routes derive the same way.** A solution is a module whose
+backend serves its routes on an `http` endpoint and publishes them as one
+OpenAPI document (Swagger 2.0, as solution-runtime-go writes it, or OpenAPI 3).
+`generate runnables <solution>` walks that document and derives every route
+marked `x-codefly-operation`, through the same writers, into the same tree and
+index: one directory per route, named by its operationId (the route's words
+when the document gives none). solution-runtime-go marks each read a backend
+serves — a route whose `x-codefly-authority-policy` requires only `read` — with
+the marker core derives from that policy (`runnable.RouteMarker`), so a `GET`
+read becomes a read-only Runnable whose query parameters are its input, and a
+mutation, which the runtime does not mark, becomes nothing. A marked route core
+refuses (a `GET` that would mutate, a payload outside the profile) is named and
+fails the command, as a method carrying the option does. No flag names a route.
+A document that marks **no** route although some declare a policy requiring only
+`read` is the signature of an artifact rendered by solution-runtime-go's
+`InterfaceDocument` instead of `Server.InterfaceArtifact`, or by a runtime from
+before the marker; each such read is listed as "not an operation", naming the
+fix, rather than leaving an empty index in silence.
+
+The run reports each operation with its origin (`option`, `default`, or
+`marker` for a route) and effect, lists the methods left plain calls and why, and — when any operation
 was derived by default — counts them, names the mutations, and points at
 `codefly.runnable.v0.exclude`. A release name longer than 50 characters is
 shortened deterministically to a stable prefix and an eight-digit digest, so
@@ -3741,6 +3760,7 @@ contracts/runnables/
   index.json                                           one row per operation
   <service>/<endpoint>/<Method>/runnable-package.json  the canonical package
   <service>/<endpoint>/<Method>/operation.json         its policy and authority
+  <service>/<endpoint>/<operationId>/...               the same, for a route
 ```
 
 `runnable-package.json` is the canonical proto3 JSON core takes the package

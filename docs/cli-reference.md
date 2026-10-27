@@ -2731,6 +2731,7 @@ Subcommands:
 
 - [`codefly generate client`](#codefly-generate-client)
 - [`codefly generate contracts`](#codefly-generate-contracts)
+- [`codefly generate fixture-composition`](#codefly-generate-fixture-composition)
 - [`codefly generate permissions`](#codefly-generate-permissions)
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
@@ -2814,6 +2815,43 @@ Flags:
       --format string   output format: text|json (default "text")
       --output string   output directory for generated contracts (default: <module dir>/contracts/api)
       --permissions     also generate typed permission constants; with --check, verify their freshness
+```
+
+## `codefly generate fixture-composition`
+
+Merge every composed module's fixture-composition fragment into the workspace's document
+
+```
+Merge the fixture-composition fragment every module of the workspace ships
+(configurations/<profile>/fixture-composition.yaml in the module's own directory)
+into the workspace's configurations/<profile>/fixture-composition.yaml, the document
+the local authority reads.
+
+Each module states, once, what the local authority's standard fixture roles may
+do at its kinds; the composition's own module states only what is its own (a
+collection its seed writes). Every grant of a role on one kind, every
+installation and every stand-in module has exactly one source: two fragments
+stating the same one are refused, naming both. The rules are the authority's
+(codefly-dev/authority libraries/fixture-composition).
+
+`codefly run` writes the same document before the local authority boots, so a
+developer never runs this first. The written file says it is generated in its
+first line; a hand-written document is never overwritten, and this command
+refuses it by name.
+
+Examples:
+  codefly generate fixture-composition
+  codefly generate fixture-composition --env local
+```
+
+```
+codefly generate fixture-composition [flags]
+```
+
+Flags:
+
+```
+      --env string   environment whose configuration profile the document is written for (default "local")
 ```
 
 ## `codefly generate permissions`
@@ -2914,7 +2952,7 @@ For each derived operation the value is one JSON document
 (codefly.runnable-prepared/v3):
 
   operation        the owner coordinates, and the operation as the owner spells
-                   it: /pkg.Service/Method, or "POST /path"
+                   it: /pkg.Service/Method, or "GET /path" for a route
   call             where one call is sent: the resolved base URL, and a typed
                    route — connect (the procedure, POSTed as JSON on the owner's
                    Connect endpoint) or rest (the owner's own verb and path)
@@ -2931,6 +2969,9 @@ A gRPC owner is therefore called on its **Connect** endpoint: a service that
 publishes a runnable-marked method and declares no connect endpoint is refused
 here, by name, rather than at a call.
 An operation published directly on a Connect endpoint uses that endpoint.
+A solution's route is called on the http (or rest) endpoint whose OpenAPI
+document published it, with its own verb and path, and keyed by the solution's
+name exactly as a module operation is by its module's (SOLUTION__OPERATION).
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. Locally that is the address of the run's
@@ -3003,11 +3044,12 @@ Flags:
 
 ## `codefly generate runnables`
 
-Derive SERVICE-facility Runnable packages, and so tools, from a module's served methods
+Derive SERVICE-facility Runnable packages, and so tools, from a module's served methods and a solution's routes
 
 ```
 Derive a Runnable package for every gRPC method a module's published contracts
-serve behind the authority hop. Every Runnable is a tool.
+serve behind the authority hop, and every REST route a solution's published
+OpenAPI document marks. Every Runnable is a tool.
 
 A method that declares its authority policy (authority.hop.v1.policy) is an
 operation with nothing added: a policy requiring only "read" derives a
@@ -3018,8 +3060,18 @@ codefly.runnable.v0.exclude keeps a method from every agent. The message
 descriptors say what the contract is, by their proto3 JSON. Nothing is written
 twice.
 
+A solution publishes its routes as one OpenAPI document (Swagger 2.0 or
+OpenAPI 3), and every route marked x-codefly-operation derives the same way:
+solution-runtime-go marks each read the backend serves, so a GET read becomes a
+read-only tool whose query parameters are its input. Its directory is named by
+the route's operationId. No flag names a route. A document that marks no route
+although its routes declare read-only policies — rendered by the runtime's
+InterfaceDocument rather than Server.InterfaceArtifact, or by a runtime from
+before the marker — names each such read as not an operation.
+
 The input is what `codefly generate contracts` already wrote — each endpoint's
-served procedures in the API catalog and its serialized FileDescriptorSet.
+served procedures in the API catalog and its serialized FileDescriptorSet, or
+its OpenAPI document.
 Run that first. Only served methods are derived; a declared Lookup must be
 served on the same endpoint. No flag names a method.
 
@@ -3028,6 +3080,8 @@ For each marked method this writes, under contracts/runnables:
   <service>/<endpoint>/<Method>/runnable-package.json   the canonical package
   <service>/<endpoint>/<Method>/operation.json          its execution policy and authority
   index.json                                            one row per operation
+
+and the same, under <service>/<endpoint>/<operationId>/, for each marked route.
 
 The tree is fully owned: a method that is no longer an operation loses its
 directory. A module with no operation writes an empty index, not an error.
@@ -3043,6 +3097,7 @@ prints a unified diff of what differs, without writing anything.
 Examples:
   codefly generate runnables
   codefly generate runnables documents
+  codefly generate runnables releases          # a solution: its marked routes
   codefly generate runnables --check
 ```
 

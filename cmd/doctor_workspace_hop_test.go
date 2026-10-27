@@ -67,9 +67,34 @@ func TestDoctorWorkspaceRecognizesGeneratedHopRoutes(t *testing.T) {
 	}
 }
 
+// A composition that names no module for the hop is READY: the declaring
+// service receives hop-routes with an empty ROUTES, which the doctor reads
+// from the same resolved inventory the run resolves (checkConfigurationSources
+// takes generated groups from there, "never from a name exemption"), so
+// nothing reports the group missing.
+//
+// This replaces a baselined refusal: `{"no selected modules", …,
+// codeConfigurationMissing, "hop-routes"}` in the table below asserted that
+// this composition fails the doctor. That refusal was the symptom of the
+// delivery gap, not a rule — a host that stands a hop only on some
+// compositions (saas's gateway on a cell) declares the group always and must
+// start where it stands no hop — so the case is replaced by this one rather
+// than kept green.
+func TestDoctorWorkspaceAcceptsAHopThatSelectsNoModule(t *testing.T) {
+	dir := doctorHopWorkspace(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, "configurations/local/hop.env")))
+	before := snapshotTree(t, dir)
+	for _, opts := range []workspaceReadinessOptions{{dir: dir}, {dir: dir, service: "authority/hop"}} {
+		report := runReadiness(t, opts)
+		require.Equal(t, readinessStatusReady, report.Status, reportJSON(t, report))
+		requireNoCode(t, report, codeConfigurationMissing)
+		requireNoCode(t, report, codeConfigurationDirMissing)
+	}
+	require.Equal(t, before, snapshotTree(t, dir), "doctor must not materialize an empty route table")
+}
+
 func TestDoctorWorkspaceStillRefusesInvalidHopInputs(t *testing.T) {
 	for _, tc := range []struct{ name, path, content, code, reason string }{
-		{"no selected modules", "configurations/local/hop.env", "", codeConfigurationMissing, "hop-routes"},
 		{"missing catalog", "modules/records/" + composition.APIContractCatalogFileName, "", codeConfigurationInvalid, "not checked"},
 		{"bad principal", "modules/records/module.contract.codefly.yaml", "schema: codefly/module-contract/v1\nprincipal: other\n", codeConfigurationInvalid, "principal"},
 		{"authored routes", "configurations/local/hop-routes.env", "ROUTES={}\n", codeConfigurationInvalid, "remove its authored configuration"},
