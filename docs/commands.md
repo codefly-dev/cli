@@ -118,7 +118,10 @@ service` that do not name one root service — `--naming-scope`,
 `--temporary-ports`, `--output-env`, `--runtime-context`, `--set` among them,
 never `--stand-alone` or `--exclude-root`; `--exclude-dependency` and
 `--exclude-workspace-configuration` leave a service or a configuration group
-out. The deterministic port hash folds every endpoint into a few thousand
+out. The selected environment's `exclude-services` also removes services from
+the composition roots; a module withdrawn whole contributes no root, including
+its service-entry. CLI and run-profile exclusions still apply on top.
+The deterministic port hash folds every endpoint into a few thousand
 buckets, so a `--naming-scope` can hash two endpoints to one port and abort
 the run; `--temporary-ports` sidesteps the hash, under the ordering its
 allocation needs — a workspace configuration reference to a service that has
