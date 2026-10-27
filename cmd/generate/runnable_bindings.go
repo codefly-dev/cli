@@ -141,7 +141,12 @@ Examples:
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		workspace, err := common.LoadWorkspace(ctx)
+		// Every composed module is walked for its derived operations, so a
+		// pinned module is materialized first, as a run, a render and
+		// `generate fixture-composition` do: on a fresh checkout — a CI job —
+		// the plain loader refuses a pinned module as "not loadable as a local
+		// checkout", and --check never reaches the file it exists to judge.
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}
