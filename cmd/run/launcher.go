@@ -604,7 +604,8 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 }
 
 // newCompositionDelivery speaks the composition interface over conn, reading
-// each module's method policies, scope ceilings, roles and owner-awareness
+// each module's method policies (the table its manifest carries to this
+// host, gitops.HostMethodPolicies), scope ceilings, roles and owner-awareness
 // from the module as the run composes it at the time of the delivery.
 func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *gitops.CompositionDelivery {
 	load := func(ctx context.Context, module string) (string, error) {
@@ -616,11 +617,11 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 	}
 	return gitops.NewCompositionDelivery(conn, cluster.signer,
 		func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
-			dir, err := load(ctx, module)
+			m, err := cluster.composed().LoadModuleFromName(ctx, module)
 			if err != nil {
 				return nil, false, err
 			}
-			return gitops.MethodPolicies(dir)
+			return gitops.HostMethodPolicies(ctx, cluster.composed(), cluster.env, m)
 		},
 		func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error) {
 			dir, err := load(ctx, module)

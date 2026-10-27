@@ -371,7 +371,10 @@ func TestMethodPoliciesListOnlyTheServedMethods(t *testing.T) {
 	if !slices.Equal(served.Unserved, []string{"/api.ApiService/Plain"}) {
 		t.Fatalf("unserved: %v", served.Unserved)
 	}
-	methods := served.All()
+	methods, err := served.All()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var names []string
 	for _, m := range methods {
 		names = append(names, m.GetMethod())
@@ -386,5 +389,83 @@ func TestMethodPoliciesListOnlyTheServedMethods(t *testing.T) {
 	writeCatalog(contract.Digest, "connect")
 	if _, _, err := MethodPolicies(dir); err == nil || !strings.Contains(err.Error(), "records no endpoint api/grpc") {
 		t.Fatalf("a catalog with no entry for the endpoint: %v", err)
+	}
+}
+
+// gatewayPackage is policyPackage with a second contract on its api service:
+// the OpenAPI document of an http endpoint, written before the protobuf one,
+// the shape `codefly generate contracts` publishes for a gRPC service's REST
+// gateway or proxy face. document is that document.
+func gatewayPackage(t *testing.T, document string) string {
+	t.Helper()
+	dir := policyPackage(t, false)
+	path := filepath.Join(dir, "contracts", "api", "api", "http", "openapi.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(document))
+	manifestPath := filepath.Join(dir, "module.package.codefly.yaml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := strings.Replace(string(manifest), "    endpoints: [grpc]\n    api-contracts:\n", `    endpoints: [grpc, http]
+    api-contracts:
+      - endpoint: http
+        kind: openapi
+        package: api.proto
+        path: contracts/api/api/http/openapi.json
+        digest: sha256:`+hex.EncodeToString(sum[:])+"\n", 1)
+	if gateway == string(manifest) {
+		t.Fatal("the package manifest changed shape")
+	}
+	if err := os.WriteFile(manifestPath, []byte(gateway), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A gRPC service's OpenAPI document is its proto rendered for HTTP, which has
+// no place for the policy option: a route it declares nothing for, which one
+// of the service's proto methods binds, carries that method's policy rather
+// than a second, empty declaration that would contradict it, whichever
+// contract the package lists first. A route the proto does not bind is the
+// document's own, listed as it declares it, and a policy the document does
+// declare is a declaration, refused when it differs from the proto's.
+func TestAGatewayRouteCarriesThePolicyOfTheProtoMethodItRenders(t *testing.T) {
+	methods, ok, err := MethodPolicies(gatewayPackage(t, `{"swagger":"2.0","info":{"title":"api.proto"},"paths":{
+		"/v1/console/whoami":{"get":{}},
+		"/v1/console/extra":{"get":{}}}}`))
+	if err != nil || !ok {
+		t.Fatalf("methods: %v %v", ok, err)
+	}
+	byName := map[string]*compositionv1.MethodPolicyV1{}
+	for _, m := range methods {
+		if byName[m.GetMethod()] != nil {
+			t.Fatalf("%s is listed twice", m.GetMethod())
+		}
+		byName[m.GetMethod()] = m
+	}
+	if r := byName["GET /v1/console/whoami"].GetRequires(); len(r) != 1 || r[0].GetResourceKind() != "console.identity" {
+		t.Fatalf("the gateway's copy of WhoAmI's route carries WhoAmI's policy: %v", byName["GET /v1/console/whoami"])
+	}
+	if extra := byName["GET /v1/console/extra"]; extra == nil || !declaresNothing(extra) {
+		t.Fatalf("a route no proto method binds is listed as the document declares it: %v", extra)
+	}
+	if err := ValidateMethodPolicies([]*compositionv1.MethodPolicyV1{byName["GET /v1/console/whoami"]}, true); err != nil {
+		t.Fatalf("the derived route declares a policy: %v", err)
+	}
+
+	_, _, err = MethodPolicies(gatewayPackage(t, `{"swagger":"2.0","paths":{
+		"/v1/console/whoami":{"get":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`))
+	if err == nil || !strings.Contains(err.Error(), "conflicting policies for GET /v1/console/whoami") {
+		t.Fatalf("a document declaring another policy for the route: %v", err)
+	}
+	if _, _, err = MethodPolicies(gatewayPackage(t, `{"swagger":"2.0","paths":{
+		"/v1/console/whoami":{"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"console.identity","actions":["read"]}]}}}}}`)); err != nil {
+		t.Fatalf("a document declaring the proto's own policy: %v", err)
 	}
 }
