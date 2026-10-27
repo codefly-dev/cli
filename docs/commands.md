@@ -2648,7 +2648,31 @@ codefly list module       # List modules (alias: application)
 codefly list libraries    # List workspace libraries (--remote for published versions, --json for machine output)
 codefly list jobs         # List jobs
 codefly list runnables    # List runnables (--module to scope, --json for machine output)
+codefly list runnables --tools --env=staging   # Only the tools, with each one's grant
 ```
+
+Every Runnable a module derives from its published contracts is listed beside
+the ones it declares, carrying the tool its owner exposed it as — the
+model-facing name and the explicit effect (`codefly.runnable.v0.ToolExposure`).
+An operation with no exposure is listed without one: absent means not exposed,
+and an unstated effect is not read-only. `--tools` keeps only the exposed ones,
+which is what a composition can grant as a tool.
+
+`--env <name>` adds the configuration key each derived operation's authority is
+answered under — the `runnable-scope-selections` key in
+`workspace.codefly.yaml`, see [Generate runnable-bindings](#generate-runnable-bindings)
+— and what that environment has answered:
+
+| grant | meaning |
+| --- | --- |
+| `selected` | a binding is prepared: the operation asks for no scope slot, or the environment's answer resolves the ones it asks for |
+| `declined` | answered `[]`: installed for no resource, granted no authority, offered as no tool |
+| `needs-scopes` | its owner asks for scope slots nobody has answered; `generate runnable-bindings` refuses it by name rather than preparing a binding with the question still open |
+
+`needs-scopes` is how a module version that offers a new tool becomes visible:
+the operation appears in the listing, nothing answers it, and the answer is
+written under the key the listing names. An environment the workspace does not
+declare is an error, not a listing whose grant column is quietly absent.
 
 See [Runnables](runnable.md) for what a runnable is and which parts of its
 lifecycle the CLI implements today.
