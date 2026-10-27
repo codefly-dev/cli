@@ -175,7 +175,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	// behind the materialization gate like every other check that loads them.
 	checkRunnableBindingDeclines(ctx, ws, env, report)
 
-	scope, requiredBy := checkScope(ctx, ws, opts.module, opts.service, report)
+	scope, requiredBy := checkScope(ctx, ws, env, opts.module, opts.service, report)
 	if scope == nil {
 		return report
 	}
@@ -790,7 +790,11 @@ func checkSecretProviders(env *environments.Environment, report *workspaceReadin
 // acts on one unit must not be judged by a sibling unit's missing
 // configuration. --service wins when both are given, being the narrower of the
 // two.
-func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, serviceName string, report *workspaceReadinessReport) ([]*resources.Service, map[string][]string) {
+func checkScope(ctx context.Context, ws *resources.Workspace, env *environments.Environment, moduleName, serviceName string, report *workspaceReadinessReport) ([]*resources.Service, map[string][]string) {
+	if err := environments.ValidateEnvironmentExclusions(ctx, ws, env); err != nil {
+		report.add(codeWorkspaceInvalid, "services", "fail", err.Error(), "correct the selected environment's exclude-services declarations")
+		return nil, nil
+	}
 	services, err := ws.LoadServices(ctx)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "services", "fail",
@@ -841,6 +845,21 @@ func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, servic
 		scope = []*resources.Service{svc}
 		report.Service = serviceUnique(svc)
 	}
+	excluded := env.ExcludedServiceUniques()
+	selected := make([]*resources.Service, 0, len(scope))
+	for _, svc := range scope {
+		if slices.Contains(excluded, serviceUnique(svc)) {
+			if serviceName != "" {
+				report.add(codeServiceNotFound, "service", "fail",
+					fmt.Sprintf("environment %q excludes %s", env.Name, serviceUnique(svc)),
+					"select a service included in this environment")
+				return nil, nil
+			}
+			continue
+		}
+		selected = append(selected, svc)
+	}
+	scope = selected
 	requiredBy := make(map[string][]string)
 	for _, svc := range scope {
 		for _, dep := range svc.WorkspaceConfigurationDependencies {
@@ -1099,6 +1118,12 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		if checked != nil {
 			for _, info := range checked.Infos {
 				if _, authored := byName[info.Name]; authored {
+					// Generated binding decisions must judge the values the
+					// invocation delivers, including Core-applied overrides.
+					// Keep the authored inventory for provenance and conflicts.
+					if info.Name == generate.RunnableBindingsGroup {
+						byName[info.Name] = info
+					}
 					continue
 				}
 				byName[info.Name] = info
@@ -1261,7 +1286,7 @@ func checkRequiredWorkspaceConfiguration(ctx context.Context, ws *resources.Work
 // no runnable binding, so the group absent or holding no value is its answer.
 // A selected binding the group does not hold fails, naming the generation
 // that writes it. It reports whether it judged the group; a group that holds
-// every selected binding is left to the checks every group gets.
+// every selected binding must also match the generator's prepared values.
 func checkRunnableBindingsGroup(ctx context.Context, ws *resources.Workspace, env *environments.Environment, name string, info *basev0.ConfigurationInformation, relCfgDir, requiredBy string, report *workspaceReadinessReport) bool {
 	selection, err := generate.SelectRunnableBindings(ctx, ws, env)
 	if err != nil {
@@ -1294,6 +1319,11 @@ func checkRunnableBindingsGroup(ctx context.Context, ws *resources.Workspace, en
 		report.add("", "workspace configuration "+name, "ok",
 			fmt.Sprintf("environment %s prepares no runnable binding, so %q holds none (required by %s)", env.Name, name, requiredBy), "")
 	default:
+		if err := generate.CheckRunnableBindings(ctx, ws, env, info); err != nil {
+			report.add(codeConfigurationInvalid, "workspace configuration "+name, checkStatusFail,
+				fmt.Sprintf("cannot use generated runnable bindings: %v (required by %s)", err, requiredBy), remedy)
+			return true
+		}
 		return false
 	}
 	return true

@@ -3036,7 +3036,7 @@ Flags:
 
 ```
       --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)
-      --check                                   do not write; exit 1 if the on-disk file differs from what would be generated
+      --check                                   leave binding output unchanged; materialize selected pins, then exit 1 if the output is stale
       --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
       --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
 ```

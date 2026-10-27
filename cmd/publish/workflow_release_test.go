@@ -231,7 +231,7 @@ func (p *publishedRelease) client() *github.Client {
 }
 
 func (p *publishedRelease) verify(staged []loaderAsset) error {
-	return verifyWorkflowRelease(p.t.Context(), p.client(), "codefly-dev", "service-go", p.tag, staged)
+	return verifyPublishedArchives(p.t.Context(), p.client(), "codefly-dev", "service-go", p.tag, staged)
 }
 
 func TestVerifyWorkflowReleaseReadsPublishedAssetsWithoutWriting(t *testing.T) {
@@ -269,7 +269,7 @@ func TestVerifyWorkflowReleaseReadsPublishedAssetsWithoutWriting(t *testing.T) {
 				r.draft = true
 				return r
 			},
-			wantErr: "workflow did not publish release",
+			wantErr: "absent or still draft",
 		},
 		{
 			name: "no checksums file",
@@ -296,7 +296,7 @@ func TestVerifyWorkflowReleaseReadsPublishedAssetsWithoutWriting(t *testing.T) {
 				r.omitFromChecksums = map[string]bool{testArchive: true}
 				return r.withChecksums()
 			},
-			wantErr: testArchive + " is absent from the checksums",
+			wantErr: testArchive + " is absent from the published checksums",
 		},
 		{
 			name: "release records a digest the workflow did not build",
@@ -400,7 +400,7 @@ func TestPostPublicationVerificationOutlivesTheSpentPublishBudget(t *testing.T) 
 
 	ctx, cancel := postPublicationContext(spent)
 	defer cancel()
-	err := verifyWorkflowRelease(ctx, client, "codefly-dev", "service-go", "v0.0.16", stageAssets(t, testArchive))
+	err := verifyPublishedArchives(ctx, client, "codefly-dev", "service-go", "v0.0.16", stageAssets(t, testArchive))
 
 	require.NoError(t, err)
 	require.ErrorIs(t, spent.Err(), context.Canceled, "the publish budget must be spent by the time verification finishes")
@@ -410,10 +410,21 @@ func TestPostPublicationVerificationOutlivesTheSpentPublishBudget(t *testing.T) 
 }
 
 func TestParseChecksumsReadsBothSha256sumForms(t *testing.T) {
-	raw := "aaaa  text-mode.tar.gz\nbbbb *binary-mode.tar.gz\n\ngarbage\ncccc  extra  fields\n"
+	digest := strings.TrimPrefix(digestOf("archive"), "sha256:")
+	raw := digest + "  text-mode.tar.gz\n" + strings.ToUpper(digest) + " *binary-mode.tar.gz\n\n"
+	parsed, err := parseChecksums([]byte(raw))
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"text-mode.tar.gz": digest, "binary-mode.tar.gz": digest}, parsed)
+}
 
-	require.Equal(t, map[string]string{
-		"text-mode.tar.gz":   "aaaa",
-		"binary-mode.tar.gz": "bbbb",
-	}, parseChecksums([]byte(raw)))
+func TestParseChecksumsRefusesAmbiguousOrMalformedEvidence(t *testing.T) {
+	digest := strings.TrimPrefix(digestOf("archive"), "sha256:")
+	for _, raw := range []string{
+		"garbage", "abc  archive", strings.Repeat("x", 64) + "  archive",
+		digest + "  archive\n" + digest + "  archive\n",
+		digest + "  archive  extra", strings.Repeat("x", 70<<10),
+	} {
+		_, err := parseChecksums([]byte(raw))
+		require.ErrorIs(t, err, errAssetVerdict)
+	}
 }

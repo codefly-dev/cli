@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -249,7 +248,7 @@ func collectLoaderAssets(reg *resources.AgentKindRegistration, ciOutput, name, v
 
 // expectedLoaderAssets names the archive every required loader platform must
 // carry on a release the agent's own workflow publishes. Nothing is staged:
-// the workflow is the sole producer of those bytes, and verifyWorkflowRelease
+// the workflow is the sole producer of those bytes, and verifyPublishedArchives
 // establishes them against the checksums that workflow published.
 func expectedLoaderAssets(reg *resources.AgentKindRegistration, name, version string) []loaderAsset {
 	assets := make([]loaderAsset, 0, len(loaderPlatforms))
@@ -322,6 +321,10 @@ func createAndUploadRelease(ctx context.Context, client *github.Client, owner, r
 // publishReleaseAssets is createAndUploadRelease for an explicit release
 // request — the one upload path a semantic release and a dev build share.
 func publishReleaseAssets(ctx context.Context, client *github.Client, owner, repo string, request *github.CreateReleaseRequest, assets []loaderAsset) error {
+	files, err := stageReleaseChecksums(assets)
+	if err != nil {
+		return err
+	}
 	release, err := getOrCreateRelease(ctx, client, owner, repo, request)
 	if err != nil {
 		return err
@@ -330,15 +333,16 @@ func publishReleaseAssets(ctx context.Context, client *github.Client, owner, rep
 	for _, asset := range release.Assets {
 		existing[asset.GetName()] = asset
 	}
-	for _, asset := range assets {
-		files := []string{asset.archivePath}
-		if asset.sbomPath != "" {
-			files = append(files, asset.sbomPath)
+	// Refuse a conflicting retry before uploading any new file, especially
+	// checksums describing bytes that this release can never accept.
+	for _, file := range files {
+		if err := validateExistingReleaseAsset(file, existing); err != nil {
+			return err
 		}
-		for _, file := range files {
-			if err := uploadReleaseAsset(ctx, client, owner, repo, release.GetID(), file, existing); err != nil {
-				return err
-			}
+	}
+	for _, file := range files {
+		if err := uploadReleaseAsset(ctx, client, owner, repo, release.GetID(), file, existing); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -397,15 +401,8 @@ func uploadReleaseAsset(ctx context.Context, client *github.Client, owner, repo 
 		return fmt.Errorf("open release asset %s: %w", path, err)
 	}
 	defer file.Close()
-	if asset, ok := existing[name]; ok {
-		digest := sha256.New()
-		if _, err := io.Copy(digest, file); err != nil {
-			return err
-		}
-		if asset.GetDigest() != fmt.Sprintf("sha256:%x", digest.Sum(nil)) {
-			return fmt.Errorf("release asset %s already exists with different or unverifiable bytes; published assets cannot be replaced", name)
-		}
-		return nil
+	if _, ok := existing[name]; ok {
+		return validateExistingReleaseAsset(path, existing)
 	}
 	if _, _, err := client.Repositories.UploadReleaseAsset(ctx, owner, repo, releaseID, &github.UploadOptions{Name: name}, file); err != nil {
 		return fmt.Errorf("upload release asset %s: %w", name, err)
@@ -650,7 +647,6 @@ func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 }
 
 func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
-	version := strings.TrimPrefix(newTag, "v")
 	owner := gh.Owner(r.publisher)
 	repo := r.reg.GitHubRepository(r.name)
 	client, err := gh.NewClient()
@@ -673,7 +669,25 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	if err := publishReleaseAssets(ctx, client, owner, repo, releaseRequest(newTag, r.dev), r.assets); err != nil {
 		return err
 	}
-	return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, version, r.assets)
+	return r.verifyPublication(ctx, client, owner, repo, newTag)
+}
+
+// verifyPublication separates the publisher's integrity proof from installer
+// reachability. The latter uses Core's credential rule, never a gh CLI login
+// that publishing may use. Public releases remain installable anonymously.
+func (r *agentReleaser) verifyPublication(ctx context.Context, publisherClient *github.Client, owner, repo, tag string) error {
+	if err := verifyPublishedArchives(ctx, publisherClient, owner, repo, tag, r.assets); err != nil {
+		return err
+	}
+	options := []github.ClientOptionsFunc{}
+	if token := manager.GitHubReleaseToken(); token != "" {
+		options = append(options, github.WithAuthToken(token))
+	}
+	installerClient, err := github.NewClient(options...)
+	if err != nil {
+		return err
+	}
+	return verifyReleaseAssets(ctx, installerClient, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
 }
 
 // sourceTagReleaser publishes an immutable source release: it runs

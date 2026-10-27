@@ -2931,6 +2931,17 @@ publishing host, so on a linux/amd64 runner that qualification is the
 linux/amd64 build only. An agent with `release.owner: cli` uploads the archives
 itself and still requires a host that builds every platform.
 
+Both publication owners verify the published archive bytes before reporting
+success. CLI-owned uploads also stage deterministic checksums and refuse changed
+existing assets before uploading anything. The final reachability check uses
+installer credentials, independently of the publishing login. See
+[publication verification](publish-verification.md).
+
+Module releases also carry their tracked generated client versions through the
+existing release transaction; stale clients must be regenerated first. See
+[generated client versions](publish-client-versions.md) for single-source and
+aggregate behavior.
+
 ### `codefly publish all [patch|minor|major]`
 
 Discover every git repository under the workspace that carries a codefly
@@ -3902,7 +3913,7 @@ absent or empty exactly when the environment selects no binding.
 | Flag | Description |
 |------|-------------|
 | `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
-| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes; write nothing |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes. Leaves binding output unchanged; first materializes selected pins through the common loader, which may update the cache, local overlay and resolution receipts. |
 
 ## Infrastructure
 
@@ -4210,7 +4221,11 @@ What it checks, in order:
    operations that cannot be read at all fail as
    `runnable_operations_unreadable`. Like the checks below, it needs every
    composed module materialized.
-6. Every workspace configuration group services declare under
+6. Services withdrawn by the selected environment's `exclude-services` impose
+   no configuration requirements, including in a module-scoped check. The same
+   exclusion validation used by run still refuses undeclared consumer withdrawals;
+   explicitly selecting an excluded service fails.
+   Every workspace configuration group remaining services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
    `configurations/<profile>/*` composed with the groups each composed module
@@ -4225,7 +4240,13 @@ What it checks, in order:
    (nothing derived, or every binding declined) the group absent or holding no
    value is ok; a selected binding the group does not hold fails as
    `configuration_missing` with `codefly generate runnable-bindings --env
-   <env>` as its remedy.
+   <env>` as its remedy. Existing binding values are also compared with the
+   generator's current preparation: changed addresses, contracts or policies,
+   obsolete extra bindings and output left after the last operation disappears
+   fail as `configuration_invalid`. This comparison checks effective values;
+   the generator's `--check` additionally checks exact file bytes. The delivery
+   readiness gate uses this check before build or push for modules consuming
+   the group; the explicit `--skip-workspace-readiness` override still applies.
 7. Per-service `configurations/<env>` files parse; duplicates are flagged.
 8. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
