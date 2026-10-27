@@ -205,7 +205,7 @@ Examples:
 
 func init() {
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment supplying resolved addresses and runnable-scope-selections")
-	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
+	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "write no binding output; exit 1 if the on-disk file differs from what would be generated (pinned modules are still materialized, as for every command that reads them)")
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsNamingScope, "naming-scope", "", "`scope` addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it")
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsCallEndpoint, "call-endpoint", "", "declared HTTP-based endpoint, as `module/service/endpoint`, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)")
 }
