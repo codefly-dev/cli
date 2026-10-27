@@ -114,6 +114,24 @@ func TestAWithdrawnEdgeIsNoCellConsumer(t *testing.T) {
 	require.Empty(t, consumers["shop/api/grpc"])
 }
 
+// A module the environment withdraws whole owes the cell file no render: the
+// file is derived from the other modules' trees and describes nothing of it.
+func TestCellFileLeavesOutAModuleTheEnvironmentWithdrawsWhole(t *testing.T) {
+	workspace := withdrawnCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	shop, err := workspace.LoadModuleFromName(context.Background(), "shop")
+	require.NoError(t, err)
+	require.True(t, env.WithdrawsModule(shop), "the fixture withdraws every service of shop")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing"}, result.Modules)
+	file, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	require.NotContains(t, string(file), "acme-shop")
+}
+
 // A cell file is never derived from a tree that still delivers an excluded
 // service: the render of that module is owed first.
 func TestCellFileRefusesATreeThatStillDeliversAnExcludedService(t *testing.T) {

@@ -161,7 +161,7 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if len(file.Namespaces) == 0 {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
 	}
-	if err = refuseUnrenderedModules(workspace, env, result.Modules); err != nil {
+	if err = refuseUnrenderedModules(ctx, workspace, env, result.Modules); err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
@@ -188,12 +188,18 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 // claim about a composition that may no longer exist, and the file it was
 // read from is as likely to have been cleaned as the records were. No digest
 // is invented either: the render of the module is what knows it.
-func refuseUnrenderedModules(workspace *resources.Workspace, env *environments.Environment, rendered []string) error {
+func refuseUnrenderedModules(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, rendered []string) error {
 	var missing []string
 	for _, reference := range workspace.Modules {
-		if reference != nil && !slices.Contains(rendered, reference.Name) {
-			missing = append(missing, reference.Name)
+		if reference == nil || slices.Contains(rendered, reference.Name) {
+			continue
 		}
+		// A module the environment withdraws whole has no render here and
+		// owes none (render refuses it): it delivers nothing to the cell.
+		if module, err := workspace.LoadModuleFromName(ctx, reference.Name); err == nil && env.WithdrawsModule(module) {
+			continue
+		}
+		missing = append(missing, reference.Name)
 	}
 	if len(missing) == 0 {
 		return nil
@@ -643,7 +649,9 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 	for index := range consumed {
 		consumption := &consumed[index]
 		module, loadErr := workspace.LoadModuleFromName(ctx, consumption.Solution)
-		if loadErr != nil || module.ServiceEntry == "" {
+		// A solution the environment withdraws whole has no entry here to
+		// consume anything.
+		if loadErr != nil || module.ServiceEntry == "" || env.WithdrawsModule(module) {
 			continue
 		}
 		add(consumption.Module+"/"+consumption.Service+"/"+consumption.Endpoint, resources.ServiceUnique(module.Name, module.ServiceEntry))
