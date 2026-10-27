@@ -1278,9 +1278,18 @@ wildcard :P both bind. The one listener that is not a squatter is the
 service's own kept container: a Docker store with `keep-running` leaves its
 container up for the next run to adopt, still publishing the service's port.
 An address is let through only when the container listening there is the one
-the service's agent will adopt — its name in this run's workspace and naming
-scope, codefly-owned, labelled with this run's recovery scope, running, not
-ephemeral, and publishing that port on that loopback family; any other holder,
+the service owns: Core's exact parent-service label must match the loaded
+module/service, and the logical name label must match an actual Docker name.
+The container must also be codefly-owned, labelled with this run's recovery
+scope and a compatible namespace, running, not ephemeral, and publishing that
+port on that loopback family. Agents bind each Docker environment through
+Core's `WithServiceIdentity`; CLI does not infer parent identity from suffixes.
+For older unlabelled containers, the existing exact bare name in this run's
+workspace and naming scope remains the only compatibility exception. A present
+conflicting or malformed parent label refuses even that exception. Old suffixed
+containers need owner-directed recovery preserving their data; the CLI does not
+relabel or delete them. Parent attribution proves ownership, while the agent
+owns actual reuse of its concrete containers. Any other holder,
 including one on the other family beside it, is refused. Not covered: a
 process that binds a loopback address on the port after that probe, and a
 routed module that crashes or is withdrawn mid-run, whose port the hop keeps
