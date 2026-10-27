@@ -27,33 +27,13 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is a `v0.19.7` pseudo-version of core: `257e6b23`, branch
-`chore/envelope-on-0.19.6`, which merges `v0.19.6` (with the git source
-declaration, codefly-dev/core#832) into `5522c4da`, the commit carrying the
-module envelope that `pkg/delivery/signing` uses. `v0.19.6` carries
-`b81d92e6`, the merge of codefly-dev/core#812 — the module manifest
-(`solutionhost.ModuleManifest`, one signed document per module, whose
-workload is `(service, container)` and which names no build) and
-`workloadidentity`, which a native run attests its workloads with. Its
-companion is `github.com/codefly-dev/sdk-go/workcontext` at `70dc7a54`
-(codefly-dev/sdk-go#80, a credential carries no build seal). Releasing a CLI
-on it requires core `v0.19.6` and a `workcontext` release past `v0.1.0` to
-be tagged first. The previous pin, a `v0.19.5` pseudo-version, carried the
-`runtime-started-artifact/v1` contract (codefly-dev/core#796,
-codefly-dev/cli#989), which this CLI no longer reads. On top of `v0.19.2`, `v0.19.4` adds
-the issuer's non-consuming `Authority.ReadBack` and moves kustomize back to
-`v0.21.1`, whose kube-openapi does not pull `structured-merge-diff/v7` (the
-`v0.21.3` that `v0.19.2` and `v0.19.3` carried broke every build compiling
-client-go). `v0.19.2` added a
-solution manifest's scoped `api.consumes` and its consumption contract (#784)
-and an issuer-assigned Work Context session (#783). `v0.19.1`
-verifies delivered carriers
-against pinned platform keys (#773), projects a service account entirely on a
-caller-supplied filesystem (#774, #777), and carries ToolProjection and slot-only authority (#755), ciguard (#750), caller tokens,
-image-lock/publish evidence (#759), and configuration-origin evidence (#746),
-in addition to #752's composition-provenance contract. This source matrix does
-not qualify released agents for the new
-`deployment-composition-provenance/v1` capability.
+The current pin targets Core's `v0.19.8` release line. The exact source
+revision is declared in `go.mod`; the CLI consumes Core's container parent
+attribution and release acquisition APIs. These source gates qualify the CLI
+against that selected revision. They do not qualify separately compiled agents
+or imply that the target Core release has been published. Agents creating
+sidecar containers must adopt the attribution API in their own source and
+qualify their lifecycle before consumers select the resulting release.
 
 A missing receipt can be a consequence of an earlier failure: coverage and race
 run `go test -failfast`, so a failed package can stop the npm tests in
