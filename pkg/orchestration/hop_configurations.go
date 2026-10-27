@@ -64,6 +64,17 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	if group != nil {
 		r.combined = append(r.combined, group)
 	}
+	// The one fixture-composition document of this composition, merged from
+	// the composed modules' fragments: the group is multi-provider by design,
+	// and this is its provider where the workspace has no answer of its own
+	// (fixture_composition.go).
+	fixture, err := mergedFixtureComposition(ctx, r.workspace, env, configs)
+	if err != nil {
+		return err
+	}
+	if fixture != nil {
+		r.combined = append(r.combined, fixture)
+	}
 	return nil
 }
 

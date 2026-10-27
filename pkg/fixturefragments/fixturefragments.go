@@ -88,33 +88,9 @@ func Prepare(ctx context.Context, workspace *resources.Workspace, env *environme
 		return nil, err
 	}
 	target := filepath.Join(workspace.Dir(), "configurations", profile, Group+".yaml")
-	modules, err := workspace.LoadModules(ctx)
+	sources, err := fragments(ctx, workspace, profiles)
 	if err != nil {
 		return nil, err
-	}
-	var sources []fixturecomposition.Source
-	for _, module := range modules {
-		dir, found, dirErr := configurations.ProfileDirectory(ctx, module.Dir(), "configurations", profiles)
-		if dirErr != nil {
-			return nil, fmt.Errorf("module %s: %w", module.Name, dirErr)
-		}
-		if !found {
-			continue
-		}
-		path := filepath.Join(dir, Group+".yaml")
-		// A module at the workspace root (a flat layout) has the output as its
-		// own configuration: it is what is written, never a fragment.
-		if resources.SameDir(filepath.Dir(path), filepath.Dir(target)) {
-			continue
-		}
-		data, readErr := os.ReadFile(path)
-		if errors.Is(readErr, os.ErrNotExist) {
-			continue
-		}
-		if readErr != nil {
-			return nil, fmt.Errorf("module %s: %w", module.Name, readErr)
-		}
-		sources = append(sources, fixturecomposition.Source{Name: sourceName(workspace, module.Name, path), Data: data})
 	}
 	merged, err := fixturecomposition.Merge(sources)
 	if err != nil {
@@ -142,6 +118,46 @@ func Prepare(ctx context.Context, workspace *resources.Workspace, env *environme
 	return &Prepared{Target: target, Sources: names, Content: content.Bytes()}, nil
 }
 
+// fragments is every composed module's fragment, read from the module's own
+// directory under the first of profiles it has a directory for.
+//
+// A module whose configuration directory IS the workspace's own is skipped:
+// in a flat layout that directory holds the merged document, which is the
+// output, never a fragment.
+func fragments(ctx context.Context, workspace *resources.Workspace, profiles []string) ([]fixturecomposition.Source, error) {
+	workspaceDir, found, err := configurations.ProfileDirectory(ctx, workspace.Dir(), "configurations", profiles)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		workspaceDir = ""
+	}
+	modules, err := workspace.LoadModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var sources []fixturecomposition.Source
+	for _, module := range modules {
+		dir, exists, dirErr := configurations.ProfileDirectory(ctx, module.Dir(), "configurations", profiles)
+		if dirErr != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, dirErr)
+		}
+		if !exists || (workspaceDir != "" && resources.SameDir(dir, workspaceDir)) {
+			continue
+		}
+		path := filepath.Join(dir, Group+".yaml")
+		data, readErr := os.ReadFile(path)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, readErr)
+		}
+		sources = append(sources, fixturecomposition.Source{Name: sourceName(workspace, module.Name, path), Data: data})
+	}
+	return sources, nil
+}
+
 // sourceName is how a fragment is named in a conflict and in the document:
 // the module, and where its fragment is, relative to the workspace when it is
 // inside it.
@@ -150,6 +166,26 @@ func sourceName(workspace *resources.Workspace, module, path string) string {
 		path = rel
 	}
 	return fmt.Sprintf("module %s (%s)", module, path)
+}
+
+// Merged is the merged document alone, for a caller that supplies the group
+// rather than writing the file: the same merge Prepare performs, without the
+// generated header, so what a reader is handed and what `codefly generate
+// fixture-composition` writes come from one place. It is nil when no composed
+// module ships a fragment.
+func Merged(ctx context.Context, workspace *resources.Workspace, profiles []string) ([]byte, error) {
+	sources, err := fragments(ctx, workspace, profiles)
+	if err != nil {
+		return nil, err
+	}
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	merged, err := fixturecomposition.Merge(sources)
+	if err != nil {
+		return nil, err
+	}
+	return fixturecomposition.Encode(merged)
 }
 
 // Write writes the document unless the workspace holds a hand-written one,
