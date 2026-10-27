@@ -175,6 +175,27 @@ environments:
         withdrawn-from: [saas/accounts]
 ```
 
+Nothing may still reach what is withdrawn: a service that declares a
+dependency on it is refused unless `withdrawn-from` names it, and so are a
+solution consuming one of its endpoints, an environment declaration naming it
+and a configuration reference to one of its endpoints. A service the module's
+`interface:` exports, or names its `service-entry`, is withdrawn only with the
+whole module: an environment that names every service of a module leaves the
+module out, and its exports leave with it. Withdrawing some of its services is
+refused, because the module the environment still composes would promise an
+endpoint that is not there.
+
+```yaml
+environments:
+  - name: staging             # the host is another module's service here
+    exclude-services:
+      - service: authority/local
+      - service: authority/hop
+        withdrawn-from: [documents/documents]
+      - service: authority/edge
+      - service: authority/store
+```
+
 A product whose hosted environment is imported can keep this decision in an
 **authored** `delivery.environments.yaml` and pass it alongside the producer's
 contract:

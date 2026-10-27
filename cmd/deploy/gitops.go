@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
 	"github.com/codefly-dev/cli/pkg/control"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
@@ -693,8 +694,35 @@ func printCell(cell *gitops.CellResult) {
 
 var gitOpsRenderAll bool
 
+// compositionRenderOrder is the order renderComposition renders modules in —
+// the host's module first, then the rest by name — less every module the
+// environment withdraws whole, which it returns by name: nothing of such a
+// module renders in this environment.
+func compositionRenderOrder(env *environments.Environment, modules []*resources.Module) (rendered []*resources.Module, withdrawn []string) {
+	host := ""
+	if env.Host != nil {
+		host, _, _ = env.Host.DeliveryEndpoint()
+	}
+	for _, module := range modules {
+		if env.WithdrawsModule(module) {
+			withdrawn = append(withdrawn, module.Name)
+			continue
+		}
+		rendered = append(rendered, module)
+	}
+	sort.SliceStable(rendered, func(i, j int) bool {
+		if (rendered[i].Name == host) != (rendered[j].Name == host) {
+			return rendered[i].Name == host
+		}
+		return rendered[i].Name < rendered[j].Name
+	})
+	sort.Strings(withdrawn)
+	return rendered, withdrawn
+}
+
 // renderComposition renders every module the workspace composes for the
-// selected environment — the host module first, since every other module's
+// selected environment — a module the environment withdraws whole is not one
+// of them — the host module first, since every other module's
 // tree is read against it, then the rest in name order — and derives the
 // environment's cell file once, from all of them. One command for one
 // composition: a stale sibling is never a reason to run it again.
@@ -718,17 +746,11 @@ func renderComposition(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	host := ""
-	if env.Host != nil {
-		host, _, _ = env.Host.DeliveryEndpoint()
+	rendered, withdrawn := compositionRenderOrder(env, modules)
+	for _, name := range withdrawn {
+		cli.Info("Skipped %s: environment %s withdraws every service of it (exclude-services)", name, env.Name)
 	}
-	sort.SliceStable(modules, func(i, j int) bool {
-		if (modules[i].Name == host) != (modules[j].Name == host) {
-			return modules[i].Name == host
-		}
-		return modules[i].Name < modules[j].Name
-	})
-	for _, module := range modules {
+	for _, module := range rendered {
 		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}

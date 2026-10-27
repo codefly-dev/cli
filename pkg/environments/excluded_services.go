@@ -27,6 +27,12 @@ import (
 // service-secrets, managed-services) is refused, and so is a workspace
 // configuration reference to one of its endpoints, at plan time: such a value
 // would resolve to nothing.
+//
+// A service the module's interface exports, or names its service-entry, is
+// withdrawn only with the whole module: an environment that excludes every
+// service of a module leaves the module out, its exports with it, while one
+// that excludes only some of them is refused, because the module it still
+// composes would promise an endpoint that is not there.
 type EnvironmentExcludedService struct {
 	// Service is the "<module>/<service>" withdrawn; never a bare name, so one
 	// entry can only ever withdraw one service.
@@ -75,6 +81,22 @@ func (env *Environment) ComposedServices(module *resources.Module) []*resources.
 		}
 	}
 	return composed
+}
+
+// WithdrawsModule reports whether this environment excludes every service of
+// the module: the module is then not composed here at all, so neither its
+// interface exports nor its service-entry are offered to the composition, and
+// nothing of it renders, builds or deploys here.
+func (env *Environment) WithdrawsModule(module *resources.Module) bool {
+	if env == nil || module == nil || len(module.ServiceReferences) == 0 {
+		return false
+	}
+	for _, reference := range module.ServiceReferences {
+		if reference != nil && !env.Excludes(module.Name, reference.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // ExcludedServiceUniques returns the "<module>/<service>" this environment
@@ -249,24 +271,8 @@ func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
 			}
 		}
 	}
-	// A module interface exporting one of its endpoints, or naming it the
-	// module's entry, promises the composition what this environment does
-	// not have; so does a solution consuming one of its endpoints.
-	for _, module := range modules {
-		if module == nil {
-			continue
-		}
-		if module.ServiceEntry != "" && excluded[resources.ServiceUnique(module.Name, module.ServiceEntry)] {
-			return fmt.Errorf("module %s names %s/%s its service-entry, which exclude-services withdraws from this environment", module.Name, module.Name, module.ServiceEntry)
-		}
-		if module.Interface == nil {
-			continue
-		}
-		for _, exported := range module.Interface.Endpoints {
-			if exported != nil && excluded[resources.ServiceUnique(module.Name, exported.Service)] {
-				return fmt.Errorf("module %s exports %s/%s/%s through its interface, which exclude-services withdraws from this environment", module.Name, module.Name, exported.Service, exported.Endpoint)
-			}
-		}
+	if err := env.validateModulePromises(modules, excluded); err != nil {
+		return err
 	}
 	for index := range graph.consumed {
 		consumption := &graph.consumed[index]
@@ -285,6 +291,33 @@ func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
 		}
 		if excluded[target] {
 			return fmt.Errorf("%s names %s, which exclude-services withdraws from this environment: drop the declaration, or stop excluding %s", named.block, named.name, target)
+		}
+	}
+	return nil
+}
+
+// validateModulePromises refuses withdrawing a service a module still promises
+// the composition: one its interface exports, or names its service-entry. A
+// module interface exporting one of its endpoints, or naming it the module's
+// entry, promises the composition what this environment does not have. A
+// module this environment withdraws whole makes no promise here: its exports
+// and its entry leave with it, and whatever still reached them is a consumer
+// validateExclusionsAgainst refuses by name.
+func (env *Environment) validateModulePromises(modules []*resources.Module, excluded map[string]bool) error {
+	for _, module := range modules {
+		if module == nil || env.WithdrawsModule(module) {
+			continue
+		}
+		if module.ServiceEntry != "" && excluded[resources.ServiceUnique(module.Name, module.ServiceEntry)] {
+			return fmt.Errorf("module %s names %s/%s its service-entry, which exclude-services withdraws from this environment: exclude every service of module %s to leave the module out, or stop excluding %s/%s", module.Name, module.Name, module.ServiceEntry, module.Name, module.Name, module.ServiceEntry)
+		}
+		if module.Interface == nil {
+			continue
+		}
+		for _, exported := range module.Interface.Endpoints {
+			if exported != nil && excluded[resources.ServiceUnique(module.Name, exported.Service)] {
+				return fmt.Errorf("module %s exports %s/%s/%s through its interface, which exclude-services withdraws from this environment: exclude every service of module %s to leave the module out, or stop excluding %s/%s", module.Name, module.Name, exported.Service, exported.Endpoint, module.Name, module.Name, exported.Service)
+			}
 		}
 	}
 	return nil
