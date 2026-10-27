@@ -157,6 +157,71 @@ func TestExcludeServicesRefusesAnInterfaceExportOfIt(t *testing.T) {
 	require.ErrorContains(t, err, "module shop exports shop/cache/tcp through its interface")
 }
 
+// An environment that excludes every service of a module leaves the module
+// out: its interface exports and its service-entry leave with it, so the
+// refusals above do not hold, while a consumer outside the module still does.
+func TestExcludeServicesWithdrawsAWholeModuleWithItsExports(t *testing.T) {
+	const wholeShop = `    exclude-services:
+      - service: shop/api
+      - service: shop/vault
+      - service: shop/cache
+`
+	exporting := "service-entry: cache\ninterface:\n    endpoints:\n        - service: cache\n          endpoint: tcp\n          visibility: internal\n"
+	workspace := writeExclusionWorkspaceExporting(t, wholeShop, exporting)
+	require.NoError(t, environments.ValidateWorkspace(context.Background(), workspace))
+
+	staging, err := environments.Select(workspace, "staging")
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(context.Background(), "shop")
+	require.NoError(t, err)
+	require.Empty(t, staging.ComposedServices(module))
+	local, err := environments.Select(workspace, "local")
+	require.NoError(t, err)
+	require.Len(t, local.ComposedServices(module), 3, "another environment still composes the module")
+
+	// Leaving one service of the module composed keeps its promise in force.
+	partial := writeExclusionWorkspaceExporting(t, `    exclude-services:
+      - service: shop/vault
+        withdrawn-from: [shop/api]
+      - service: shop/cache
+`, exporting)
+	err = environments.ValidateWorkspace(context.Background(), partial)
+	require.ErrorContains(t, err, "exclude every service of module shop to leave the module out")
+
+	// A consumer in another module is still a consumer of what left.
+	consumed := writeExclusionWorkspaceExporting(t, wholeShop, exporting)
+	root := consumed.Dir()
+	data, err := os.ReadFile(filepath.Join(root, resources.WorkspaceConfigurationName))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName),
+		[]byte(strings.Replace(string(data), "  - name: shop\n", "  - name: shop\n  - name: portal\n", 1)), 0o644))
+	for rel, content := range map[string]string{
+		"modules/portal/module.codefly.yaml": "kind: module\nname: portal\nservices:\n    - name: web\n",
+		"modules/portal/services/web/service.codefly.yaml": `kind: service
+name: web
+version: 0.0.0
+agent:
+  kind: runtime::service
+  name: go-grpc
+  version: 0.0.1
+  publisher: codefly.ai
+service-dependencies:
+  - name: cache
+    module: shop
+    endpoints:
+      - name: tcp
+`,
+	} {
+		full := filepath.Join(root, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	require.NoError(t, err)
+	err = environments.ValidateWorkspace(context.Background(), reloaded)
+	require.ErrorContains(t, err, `exclude-services withdraws "shop/cache", but portal/web declares a dependency on it`)
+}
+
 // A module naming the excluded service its entry routes the host to a service
 // that is not there.
 func TestExcludeServicesRefusesTheModuleServiceEntry(t *testing.T) {
