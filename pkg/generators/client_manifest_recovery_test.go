@@ -45,7 +45,7 @@ func TestConflictedLibraryManifestRecoveryPreservesPreflight(t *testing.T) {
 			if tc.entries == 2 {
 				entries = append(entries, ContractEntry{
 					Endpoint:       composition.APIContractEndpoint{Service: "other", Endpoint: "connect", Kind: composition.APIContractKindProtobuf, Package: "other.v1"},
-					PackageVersion: "0.3.0", ModuleName: "other",
+					PackageVersion: "0.3.0", ModuleName: "other", As: "other",
 				})
 			}
 			before := snapshotTree(t, output)
