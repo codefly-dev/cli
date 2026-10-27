@@ -62,6 +62,33 @@ func TestRenderModuleLeavesAnExcludedServiceOutOfTheTreeAndTheInventory(t *testi
 		`rendered unit "store" is a service environment "staging" excludes`)
 }
 
+// A module the environment withdraws whole renders nothing there: the render
+// refuses it by name instead of producing an empty tree.
+func TestRenderModuleRefusesAModuleTheEnvironmentWithdrawsWhole(t *testing.T) {
+	installFakeAgents(t)
+	root := t.TempDir()
+	require.NoError(t, copyTree(filepath.Join("testdata", "container-ports"), root))
+	path := filepath.Join(root, resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	data = append(data, []byte(`    exclude-services:
+      - service: shop/api
+      - service: shop/store
+`)...)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	env, err := orchestration.SelectEnvironment(workspace, "staging")
+	require.NoError(t, err)
+	require.True(t, env.WithdrawsModule(module))
+
+	_, err = RenderModule(ctx, workspace, module, env, "acme-staging", nil)
+	require.ErrorContains(t, err, "environment staging withdraws every service of module shop (exclude-services)")
+}
+
 // withdrawnCellWorkspace is the cell fixture with staging excluding shop/api
 // and withdrawing billing/ledger's edge to it — and, as the exclusion
 // requires, with no ingress, egress or cell declaration naming shop/api left.
@@ -85,6 +112,24 @@ func TestAWithdrawnEdgeIsNoCellConsumer(t *testing.T) {
 	consumers, _, err := endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.NoError(t, err)
 	require.Empty(t, consumers["shop/api/grpc"])
+}
+
+// A module the environment withdraws whole owes the cell file no render: the
+// file is derived from the other modules' trees and describes nothing of it.
+func TestCellFileLeavesOutAModuleTheEnvironmentWithdrawsWhole(t *testing.T) {
+	workspace := withdrawnCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	shop, err := workspace.LoadModuleFromName(context.Background(), "shop")
+	require.NoError(t, err)
+	require.True(t, env.WithdrawsModule(shop), "the fixture withdraws every service of shop")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing"}, result.Modules)
+	file, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	require.NotContains(t, string(file), "acme-shop")
 }
 
 // A cell file is never derived from a tree that still delivers an excluded
