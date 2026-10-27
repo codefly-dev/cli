@@ -328,3 +328,19 @@ func TestModulePageGetsACarrierWithoutASolutionConsumer(t *testing.T) {
 		})
 	}
 }
+
+// A local run tells an endpoint the producer does not declare from one it has
+// not addressed yet: the first is named as missing, never as waiting on an
+// address no allocation will ever give it.
+func TestALocalRunNamesAnUndeclaredEndpointAsMissing(t *testing.T) {
+	consumes := "    - id: docs\n      protocol: connect\n      module: docs\n      service: documents\n      endpoint: connect\n      as: docs\n"
+	world, workspace := hostRoutesWorld(t, RunMode, func(dir string) { writeWikiConsumes(t, dir, consumes) })
+	gateway := parityService(t, workspace, "host", "gateway")
+	access := resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+
+	_, problems, err := world.hostRouteCarriers(context.Background(), gateway, access)
+	require.NoError(t, err)
+	require.NotEmpty(t, problems)
+	require.Contains(t, problems[0].Error(), `docs/documents declares no endpoint named "connect"`)
+	require.NotContains(t, problems[0].Error(), "has not allocated")
+}

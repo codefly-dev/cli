@@ -5,7 +5,6 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
-	"github.com/codefly-dev/core/agents"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -30,11 +29,8 @@ func NewContext() (context.Context, func()) {
 
 	provider.WithLogger(cli.GetLogger())
 
-	// Enable file logging to ~/.codefly/logs/<date>.log
+	// Repeated helper contexts share the invocation's single registered sink.
 	cli.EnableFileLogging()
-	if fl := cli.GetFileLogger(); fl != nil {
-		agents.AddProcessor(fl)
-	}
 
 	ctx = provider.Inject(ctx)
 

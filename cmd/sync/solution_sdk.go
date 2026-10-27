@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -28,6 +29,7 @@ var (
 	solutionSDKLanguages []string
 	solutionSDKCheck     bool
 	solutionSDKApply     bool
+	solutionSDKForce     bool
 
 	// skipGenerateForTests short-circuits the actual codegen call
 	// (generators.GenerateClientLibrary), so a test can exercise resolution,
@@ -46,11 +48,13 @@ var SolutionSDKCmd = &cobra.Command{
 client library per solution, carrying only the declared services, generated
 from the contracts of the module packages the workspace composes. A consume
 of a module's rest or connect endpoint is generated from that service's
-protobuf contract. Each consumed module's facade gets a package of its own.
+protobuf contract. Each consumed module's facade and bindings get a
+directory of their own.
 
-A consume of another module is reached through the host's gateway and needs
-no service-dependencies entry; only a consume of the solution's own module is
-a direct call, and that one is kept in step with the declaration.
+A consume of another module is reached through the authority hop, which
+fronts every module behind it on one Connect face, and needs no
+service-dependencies entry; only a consume of the solution's own module is a
+direct call, and that one is kept in step with the declaration.
 `,
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
@@ -65,7 +69,8 @@ a direct call, and that one is kept in step with the declaration.
 func init() {
 	SolutionSDKCmd.Flags().StringSliceVar(&solutionSDKLanguages, "language", nil, "languages to generate: go,typescript,python")
 	SolutionSDKCmd.Flags().BoolVar(&solutionSDKCheck, "check", false, "do not write; exit 1 if the library or service-dependencies are out of date")
-	SolutionSDKCmd.Flags().BoolVar(&solutionSDKApply, "apply-dependencies", false, "add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the host gateway)")
+	SolutionSDKCmd.Flags().BoolVar(&solutionSDKApply, "apply-dependencies", false, "add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the authority hop)")
+	SolutionSDKCmd.Flags().BoolVar(&solutionSDKForce, "force", false, "overwrite a library generated from a different version of a consumed contract")
 }
 
 func runSyncSolutionSDK(ctx context.Context) error {
@@ -226,12 +231,18 @@ func resolveConsumedContracts(ctx context.Context, workspace *resources.Workspac
 	return entries, nil
 }
 
-// consumedContract selects the catalog entry a consume is generated from. The
-// endpoint it names wins when the catalog carries a protobuf contract for it.
-// A rest or connect endpoint otherwise serves its service's protobuf contract
-// over another transport — connect natively, rest transcoded — while the
-// catalog carries that contract under the service's grpc endpoint, so the
-// consume resolves to the service's one protobuf entry. A rest endpoint of a
+// consumedContract selects the catalog entry a consume is generated from: the
+// protobuf contract the authority hop routes for the consumed service, since a
+// consume of another module is called through the hop's Connect face. The
+// endpoint the consume names wins when the catalog carries a protobuf contract
+// for it. A rest or connect endpoint otherwise serves its service's protobuf
+// contract over another transport — connect natively, rest transcoded — while
+// the catalog carries that contract under the service's grpc endpoint, so the
+// consume resolves to the service's protobuf contract. Several protobuf
+// entries of one service are that one contract when they carry one digest,
+// the rule the hop routes by (a service's gRPC and Connect listeners under one
+// contract are one destination); under different digests which one the named
+// endpoint serves has no single answer, so it is refused. A rest endpoint of a
 // service with no protobuf contract keeps its own OpenAPI entry.
 func consumedContract(ctx context.Context, moduleDir string, catalog *composition.APIContractCatalog, consume *manifest.APIDeclaration) (*composition.APIContractEndpoint, error) {
 	var named *composition.APIContractEndpoint
@@ -262,19 +273,16 @@ func consumedContract(ctx context.Context, moduleDir string, catalog *compositio
 		}
 		api = declared
 	}
-	if api == standards.REST || api == standards.CONNECT {
-		switch len(protobuf) {
-		case 0:
-		case 1:
-			return protobuf[0], nil
-		default:
+	if (api == standards.REST || api == standards.CONNECT) && len(protobuf) > 0 {
+		if slices.ContainsFunc(protobuf, func(entry *composition.APIContractEndpoint) bool { return entry.Digest != protobuf[0].Digest }) {
 			endpoints := make([]string, 0, len(protobuf))
 			for _, entry := range protobuf {
-				endpoints = append(endpoints, entry.Endpoint)
+				endpoints = append(endpoints, entry.Endpoint+" ("+entry.Digest+")")
 			}
-			return nil, fmt.Errorf("consume %s/%s/%s: service %s exports protobuf contracts on several endpoints (%s), so which one its %s endpoint serves has no single answer; consume one of them by name",
+			return nil, fmt.Errorf("consume %s/%s/%s: service %s exports different protobuf contracts on several endpoints (%s), so which one its %s endpoint serves has no single answer; consume one of them by name",
 				consume.Module, consume.Service, consume.Endpoint, consume.Service, strings.Join(endpoints, ", "), api)
 		}
+		return protobuf[0], nil
 	}
 	if named != nil {
 		return named, nil
@@ -352,10 +360,12 @@ type missingDependency struct {
 // Application.HasServiceDependency uses.
 //
 // Only a consume of the solution's own module is a direct call. A consume of
-// any other module is reached through the host's gateway (the routes
-// orchestration.HostRouteTargets derives from the same api.consumes), and a
-// service-dependency on it would be a mesh edge past the gateway — the path a
-// solution must not hold — so none is asked for, or added.
+// any other module is called through the authority hop's Connect face: the
+// hop routes every module the composition puts behind it from that module's
+// published API catalog (orchestration's hop-routes) and checks each call
+// against the method's policy before forwarding it. A service-dependency on
+// the module would be a mesh edge past the hop — a call no policy is checked
+// on — so none is asked for, or added.
 func missingServiceDependencies(solution *resources.Module, service *resources.Service, consumes []manifest.APIDeclaration) ([]missingDependency, error) {
 	existing := make(map[[2]string]bool, len(service.ServiceDependencies))
 	for _, dep := range service.ServiceDependencies {
@@ -488,6 +498,7 @@ func generateSolutionSDKInto(ctx context.Context, name, outputDir string, entrie
 		Output:     outputDir,
 		Languages:  langs,
 		Entries:    entries,
+		Force:      solutionSDKForce,
 		GoModule:   "github.com/codefly-dev/" + name + "-go",
 		NpmPackage: "@codefly-dev/" + name,
 		// One library aggregates every consumed module, so each facade

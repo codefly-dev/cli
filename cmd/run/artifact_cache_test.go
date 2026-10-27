@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -44,26 +46,154 @@ func TestArtifactCacheGroupCreatesTheCacheRoot(t *testing.T) {
 	require.True(t, info.IsDir())
 }
 
-// A component that declares a page and built no bundle is refused by name,
-// with what to build; a headless component needs none, and a leftover dist
-// is not its page.
-func TestANativeRunRefusesADeclaredPageWithoutItsBuiltBundle(t *testing.T) {
-	ctx := context.Background()
+// pageModule is a component whose entry service declares a page, with its npm
+// project (package.json, package-lock.json, one source) beside the services.
+func pageModule(t *testing.T) (*resources.Module, string) {
+	t.Helper()
 	module := &resources.Module{Name: "wiki", ServiceEntry: "api"}
 	module.WithDir(t.TempDir())
 	entry := filepath.Join(module.ServicesDir(), "api")
 	require.NoError(t, os.MkdirAll(entry, 0o755))
-	cluster := &launcher{workspace: &resources.Workspace{Name: "acme"}}
+	require.NoError(t, os.WriteFile(filepath.Join(entry, solutionrun.FrontendFileName), []byte("title: Wiki\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+	remote := filepath.Join(module.ServicesDir(), "fe-remote")
+	require.NoError(t, os.MkdirAll(remote, 0o755))
+	for name, content := range map[string]string{"package.json": `{"scripts":{"build":"owner-build"}}`, "package-lock.json": `{"lockfileVersion":3}`, "Page.tsx": "page v1"} {
+		require.NoError(t, os.WriteFile(filepath.Join(remote, name), []byte(content), 0o600))
+	}
+	return module, remote
+}
 
-	bundle, err := cluster.frontendBundle(ctx, module)
-	require.NoError(t, err, "headless: no page, no bundle needed")
+// fakeTool puts an executable named name, running body, first on PATH.
+func fakeTool(t *testing.T, bin, name, body string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nset -eu\n"+body), 0o700))
+}
+
+// A declared page is built natively with the frontend's own npm build, once per
+// change of its own inputs: an unchanged frontend, or an edit elsewhere in the
+// component (a Go service hot-reloading), reuses the retained bundle; a source
+// edit rebuilds; a lockfile edit installs again first. A failed build names its
+// command and carries its output, and never delivers an old bundle.
+func TestANativeRunBuildsItsDeclaredPageOncePerChangeOfItsInputs(t *testing.T) {
+	ctx := context.Background()
+	module, remote := pageModule(t)
+	workspace := &resources.Workspace{Name: "acme"}
+	workspace.WithDir(t.TempDir())
+	cluster := &launcher{workspace: workspace, stateDir: t.TempDir(), flow: &fakeLauncherFlow{}}
+
+	headless := &resources.Module{Name: "headless", ServiceEntry: "api"}
+	headless.WithDir(t.TempDir())
+	bundle, err := cluster.frontendBundle(ctx, headless)
+	require.NoError(t, err, "headless: no build needed")
 	require.Nil(t, bundle)
 
-	require.NoError(t, os.WriteFile(filepath.Join(entry, solutionrun.FrontendFileName), []byte("title: Wiki\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	calls := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("ASSET_PREFIX", "http://leaked.example")
+	fakeTool(t, bin, "npm", `echo "$*" >> `+calls+`
+[ -z "${ASSET_PREFIX:-}" ] || { echo 'ASSET_PREFIX reached the build' >&2; exit 3; }
+case "$*" in
+ci) mkdir -p node_modules ;;
+"run build") mkdir -p dist && printf '{"page":"%s"}' "$(cat Page.tsx)" > dist/mf-manifest.json ;;
+esac
+`)
+	build := func() string {
+		t.Helper()
+		bundle, err := cluster.frontendBundle(ctx, module)
+		require.NoError(t, err)
+		archive := filepath.Join(composition.ArtifactCacheDir(workspace.Dir()), strings.TrimPrefix(string(bundle.Digest), "sha256:"))
+		contents, err := os.ReadFile(archive)
+		require.NoError(t, err)
+		return string(contents)
+	}
+	invocations := func() []string {
+		data, _ := os.ReadFile(calls)
+		_ = os.Remove(calls)
+		return strings.Fields(strings.ReplaceAll(strings.TrimSpace(string(data)), "run build", "build"))
+	}
+
+	require.Contains(t, build(), "page v1")
+	require.Equal(t, []string{"ci", "build"}, invocations())
+	require.Contains(t, build(), "page v1")
+	require.Empty(t, invocations(), "unchanged inputs reuse the retained bundle")
+	require.NoError(t, os.WriteFile(filepath.Join(module.ServicesDir(), "api", "main.go"), []byte("package main"), 0o600))
+	require.Contains(t, build(), "page v1")
+	require.Empty(t, invocations(), "an edit outside the frontend builds nothing")
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "Page.tsx"), []byte("page v2"), 0o600))
+	require.Contains(t, build(), "page v2")
+	require.Equal(t, []string{"build"}, invocations(), "a source edit rebuilds without reinstalling")
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "package-lock.json"), []byte(`{"lockfileVersion":3,"packages":{}}`), 0o600))
+	build()
+	require.Equal(t, []string{"ci", "build"}, invocations(), "a lockfile edit installs again")
+
+	require.NoError(t, os.WriteFile(filepath.Join(remote, "Page.tsx"), []byte("page v3"), 0o600))
+	fakeTool(t, bin, "npm", "echo 'owner bundler: Page.tsx failed' >&2\nexit 7\n")
+	bundle, err = cluster.frontendBundle(ctx, module)
+	require.Nil(t, bundle, "a failed build never delivers the old bundle")
+	require.ErrorContains(t, err, "build the frontend of wiki (npm run build in")
+	require.ErrorContains(t, err, "owner bundler: Page.tsx failed")
+
+	require.NoError(t, os.Symlink("Page.tsx", filepath.Join(remote, "Alias.tsx")))
 	_, err = cluster.frontendBundle(ctx, module)
-	require.ErrorContains(t, err, "its bundle is not built")
-	require.ErrorContains(t, err, filepath.Join(module.ServicesDir(), "fe-remote"), "the source to build is named")
-	require.ErrorContains(t, err, solutionrun.FrontendBundleManifest)
+	require.ErrorContains(t, err, "Alias.tsx is not a regular file")
+}
+
+// A page whose owning service runs in a container is built in the pinned
+// builder image, as deployment builds it; the controlled Docker peer exercises
+// the process boundary without a registry or toolchain.
+func TestAContainerizedPageBuildsInTheBuilderImage(t *testing.T) {
+	ctx := context.Background()
+	module, _ := pageModule(t)
+	workspace := &resources.Workspace{Name: "acme"}
+	workspace.WithDir(t.TempDir())
+	cluster := &launcher{workspace: workspace, stateDir: t.TempDir(), flow: &fakeLauncherFlow{runtime: resources.RuntimeContextContainer}}
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeTool(t, bin, "npm", "echo 'npm must not run on the host' >&2\nexit 9\n")
+	fakeTool(t, bin, "docker", `recipe=$(cat)
+case "$recipe" in *'npm ci && npm run build'*) ;; *) echo 'missing owner build' >&2; exit 2;; esac
+for arg in "$@"; do
+ case "$arg" in type=local,dest=*) destination=${arg#type=local,dest=};; esac
+done
+mkdir -p "$destination"
+echo '{"name":"built-wiki"}' > "$destination/mf-manifest.json"
+`)
+	bundle, err := cluster.frontendBundle(ctx, module)
+	require.NoError(t, err)
+	contents, err := os.ReadFile(filepath.Join(composition.ArtifactCacheDir(workspace.Dir()), strings.TrimPrefix(string(bundle.Digest), "sha256:")))
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "built-wiki")
+
+	fakeTool(t, bin, "docker", "cat >/dev/null\necho 'owner build returned without artifacts'\n")
+	require.NoError(t, os.WriteFile(filepath.Join(module.ServicesDir(), "fe-remote", "Page.tsx"), []byte("page v2"), 0o600))
+	_, err = cluster.frontendBundle(ctx, module)
+	require.ErrorContains(t, err, "frontend build of wiki wrote no regular mf-manifest.json")
+	require.ErrorContains(t, err, "owner build returned without artifacts")
+}
+
+// The frontend is built before the delivery lock is taken: a module whose
+// build fails says so while another delivery holds the lock.
+func TestAFrontendBuildHoldsNoDeliveryLock(t *testing.T) {
+	root := writeNonGoWorkloadDir(t, "model")
+	moduleFile := filepath.Join(root, "modules", "model", resources.ModuleConfigurationName)
+	require.NoError(t, os.WriteFile(moduleFile, []byte("kind: module\nname: model\nservice-entry: api\nservices:\n  - name: api\n"), 0o644))
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(context.Background(), "model")
+	require.NoError(t, err)
+	require.NotEmpty(t, module.ServiceEntry)
+	entry := filepath.Join(module.ServicesDir(), module.ServiceEntry)
+	require.NoError(t, os.MkdirAll(entry, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(entry, solutionrun.FrontendFileName), []byte("title: Model\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+	cluster, _, unique := launcherWithFakeFlow(t, func(string) bool { return true })
+	cluster.workspace, cluster.stateDir = workspace, t.TempDir()
+	cluster.running[unique] = true
+	require.NoError(t, cluster.acquireDelivery(context.Background()))
+	defer cluster.delivery.Release(1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.ErrorContains(t, cluster.deliver(ctx, "model"), "holds no npm project", "the build ran and failed without waiting for the lock")
 }
 
 // Forgetting a stopped workload drops what this run kept for it, and only
@@ -137,6 +267,23 @@ func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.
 	require.NoError(t, err)
 	require.Empty(t, groups, "a host that does not declare federation is handed none of it")
 
-	_, err = federationGroup(&environments.EnvironmentHost{Coordinate: "obin/local/dev"})
+	_, err = environments.NativeHostFederation(&environments.EnvironmentHost{Coordinate: "obin/local/dev", Delivery: "saas/accounts/rest"}, accounts)
 	require.ErrorContains(t, err, "host.domain")
+}
+
+// A run keeps no staged frontend copy past its teardown, nor past the module
+// leaving the composition; the bundle records stay, so retained bundles are
+// reused.
+func TestStagedFrontendCopiesLeaveWithTheModuleAndTheRun(t *testing.T) {
+	cluster := &launcher{stateDir: t.TempDir(), stop: make(chan struct{})}
+	for _, module := range []string{"wiki", "summary"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(cluster.frontendState(), module, "source", "node_modules"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(cluster.frontendState(), module+".json"), []byte(`{}`), 0o600))
+	}
+	require.NoError(t, cluster.forgetFrontend(context.Background(), "summary"))
+	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "summary"))
+	require.DirExists(t, filepath.Join(cluster.frontendState(), "wiki"))
+	cluster.close()
+	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "wiki"))
+	require.FileExists(t, filepath.Join(cluster.frontendState(), "wiki.json"))
 }

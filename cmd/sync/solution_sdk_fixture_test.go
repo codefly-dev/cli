@@ -133,6 +133,31 @@ func TestSyncSolutionSDKResolvesTransportEndpointsToTheProtobufContract(t *testi
 		}
 	}
 
+	// A consume of the connect endpoint itself, once the catalog publishes it
+	// beside grpc under the same contract — one destination behind the hop —
+	// resolves to it; a rest consume resolves to that one contract too.
+	// Different contracts on the two give the rest consume no single answer.
+	catalog, err := composition.LoadAPIContractCatalog(filepath.Join(wsDir, "modules", "accounts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	connect := catalog.Endpoints[0]
+	connect.Endpoint, connect.API = "connect", standards.CONNECT
+	catalog.Endpoints = append(catalog.Endpoints, connect)
+	accounts := declared.API.Consumes[0]
+	if got, resolveErr := consumedContract(ctx, "", catalog, &accounts); resolveErr != nil || got.Endpoint != "connect" {
+		t.Fatalf("connect consume resolved to %+v (%v), want the published connect contract", got, resolveErr)
+	}
+	accounts.Endpoint = "rest"
+	catalog.Endpoints = append(catalog.Endpoints, composition.APIContractEndpoint{Service: "accounts", Endpoint: "rest", API: standards.REST, Kind: composition.APIContractKindOpenAPI})
+	if got, resolveErr := consumedContract(ctx, "", catalog, &accounts); resolveErr != nil || got.Kind != composition.APIContractKindProtobuf {
+		t.Fatalf("rest consume over one contract on grpc and connect resolved to %+v (%v), want that protobuf contract", got, resolveErr)
+	}
+	catalog.Endpoints[1].Digest = "sha256:another"
+	if _, resolveErr := consumedContract(ctx, "", catalog, &accounts); resolveErr == nil || !strings.Contains(resolveErr.Error(), "different protobuf contracts") {
+		t.Fatalf("error = %v, want two contracts on one service refused", resolveErr)
+	}
+
 	// An endpoint the producer does not declare is still refused, by name.
 	declared.API.Consumes[1].Endpoint = "graphql"
 	if _, err := resolveConsumedContracts(ctx, ws, declared); err == nil || !strings.Contains(err.Error(), "declares no endpoint graphql") {
@@ -140,10 +165,10 @@ func TestSyncSolutionSDKResolvesTransportEndpointsToTheProtobufContract(t *testi
 	}
 }
 
-// Gap 3: both consumes are reached through the host's gateway, so neither
-// the check nor --apply-dependencies asks for a service-dependency: that edge
-// is the mesh path past the gateway a solution must not hold.
-func TestSyncSolutionSDKAsksNoMeshEdgeForAGatewayServedConsume(t *testing.T) {
+// Gap 3: both consumes are called through the authority hop's Connect face,
+// so neither the check nor --apply-dependencies asks for a service-dependency:
+// that edge is a mesh path past the hop, a call no method policy is checked on.
+func TestSyncSolutionSDKAsksNoMeshEdgeForAHopRoutedConsume(t *testing.T) {
 	wsDir := newTwoModuleSolution(t, syntheticContract)
 	before, err := os.ReadFile(backendServiceFile(wsDir))
 	if err != nil {
@@ -161,7 +186,7 @@ func TestSyncSolutionSDKAsksNoMeshEdgeForAGatewayServedConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatalf("--apply-dependencies added a mesh edge to a gateway-served module:\n%s", after)
+		t.Fatalf("--apply-dependencies added a mesh edge past the hop:\n%s", after)
 	}
 
 	// --check counts the absent library, and nothing else.
@@ -220,8 +245,10 @@ func TestSyncSolutionSDKTwoModulesEndToEnd(t *testing.T) {
 		"go/accounts/accounts_facade.pb.go",
 		"go/records/records_facade.pb.go",
 		"typescript/src/index.ts",
-		"typescript/src/accounts/index.ts",
-		"typescript/src/records/index.ts",
+		"typescript/src/accounts_facade.ts",
+		"typescript/src/records_facade.ts",
+		"typescript/src/gen/accounts",
+		"typescript/src/gen/records",
 	} {
 		if _, err := os.Stat(filepath.Join(library, filepath.FromSlash(path))); err != nil {
 			t.Errorf("generated library lacks %s: %v", path, err)

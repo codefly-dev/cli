@@ -210,7 +210,11 @@ func TestRenderInjectsTheEnvironmentsTelemetryCarriers(t *testing.T) {
 	backend := injections.forService("wiki", "backend").Public
 	require.Equal(t, "https://otel.internal.ops.example:443", backend["OTEL_EXPORTER_OTLP_ENDPOINT"])
 	require.Equal(t, "wiki/backend", backend["OTEL_SERVICE_NAME"])
-	require.Equal(t, "service.namespace=wiki,deployment.environment.name=staging", backend["OTEL_RESOURCE_ATTRIBUTES"])
+	// Within the tracing attribute contract: deployment.environment.name only;
+	// service.namespace is not a key a producer may set, and a producer that
+	// enforces the contract refuses its whole export when it is injected.
+	require.Equal(t, "deployment.environment.name=staging", backend["OTEL_RESOURCE_ATTRIBUTES"])
+	require.NotContains(t, backend["OTEL_RESOURCE_ATTRIBUTES"], "service.namespace")
 	require.NoError(t, validateInjectionClassification("backend", injections.forService("wiki", "backend")))
 	require.Nil(t, telemetryCarriersForRender(&environments.Environment{Name: "local"}, []string{"wiki/backend"}))
 }
@@ -231,6 +235,20 @@ func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	}}
 	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfOnly))
 	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+
+	// The environment's telemetry carriers are offered too: a vendor image has
+	// no SDK to export with. An environment declaring an intake must not stop
+	// every render composing a redis or a postgres.
+	selfAndTelemetry := serviceInjection{Public: map[string]string{
+		"CODEFLY__SELF_ENDPOINT__SAAS__CACHE__READ__TCP": "tcp://cache.example-saas.svc.cluster.local:6379",
+		"OTEL_EXPORTER_OTLP_ENDPOINT":                    "https://otel.internal.ops.example:443",
+		"OTEL_SERVICE_NAME":                              "saas/cache",
+		"OTEL_RESOURCE_ATTRIBUTES":                       "deployment.environment.name=staging",
+	}}
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfAndTelemetry))
+	after, err = os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 

@@ -119,7 +119,7 @@ func projectServiceInjectionInTree(ctx context.Context, tree *renderRoot, root, 
 	if err := validateInjectionClassification(service, injection); err != nil {
 		return err
 	}
-	if len(injection.Secrets) > 0 && env.ServiceSecrets == nil {
+	if len(injection.Secrets) > 0 && !env.ServiceSecrets.Stored() {
 		return fmt.Errorf(
 			"service %q needs %s, which a render carries only as references into the environment's secret store, and environment %q declares no service secret store",
 			service, strings.Join(sortedKeys(injection.Secrets), ", "), env.Name)
@@ -214,13 +214,17 @@ func projectServiceInjectionInTree(ctx context.Context, tree *renderRoot, root, 
 }
 
 // offeredOnly reports whether every carrier a service derives is one offered to
-// any Codefly-aware process of it — its own reachable address — rather than one
-// the render must deliver (a solution's consumed routes). A container that
-// declares no CODEFLY__SERVICE (a vendor image: postgres, redis) reads none of
-// them, so an unclaimed service may skip offered carriers.
+// any Codefly-aware process of it — its own reachable address, the
+// environment's telemetry intake — rather than one the render must deliver (a
+// solution's consumed routes). A container that declares no CODEFLY__SERVICE
+// (a vendor image: postgres, redis) reads none of them, so an unclaimed
+// service may skip offered carriers. The telemetry carriers are offered for
+// the same reason the self endpoint is: a vendor image has no SDK to export
+// with, and refusing it would stop every render composing one the moment an
+// environment declares an intake.
 func offeredOnly(injection serviceInjection) bool {
 	offered := func(key string) bool {
-		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__")
+		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") || environments.IsTelemetryCarrier(key)
 	}
 	for key := range injection.Public {
 		if !offered(key) {

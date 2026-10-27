@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,9 +58,46 @@ func TestPreviousStableTag(t *testing.T) {
 	git("tag", "v0.1.10")
 	git("tag", "v0.1.11-rc.1")
 	git("tag", "v0.1.11")
-	tag, err := previousTag(root, "v0.1.11")
+	git("tag", "v0.1.12")
+	published := func(tags ...string) func() (map[string]bool, error) {
+		return func() (map[string]bool, error) {
+			releases := map[string]bool{}
+			for _, tag := range tags {
+				releases[tag] = true
+			}
+			return releases, nil
+		}
+	}
+
+	tag, err := previousTag(root, "v0.1.13", published("v0.1.9", "v0.1.10", "v0.1.11-rc.1", "v0.1.11", "v0.1.12"))
+	require.NoError(t, err)
+	require.Equal(t, "v0.1.12", tag)
+
+	// v0.1.12 and v0.1.11 were tagged but their release workflows failed: the
+	// tags stay, and the comparison is against the last release that exists.
+	tag, err = previousTag(root, "v0.1.13", published("v0.1.9", "v0.1.10", "v0.1.11-rc.1"))
 	require.NoError(t, err)
 	require.Equal(t, "v0.1.10", tag)
+
+	_, err = previousTag(root, "v0.1.13", published())
+	require.ErrorContains(t, err, "none of the 4 stable tags before v0.1.13 has a published release")
+
+	_, err = previousTag(root, "v0.1.13", func() (map[string]bool, error) { return nil, errors.New("gh: authentication required") })
+	require.ErrorContains(t, err, "list published CLI releases: gh: authentication required")
+}
+
+func TestPreviousTagSkipsReleaseListingWithoutStableTags(t *testing.T) {
+	root := t.TempDir()
+	_, err := command(root, "git", "init", "-q")
+	require.NoError(t, err)
+	_, err = command(root, "git", "-c", "user.name=Contract test", "-c", "user.email=contract@example.invalid", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-qm", "initial")
+	require.NoError(t, err)
+	tag, err := previousTag(root, "v0.1.1", func() (map[string]bool, error) {
+		t.Fatal("listed releases with no stable tag to compare against")
+		return nil, nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, tag)
 }
 
 func TestGenerateFromConsumedCore(t *testing.T) {

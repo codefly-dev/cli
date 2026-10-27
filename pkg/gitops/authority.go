@@ -9,12 +9,15 @@ import (
 	"slices"
 	"strings"
 
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/wool"
 )
 
 // --- What a module asks for ---
@@ -72,27 +75,68 @@ func moduleAuthority(
 	request authorityRequest,
 ) (*solutionhost.Authority, error) {
 	authority := &solutionhost.Authority{Principal: module.Name}
+	if err := refuseRetiredRoles(module.Dir()); err != nil {
+		return nil, fmt.Errorf("module %s: %w", module.Name, err)
+	}
 	if request.undeclared != "" {
 		return authority, nil
+	}
+	// The principal is the module's own name, and the contract is held to it
+	// before anything resolves: a module claiming another module's principal
+	// would claim its grant, and a binding addressed to the module itself
+	// ({self: true}) resolves to the contract's principal — this name.
+	if request.contract.Principal != module.Name {
+		return nil, fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, request.contract.Principal, module.Name)
 	}
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
 	}
-	resolved, err := request.contract.Resolve(workspaceValues{provided: provided})
+	callees := newComposedCallees(func(name string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+		callee, loadErr := workspace.LoadModuleFromName(ctx, name)
+		if loadErr != nil {
+			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
+		}
+		return HostMethodPolicies(ctx, workspace, env, callee)
+	})
+	resolved, err := request.contract.Resolve(workspaceValues{provided: provided}, modulecontract.WithCallees(callees))
 	if err != nil {
 		return nil, fmt.Errorf("module %s: %w", module.Name, err)
 	}
 	if err := refuseUnaddressableConsumption(workspace, module, request, resolved); err != nil {
 		return nil, err
 	}
-	// The principal is the module's own name, and the contract is held to it:
-	// a module claiming another module's principal would claim its grant.
-	if resolved.Principal != module.Name {
-		return nil, fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, resolved.Principal, module.Name)
-	}
 	if err := refuseUndeclaredDestinations(module.Name, resolved, services); err != nil {
 		return nil, err
+	}
+	// An optional binding the composition fills none of the slots of is left
+	// out of the delivered manifest by core's resolution, so no credential can
+	// be issued through it; the render says so rather than drop it silently.
+	for _, omitted := range resolved.Omitted {
+		wool.Get(ctx).In("gitops.moduleAuthority").Info(
+			fmt.Sprintf("module %s: optional binding %s is omitted from the delivered manifest: %s", module.Name, omitted.ID, omitted.Reason),
+			wool.Field("module", module.Name), wool.Field("binding", omitted.ID))
+	}
+	// A binding addressed to a list of audiences is delivered once per listed
+	// audience, each its own binding (core's AudienceBindingID) with the
+	// ceiling that audience's own declarations give it; the render says which,
+	// since the delivered ids are not the ones the contract spells.
+	for i := range request.contract.Bindings {
+		declared := &request.contract.Bindings[i]
+		if declared.Audiences == nil {
+			continue
+		}
+		var delivered []string
+		for _, binding := range resolved.Bindings {
+			if strings.HasPrefix(binding.ID, modulecontract.AudienceBindingID(declared.ID, "")) {
+				delivered = append(delivered, binding.ID)
+			}
+		}
+		if len(delivered) > 0 {
+			wool.Get(ctx).In("gitops.moduleAuthority").Info(
+				fmt.Sprintf("module %s: binding %s is delivered once per listed audience, as %s", module.Name, declared.ID, strings.Join(delivered, ", ")),
+				wool.Field("module", module.Name), wool.Field("binding", declared.ID))
+		}
 	}
 	for _, binding := range resolved.Bindings {
 		operations := make(map[string][]string, len(binding.Operations))
@@ -100,6 +144,17 @@ func moduleAuthority(
 			operations[operation] = append([]string(nil), binding.Scopes[operation]...)
 		}
 		authority.Bindings = append(authority.Bindings, solutionhost.AuthorityBinding{ID: binding.ID, Audience: binding.Audience, Operations: operations})
+	}
+	// A module that installs prepared bindings also asks for each one it
+	// installs (runnable_grants.go).
+	if installsPreparedBindings(services) {
+		grants, err := preparedGrants(provided)
+		if err != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		if err := appendPreparedBindings(authority, module.Name, grants); err != nil {
+			return nil, err
+		}
 	}
 	authority.Queues = append([]string(nil), resolved.Queues...)
 	authority.Namespaces = append([]string(nil), resolved.Namespaces...)
@@ -252,4 +307,55 @@ func refuseUndeclaredDestinations(module string, contract *modulecontract.Resolv
 		return nil
 	}
 	return fmt.Errorf("%w: module %s declares the destinations %s, and none of its services declares such an endpoint; declare the endpoint on the service or withdraw the destination", errUnrenderedDestination, module, strings.Join(missing, ", "))
+}
+
+// composedCallees is modulecontract.Callees over the composed modules: what a
+// call to one requires is that module's own method policy for it, read from
+// its published contracts, so a binding that names its calls carries exactly
+// what the callee declares and the caller names none of its kinds. A callee's
+// policies are read once per resolution.
+type composedCallees struct {
+	read     func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)
+	policies map[string]map[string]*compositionv1.MethodPolicyV1
+}
+
+func newComposedCallees(read func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)) *composedCallees {
+	return &composedCallees{read: read, policies: map[string]map[string]*compositionv1.MethodPolicyV1{}}
+}
+
+// Requires implements modulecontract.Callees. A call the audience does not
+// serve, or one it serves declaring nothing (which the hop refuses), is an
+// error naming it; a call open to any checked caller requires no scope.
+func (c *composedCallees) Requires(audience, call string) ([]string, error) {
+	methods, held := c.policies[audience]
+	if !held {
+		served, declared, err := c.read(audience)
+		if err != nil {
+			return nil, err
+		}
+		if !declared {
+			return nil, fmt.Errorf("%s publishes no contracts, so what its calls require cannot be read", audience)
+		}
+		methods = make(map[string]*compositionv1.MethodPolicyV1, len(served))
+		for _, method := range served {
+			methods[method.GetMethod()] = method
+		}
+		c.policies[audience] = methods
+	}
+	method, served := methods[call]
+	switch {
+	case !served:
+		return nil, fmt.Errorf("%s does not serve it", audience)
+	case method.GetAnyCheckedCaller():
+		return nil, nil
+	case len(method.GetRequires()) == 0:
+		return nil, fmt.Errorf("%s declares nothing for it, and the hop refuses a call to a method that declares nothing", audience)
+	}
+	var scopes []string
+	for _, required := range method.GetRequires() {
+		for _, action := range required.GetActions() {
+			scopes = append(scopes, required.GetResourceKind()+":"+action)
+		}
+	}
+	return scopes, nil
 }

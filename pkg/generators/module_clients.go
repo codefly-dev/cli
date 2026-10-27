@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -172,11 +171,18 @@ func PlanModuleClients(moduleName string, catalog *composition.APIContractCatalo
 	return plans, nil
 }
 
+// ProtoSourceLister names a proto tree's source set as buf compiles it.
+// `codefly generate` owns the one implementation (generate.ListProtoSources),
+// which runs buf in the pinned proto companion.
+type ProtoSourceLister func(ctx context.Context, protoDir string) ([]coreproto.Source, error)
+
 // BuildModuleClientEntry reads exactly the committed package contract that is
 // being published. Callers validate the package manifest, catalog and artifact
 // digests before invoking it, so generated clients cannot diverge from the
-// module package under the same version.
-func BuildModuleClientEntry(ctx context.Context, moduleDir, moduleName string, catalog *composition.APIContractCatalog, plan *ModuleClientPlan) (*ContractEntry, error) {
+// module package under the same version. A protobuf contract's sources are
+// what listSources names over the proto tree published beside it, so buf.yaml
+// modules and excludes decide them exactly as they did the contract.
+func BuildModuleClientEntry(ctx context.Context, moduleDir, moduleName string, catalog *composition.APIContractCatalog, plan *ModuleClientPlan, listSources ProtoSourceLister) (*ContractEntry, error) {
 	contractBytes, err := ReadCatalogContractBytes(moduleDir, &plan.Endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("read contract for %s/%s: %w", plan.Endpoint.Service, plan.Endpoint.Endpoint, err)
@@ -184,7 +190,7 @@ func BuildModuleClientEntry(ctx context.Context, moduleDir, moduleName string, c
 	var protoSources []coreproto.Source
 	if plan.Endpoint.Kind == composition.APIContractKindProtobuf {
 		protoDir := filepath.Join(filepath.Dir(filepath.Join(moduleDir, filepath.FromSlash(plan.Endpoint.Path))), "proto")
-		protoSources, err = collectPublishedProtoSources(ctx, protoDir)
+		protoSources, err = listSources(ctx, protoDir)
 		if err != nil {
 			return nil, fmt.Errorf("read proto sources for %s/%s: %w", plan.Endpoint.Service, plan.Endpoint.Endpoint, err)
 		}
@@ -199,39 +205,6 @@ func BuildModuleClientEntry(ctx context.Context, moduleDir, moduleName string, c
 		ProtoSources:        protoSources,
 		Services:            plan.Services,
 	}, nil
-}
-
-func collectPublishedProtoSources(ctx context.Context, protoDir string) ([]coreproto.Source, error) {
-	var sources []coreproto.Source
-	err := filepath.WalkDir(protoDir, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".proto" {
-			return nil
-		}
-		rel, err := filepath.Rel(protoDir, path)
-		if err != nil {
-			return err
-		}
-		content, err := os.ReadFile(path) //nolint:gosec // walked beneath the validated contract directory.
-		if err != nil {
-			return err
-		}
-		sources = append(sources, coreproto.Source{Path: filepath.ToSlash(rel), Content: content})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(sources) == 0 {
-		return nil, fmt.Errorf("no .proto files under %s", protoDir)
-	}
-	sort.Slice(sources, func(i, j int) bool { return sources[i].Path < sources[j].Path })
-	return sources, nil
 }
 
 func containsLanguage(list []languages.Language, lang languages.Language) bool {

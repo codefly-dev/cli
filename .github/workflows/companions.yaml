@@ -244,3 +244,17 @@ jobs:
 
       - name: Verify every embedded tag is in the registry
         run: ${{ github.workspace }}/bin/codefly companion verify --core-dir "${{ github.workspace }}/core"
+
+      # The published proto companion, pulled fresh on this runner, must render
+      # a Python client that streams all four RPC shapes. A tag republished
+      # with different content passes the presence check above and fails here.
+      - name: Qualify Python client streaming through the published companion
+        working-directory: cli
+        env:
+          CODEFLY_GENERATE_QUALIFY: "1"
+          GOWORK: "off"
+        run: go test ./cmd/generate -count=1 -run '^TestGenerateClientPythonStreaming$'
+
+      - name: Name the proto companion image the qualification ran
+        if: failure()
+        run: docker images --digests --format '{{.Repository}}:{{.Tag}} {{.Digest}} {{.ID}}' ghcr.io/codefly-dev/proto

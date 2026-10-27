@@ -274,3 +274,31 @@ func TestANativeRunAndARenderRequestTheSameAuthority(t *testing.T) {
 	require.Equal(t, declared, native.Workloads)
 	require.Equal(t, deployed.Binding, native.Binding)
 }
+
+// A solution's own kinds come from its module contract's scope ceilings and
+// are named in its manifest's authority block, so the authority's document can
+// ceil them and grant roles within them. A solution asking for scopes on
+// api.consumes declares its roles in a contract only by moving its consumption
+// there: a module asks for authority from one declaration. One still shipping
+// the retired roles declaration fails the render, naming the file.
+func TestASolutionsDeclaredKindsAreNamedInItsManifest(t *testing.T) {
+	workspace, module := writeConsumingSolutionWorkspace(t, consumptionFixture(t, "agentless.yaml"))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(wikiContract), 0o644))
+	env := selectedEnvironment(t, workspace, "staging")
+	authority, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"wiki.page"}, authority.ResourceKinds)
+
+	workspace, module = writeConsumingSolutionWorkspace(t, consumingSolution)
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(wikiContract), 0o644))
+	_, err = authorityRequestOf(module)
+	require.ErrorContains(t, err, "a module asks for authority from one declaration")
+
+	workspace, module = writeConsumingSolutionWorkspace(t, consumptionFixture(t, "agentless.yaml"))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(wikiContract), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), retiredRolesFileName), []byte("schema: codefly/solution-roles/v1\n"), 0o644))
+	env = selectedEnvironment(t, workspace, "staging")
+	_, err = shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
+	require.ErrorContains(t, err, retiredRolesFileName)
+	require.ErrorContains(t, err, modulecontract.FileName)
+}

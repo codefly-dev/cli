@@ -224,11 +224,11 @@ func loadFixtureWorkspace(t *testing.T, wsDir string) *resources.Workspace {
 
 func resetSolutionSDKFlags(t *testing.T) {
 	t.Helper()
-	prevLangs, prevCheck, prevApply, prevSkip := solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, skipGenerateForTests
-	solutionSDKLanguages, solutionSDKCheck, solutionSDKApply = nil, false, false
+	prevLangs, prevCheck, prevApply, prevForce, prevSkip := solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce, skipGenerateForTests
+	solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce = nil, false, false, false
 	skipGenerateForTests = true
 	t.Cleanup(func() {
-		solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, skipGenerateForTests = prevLangs, prevCheck, prevApply, prevSkip
+		solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce, skipGenerateForTests = prevLangs, prevCheck, prevApply, prevForce, prevSkip
 	})
 }
 
@@ -322,7 +322,7 @@ func TestSyncSolutionSDKRejectsUnknownService(t *testing.T) {
 // TestSyncSolutionSDKApplyDependencies: the only consume the entry service
 // calls directly is one of the solution's own module, and --apply-dependencies
 // adds exactly that edge, node-preserving. A consume of another module (here
-// host's accounts) is reached through the host's gateway and gets none.
+// host's accounts) is called through the authority hop and gets none.
 func TestSyncSolutionSDKApplyDependencies(t *testing.T) {
 	root := t.TempDir()
 	hostDir := filepath.Join(root, "host")
@@ -358,7 +358,7 @@ func TestSyncSolutionSDKApplyDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(service.ServiceDependencies) != 0 {
-		t.Fatalf("--apply-dependencies added a mesh edge to a gateway-served module: %+v", service.ServiceDependencies)
+		t.Fatalf("--apply-dependencies added a mesh edge past the hop to another module: %+v", service.ServiceDependencies)
 	}
 
 	ws := loadFixtureWorkspace(t, wsDir)

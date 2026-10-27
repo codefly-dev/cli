@@ -143,6 +143,109 @@ addopts = "-q"
 	}
 }
 
+// TestTypeScriptFacadeImportsReachIntoGen pins the specifier the facade
+// rewrite produces. The facade is hoisted out of the generated tree to src/,
+// so its same-directory imports must name the binding's new place under gen/
+// — and for a facade at the tree's root (a proto file with no package-derived
+// subdirectory, e.g. api.proto), that place is gen/ itself, not "gen/./".
+func TestTypeScriptFacadeImportsReachIntoGen(t *testing.T) {
+	for _, tc := range []struct {
+		name, facadeDir, want string
+	}{
+		{name: "root facade", facadeDir: "", want: `from "./gen/api_pb.js"`},
+		{name: "package facade", facadeDir: "saas/accounts/v1", want: `from "./gen/saas/accounts/v1/api_pb.js"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, langDir := t.TempDir(), t.TempDir()
+			dir := filepath.Join(raw, filepath.FromSlash(tc.facadeDir))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			facade := "import { Pdf } from \"./api_pb.js\";\n"
+			if err := os.WriteFile(filepath.Join(dir, "pdf_facade.ts"), []byte(facade), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "api_pb.ts"), []byte("export const Pdf = {};\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := mergeTypeScriptEntry(langDir, raw, "", false); err != nil {
+				t.Fatalf("mergeTypeScriptEntry: %v", err)
+			}
+			got, err := os.ReadFile(filepath.Join(langDir, "src", "pdf_facade.ts"))
+			if err != nil {
+				t.Fatalf("read hoisted facade: %v", err)
+			}
+			if !strings.Contains(string(got), tc.want) {
+				t.Errorf("hoisted facade imports\n%s\nwant a specifier %s", got, tc.want)
+			}
+			binding := filepath.Join(langDir, "src", "gen", filepath.FromSlash(tc.facadeDir), "api_pb.ts")
+			if _, err := os.Stat(binding); err != nil {
+				t.Errorf("the binding the specifier names is not where it points: %v", err)
+			}
+		})
+	}
+}
+
+// TestEnsurePythonDependenciesKeepsADevelopersOwnPin pins that a package is
+// declared by its distribution name, not by the exact requirement string: a
+// developer who pinned grpcio or protovalidate themselves keeps that pin, and
+// the library never gains a second, conflicting requirement for it.
+func TestEnsurePythonDependenciesKeepsADevelopersOwnPin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pyproject.toml")
+	original := `[project]
+dependencies = ["protobuf>=5.29.3,<7", "grpcio==1.75.1", "Protovalidate>=0.7"]
+`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePythonDependencies(dir, []string{pythonGrpcRequirement, "protovalidate", "googleapis-common-protos"}); err != nil {
+		t.Fatalf("ensurePythonDependencies: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `dependencies = ["protobuf>=5.29.3,<7", "grpcio==1.75.1", "Protovalidate>=0.7", "googleapis-common-protos"]`
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("got:\n%s\nwant the line:\n%s", got, want)
+	}
+}
+
+func TestPythonDistribution(t *testing.T) {
+	for requirement, want := range map[string]string{
+		"grpcio>=1.71.0":                   "grpcio",
+		"protobuf>=5.29.3,<7":              "protobuf",
+		"googleapis-common-protos":         "googleapis-common-protos",
+		"Googleapis_Common_Protos==1.66":   "googleapis-common-protos",
+		"protovalidate ~= 0.7":             "protovalidate",
+		"grpcio[protobuf]>=1.71":           "grpcio",
+		`grpcio; python_version >= "3.10"`: "grpcio",
+		"opentelemetry-proto!=1.2":         "opentelemetry-proto",
+	} {
+		if got := pythonDistribution(requirement); got != want {
+			t.Errorf("pythonDistribution(%q) = %q, want %q", requirement, got, want)
+		}
+	}
+}
+
+// TestPythonScaffoldDeclaresGrpcio pins that a new library depends on the
+// grpcio its *_pb2_grpc stubs check at import, the floor the companion's
+// grpc_tools sets.
+func TestPythonScaffoldDeclaresGrpcio(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePythonScaffold(dir, "authority_client"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "pyproject.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `dependencies = ["protobuf>=5.29.3,<7", "grpcio>=1.71.0"]`) {
+		t.Fatalf("scaffold does not declare grpcio:\n%s", got)
+	}
+}
+
 // TestTypeScriptLibraryDeclaresAnEntryPointItProduces pins the two halves of
 // the generated package that must agree: package.json's "exports" and the file
 // tree. They lived in different functions and disagreed — the scaffold named
@@ -165,7 +268,7 @@ func TestTypeScriptLibraryDeclaresAnEntryPointItProduces(t *testing.T) {
 		}
 	}
 
-	export, err := finalizeTypeScriptLibrary(langDir, "@acme/pdf-client", false)
+	export, err := finalizeTypeScriptLibrary(langDir, "@acme/pdf-client")
 	if err != nil {
 		t.Fatalf("finalizeTypeScriptLibrary: %v", err)
 	}
@@ -235,7 +338,7 @@ func TestTypeScriptLibraryDeclaresAnEntryPointItProduces(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(genDir, "other_pb.ts"), []byte("export const Other = {};\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = finalizeTypeScriptLibrary(langDir, "@acme/pdf-client", false); err != nil {
+	if _, err = finalizeTypeScriptLibrary(langDir, "@acme/pdf-client"); err != nil {
 		t.Fatalf("second finalizeTypeScriptLibrary: %v", err)
 	}
 	index, err = os.ReadFile(filepath.Join(langDir, "src", "index.ts"))

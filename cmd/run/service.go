@@ -20,6 +20,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -218,13 +219,13 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// every exit path — including failures — so a partially-started flow
 	// never orphans agents or containers.
 	stopFresh := func() error {
+		stopLauncher() // Cancel delivery before waiting for service teardown.
 		if run.flowManager != nil {
 			run.flowManager.Release(serviceName, run.flow)
 		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		err := stopService(shutdownCtx, run.flow)
 		shutdownCancel()
-		stopLauncher()
 		return err
 	}
 	defer func() { returnErr = errors.Join(returnErr, stopFresh()) }()
@@ -900,9 +901,19 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	w.Info("Running with remotes", wool.Field("remotes", remoteServices))
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode,
-		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...))
+		orchestration.WithRunModuleClosure(runModuleSeeds(module, runCoRoots)...),
+		NativeAuthorityPrerequisites(env, runtimeContext),
+		orchestration.WithCompositionCheck(gitops.PermissionPreflight(false)))
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+
+	generated, err := provisionGeneratedSecrets(ctx, workspace, env)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	if len(generated) > 0 {
+		cli.Info("generated %s, as environment %s's service-secrets declare (values never printed)", strings.Join(generated, ", "), env.Name)
 	}
 
 	flow.WithOutputSink(cli.NewOutputSink())

@@ -49,6 +49,9 @@ func renderModuleTree(
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return RenderResult{}, err
+	}
 	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
 		return RenderResult{}, err
 	}
@@ -185,7 +188,7 @@ type moduleRender struct {
 // agent, the units inventoried, the module's instance declared,
 // and the module bundle or the environment bootstrap staged beside them.
 func (r *moduleRender) stage(ctx context.Context, stage string) error {
-	services, err := loadModuleServices(ctx, r.module)
+	services, err := loadModuleServices(ctx, r.module, r.env)
 	if err != nil {
 		return err
 	}
@@ -279,10 +282,14 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	return r.stageBootstrap(stage)
 }
 
-// loadModuleServices loads every service the module references.
-func loadModuleServices(ctx context.Context, module *resources.Module) ([]*resources.Service, error) {
-	services := make([]*resources.Service, 0, len(module.ServiceReferences))
-	for _, reference := range module.ServiceReferences {
+// loadModuleServices loads every service the module references and the
+// environment renders.
+// A service the environment excludes (exclude-services) is not one of them:
+// it has no unit, no tree, no image and no workload in this environment.
+func loadModuleServices(ctx context.Context, module *resources.Module, env *environments.Environment) ([]*resources.Service, error) {
+	references := env.ComposedServices(module)
+	services := make([]*resources.Service, 0, len(references))
+	for _, reference := range references {
 		service, err := module.LoadServiceFromName(ctx, reference.Name)
 		if err != nil {
 			return nil, fmt.Errorf("load service %s: %w", reference.Name, err)
@@ -611,6 +618,9 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return RenderResult{}, err
+	}
 	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
 		return RenderResult{}, err
 	}
@@ -735,11 +745,15 @@ func serviceRenderPath(module, service string) string {
 // declares an auth method, logs in so `docker push` can resolve the immutable
 // snapshot digest. Managed registries authenticate out-of-band and declare no
 // auth, so login is skipped. Runs once per render rather than per service.
+//
+// Images are named by the repository the cell pulls from (PullRepository, the
+// mirror of the registry when one is declared), so the rendered manifests and
+// the cell file name it; the build pushes to registry.url and logs in there.
 func prepareSnapshotRegistry(ctx context.Context, env *environments.Environment) error {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
 	}
-	builder.SetRepository(env.Registry.URL)
+	builder.SetRepository(env.Registry.PullRepository())
 	if env.Registry.Auth != "" {
 		if err := builder.RegistryLogin(ctx, env.Registry.URL, env.Registry.Auth); err != nil {
 			return fmt.Errorf("authenticate snapshot registry: %w", err)

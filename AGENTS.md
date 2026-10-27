@@ -8,7 +8,7 @@
 
 - **Module:** `github.com/codefly-dev/cli`
 - **Repository:** `https://github.com/codefly-dev/cli`
-- **Language:** Go 1.27.2 (`go.mod` is the source of truth — see [Bump the Go version](docs/runbooks/bump-go-version.md))
+- **Language:** Go 1.27.3 (`go.mod` is the source of truth — see [Bump the Go version](docs/runbooks/bump-go-version.md))
 
 The CLI is the primary interface for codefly. It orchestrates agent lifecycles, manages the
 daemon, runs services with their dependency graphs, and exposes an MCP server for AI tool
@@ -171,6 +171,7 @@ codefly self build --with-agents    # ...also rebuild every canonical agent repo
 go test ./...                       # All tests
 go test ./pkg/orchestration/ -v     # Orchestration tests
 make lint                           # golangci-lint (reproduces CI)
+make hooks                          # once per clone: gofmt on commit; lint + CLI reference on push
 make check-coverage                 # Coverage gate
 ```
 

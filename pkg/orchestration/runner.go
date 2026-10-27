@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -268,18 +269,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, err
 	}
 
-	// Reject stale native listeners before calling the agent's Init hook.
-	// Infrastructure agents are allowed to bind their assigned endpoint during
-	// Init (for example Vault starts its Docker/Nix runtime there), so probing in
-	// Start is already too late and mistakes the service we just initialized for
-	// a stale process.
-	//
-	// A running service being hot-reloaded keeps its port and is marked started,
-	// so it must skip this first-start guard.
-	if err := runner.checkInitialPortAvailability(ctx); err != nil {
-		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
-	}
-
 	// Configuration reads can block on a stalled provider (e.g. a dependency
 	// service that failed to export its config). Bound each read with a
 	// timeout so a single bad provider doesn't stall the entire Init.
@@ -289,6 +278,21 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
 		return nil, err
+	}
+
+	// Reject stale native listeners before calling the agent's Init hook, on
+	// the addresses this Init proposes: on a first Init nothing has been
+	// accepted yet, and those are the ports the service is about to serve —
+	// and the ones a hop routing to it already holds. Infrastructure agents
+	// are allowed to bind their assigned endpoint during Init (for example
+	// Vault starts its Docker/Nix runtime there), so probing in Start is
+	// already too late and mistakes the service we just initialized for a
+	// stale process.
+	//
+	// A running service being hot-reloaded keeps its port and is marked started,
+	// so it must skip this first-start guard.
+	if err = runner.checkInitialPortAvailability(ctx, inputs.networkMappings); err != nil {
+		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
 	}
 	dependenciesEndpoints := inputs.dependenciesEndpoints
 	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
@@ -349,13 +353,12 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
 	}
-	runner.networkMappings = accepted
-	runner.pinAcceptedPorts(accepted)
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = accepted
+	runner.pinAcceptedPorts(accepted)
 
 	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Identity, resp.RuntimeConfigurations...)
 	if err != nil {
@@ -888,12 +891,11 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
-	runner.networkMappings = networkMappings
-
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
 	}
+	runner.networkMappings = networkMappings
 	err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{networkMappings: networkMappings})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for init")
@@ -908,6 +910,19 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	if runner.remoteEnvironment != nil {
 		return runner.StartRemote(ctx)
+	}
+
+	started := false
+	var attempt *RuntimeStartAttempt
+	if begin := runner.world.BeginRuntimeStart; begin != nil {
+		var err error
+		attempt, err = begin(ctx, runner.instance.Service)
+		if attempt != nil && attempt.Complete != nil {
+			defer func() { attempt.Complete(started) }()
+		}
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot prepare runtime start attempt")
+		}
 	}
 
 	err := runner.StopIfNeeded(ctx)
@@ -1000,6 +1015,17 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot validate start request")
 	}
 
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+	if attempt != nil && attempt.Admit != nil {
+		if admitErr := attempt.Admit(ctx); admitErr != nil {
+			return nil, w.Wrapf(admitErr, "cannot admit service before runtime start")
+		}
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	resp, err := runner.instance.Runtime.Start(ctx, req)
 
 	if err != nil {
@@ -1028,6 +1054,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	}
 
 	runner.markStarted()
+	started = true
 	return outputProperty, nil
 }
 
@@ -1080,16 +1107,30 @@ const portHolderLookupTimeout = 3 * time.Second
 type portCollision struct {
 	port     uint32
 	endpoint string
+	// address is the host:port the holder answered on, so the holder named is
+	// the one on that address — a squatter on [::1]:P beside another process
+	// on 127.0.0.1:P is the one reported.
+	address string
 }
 
-// boundNativePorts returns "<port> (<endpoint>)" descriptions for each of the
-// runner's own native endpoint ports that another process is already listening
-// on, naming the process that holds each one when it can be identified. A
+// boundNativePorts returns "<port> (<endpoint>)" descriptions for each native
+// endpoint port in mappings that another process is already listening on,
+// naming the process that holds each one when it can be identified. A
 // successful TCP dial is the honest signal that the port is held: unlike a
 // listen probe it doesn't trip on TIME_WAIT sockets that have no listener.
-func (runner *Runner) boundNativePorts(ctx context.Context) []string {
+//
+// Each loopback family is dialled explicitly, besides the instance's own host:
+// a listener on 127.0.0.1:P and one on [::1]:P are different sockets, and on
+// macOS a service that later binds the wildcard :P coexists with a squatter on
+// 127.0.0.1:P, which keeps receiving every dial to 127.0.0.1:P. Only a probe
+// of both families before the service binds sees either squatter.
+//
+// adopted excuses an address whose listener is the service's own: the
+// container its agent will adopt (Runner.adoptedContainerAddresses). nil
+// excuses nothing.
+func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, adopted func(address string) bool) []string {
 	var collisions []portCollision
-	for _, mapping := range runner.networkMappings {
+	for _, mapping := range mappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
 		// mapping or endpoint is possible at this boundary — skip rather than panic.
 		if mapping == nil || mapping.Endpoint == nil {
@@ -1099,24 +1140,49 @@ func (runner *Runner) boundNativePorts(ctx context.Context) []string {
 		if instance == nil {
 			continue
 		}
-		conn, err := net.DialTimeout("tcp", instance.Host, 200*time.Millisecond)
-		if err != nil {
-			continue
+		for _, address := range nativeProbeAddresses(instance) {
+			if listening(address) && (adopted == nil || !adopted(address)) {
+				collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name, address: address})
+				break
+			}
 		}
-		_ = conn.Close()
-		collisions = append(collisions, portCollision{port: instance.Port, endpoint: mapping.Endpoint.Name})
 	}
 	if len(collisions) == 0 {
 		return nil
 	}
 	lookupCtx, cancel := holderLookupContext(ctx)
 	defer cancel()
-	listeners := listeningPorts(lookupCtx)
+	sockets := listeningSockets(lookupCtx)
 	held := make([]string, 0, len(collisions))
 	for _, collision := range collisions {
-		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, listeners, collision.port)))
+		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, holderPID(sockets, collision.address, collision.port))))
 	}
 	return held
+}
+
+// nativeProbeAddresses is every address a native instance's port can be
+// held at: the port on each loopback family, and the instance's own host when
+// it is not a loopback name those two already cover. A loopback host is
+// probed per family only, so a holder is always attributed to one family.
+func nativeProbeAddresses(instance *basev0.NetworkInstance) []string {
+	var addresses []string
+	if host := instance.GetHost(); host != "" && !isLoopbackHostname(instance.GetHostname()) {
+		addresses = append(addresses, host)
+	}
+	if instance.GetPort() > 0 {
+		port := strconv.FormatUint(uint64(instance.GetPort()), 10)
+		addresses = append(addresses, net.JoinHostPort(loopbackIPv4, port), net.JoinHostPort(loopbackIPv6, port))
+	}
+	return addresses
+}
+
+func listening(address string) bool {
+	conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // holderLookupContext derives the deadline the holder attribution runs under.
@@ -1128,29 +1194,58 @@ func holderLookupContext(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeout(ctx, portHolderLookupTimeout)
 }
 
-// listeningPorts maps each locally LISTENing TCP port to the pid that holds it.
-// Building the whole map once per probe keeps a stack-wide collision from
-// re-enumerating the machine's sockets for every clashing endpoint.
-func listeningPorts(ctx context.Context) map[uint32]int32 {
+// listeningSocket is one locally LISTENing TCP socket and the pid holding it.
+type listeningSocket struct {
+	ip   string
+	port uint32
+	pid  int32
+}
+
+// listeningSockets enumerates the machine's listening TCP sockets once per
+// probe, so a stack-wide collision does not re-enumerate them for every
+// clashing endpoint.
+func listeningSockets(ctx context.Context) []listeningSocket {
 	connections, err := gopsnet.ConnectionsWithContext(ctx, "tcp")
 	if err != nil {
-		return map[uint32]int32{}
+		return nil
 	}
-	ports := make(map[uint32]int32, len(connections))
+	var sockets []listeningSocket
 	for _, connection := range connections {
 		if connection.Status != "LISTEN" || connection.Pid <= 0 {
 			continue
 		}
-		// A port bound on several addresses (v4 + v6, or per-interface) yields
-		// one connection each; they belong to the same listener, so first wins.
-		if _, seen := ports[connection.Laddr.Port]; !seen {
-			ports[connection.Laddr.Port] = connection.Pid
-		}
+		sockets = append(sockets, listeningSocket{ip: connection.Laddr.IP, port: connection.Laddr.Port, pid: connection.Pid})
 	}
-	return ports
+	return sockets
 }
 
-// portHolderSuffix names the process squatting on port, so an "already in use"
+// holderPID is the pid listening where address answered: a socket on that
+// exact IP first, then a wildcard socket of its family, then any socket on the
+// port. Zero when none is readable.
+func holderPID(sockets []listeningSocket, address string, port uint32) int32 {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = ""
+	}
+	wildcards := []string{wildcardIPv4, "*", ""}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		wildcards = []string{wildcardIPv6, "*", ""}
+	}
+	for _, matches := range []func(string) bool{
+		func(ip string) bool { return host != "" && ip == host },
+		func(ip string) bool { return slices.Contains(wildcards, ip) },
+		func(string) bool { return true },
+	} {
+		for _, socket := range sockets {
+			if socket.port == port && matches(socket.ip) {
+				return socket.pid
+			}
+		}
+	}
+	return 0
+}
+
+// portHolderSuffix names the process holding a port, so an "already in use"
 // failure says which pid to look at instead of leaving the user to run lsof.
 //
 // It reports the holder's executable PATH and never its command line: the path
@@ -1162,9 +1257,8 @@ func listeningPorts(ctx context.Context) map[uint32]int32 {
 // It returns "" when the holder cannot be identified: socket ownership is not
 // always readable (a listener owned by another user, a lookup that ran past
 // the deadline), and a missing name must not cost us the port report itself.
-func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint32) string {
-	pid, ok := listeners[port]
-	if !ok {
+func portHolderSuffix(ctx context.Context, pid int32) string {
+	if pid <= 0 {
 		return ""
 	}
 	proc, err := process.NewProcessWithContext(ctx, pid)
@@ -1178,7 +1272,7 @@ func portHolderSuffix(ctx context.Context, listeners map[uint32]int32, port uint
 	return fmt.Sprintf(" held by pid %d (%s)", pid, executable)
 }
 
-func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
+func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed []*basev0.NetworkMapping) error {
 	// Only the very first Init can see a ghost: once this runner has started
 	// the service, a bound port is its own — either still running (hot reload)
 	// or still releasing after the Stop that precedes a restart. Testing
@@ -1187,7 +1281,9 @@ func (runner *Runner) checkInitialPortAvailability(ctx context.Context) error {
 	if runner.isStarted.Load() || runner.everStarted.Load() {
 		return nil
 	}
-	if held := runner.boundNativePorts(ctx); len(held) > 0 {
+	// A listener that is the service's own kept container is not a ghost: its
+	// agent adopts it (keep-running), and 'codefly clear' would delete it.
+	if held := boundNativePorts(ctx, proposed, runner.adoptedContainerAddresses(ctx)); len(held) > 0 {
 		// The holder is whoever bound the port first — it may be a leftover
 		// codefly run, but it may equally be the user's own server, so the
 		// remedy is stated conditionally rather than asserting a provenance
@@ -1465,6 +1561,13 @@ func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev0.De
 	if runner.callback == nil {
 		runner.cancelRestarts()
 		return errors.New("restart requested before the orchestration callback was initialized")
+	}
+
+	if runner.world != nil && runner.world.beforeSourceRestart != nil {
+		if err := runner.world.beforeSourceRestart(ctx); err != nil {
+			runner.cancelRestarts()
+			return err
+		}
 	}
 
 	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -2000,17 +2103,23 @@ func (runner *Runner) gatherInitInputs(ctx, cfgCtx context.Context, w *wool.Wool
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
-	out.workspaceConfigurations, err = runner.workspaceConfigurations(cfgCtx, out.dependenciesNetworkMappings, out.runtimeContext)
+	// The addresses this Init proposes come first: a service whose own groups
+	// reference its own endpoint (the hop's ENDPOINT names the hop) resolves
+	// that reference to the address it is about to serve. Deriving it again as
+	// a producer's would allocate a second, different port under
+	// --temporary-ports, where a derivation is refused for that reason.
+	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+	resolvable := append(slices.Clone(out.dependenciesNetworkMappings), out.networkMappings...)
+	out.workspaceConfigurations, err = runner.workspaceConfigurations(cfgCtx, resolvable, out.runtimeContext)
 	if err != nil {
 		return nil, runner.initReadFailure(cfgCtx, w, err, "workspace dependencies configurations")
 	}
 	out.dependenciesConfigurations, err = runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
 	if err != nil {
 		return nil, runner.initReadFailure(cfgCtx, w, err, "dependencies configurations")
-	}
-	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
 	return out, nil
 }

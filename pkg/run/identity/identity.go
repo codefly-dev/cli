@@ -12,10 +12,12 @@ package identity
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/codefly-dev/core/workloadidentity"
 	"github.com/codefly-dev/core/workloadidentity/native"
@@ -27,6 +29,7 @@ type Credential struct {
 	Workload  workloadidentity.Workload
 	Container string
 	File      string
+	expiresAt time.Time
 }
 
 // Launcher issues the run's credentials. One per run; it dies with it.
@@ -93,6 +96,12 @@ func (l *Launcher) WriteAnchor(path string) error {
 	return l.issuer.Anchor().WriteFile(path)
 }
 
+// ProjectionPath resolves the credential carrier without issuing or refreshing
+// authority. Init may prepare the environment before a process is started.
+func (l *Launcher) ProjectionPath(workload workloadidentity.Workload) string {
+	return filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential")
+}
+
 // Project issues the credential of unique's workload once, to a file the
 // process reads, and returns it. A second Project of the same unique returns
 // the same credential.
@@ -105,28 +114,46 @@ func (l *Launcher) Project(unique string, workload workloadidentity.Workload) (C
 	workload.Instance = workload.Service + "-" + l.runID
 	credential := Credential{
 		Workload: workload, Container: workload.Service,
-		File: filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential"),
+		File: l.ProjectionPath(workload),
 	}
-	if err := l.issuer.WriteCredential(credential.File, l.subject(&credential), l.audience); err != nil {
+	if err := l.writeCredential(&credential); err != nil {
 		return Credential{}, err
 	}
 	l.credentials[unique] = credential
 	return credential, nil
 }
 
-// Refresh re-issues every projected credential, as a cell rotates a projected
-// token: a client that re-reads the file before every mint always presents
-// one the host has not recorded yet.
-func (l *Launcher) Refresh() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, credential := range l.credentials {
-		_ = l.issuer.WriteCredential(credential.File, l.subject(&credential), l.audience)
+// writeCredential records a conservative wall-clock expiry before issuance.
+// Core owns the lifetime and atomic write; failed writes never advance expiry.
+func (l *Launcher) writeCredential(credential *Credential) error {
+	expiresAt := time.Now().Truncate(time.Second).Add(native.TokenLifetime)
+	if err := l.issuer.WriteCredential(credential.File, l.subject(credential), l.audience); err != nil {
+		return err
 	}
+	credential.expiresAt = expiresAt
+	return nil
 }
 
-// RefreshInterval is how often Refresh runs.
-const RefreshInterval = native.RefreshInterval
+// Refresh re-issues projections with at most 20% of their lifetime remaining.
+// now is sampled at the poll, not taken from a possibly stale ticker event.
+func (l *Launcher) Refresh(now time.Time) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var failures []error
+	for unique, credential := range l.credentials {
+		// Strip monotonic time: on platforms where it pauses during suspend,
+		// only the wall clock includes the time the laptop spent asleep.
+		if credential.expiresAt.Sub(now.Round(0)) > native.TokenLifetime-native.RefreshInterval {
+			continue
+		}
+		if err := l.writeCredential(&credential); err != nil {
+			failures = append(failures, fmt.Errorf("refresh workload credential %s: %w", unique, err))
+			continue
+		}
+		l.credentials[unique] = credential
+	}
+	return errors.Join(failures...)
+}
 
 // Forget drops a stopped workload's projection.
 func (l *Launcher) Forget(unique string) {

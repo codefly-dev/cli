@@ -6,6 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/platform"
 	"github.com/codefly-dev/core/resources"
@@ -70,6 +71,11 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		return nil, nil, w.Wrap(err)
 	}
 
+	// The modules `deploy service` checks, the same way, before any effect; the
+	// deploy graph itself is the one a deployment has always taken.
+	if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
+		return nil, nil, w.Wrap(err)
+	}
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)
 	if err != nil {
 		return nil, nil, w.Wrap(err)
