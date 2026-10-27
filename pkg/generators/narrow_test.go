@@ -478,3 +478,40 @@ func TestNarrowEntriesFollowsExtensionsAndNestedOptions(t *testing.T) {
 		t.Errorf("ext.proto keeps %v and %d extensions, want Extra and the extension of P2", messages, len(ext.GetExtension()))
 	}
 }
+
+// A multi-package contract can declare the same short service name twice.
+// Selecting one must never include the other package's service or messages.
+func TestNarrowEntriesSelectsQualifiedServiceIdentity(t *testing.T) {
+	var files []*descriptorpb.FileDescriptorProto
+	for _, pkg := range []string{"acme.v1", "other.v1"} {
+		file := protoFile(pkg+"/api.proto", nil,
+			[]*descriptorpb.DescriptorProto{message("Request")}, nil,
+			service("DirectoryService", method("List", "."+pkg+".Request", "."+pkg+".Request")))
+		file.Package = googleproto.String(pkg)
+		files = append(files, file)
+	}
+	set := &descriptorpb.FileDescriptorSet{File: files}
+	data, err := googleproto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := narrowEntry(data, "acme.v1.DirectoryService")
+	entry.Endpoint.Package = ""
+	entry.Endpoint.Services = composition.ProtobufServices(set, "")
+	narrowed, err := narrowEntries([]ContractEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseNarrowed(t, narrowed[0].ContractBytes)
+	if len(got) != 1 || got["acme.v1/api.proto"] == nil {
+		t.Fatalf("qualified selection includes wrong files: %v", got)
+	}
+	if !slices.Equal(narrowed[0].Services, []string{"DirectoryService"}) {
+		t.Fatalf("companion selection = %v", narrowed[0].Services)
+	}
+	entry.Services = []string{"DirectoryService"}
+	_, err = narrowEntries([]ContractEntry{entry})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "acme.v1.DirectoryService") || !strings.Contains(err.Error(), "other.v1.DirectoryService") {
+		t.Fatalf("ambiguous selection error = %v", err)
+	}
+}

@@ -370,3 +370,24 @@ func TestGenerateClientServicesSelectionChangesRegenerateWithoutForce(t *testing
 	assertPythonImports(t, filepath.Join(output, "python"), "acme_sdk.acme")
 	assertPythonImports(t, filepath.Join(output, "python"), "acme_sdk.other")
 }
+
+func TestGenerateClientQualifiedServiceName(t *testing.T) {
+	requireQualify(t)
+	contractsDir := writeTwoServicesContractsFixture(t)
+	qualifyWorkspace(t)
+	resetClientFlags(t)
+	clientFrom = "contracts:" + contractsDir
+	clientLanguages = []string{"go"}
+	clientServices = []string{"acme.v1.WantedService"}
+	clientName = "wanted-client"
+	clientGoModule = "github.com/codefly-dev/wanted-client-go"
+	clientOutput = filepath.Join(t.TempDir(), "lib")
+	if err := ClientCmd.RunE(ClientCmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	goDir := filepath.Join(clientOutput, "go")
+	facade := findFacadeFile(t, goDir, "_facade.pb.go")
+	assertFileContains(t, facade, "WantedServiceClient")
+	assertFileLacks(t, facade, "OtherService")
+	goVetLibrary(t, goDir)
+}
