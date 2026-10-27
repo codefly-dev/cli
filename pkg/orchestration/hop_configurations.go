@@ -16,7 +16,12 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-const hopRoutesGroup = "hop-routes"
+const (
+	hopRoutesGroup = "hop-routes"
+	// hopRoutesKey is the one value of that group: the route table, or empty
+	// where the composition names no module for the hop.
+	hopRoutesKey = "ROUTES"
+)
 
 // WorkspaceConfigurationReader adds a generated, non-root group to the ordinary Core
 // reader. Both planning and delivery see its unresolved endpoint references,
@@ -73,7 +78,7 @@ func hopRoutingSnapshot(config *basev0.Configuration) string {
 	for _, info := range config.GetInfos() {
 		if info.GetName() == hopRoutesGroup {
 			for _, value := range info.GetConfigurationValues() {
-				if value.GetKey() == "ROUTES" {
+				if value.GetKey() == hopRoutesKey {
 					return value.GetValue()
 				}
 			}
@@ -100,9 +105,6 @@ func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, con
 			}
 		}
 	}
-	if listed == "" {
-		return nil, nil
-	}
 	services, err := workspace.LoadServices(ctx)
 	if err != nil {
 		return nil, err
@@ -111,6 +113,19 @@ func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, con
 		return slices.Contains(s.WorkspaceConfigurationDependencies, hopRoutesGroup)
 	}) {
 		return nil, nil
+	}
+	// A declared group that resolves to nothing is an error in Core's reader
+	// (GetWorkspaceDependenciesConfigurations), raised from the DECLARATION at
+	// runtime-init, before any of the service's code runs — so a host that
+	// stands a hop on some compositions and not others cannot degrade, and
+	// cannot stop declaring the group either, since generation requires a
+	// declaring service. It is handed the EMPTY view instead: nothing decodes
+	// an empty ROUTES (a host stands its hop only where the hop group names
+	// modules), the routing snapshot of an empty value is the same as of no
+	// group at all, so no run is told its routes changed, and a composition
+	// that does name modules still receives the routes generated below.
+	if listed == "" {
+		return emptyHopRoutes(), nil
 	}
 	routes := routing.Routing{Schema: routing.RoutingSchema}
 	modules := strings.Split(listed, ",")
@@ -139,7 +154,15 @@ func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, con
 	if err != nil {
 		return nil, err
 	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{Name: hopRoutesGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: "ROUTES", Value: string(raw)}}}}}, nil
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{Name: hopRoutesGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: hopRoutesKey, Value: string(raw)}}}}}, nil
+}
+
+// emptyHopRoutes is the hop-routes group holding no route: what a service
+// declaring the group receives where the composition names no module for it.
+func emptyHopRoutes() *basev0.Configuration {
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+		Name: hopRoutesGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: hopRoutesKey, Value: ""}},
+	}}}
 }
 
 func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]routing.RouteEndpoint, error) {

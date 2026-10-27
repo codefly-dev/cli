@@ -146,3 +146,62 @@ func TestHopRoutesRefuseForeignMethodsTheyCannotPlace(t *testing.T) {
 	_, err = hopRoutesOf(t, rpcHopWorkspace(t, []string{"chat", "host"}, nil))
 	require.NoError(t, err)
 }
+
+// A host that stands a hop on some compositions and not others declares
+// hop-routes always: saas's gateway is the hop on a cell and stands none where
+// the composition names no module for it. Core's reader raises "no
+// configuration found" from the DECLARATION, at runtime-init before any of the
+// service's code runs, so the group must be delivered — EMPTY — rather than
+// omitted. A composition that does name modules still receives its routes, and
+// a workspace no service of which declares the group still receives nothing.
+func TestHopRoutesAreDeliveredEmptyWhenNoModuleIsNamed(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := rpcHopWorkspace(t, []string{"chat"}, nil)
+	hop := func(modules string) []*basev0.Configuration {
+		return []*basev0.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+			Name: "hop", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "MODULES", Value: modules}},
+		}}}}
+	}
+
+	// No module named, and no hop group at all: the declaring service is handed
+	// the group with an empty ROUTES, so its declaration resolves.
+	for name, configs := range map[string][]*basev0.Configuration{
+		"empty hop/MODULES": hop(""),
+		"no hop group":      nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			group, err := generatedHopRoutes(context.Background(), workspace, configs)
+			require.NoError(t, err)
+			require.NotNil(t, group, "a declared group delivered as nothing is refused by core's reader at runtime-init")
+			require.Len(t, group.GetInfos(), 1)
+			require.Equal(t, hopRoutesGroup, group.GetInfos()[0].GetName())
+			values := group.GetInfos()[0].GetConfigurationValues()
+			require.Len(t, values, 1)
+			require.Equal(t, "ROUTES", values[0].GetKey())
+			require.Empty(t, values[0].GetValue())
+			// The group defines a value, so `codefly doctor workspace` reads it
+			// from the same resolved inventory as the run instead of reporting
+			// the group missing, and the routing snapshot is unchanged from no
+			// group at all, so no run is told its routes moved.
+			require.Empty(t, hopRoutingSnapshot(group))
+		})
+	}
+
+	// Naming a module still generates that module's routes.
+	routes, err := hopRoutesOf(t, workspace)
+	require.NoError(t, err)
+	require.Len(t, routes.Endpoints, 2)
+
+	// A workspace no service of which declares the group receives nothing,
+	// empty or not: there is no reader to deliver it to.
+	none := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                              "name: routes\nlayout: modules\nmodules:\n - name: authority\n",
+		"modules/authority/module.codefly.yaml":               "name: authority\nservices:\n - name: hop\n",
+		"modules/authority/services/hop/service.codefly.yaml": "name: hop\nversion: 0.0.0\nagent: {kind: runtime::service, name: go-grpc, version: 0.0.16, publisher: codefly.ai}\n",
+	})
+	for _, configs := range [][]*basev0.Configuration{hop(""), hop("owner"), nil} {
+		group, groupErr := generatedHopRoutes(context.Background(), none, configs)
+		require.NoError(t, groupErr)
+		require.Nil(t, group)
+	}
+}
