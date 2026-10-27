@@ -1129,6 +1129,14 @@ HTTP readiness deliberately stops at TCP reachability. Probing `/` would invent 
 health contract and can itself keep a development server unready.
 ## Teardown
 
+`codefly stop` retains an authenticated process-group record and returns an
+error when a live leader has the recorded start identity but a different boot
+identity. Older Darwin agents wrote a boot timestamp where current agents write
+a boot-session UUID. This mismatch does not prove PID reuse: cleanup neither
+signals the group nor discards its recovery evidence. Recover the owning run
+and update its agent before restarting. A successful stop must not hide a
+process it could not authenticate.
+
 `Stop()` and `Shutdown()` do not fan every manager out at once. Launch order is
 not completion order, so stopping a database concurrently with the API draining
 into it can cut off that API's last write. Both walk **reverse topological

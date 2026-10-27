@@ -866,6 +866,13 @@ func authenticateAuthenticatedGroup(ctx context.Context, rec *authenticatedRecor
 	}
 	for _, member := range members {
 		if member.pid == rec.PGID {
+			// A different boot representation with the same start identity is
+			// not proof of PID reuse. Older Darwin agents recorded a mutable
+			// boot timestamp instead of the boot-session UUID. Keep their
+			// evidence and refuse cleanup; never reinterpret it or signal it.
+			if member.startID == rec.Leader.StartID && member.bootID != rec.Leader.BootID {
+				return members, false, fmt.Errorf("process group %d has an incompatible boot identity; record retained without signaling; recover the owning run and update its agent before restarting", rec.PGID)
+			}
 			return members, member.matches(&rec.Leader), nil
 		}
 	}
