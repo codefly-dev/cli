@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	runners "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/wool"
 	"github.com/gofrs/flock"
 	"github.com/shirou/gopsutil/v3/process"
@@ -22,7 +23,6 @@ import (
 
 const (
 	stateDirName          = "runs"
-	authenticatedDirName  = "authenticated-v1"
 	registryLockName      = ".reaper.lock"
 	maxSweepPasses        = 4
 	maxRecordSize         = 16 << 10
@@ -127,6 +127,8 @@ const (
 )
 
 // GroupCleanup identifies the outcome retained for one registry record.
+// Record is a logical registered-group:<pgid> key for Core-owned registrations
+// and a filesystem path for historical root records.
 type GroupCleanup struct {
 	PGID    int
 	Record  string
@@ -245,13 +247,22 @@ func reconcileProcessGroupRegistries(ctx context.Context, policy reapPolicy) (Cl
 		evidence.Outcome = CleanupFailed
 		return evidence, err
 	}
-	currentEvidence, currentErr := reapProcessGroups(ctx, filepath.Join(dir, authenticatedDirName), policy)
-	evidence.merge(currentEvidence)
-	legacyEvidence, legacyErr := reapProcessGroups(ctx, dir, policy)
-	evidence.merge(legacyEvidence)
-	if err := errors.Join(currentErr, legacyErr); err != nil {
-		evidence.Outcome = CleanupFailed
-		return evidence, err
+	// Reaping a parent may orphan a group already inspected earlier in the
+	// pass, including a child written by a different producer generation.
+	for range maxSweepPasses {
+		currentEvidence, currentErr := reapRegisteredProcessGroups(ctx, policy)
+		evidence.merge(currentEvidence)
+		if currentErr != nil {
+			return evidence, currentErr
+		}
+		legacyEvidence, legacyErr := reapProcessGroups(ctx, dir, policy)
+		evidence.merge(legacyEvidence)
+		if legacyErr != nil {
+			return evidence, legacyErr
+		}
+		if len(currentEvidence.RecoveredPGIDs()) == 0 && len(legacyEvidence.RecoveredPGIDs()) == 0 {
+			break
+		}
 	}
 	return evidence, nil
 }
@@ -385,20 +396,7 @@ func reconcile(ctx context.Context, path string, policy reapPolicy) (string, err
 		if errors.Is(err, os.ErrNotExist) {
 			return dispositionRemoved, nil
 		}
-		if filepath.Base(filepath.Dir(path)) == authenticatedDirName && snapshot.info != nil {
-			quarantinePath, quarantineErr := quarantineInvalidRecord(path, snapshot)
-			if quarantineErr != nil {
-				return dispositionFailed, errors.Join(
-					fmt.Errorf("read process-group record %s: %w", path, err),
-					fmt.Errorf("quarantine invalid process-group record %s: %w", path, quarantineErr),
-				)
-			}
-			w.Warn("quarantined invalid process-group record without signaling",
-				wool.Field("record", path),
-				wool.Field("quarantine", quarantinePath),
-				wool.ErrField(err))
-			return dispositionRemoved, nil
-		}
+
 		w.Warn("could not reconcile process-group record",
 			wool.Field("record", path),
 			wool.Field("disposition", "retained-invalid-record"),
@@ -410,6 +408,13 @@ func reconcile(ctx context.Context, path string, policy reapPolicy) (string, err
 		wool.Field("pgid", rec.pgid),
 		wool.Field("parent", rec.parent),
 	}
+	// A historical root record must not bypass a supported registration's
+	// authentication or persisted workspace selection.
+	if _, lookupErr := runners.LookupProcessGroup(rec.pgid); lookupErr == nil {
+		return dispositionFailed, fmt.Errorf("group %d has both a legacy root record and a supported registration; records retained", rec.pgid)
+	} else if !errors.Is(lookupErr, runners.ErrProcessGroupNotRegistered) {
+		return dispositionFailed, lookupErr
+	}
 
 	if !groupAlive(rec.pgid) {
 		if removeErr := removeRecord(path, snapshot); removeErr != nil {
@@ -419,9 +424,9 @@ func reconcile(ctx context.Context, path string, policy reapPolicy) (string, err
 			wool.Field("disposition", "removed-dead-group"))...)
 		return dispositionRemoved, nil
 	}
-	// A record carries no workspace of its own — independently released agents
-	// write these and this package cannot change their format — so the group is
-	// attributed the same way an orphan is: from its leader's working directory.
+	// Historical root records carry no workspace metadata. Supported owner
+	// registrations were handled above through Core; this compatibility path
+	// retains environment/cwd attribution for historical producers.
 	// Out of scope means left alone entirely: not signalled, and its record kept,
 	// because the workspace that owns it is still using it.
 	if !policy.scope.includesProcessGroup(rec.pgid) {
@@ -724,24 +729,6 @@ func removeRecord(path string, snapshot recordSnapshot) error {
 	return nil
 }
 
-func quarantineInvalidRecord(path string, snapshot recordSnapshot) (string, error) {
-	if err := recordIsUnchanged(path, snapshot); err != nil {
-		return "", err
-	}
-	quarantinePath := path + ".invalid"
-	if err := os.Rename(path, quarantinePath); err != nil {
-		return "", err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return quarantinePath, err
-	}
-	if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
-		return quarantinePath, err
-	}
-	return quarantinePath, nil
-}
-
 func recordedCommand(summary string) string {
 	separator := strings.LastIndex(summary, " <")
 	if separator <= 0 || !strings.HasSuffix(summary, " args>") {
@@ -854,10 +841,8 @@ func inspectProcessGroup(ctx context.Context, pgid int) ([]processIdentity, erro
 	return identities, nil
 }
 
-var inspectAuthenticatedProcessGroup = inspectProcessGroup
-
 func authenticateAuthenticatedGroup(ctx context.Context, rec *authenticatedRecord) ([]processIdentity, bool, error) {
-	members, err := inspectAuthenticatedProcessGroup(ctx, rec.PGID)
+	members, err := inspectProcessGroup(ctx, rec.PGID)
 	if err != nil {
 		return nil, false, err
 	}

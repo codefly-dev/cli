@@ -65,16 +65,9 @@ func (s Scope) Includes(workspace string) bool {
 	return sameDirectory(filepath.Clean(workspace), s.Workspace)
 }
 
-// includesProcessGroup resolves a group's workspace from its leader and reports
-// whether it is in scope.
-//
-// A registry record carries no workspace of its own — independently released
-// agents write these and this package cannot change their format — so the
-// leader is asked instead: the run recorded in its environment when it was
-// launched, and only failing that the workspace enclosing its working
-// directory. Asking the working directory first was the whole defect: a
-// composed module's service runs from a checkout outside the workspace that
-// composed it, so a scoped stop left it running and reported success.
+// includesProcessGroup provides environment/cwd compatibility attribution for
+// historical records without a persisted launch workspace. Current registered
+// groups select Core's authenticated LaunchWorkspace before using this fallback.
 func (s Scope) includesProcessGroup(pgid int) bool {
 	if s.All() {
 		return true

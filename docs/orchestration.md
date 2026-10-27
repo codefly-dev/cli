@@ -1129,6 +1129,23 @@ HTTP readiness deliberately stops at TCP reachability. Probing `/` would invent 
 health contract and can itself keep a development server unready.
 ## Teardown
 
+`codefly stop` discovers supported process-group registrations through Core,
+which authenticates their recorded identities and owns signaling and removal.
+The command does not kill CLI/agent processes by executable name or path.
+The CLI selects the current workspace using the authenticated launch workspace
+persisted at spawn. This survives an exited controller and children that rewrite
+their environment. Independently built agents must adopt this Core producer;
+older registrations without that metadata retain environment/cwd attribution.
+Historical root records remain a separate compatibility path. A root record cannot override
+a surviving supported registration's refusal or workspace selection.
+
+Signature scans can find additional frontend/native candidates, but a process
+name or environment marker grants no signal authority. Missing or unproven
+registered ownership leaves the process running and reports an error. Registry
+inspection failure also prevents the legacy and signature fallback paths from
+overriding the refusal. An older CLI that cannot read the new namespace cannot
+recover its groups; upgrade the cleanup consumer along with the producer.
+
 `codefly stop` retains an authenticated process-group record and returns an
 error when a live leader has the recorded start identity but a different boot
 identity. Older Darwin agents wrote a boot timestamp where current agents write

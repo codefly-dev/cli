@@ -38,7 +38,7 @@ func TestOldDarwinBootIdentityRetainsLiveRecord(t *testing.T) {
 	waitForFile(t, readyPath)
 	pid := readPID(t, pidPath)
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
-	path := filepath.Join(home, ".codefly", stateDirName, authenticatedDirName, fmt.Sprintf("%d.pgid", pid))
+	path := filepath.Join(home, ".codefly", stateDirName, "authenticated-v2", fmt.Sprintf("%d.pgid", pid))
 	original, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

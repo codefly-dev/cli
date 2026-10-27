@@ -35,12 +35,19 @@ func TestStopIdentityFallbackOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestStopDoesNotFallbackAfterBootIdentityRefusal(t *testing.T) {
+func TestStopDoesNotFallbackAfterBootIdentityRefusal(t *testing.T) { testStopIdentityRefusal(t, false) }
+func TestStopDoesNotKillAgentBeforeBootIdentityRefusal(t *testing.T) {
+	testStopIdentityRefusal(t, true)
+}
+func testStopIdentityRefusal(t *testing.T, agentShape bool) {
 	t.Setenv("HOME", t.TempDir())
 	workspace := psWorkspace(t)
 	t.Chdir(workspace)
 	t.Setenv(processgroup.LaunchWorkspaceEnv, workspace)
 	binary := filepath.Join(t.TempDir(), ".cache", "native", "stop-child")
+	if agentShape {
+		binary = filepath.Join(t.TempDir(), ".codefly", "agents", "stop-child")
+	}
 	if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +74,7 @@ func TestStopDoesNotFallbackAfterBootIdentityRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	path := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "authenticated-v1", fmt.Sprintf("%d.pgid", pid))
+	path := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "authenticated-v2", fmt.Sprintf("%d.pgid", pid))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -86,24 +93,27 @@ func TestStopDoesNotFallbackAfterBootIdentityRefusal(t *testing.T) {
 	if err = os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rows, scanErr := scanRunProcesses(context.Background(), processgroup.InWorkspace(workspace))
-		if scanErr != nil {
-			t.Fatal(scanErr)
+	if !agentShape {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			rows, scanErr := scanRunProcesses(context.Background(), processgroup.InWorkspace(workspace))
+			if scanErr != nil {
+				t.Fatal(scanErr)
+			}
+			found := false
+			for _, row := range rows {
+				found = found || (row.PID == pid && row.Kind == "native" && row.Status == "orphaned")
+			}
+			if found {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("child never became eligible for orphan fallback")
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		found := false
-		for _, row := range rows {
-			found = found || (row.PID == pid && row.Kind == "native" && row.Status == "orphaned")
-		}
-		if found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("child never became eligible for orphan fallback")
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
+
 	err = clearCommand(context.Background(), nil, stopClearOptions())
 	if err == nil || !strings.Contains(err.Error(), "incompatible boot identity") {
 		t.Fatalf("expected boot refusal: %v", err)

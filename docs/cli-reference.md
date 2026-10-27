@@ -3832,16 +3832,17 @@ List the processes this workspace's run is still holding
 ```
 List the processes a codefly run is keeping alive: frontend dev servers
 (next dev / npm run dev / vite) and native-mode services (compiled service
-binaries and the stateful stores a run started), including those belonging to
-composed modules checked out outside the workspace.
+binaries and PostgreSQL), including composed modules when their launch
+environment or working directory identifies the workspace. This signature scan
+can omit registered processes whose command or environment has changed; stop
+uses authenticated registry discovery independently.
 
-Scoped to the current workspace — the same set 'codefly stop' acts on. Use
---all for every workspace on this machine. Outside a workspace the listing is
-machine-wide, since there is nothing to scope to.
+Scoped to the current workspace. Use --all for every workspace on this machine.
+Outside a workspace the listing is machine-wide.
 
-STATUS is one of: orphaned (codefly's, escaped its supervisor — reaped by
-'codefly clear'), tracked (codefly's, still supervised), or external (not
-codefly's — shown for visibility, never reaped).
+STATUS is diagnostic: orphaned (marked process without its supervisor), tracked
+(marked process still supervised), or external (no marker). A marker or status
+never authorizes cleanup: clear must authenticate a registered identity.
 ```
 
 ```

@@ -41,7 +41,7 @@ func TestStopReportsIncompatibleBootIdentityWithoutDiscardingEvidence(t *testing
 		}
 		time.Sleep(time.Millisecond)
 	}
-	path := filepath.Join(home, ".codefly", "runs", "authenticated-v1", fmt.Sprintf("%d.pgid", group.PGID()))
+	path := filepath.Join(home, ".codefly", "runs", "authenticated-v2", fmt.Sprintf("%d.pgid", group.PGID()))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
