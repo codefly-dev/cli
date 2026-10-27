@@ -18,9 +18,10 @@ import (
 // fakeGitHub records the release-API calls createAndUploadRelease makes so the
 // create vs. clobber behavior can be asserted without reaching GitHub.
 type fakeGitHub struct {
-	uploaded []string // asset names uploaded, in order
-	deleted  []int64  // asset ids deleted (the clobber step)
-	created  bool     // whether a release was created
+	uploaded []string          // asset names uploaded, in order
+	deleted  []int64           // asset ids deleted (the clobber step)
+	created  bool              // whether a release was created
+	digests  map[string]string // explicit existing producer-evidence digests
 }
 
 // server stands up an httptest server speaking enough of the releases API and
@@ -36,12 +37,12 @@ func (f *fakeGitHub) server(t *testing.T, tag string, existingAssets map[string]
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		writeRelease(w, releaseID, existingAssets)
+		writeRelease(w, releaseID, existingAssets, f.digests)
 	})
 	mux.HandleFunc("/repos/codefly-dev/service-go/releases", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		f.created = true
-		writeRelease(w, releaseID, nil)
+		writeRelease(w, releaseID, nil, nil)
 	})
 	mux.HandleFunc(fmt.Sprintf("/repos/codefly-dev/service-go/releases/%d/assets", releaseID), func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
@@ -65,10 +66,14 @@ func (f *fakeGitHub) server(t *testing.T, tag string, existingAssets map[string]
 	return client
 }
 
-func writeRelease(w http.ResponseWriter, id int64, assets map[string]int64) {
+func writeRelease(w http.ResponseWriter, id int64, assets map[string]int64, digests map[string]string) {
 	var parts []string
 	for name, aid := range assets {
-		parts = append(parts, fmt.Sprintf(`{"id":%d,"name":%q,"digest":"sha256:%x"}`, aid, name, sha256.Sum256([]byte("payload-"+name))))
+		digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("payload-"+name)))
+		if value, ok := digests[name]; ok {
+			digest = value
+		}
+		parts = append(parts, fmt.Sprintf(`{"id":%d,"name":%q,"digest":%q}`, aid, name, digest))
 	}
 	fmt.Fprintf(w, `{"id":%d,"assets":[%s]}`, id, strings.Join(parts, ","))
 }
@@ -112,6 +117,7 @@ func TestCreateAndUploadRelease_CreatesWhenAbsent(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"service-go_0.0.16_darwin_arm64.tar.gz",
 		"service-go_0.0.16_linux_amd64.tar.gz",
+		"checksums.txt",
 	}, f.uploaded)
 	require.Empty(t, f.deleted, "nothing to clobber on a fresh release")
 }
@@ -126,7 +132,7 @@ func TestCreateAndUploadRelease_ReusesIdenticalAssetWithoutMutation(t *testing.T
 
 	require.False(t, f.created, "an existing release must be reused, not recreated")
 	require.Empty(t, f.deleted)
-	require.Empty(t, f.uploaded)
+	require.Equal(t, []string{"checksums.txt"}, f.uploaded, "fill missing evidence without replacing the archive")
 }
 
 func TestCreateAndUploadRelease_UploadsSBOMAlongsideArchive(t *testing.T) {
@@ -138,7 +144,7 @@ func TestCreateAndUploadRelease_UploadsSBOMAlongsideArchive(t *testing.T) {
 
 	require.NoError(t, createAndUploadRelease(context.Background(), client, "codefly-dev", "service-go", "v0.0.16", assets))
 
-	require.ElementsMatch(t, []string{archive, sbom}, f.uploaded,
+	require.ElementsMatch(t, []string{archive, sbom, "checksums.txt"}, f.uploaded,
 		"both the archive and its SBOM must be uploaded")
 }
 
@@ -153,7 +159,7 @@ func TestCreateAndUploadRelease_ReusesIdenticalSBOMWithoutMutation(t *testing.T)
 
 	require.False(t, f.created, "an existing release must be reused, not recreated")
 	require.Empty(t, f.deleted)
-	require.Empty(t, f.uploaded)
+	require.Equal(t, []string{"checksums.txt"}, f.uploaded, "fill missing evidence without replacing existing bytes")
 }
 
 func TestCreateAndUploadRelease_RejectsChangedBytesWithoutDeletingAsset(t *testing.T) {

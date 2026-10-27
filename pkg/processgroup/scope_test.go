@@ -2,6 +2,7 @@ package processgroup
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -58,9 +59,11 @@ func startRunIn(t *testing.T, workspace string) int {
 		t.Fatal(err)
 	}
 	pgid := tracked.PGID()
+	reaped := make(chan struct{})
+	go func() { _, _ = command.Process.Wait(); close(reaped) }()
 	t.Cleanup(func() {
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		_, _ = command.Process.Wait()
+		<-reaped
 	})
 	waitForFile(t, readyPath)
 	return pgid
@@ -73,15 +76,17 @@ func startRunIn(t *testing.T, workspace string) int {
 // find its run.
 func recordExists(t *testing.T, pgid int) bool {
 	t.Helper()
+	if _, err := runnersbase.LookupProcessGroup(pgid); err == nil {
+		return true
+	} else if !errors.Is(err, runnersbase.ErrProcessGroupNotRegistered) {
+		t.Fatal(err)
+	}
 	dir, err := stateDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := strconv.Itoa(pgid) + ".pgid"
-	for _, candidate := range []string{filepath.Join(dir, authenticatedDirName, name), filepath.Join(dir, name)} {
-		if _, err := os.Stat(candidate); err == nil {
-			return true
-		}
+	if _, err := os.Stat(filepath.Join(dir, strconv.Itoa(pgid)+".pgid")); err == nil {
+		return true
 	}
 	return false
 }

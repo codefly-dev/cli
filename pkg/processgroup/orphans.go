@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/resources"
+	runners "github.com/codefly-dev/core/runners/base"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
@@ -49,9 +50,8 @@ type DevServerOrphan struct {
 	// the registry-based reaper can no longer identify.
 	Orphaned bool
 	// Owned is true when the process carries codefly's process-group
-	// authentication in its environment, proving codefly spawned it. Only owned
-	// groups are ever signalled; a dev server the user launched by hand inside a
-	// workspace is surfaced by a scan but never reaped.
+	// marker in its environment. This is a discovery hint; the reaper separately
+	// requires Core to authenticate its registered identity before any signal.
 	Owned bool
 }
 
@@ -148,13 +148,10 @@ func snapshotProcess(ctx context.Context, pid int, proc *process.Process) (proce
 	return snap, true
 }
 
-// ReapDevServerOrphans terminates the process groups of leaked dev servers. A
-// group is reaped only when it is (1) codefly-owned — a member carries codefly's
-// process-group authentication, so codefly spawned it — and (2) stale — its
-// group leader is gone or has itself been reparented to init. Dev servers the
-// user launched by hand (no authentication) and servers still supervised by a
-// live codefly (leader with a live parent) are left untouched. With dryRun set,
-// nothing is signalled and the return value is what would be reaped.
+// ReapDevServerOrphans inspects signature-matched candidates in scope. Core
+// must prove registered ownership and owner death before an identity-bound
+// signal. A missing registration is a refusal, even with a marker present.
+// Dry runs perform the same admission checks without signaling.
 func ReapDevServerOrphans(ctx context.Context, dryRun bool, scope Scope) ([]DevServerOrphan, error) {
 	orphans, err := ScanDevServerOrphans(ctx)
 	if err != nil {
@@ -172,19 +169,20 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool, scope Scope) ([]DevS
 		}
 		stale, err := groupIsStale(orphan.PGID)
 		if err != nil {
-			failures = append(failures, fmt.Errorf("inspect dev-server process group %d (%s): %w", orphan.PGID, orphan.Cwd, err))
+			failures = append(failures, err)
 			continue
 		}
 		if !stale {
 			continue
 		}
 		reapedGroups[orphan.PGID] = struct{}{}
-		reaped = append(reaped, orphan)
-		if dryRun {
+		selected, err := reapOrphanGroup(ctx, orphan.PGID, scope, dryRun)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("reap dev-server process group %d (%s): %w", orphan.PGID, orphan.Cwd, err))
 			continue
 		}
-		if err := killAuthenticatedProcessGroup(ctx, orphan.PGID); err != nil {
-			failures = append(failures, fmt.Errorf("reap dev-server process group %d (%s): %w", orphan.PGID, orphan.Cwd, err))
+		if selected {
+			reaped = append(reaped, orphan)
 		}
 	}
 	return reaped, errors.Join(failures...)
@@ -202,7 +200,7 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool, scope Scope) ([]DevS
 //
 // Unlike a dev server, a native service is not required to sit inside a workspace
 // directory — a postgres data dir lives under ~/.codefly/data, outside the repo —
-// so ownership rests entirely on the process-group authentication.
+// so recovery requires authenticated registered ownership and workspace scope.
 type NativeServiceOrphan struct {
 	PID     int
 	PGID    int
@@ -226,8 +224,7 @@ type NativeServiceOrphan struct {
 // ScanNativeServiceOrphans finds native-mode service processes (a compiled user
 // binary under a codefly build cache, or a postgres cluster) running anywhere on
 // the machine, without relying on the process-group registry. Ownership is decided
-// by the process-group authentication alone, so a user's own or system postgres is
-// surfaced with Owned=false and never reaped.
+// by its marker for discovery only; signals require Core registration proof.
 func ScanNativeServiceOrphans(ctx context.Context) ([]NativeServiceOrphan, error) {
 	pids, err := process.PidsWithContext(ctx)
 	if err != nil {
@@ -279,11 +276,9 @@ func ScanNativeServiceOrphans(ctx context.Context) ([]NativeServiceOrphan, error
 	return orphans, nil
 }
 
-// ReapNativeServiceOrphans terminates the process groups of leaked native-mode
-// services. As with dev servers, a group is reaped only when it is (1) codefly-owned
-// — a member carries the process-group authentication — and (2) stale — its leader
-// is gone or reparented to init. With dryRun set, nothing is signalled and the
-// return value is what would be reaped.
+// ReapNativeServiceOrphans applies the same registered-identity and scope
+// checks as dev-server recovery to native signature candidates. Missing or
+// ambiguous registrations return an error and leave the process running.
 func ReapNativeServiceOrphans(ctx context.Context, dryRun bool, scope Scope) ([]NativeServiceOrphan, error) {
 	orphans, err := ScanNativeServiceOrphans(ctx)
 	if err != nil {
@@ -301,19 +296,20 @@ func ReapNativeServiceOrphans(ctx context.Context, dryRun bool, scope Scope) ([]
 		}
 		stale, err := groupIsStale(orphan.PGID)
 		if err != nil {
-			failures = append(failures, fmt.Errorf("inspect native-service process group %d (%s): %w", orphan.PGID, orphan.Command, err))
+			failures = append(failures, err)
 			continue
 		}
 		if !stale {
 			continue
 		}
 		reapedGroups[orphan.PGID] = struct{}{}
-		reaped = append(reaped, orphan)
-		if dryRun {
+		selected, err := reapOrphanGroup(ctx, orphan.PGID, scope, dryRun)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("reap native-service process group %d (%s): %w", orphan.PGID, orphan.Command, err))
 			continue
 		}
-		if err := killAuthenticatedProcessGroup(ctx, orphan.PGID); err != nil {
-			failures = append(failures, fmt.Errorf("reap native-service process group %d (%s): %w", orphan.PGID, orphan.Command, err))
+		if selected {
+			reaped = append(reaped, orphan)
 		}
 	}
 	return reaped, errors.Join(failures...)
@@ -384,9 +380,8 @@ func isRegularFile(path string) bool {
 }
 
 // processIsCodeflyOwned reports whether pid carries codefly's process-group
-// authentication in its environment — proof that codefly spawned it (and, via
-// inheritance, its whole tree). This survives the loss of the registry record,
-// so it identifies leaked codefly servers that `clear` may safely reap.
+// marker in its environment. This identifies candidates for inspection, not
+// authority to signal: recovery requires Core to authenticate a registration.
 func processIsCodeflyOwned(pid int) (bool, error) {
 	authentication, err := readProcessGroupAuthentication(pid)
 	if errors.Is(err, errProcessNotFound) {
@@ -416,77 +411,31 @@ func groupIsStale(pgid int) (bool, error) {
 	return true, nil
 }
 
-// groupHasCodeflyMember reports whether the live process group still contains a
-// codefly-owned member. It is re-checked immediately before each destructive
-// signal so that a process group whose number was recycled between the scan and
-// the kill is never signalled unless it is, right now, codefly's.
-func groupHasCodeflyMember(ctx context.Context, pgid int) (bool, error) {
-	members, err := inspectProcessGroup(ctx, pgid)
+// reapOrphanGroup treats a signature and environment marker as discovery only.
+// Core must prove the registered birth, owner death and scope before any signal.
+func reapOrphanGroup(ctx context.Context, pgid int, scope Scope, dryRun bool) (bool, error) {
+	group, err := runners.LookupProcessGroup(pgid)
+	if err != nil {
+		return false, fmt.Errorf("cannot authenticate orphan; process left running: %w", err)
+	}
+	ownership, err := group.InspectOwnership(ctx)
 	if err != nil {
 		return false, err
 	}
-	for _, member := range members {
-		owned, err := processIsCodeflyOwned(member.pid)
-		if err != nil {
-			return false, err
-		}
-		if owned {
-			return true, nil
-		}
+	if !ownership.Authenticated {
+		return false, errors.New("orphan ownership is unproven; process left running")
 	}
-	return false, nil
-}
-
-// killAuthenticatedProcessGroup escalates SIGTERM then SIGKILL to the group,
-// but re-confirms the group still holds a codefly-owned member immediately
-// before each signal. That closes the window between scan and kill in which the
-// process-group number could have been recycled by an unrelated group: if the
-// group is no longer codefly's (or already gone), it aborts without signalling.
-func killAuthenticatedProcessGroup(ctx context.Context, pgid int) error {
-	if pgid <= 1 {
-		return fmt.Errorf("refusing to signal process group %d", pgid)
+	if ownership.OwnerAlive || !registeredGroupInScope(group, ownership, scope) {
+		return false, nil
 	}
-	if pgid == syscall.Getpgrp() {
-		return errors.New("refusing to signal own process group")
+	if dryRun {
+		return true, nil
 	}
-	owned, err := groupHasCodeflyMember(ctx, pgid)
-	if err != nil {
-		return err
+	if err := group.Terminate(ctx); err != nil {
+		return false, err
 	}
-	if !owned {
-		return nil
+	if err := group.RemoveIfDeadContext(ctx); err != nil {
+		return false, err
 	}
-	if err = signalGroup(pgid, syscall.SIGTERM); err != nil {
-		return err
-	}
-	if waitForGroupDeath(ctx, pgid, sigtermGrace) {
-		return nil
-	}
-	if err = ctx.Err(); err != nil {
-		return err
-	}
-	owned, err = groupHasCodeflyMember(ctx, pgid)
-	if err != nil {
-		return err
-	}
-	if !owned {
-		return nil
-	}
-	if err = signalGroup(pgid, syscall.SIGKILL); err != nil {
-		return err
-	}
-	if waitForGroupDeath(ctx, pgid, sigkillGrace) {
-		return nil
-	}
-	if err = ctx.Err(); err != nil {
-		return err
-	}
-	return fmt.Errorf("process group %d remained alive after SIGKILL", pgid)
-}
-
-func signalGroup(pgid int, signal syscall.Signal) error {
-	if err := syscall.Kill(-pgid, signal); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("signal process group %d: %w", pgid, err)
-	}
-	return nil
+	return true, nil
 }

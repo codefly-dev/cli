@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+
+	runners "github.com/codefly-dev/core/runners/base"
 )
 
 // LaunchWorkspaceEnv carries the workspace whose run started a process. The CLI
-// records it in its OWN environment before it starts anything, which is what
-// makes every descendant carry it: the agents it spawns, the runners inside
-// them, the service binaries those exec, and the stateful stores they bring up.
-// Nothing downstream has to cooperate, which matters because agents are
-// released independently of this repository and cannot be asked to.
+// records it in its own environment before starting agents. Core's tracked and
+// owned process launchers carry the current marker into service processes even
+// when a runner materializes a separate environment, as Nix does. Independently
+// released agents must adopt that Core transport; ordinary environment
+// inheritance alone does not preserve attribution through those runners.
 //
 // It exists because a working directory cannot answer "whose run is this?". A
 // composed module is checked out OUTSIDE the workspace that composes it — a
@@ -21,7 +23,7 @@ import (
 // by working directory therefore misses precisely the processes a composed run
 // adds. The stores are the same gap from the other end: a postgres cluster runs
 // from a data directory under ~/.codefly/data, which is in no workspace at all.
-const LaunchWorkspaceEnv = "CODEFLY_RUN_WORKSPACE"
+const LaunchWorkspaceEnv = runners.LaunchWorkspaceEnv
 
 // MarkLaunchWorkspace records dir as the workspace this process's run belongs
 // to, so everything this process goes on to start is attributable to it.

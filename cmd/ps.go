@@ -39,37 +39,24 @@ type psProcess struct {
 	Started   time.Time `json:"started"`
 }
 
-// PsCmd lists what a codefly run is still holding: its frontend dev servers and
-// its native-mode service processes — the compiled service binaries and the
-// stateful stores it started.
-//
-// It lists a run COMPLETELY, which it did not. Two gaps, one cause: it scanned
-// only dev servers, so a run's compiled services and stores never appeared at
-// all; and a dev server was only found when its working directory sat inside a
-// workspace, which is never true of a composed module's frontend — that runs
-// from the module's own checkout, outside the workspace that composed it. A
-// composed run therefore showed a fraction of itself, and `stop` then left
-// exactly the processes `ps` could not name still holding their ports.
-//
-// It is scoped to the current workspace, so it answers "what is my run still
-// holding" — the same set `codefly stop` acts on. `--all` widens it to every
-// workspace on the machine, which is how to find a leak belonging to a checkout
-// you are not standing in.
+// PsCmd lists signature-matched frontend and native processes. It is a
+// diagnostic view, not the complete registered population used by stop.
 var PsCmd = &cobra.Command{
 	Use:   "ps",
 	Short: "List the processes this workspace's run is still holding",
 	Long: `List the processes a codefly run is keeping alive: frontend dev servers
 (next dev / npm run dev / vite) and native-mode services (compiled service
-binaries and the stateful stores a run started), including those belonging to
-composed modules checked out outside the workspace.
+binaries and PostgreSQL), including composed modules when their launch
+environment or working directory identifies the workspace. This signature scan
+can omit registered processes whose command or environment has changed; stop
+uses authenticated registry discovery independently.
 
-Scoped to the current workspace — the same set 'codefly stop' acts on. Use
---all for every workspace on this machine. Outside a workspace the listing is
-machine-wide, since there is nothing to scope to.
+Scoped to the current workspace. Use --all for every workspace on this machine.
+Outside a workspace the listing is machine-wide.
 
-STATUS is one of: orphaned (codefly's, escaped its supervisor — reaped by
-'codefly clear'), tracked (codefly's, still supervised), or external (not
-codefly's — shown for visibility, never reaped).`,
+STATUS is diagnostic: orphaned (marked process without its supervisor), tracked
+(marked process still supervised), or external (no marker). A marker or status
+never authorizes cleanup: clear must authenticate a registered identity.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
