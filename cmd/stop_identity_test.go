@@ -22,6 +22,7 @@ func TestStopReportsIncompatibleBootIdentityWithoutDiscardingEvidence(t *testing
 	t.Setenv("HOME", home)
 	workspace := psWorkspace(t)
 	t.Chdir(workspace)
+	t.Setenv(processgroup.LaunchWorkspaceEnv, workspace)
 	child := exec.Command(os.Args[0], "-test.run=^TestPsHelper$")
 	child.Env = append(os.Environ(), psHelperEnv+"=1", processgroup.LaunchWorkspaceEnv+"="+workspace)
 	child.Dir = workspace

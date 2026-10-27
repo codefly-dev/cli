@@ -219,9 +219,14 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		failures = append(failures, killCodeflyProcesses(ctx, w, options)...)
 	}
 
-	failures = append(failures, sweepStaleState(ctx, w, options)...)
-	failures = append(failures, reapOrphanedDevServers(ctx, w, options)...)
-	failures = append(failures, reapOrphanedNativeServices(ctx, w, options)...)
+	managedFailures := sweepStaleState(ctx, w, options)
+	failures = append(failures, managedFailures...)
+	// The fallback scans must not turn a failed registry authentication into
+	// permission to signal the same group by its executable signature.
+	if len(managedFailures) == 0 {
+		failures = append(failures, reapOrphanedDevServers(ctx, w, options)...)
+		failures = append(failures, reapOrphanedNativeServices(ctx, w, options)...)
+	}
 
 	if options.keepContainers {
 		return errors.Join(failures...)

@@ -1135,7 +1135,8 @@ identity. Older Darwin agents wrote a boot timestamp where current agents write
 a boot-session UUID. This mismatch does not prove PID reuse: cleanup neither
 signals the group nor discards its recovery evidence. Recover the owning run
 and update its agent before restarting. A successful stop must not hide a
-process it could not authenticate.
+process it could not authenticate. If registry cleanup fails, stop also skips
+the signature-based orphan fallback so it cannot bypass that refusal.
 
 `Stop()` and `Shutdown()` do not fan every manager out at once. Launch order is
 not completion order, so stopping a database concurrently with the API draining
