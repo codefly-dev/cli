@@ -825,10 +825,6 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
 	return writeFileIfMissing(filepath.Join(langDir, "tsconfig.json"), []byte(tsconfig))
 }
 
-// pyprojectVersionRe matches pyproject.toml's project version line, the shape
-// writePythonScaffold writes.
-var pyprojectVersionRe = regexp.MustCompile(`(?m)^version = ("[^"]*")$`)
-
 // stampPackageVersion sets the version a language's package manifest declares
 // to the library's own. The scaffold is written once and kept, so without this
 // every generated TypeScript and Python client stays at the scaffold's 0.0.1
@@ -904,11 +900,7 @@ func locatePackageVersion(lang languages.Language, path string, data []byte) (st
 	if lang == languages.TYPESCRIPT {
 		return locatePackageJSONVersion(path, data)
 	}
-	match := pyprojectVersionRe.FindSubmatchIndex(data)
-	if match == nil {
-		return 0, 0, fmt.Errorf("cannot find a version in %s", path)
-	}
-	return match[2], match[3], nil
+	return locatePythonPackageVersion(path, data)
 }
 
 // locatePackageJSONVersion finds the value of package.json's top-level

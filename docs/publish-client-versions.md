@@ -15,7 +15,9 @@ repository; symlinks are refused.
 
 The release commit updates the selected source versions and copied catalogs. A
 single-source client also receives the release version in its library manifest
-and TypeScript/Python package manifests. An aggregate keeps its own library and
+and TypeScript/Python package manifests. Python stamping and publication both
+read the TOML `project.version` field; tool versions, comments and unrelated
+formatting remain unchanged. An aggregate keeps its own library and
 language package versions; unrelated source entries stay unchanged. Contract
 bytes and generation provenance are preserved. Go clients obtain their version
 from the release tag.

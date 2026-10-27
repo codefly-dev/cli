@@ -16,7 +16,7 @@ func TestDoctorJudgesOnlyServicesSelectedByTheEnvironment(t *testing.T) {
 `,
 		"modules/backend/module.codefly.yaml":                 testModuleYAML("api", "local"),
 		"modules/backend/services/api/service.codefly.yaml":   testServiceYAML("api", "active"),
-		"modules/backend/services/local/service.codefly.yaml": testServiceYAML("local", "fixture-composition"),
+		"modules/backend/services/local/service.codefly.yaml": testServiceYAML("local", "fixture-composition", "local-only"),
 		"configurations/blue/active.env":                      "VALUE=present\n",
 		"configurations/local/active.env":                     "VALUE=present\n",
 	})
@@ -25,7 +25,8 @@ func TestDoctorJudgesOnlyServicesSelectedByTheEnvironment(t *testing.T) {
 		require.Equal(t, readinessStatusReady, report.Status, reportJSON(t, report))
 		require.Contains(t, findCheck(report, "services").Message, "1 service(s)")
 	}
-	// The same service still imposes its requirements where it is included.
+	// The same service still imposes its ordinary requirements where included.
+	// Fixture composition itself is supplied by the dedicated empty merger.
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir, env: "local"})
 	requireCode(t, report, codeConfigurationMissing, checkStatusFail)
 	// Selecting an excluded root explicitly must not claim it can run there.

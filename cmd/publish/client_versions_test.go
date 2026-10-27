@@ -136,3 +136,17 @@ func TestModuleClientReleaseRefusesEscapingLanguagePath(t *testing.T) {
 		})
 	}
 }
+
+func TestModuleClientReleasePythonVersionTargetsProjectTable(t *testing.T) {
+	dir, _ := clientReleaseRepo(t)
+	path := "clients/payments/python/pyproject.toml"
+	before := "[tool.example]\nversion = \"7.0.0\"\n\n[project] # package metadata\nname = 'payments'\nversion = \"0.0.0\" # release\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, path), []byte(before), 0o600))
+	require.NoError(t, runGit(dir, "commit", "-am", "customized Python manifest"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+	tag, err := moduleEngine(t, dir, "patch").Release(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "v0.2.1", tag)
+	require.Equal(t, strings.Replace(before, `"0.0.0"`, `"0.2.1"`, 1), readRel(t, dir, path))
+	require.NoError(t, runGit(dir, "diff", "--exit-code", "HEAD"))
+}

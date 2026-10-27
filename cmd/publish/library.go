@@ -11,6 +11,7 @@ import (
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/cli/pkg/librarystore"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
@@ -273,53 +274,12 @@ func readJSONVersionField(path string) (string, error) {
 	return doc.Version, nil
 }
 
-// readPyprojectVersion extracts `version = "X.Y.Z"` from the [project] table
-// of a pyproject.toml. A hand-written line scan, not a TOML parser: the
-// version field is the only value this command needs, and codefly does not
-// otherwise depend on a TOML library.
+// readPyprojectVersion uses the same project identity as generated-client
+// stamping, including quoted/dotted TOML keys and comments.
 func readPyprojectVersion(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	inProject := false
-	for _, rawLine := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(stripTOMLComment(rawLine))
-		if strings.HasPrefix(trimmed, "[") {
-			inProject = trimmed == "[project]"
-			continue
-		}
-		if !inProject || trimmed == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(trimmed, "=")
-		if !ok || strings.TrimSpace(key) != "version" {
-			continue
-		}
-		return strings.Trim(strings.TrimSpace(value), `"'`), nil
-	}
-	return "", fmt.Errorf("%s: no version field in [project]", path)
-}
-
-// stripTOMLComment removes a trailing, unquoted "#" comment from a TOML
-// line — mirroring how parseGoModulePath strips "//" from a go.mod line — so
-// a table header or value followed by a comment (`[project]  # PEP 621` or
-// `version = "1.0.0"  # keep in sync`) is matched correctly instead of
-// leaving the comment text fused onto the extracted value. A "#" inside a
-// quoted string is left alone.
-func stripTOMLComment(line string) string {
-	var quote byte
-	for i := 0; i < len(line); i++ {
-		switch c := line[i]; {
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == '#':
-			return line[:i]
-		}
-	}
-	return line
+	return generators.PythonProjectVersion(path, data)
 }

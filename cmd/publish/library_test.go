@@ -202,3 +202,18 @@ func TestPublishLibraryUnknownNameReturnsError(t *testing.T) {
 	cmd, _ := newTestCmd()
 	require.Error(t, publishLibrary(cmd, "does-not-exist"))
 }
+
+func TestReadPyprojectVersionUsesTOMLProjectIdentity(t *testing.T) {
+	for _, before := range []string{
+		"[tool.example]\nversion='7.0.0'\n[ 'project' ]\n'version'='0.1.0' # metadata\n",
+		"[tool.example]\ndescription='''\n[project]\nversion='7.0.0'\n'''\n[project]\nversion='0.1.0'\n",
+		"project.version='0.1.0'\n[tool.example]\nversion='7.0.0'\n",
+		"project={version='0.1.0'}\n",
+	} {
+		path := filepath.Join(t.TempDir(), "pyproject.toml")
+		require.NoError(t, os.WriteFile(path, []byte(before), 0o600))
+		version, err := readPyprojectVersion(path)
+		require.NoError(t, err)
+		require.Equal(t, "0.1.0", version)
+	}
+}
