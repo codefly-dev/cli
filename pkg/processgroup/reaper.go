@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -160,7 +161,11 @@ func (e CleanupEvidence) RecoveredPGIDs() []int {
 }
 
 func (e *CleanupEvidence) merge(other CleanupEvidence) {
-	e.OutOfScope = append(e.OutOfScope, other.OutOfScope...)
+	for _, pgid := range other.OutOfScope {
+		if !slices.Contains(e.OutOfScope, pgid) {
+			e.OutOfScope = append(e.OutOfScope, pgid)
+		}
+	}
 	for _, group := range other.Groups {
 		e.record(group.Record, group.PGID, group.Outcome)
 	}
