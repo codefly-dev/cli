@@ -122,10 +122,7 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 	// failed, so what follows runs on a budget of its own.
 	ctx, cancel := postPublicationContext(ctx)
 	defer cancel()
-	if err := verifyWorkflowRelease(ctx, client, owner, repo, tag, r.assets); err != nil {
-		return err
-	}
-	return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
+	return verifyPublication(ctx, client, r.published(strings.TrimPrefix(tag, "v"), tag))
 }
 
 // releaseVerifyBudget sizes the work that follows a live tag: downloading every
@@ -136,16 +133,21 @@ func postPublicationContext(ctx context.Context) (context.Context, context.Cance
 	return context.WithTimeout(context.WithoutCancel(ctx), releaseVerifyBudget)
 }
 
-// verifyWorkflowRelease confirms the release the owner workflow published
-// carries every loader archive, and that each one is the build the workflow
-// made. The workflow is the sole publisher of those assets, so every call here
-// reads: nothing is created, replaced or deleted.
+// verifyPublishedArchives confirms a release carries every loader archive, and
+// that each one is the build its producer made. Every call here reads: nothing
+// is created, replaced or deleted.
+//
+// It is not specific to a workflow-owned release. Publish used to run this on
+// the release.owner: workflow path only, so the same command verified a
+// cli-published release to a weaker standard — reachability, but never the
+// bytes against a digest GitHub did not itself record. Both owners publish a
+// checksums file now and both are read here.
 //
 // The archive is the contract — core's downloader fetches exactly that name.
-// Whether a workflow also publishes an SBOM beside it, and under what name, is
-// its own GoReleaser configuration and nothing the manifest declares, so one is
+// Whether a release also publishes an SBOM beside it, and under what name, is
+// its own packaging configuration and nothing the manifest declares, so one is
 // verified when the release carries it and never demanded.
-func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, repo, tag string, staged []loaderAsset) error {
+func verifyPublishedArchives(ctx context.Context, client *github.Client, owner, repo, tag string, staged []loaderAsset) error {
 	release, _, err := client.Repositories.GetReleaseByTag(ctx, owner, repo, tag)
 	if err != nil {
 		return fmt.Errorf("read workflow-published release: %w", err)

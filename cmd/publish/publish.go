@@ -146,10 +146,17 @@ func readVersion(path string) (*semver.Version, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
+	return parseVersionField(raw)
+}
+
+// parseVersionField reads the `version` field out of manifest bytes. Separate
+// from readVersion because `codefly publish verify` reads the manifest as main
+// holds it, through the GitHub API, rather than from the local file.
+func parseVersionField(raw []byte) (*semver.Version, error) {
 	var probe struct {
 		Version string `yaml:"version"`
 	}
-	if err = yaml.Unmarshal(raw, &probe); err != nil {
+	if err := yaml.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("parse YAML: %w", err)
 	}
 	if probe.Version == "" {

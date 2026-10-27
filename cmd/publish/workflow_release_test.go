@@ -231,7 +231,7 @@ func (p *publishedRelease) client() *github.Client {
 }
 
 func (p *publishedRelease) verify(staged []loaderAsset) error {
-	return verifyWorkflowRelease(p.t.Context(), p.client(), "codefly-dev", "service-go", p.tag, staged)
+	return verifyPublishedArchives(p.t.Context(), p.client(), "codefly-dev", "service-go", p.tag, staged)
 }
 
 func TestVerifyWorkflowReleaseReadsPublishedAssetsWithoutWriting(t *testing.T) {
@@ -400,7 +400,7 @@ func TestPostPublicationVerificationOutlivesTheSpentPublishBudget(t *testing.T) 
 
 	ctx, cancel := postPublicationContext(spent)
 	defer cancel()
-	err := verifyWorkflowRelease(ctx, client, "codefly-dev", "service-go", "v0.0.16", stageAssets(t, testArchive))
+	err := verifyPublishedArchives(ctx, client, "codefly-dev", "service-go", "v0.0.16", stageAssets(t, testArchive))
 
 	require.NoError(t, err)
 	require.ErrorIs(t, spent.Err(), context.Canceled, "the publish budget must be spent by the time verification finishes")

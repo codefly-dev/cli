@@ -249,7 +249,7 @@ func collectLoaderAssets(reg *resources.AgentKindRegistration, ciOutput, name, v
 
 // expectedLoaderAssets names the archive every required loader platform must
 // carry on a release the agent's own workflow publishes. Nothing is staged:
-// the workflow is the sole producer of those bytes, and verifyWorkflowRelease
+// the workflow is the sole producer of those bytes, and verifyPublishedArchives
 // establishes them against the checksums that workflow published.
 func expectedLoaderAssets(reg *resources.AgentKindRegistration, name, version string) []loaderAsset {
 	assets := make([]loaderAsset, 0, len(loaderPlatforms))
@@ -330,18 +330,56 @@ func publishReleaseAssets(ctx context.Context, client *github.Client, owner, rep
 	for _, asset := range release.Assets {
 		existing[asset.GetName()] = asset
 	}
-	for _, asset := range assets {
-		files := []string{asset.archivePath}
-		if asset.sbomPath != "" {
-			files = append(files, asset.sbomPath)
-		}
-		for _, file := range files {
-			if err := uploadReleaseAsset(ctx, client, owner, repo, release.GetID(), file, existing); err != nil {
-				return err
-			}
+	// The checksums file goes up with the archives it describes. It is what
+	// makes the release verifiable later by anything that did not build it:
+	// comparing the bytes GitHub serves to the digest GitHub recorded only
+	// shows GitHub agreeing with itself, and core's downloader checks neither.
+	checksums, err := stageChecksums(assets)
+	if err != nil {
+		return err
+	}
+	for _, file := range append([]string{checksums}, assetFiles(assets...)...) {
+		if err := uploadReleaseAsset(ctx, client, owner, repo, release.GetID(), file, existing); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// assetFiles is every file a set of staged assets publishes, in upload order.
+func assetFiles(assets ...loaderAsset) []string {
+	var files []string
+	for _, asset := range assets {
+		files = append(files, asset.archivePath)
+		if asset.sbomPath != "" {
+			files = append(files, asset.sbomPath)
+		}
+	}
+	return files
+}
+
+// stageChecksums writes the digest list for everything this publish uploads,
+// beside the archives themselves. The name only has to end in checksums.txt —
+// that is what verifyPublishedArchives resolves, and what GoReleaser emits on
+// the workflow-owned path, so one reader serves both.
+func stageChecksums(assets []loaderAsset) (string, error) {
+	files := assetFiles(assets...)
+	if len(files) == 0 {
+		return "", fmt.Errorf("a release publishes no assets to checksum")
+	}
+	var lines strings.Builder
+	for _, file := range files {
+		digest, err := fileDigest(file)
+		if err != nil {
+			return "", fmt.Errorf("digest %s: %w", file, err)
+		}
+		fmt.Fprintf(&lines, "%s  %s\n", digest, filepath.Base(file))
+	}
+	path := filepath.Join(filepath.Dir(files[0]), "checksums.txt")
+	if err := os.WriteFile(path, []byte(lines.String()), 0o600); err != nil {
+		return "", fmt.Errorf("stage %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // getOrCreateRelease returns the existing release for tag, or creates one when
@@ -673,7 +711,26 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	if err := publishReleaseAssets(ctx, client, owner, repo, releaseRequest(newTag, r.dev), r.assets); err != nil {
 		return err
 	}
-	return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, version, r.assets)
+	if r.dev {
+		// A dev build is a prerelease nothing resolves as `latest` and nothing
+		// pins; it gets the reachability check, not the full verification a
+		// release has to pass.
+		return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, version, r.assets)
+	}
+	return verifyPublication(ctx, client, r.published(version, newTag))
+}
+
+// published describes the release this releaser just made, for the one
+// verification `codefly publish` and `codefly publish verify` share.
+func (r *agentReleaser) published(version, tag string) releaseTarget {
+	return releaseTarget{
+		reg:       r.reg,
+		publisher: r.publisher,
+		name:      r.name,
+		version:   version,
+		tag:       tag,
+		assets:    r.assets,
+	}
 }
 
 // sourceTagReleaser publishes an immutable source release: it runs
