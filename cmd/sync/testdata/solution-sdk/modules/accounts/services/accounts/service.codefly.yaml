@@ -1,0 +1,16 @@
+kind: service
+name: accounts
+version: 0.1.0
+module: accounts
+agent:
+    kind: codefly:service
+    name: go-grpc
+    publisher: codefly.dev
+    version: 0.0.1
+endpoints:
+    - name: grpc
+      api: grpc
+      visibility: internal
+    - name: connect
+      api: connect
+      visibility: internal

@@ -54,23 +54,45 @@ func wipeGoLibrary(langDir string) error {
 	if err := os.RemoveAll(filepath.Join(langDir, "gen")); err != nil {
 		return err
 	}
-	return removeMatching(langDir, "*_facade.pb.go")
+	if err := removeMatching(langDir, "*_facade.pb.go"); err != nil {
+		return err
+	}
+	// A facade package (FacadePackages) is go/<module>/: its facade file is
+	// this command's, the directory only while nothing else lives in it.
+	packages, err := filepath.Glob(filepath.Join(langDir, "*", "*_facade.pb.go"))
+	if err != nil {
+		return err
+	}
+	for _, facade := range packages {
+		if err := os.Remove(facade); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		_ = os.Remove(filepath.Dir(facade)) // kept when a hand-added file remains
+	}
+	return nil
 }
 
 // mergeGoEntry rewrites raw's hardcoded import prefix to goModule/gen (keyed
 // to this entry's own facade module name) and moves it into langDir: the
-// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/.
-func mergeGoEntry(langDir, raw, moduleName, goModule string) error {
+// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/. With
+// facadePackages the entry's facade moves to its own package go/<module>/ and
+// its bindings to go/gen/<module>/: buf writes a binding where its proto file
+// sits in the contract, and two contracts each rooted at an api.proto would
+// otherwise write one go/gen/api.pb.go.
+func mergeGoEntry(langDir, raw, moduleName, goModule string, facadePackages bool) error {
 	service := moduleName
 	if service == "" {
 		service = defaultFacadeModule
 	}
+	genDir, genImport, facadeDir := filepath.Join(langDir, "gen"), goModule+"/gen", langDir
+	if facadePackages {
+		genDir, genImport, facadeDir = filepath.Join(genDir, service), genImport+"/"+service, filepath.Join(langDir, service)
+	}
 	oldPrefix := "github.com/codefly-dev/cli/pkg/builder/clients/" + service
-	if err := rewriteGoImportPrefix(raw, oldPrefix, goModule+"/gen"); err != nil {
+	if err := rewriteGoImportPrefix(raw, oldPrefix, genImport); err != nil {
 		return fmt.Errorf("cannot rewrite generated import paths: %w", err)
 	}
-	genDir := filepath.Join(langDir, "gen")
-	return moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go")
+	return moveTreeSplitBySuffix(raw, genDir, facadeDir, "_facade.pb.go")
 }
 
 // finalizeGoLibrary writes go.mod (if absent), resolves it and proves the
@@ -94,12 +116,19 @@ func wipeTypeScriptLibrary(langDir string) error {
 	return os.RemoveAll(filepath.Join(langDir, "src"))
 }
 
-// mergeTypeScriptEntry moves raw's tree under src/gen/, hoists the
+// mergeTypeScriptEntry moves raw's tree under src/gen/ — src/gen/<module>/
+// with facadePackages, for the reason mergeGoEntry gives — hoists the
 // *_facade.ts file(s) to src/, and rewrites the facade's same-directory
 // relative import ("./x") to reach into its new location under gen/ instead.
-func mergeTypeScriptEntry(langDir, raw string) error {
+// The entry point over all of them is writeTypeScriptIndex's namespaced
+// barrel, which already keeps two contracts' same-named messages apart.
+func mergeTypeScriptEntry(langDir, raw, moduleName string, facadePackages bool) error {
 	srcDir := filepath.Join(langDir, "src")
-	genDir := filepath.Join(srcDir, "gen")
+	gen := "gen"
+	if facadePackages {
+		gen = path.Join(gen, moduleName)
+	}
+	genDir := filepath.Join(srcDir, filepath.FromSlash(gen))
 	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, srcDir, "_facade.ts")
 	if err != nil {
 		return err
@@ -113,7 +142,7 @@ func mergeTypeScriptEntry(langDir, raw string) error {
 		// path.Join cleans the facade's directory into the specifier: a facade
 		// at raw's root (a proto with no package-derived subdirectory) has
 		// relDir ".", which spliced in verbatim reads "./gen/./x".
-		prefix := "./" + path.Join("gen", relDir) + "/"
+		prefix := "./" + path.Join(gen, filepath.ToSlash(relDir)) + "/"
 		rewritten := relImportRe.ReplaceAll(data, []byte("${1}"+prefix))
 		if err := os.WriteFile(facadePath, rewritten, 0o644); err != nil { //nolint:gosec
 			return err

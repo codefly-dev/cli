@@ -1,0 +1,4 @@
+kind: module
+name: records
+services:
+    - name: records

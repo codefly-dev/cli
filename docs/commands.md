@@ -2417,37 +2417,75 @@ codefly sync solution-sdk --language python --apply-dependencies  # Aggregate ap
 
 ```bash
 codefly sync solution-sdk --language python                      # Generate/refresh the solution's library
-codefly sync solution-sdk --language go,python --apply-dependencies  # Also wire up service-dependencies
+codefly sync solution-sdk --language go,typescript                # Go and TypeScript halves of one library
 codefly sync solution-sdk --language python --check               # CI drift gate
 ```
 
 Run from a solution workspace (`workspace.codefly.yaml` plus a module whose
 `service-entry` is the solution backend, as in `core-solutions/solutions/*`).
 Reads the single declaration `api.consumes` in `solution.codefly.yaml` (the
-solution manifest core's `solution/manifest` package defines) and aggregates
+solution manifest core's `solution/manifest` package defines) — through core's
+`LoadConsumption`, which holds `api.consumes` strictly and leaves the executor
+sections (`agent`, `lifecycle`) unread, so a solution that names no
+`codefly:solution` executor needs no `agent` block — and aggregates
 every module-bound entry — `{module, service, endpoint, version, services, as}`
 — into **one** library, `libraries/<solution module>-sdk/`, generated from the
 composed module packages' API contract catalogs (the same generator
 `generate client` uses, aggregating N contract entries into one library
-instead of one). This is the **one declaration, three outputs** rule: the same
-`api.consumes` entries drive the generated SDK, the runtime
-`service-dependencies` (below), and the `SolutionBundle` `platform.consumes`
-lodestar derives from the manifest.
+instead of one). The generated client is the Codefly-generated Connect client
+of each consumed contract, which the solution points at the hop.
 
 | Flag | Description |
 |------|-------------|
 | `--language` | Required, repeatable or comma-separated: `go`, `typescript`, `python` |
 | `--check` | Do not write; exit 1 if the library or `service-dependencies` are out of date |
-| `--apply-dependencies` | Add any `service-dependencies` entry missing for a bound consume entry to the entry service's `service.codefly.yaml`; without it, missing entries are printed as a warning. Existing entries are never removed. |
+| `--apply-dependencies` | Add any `service-dependencies` entry missing for a consume of the solution's **own** module to the entry service's `service.codefly.yaml`; without it, missing entries are printed as a warning. Existing entries are never removed. |
 | `--force` | Overwrite a library generated from a different version of a consumed contract (its recorded `sources[].contract-digest` differs) |
+
+A consume of **another** module needs no `service-dependencies` entry, and
+neither `--check` nor `--apply-dependencies` asks for one: the solution calls
+that module through the authority hop's Connect face. The hop routes every
+module the composition puts behind it (`hop/MODULES`) from that module's
+published API catalog (see [Published hop routes](orchestration.md#published-hop-routes))
+and checks each call against the method's policy before forwarding it, so a
+direct edge to the module's service would be a mesh path past the hop, a call
+no policy is checked on. Only a consume of the solution's own module is a
+direct call.
 
 Each bound entry is resolved against the workspace's own composition: the
 composed module named by `module` (workspace `add module` first), its
 `module.package.codefly.yaml` and `contracts/api/catalog.codefly.json` (from
 `generate contracts`), `version` checked as a semver constraint against the
 composed package version, and `services` validated against the endpoint's
-declared protobuf services. Two entries whose contracts share a proto package
-at different digests (a diamond) are rejected.
+declared protobuf services. A consume is generated from the protobuf contract
+the hop routes for the consumed service. A consume of a `connect` or `rest`
+endpoint is generated from that service's protobuf contract when the catalog
+carries none for the endpoint itself: both transports serve the same proto
+services (connect natively, rest transcoded), and a catalog exports the
+contract under the service's `grpc` endpoint. Several protobuf entries of one
+service under one digest are that one contract, as the hop routes a service's
+gRPC and Connect listeners under one contract as one destination; under
+different digests the consume has no single answer and is refused. A `rest`
+endpoint of a service with no protobuf contract keeps its own OpenAPI entry. Two entries whose contracts
+share a proto package at different digests (a diamond), or that would generate
+the same facade name (set `as` on one), are rejected.
+
+The library gives each consumed module's facade a package of its own, so any
+number of modules aggregate into one library:
+
+```
+libraries/<solution module>-sdk/
+  go/          go.mod, accounts/accounts_facade.pb.go, gen/accounts/…, records/…, gen/records/…
+  typescript/  package.json, src/index.ts, src/accounts_facade.ts, src/gen/accounts/…, src/records_facade.ts, src/gen/records/…
+  python/      pyproject.toml, <pkg>/accounts.py, <pkg>/records.py, <pkg>/_gen/…
+```
+
+Go imports a facade as `<module path>/<facade>`; its bindings live under
+`gen/<facade>/`, since two contracts each rooted at an `api.proto` would
+otherwise write one file. TypeScript's bindings live under `src/gen/<facade>/`
+for the same reason, and its entry point is the same barrel `generate client`
+writes: every facade flat, every proto package as a namespace, so two
+contracts' same-named messages stay reachable through their package.
 
 If a `solution-sdk.yaml` (the pre-`api.consumes` declaration this command
 replaces) sits next to the manifest, its dependencies must be migrated into

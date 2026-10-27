@@ -1,0 +1,9 @@
+name: portal
+layout: modules
+modules:
+    - name: portal
+      path: .
+    - name: accounts
+      path: modules/accounts
+    - name: records
+      path: modules/records
