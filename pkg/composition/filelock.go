@@ -25,26 +25,31 @@ var ErrLockTimeout = errors.New("timed out acquiring lock")
 // their own, so two concurrent `codefly run` processes cannot silently
 // clobber each other's update.
 func WithFileLock(lockPath string, timeout time.Duration, fn func() error) error {
+	return WithFileLockContext(context.Background(), lockPath, timeout, fn)
+}
+
+// WithFileLockContext is WithFileLock with caller cancellation. The timeout
+// bounds acquisition only; caller cancellation remains distinguishable from it.
+func WithFileLockContext(parent context.Context, lockPath string, timeout time.Duration, fn func() error) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return fmt.Errorf("create lock directory: %w", err)
 	}
 	lock := flock.New(lockPath)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)
-	// A deadline here is this function's own timeout expiring — the context is
-	// derived from Background, never from the caller — so it means the holder
-	// outlasted the wait, not that anything is wrong with the lock. It arrives as
-	// an error rather than locked=false, so both spellings map to ErrLockTimeout.
+	defer func() { _ = lock.Close() }()
+	if parent.Err() != nil {
+		return parent.Err()
+	}
 	if errors.Is(err, context.DeadlineExceeded) || (err == nil && !locked) {
 		return fmt.Errorf("%w %s", ErrLockTimeout, lockPath)
 	}
 	if err != nil {
 		return fmt.Errorf("acquire lock %s: %w", lockPath, err)
 	}
-	defer func() {
-		_ = lock.Unlock()
-		_ = lock.Close()
-	}()
 	return fn()
 }

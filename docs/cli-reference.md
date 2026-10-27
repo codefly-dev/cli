@@ -555,7 +555,7 @@ Bump, PR, tag-on-merge, and verify a service agent's release
 ```
 release turns the manual per-repo release cascade into one verb:
 
-  1. gate locally BEFORE tagging: pin core (--pin) then run agent CI
+  1. gate BEFORE tagging: pin core (--pin) then run agent CI
   2. bump the manifest to the next version above the authoritative remote tag
   3. open a PR from a release branch — a human merges it, per branch policy
   4. tag the merge commit, then verify the release published a downloadable
@@ -565,6 +565,11 @@ It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
 release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
+
+Successful CI for the exact checkout HEAD can attest source tests; the release
+report records the workflow, run ID and SHA. Otherwise source tests run locally.
+Pass --no-attestation to force local source tests. Build, audit and conformance
+still run. A changed checkout (including a core pin) requires local source tests.
 
 Requires the gh CLI to be authenticated (or GITHUB_TOKEN / GH_TOKEN set).
 
@@ -584,6 +589,7 @@ Flags:
 ```
       --bump string       Version bump from the latest tag: patch | minor | major (default "patch")
       --dir string        Agent source directory (default: current directory)
+      --no-attestation    Run local source tests even when the head SHA has successful CI attestation
       --no-wait           Open the PR and stop; re-run after merge to tag and verify
       --pin string        Pin core to this published version before the CI gate (e.g. latest, v0.3.11)
       --platform string   Additional os_arch the release must ship (e.g. linux_arm64); linux_amd64 is always required
@@ -1661,6 +1667,14 @@ deploy time: <scope>/configurations/<profile>/<name>[.secret].env.
 Configuration is Codefly's, so provisioning it is a Codefly operation — not a
 shell script in your repository. Values are written but never printed.
 
+A workspace may add to an imported group with configuration-extensions in
+workspace.codefly.yaml. Env keys must be disjoint unless append explicitly
+names the key and its delimiter (for example edge: {append: {MODULES: ","}}).
+YAML mappings combine recursively and sequences append; duplicate scalar keys
+are refused by name. Both an own and an imported group must exist. Without
+this declaration, an own group replaces the imported group whole.
+See docs/commands.md#extending-imported-workspace-configuration.
+
 Secrets are refused when git would track the destination file, are stored 0600
 inside a 0700 directory, and are never overwritten without --force so re-running
 setup cannot rotate a credential another service already holds.
@@ -1773,6 +1787,11 @@ Set stores KEY=VALUE pairs in a configuration Codefly reads.
 
 Existing keys are preserved unless --force is passed, so re-running a setup
 sequence is idempotent. The value is taken from the argument; nothing is echoed.
+
+A secret written here is read by a local run and, for a deployed environment, by
+`codefly deploy secrets`, which seeds the environment's secret store from this
+file rather than asking the operator to type the value into a store console. A
+key written with an empty value declares the key and supplies no value.
 
 Examples:
   codefly config set internal-auth CODEFLY_INTERNAL_TOKEN=$TOKEN
@@ -2012,6 +2031,10 @@ DEV ESCAPE HATCH: push one service's local code into an already-rendered GitOps 
 Build and push ONE service from local code — --path, else its machine-local
 service override — through the same build path `deploy gitops render` uses, then
 re-pin only that service's image digest in the environment's rendered tree.
+When the environment declares a host, its cell file is re-derived as well: the
+cell admits only the builds that file names, so the new digest goes with it.
+It refuses, before building, when the re-derived file would move anything but
+this service's images against the file the branch carries.
 
 The environment then runs code no release describes. The render inventory
 records it under "dev", `codefly doctor workspace` warns while it is active, and
@@ -2081,6 +2104,7 @@ codefly deploy gitops plan [module]
 Flags:
 
 ```
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote for k3d qualification
@@ -2100,6 +2124,7 @@ codefly deploy gitops publish [module]
 Flags:
 
 ```
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                                                                       Promotion pull request body
       --env string                                                                        Environment to promote (default "local")
@@ -2195,6 +2220,7 @@ codefly deploy gitops render [module]
 Flags:
 
 ```
+      --all                                                                               Render every module the workspace composes, the host first, and derive the environment's cell file once at the end
       --app-project string                                                                AppProject contract for cluster-scoped resources
       --env string                                                                        Environment to promote (default "local")
       --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
@@ -2278,9 +2304,17 @@ Plan and write the secret-store values a rendered environment's ExternalSecrets 
 Reads every ExternalSecret `deploy gitops render` projected for --env under
 deployments/modules, and resolves each remote property to a source: kept (already
 stored), propagated (a configuration value another remote key already holds),
-generated (declared random by the environment's service-secrets.generate), or
-required (supplied by the operator, and named). The store is the backend behind
-the SecretStore the render names, read from the environment's cluster.
+configured (the environment's own configurations/<profile>/<group>.secret.env
+holds the value, as written by `codefly config set`), generated (declared random
+by the environment's service-secrets.generate), or required (supplied by the
+operator, and named). The store is the backend behind the SecretStore the render
+names, read from the environment's cluster; a render reading through several
+stores is planned and written store by store.
+
+A stored value is never rotated unless --rotate names it: a property the store
+already holds is kept even when a configuration file holds one too, and the two
+disagreeing is refused rather than resolved. A configured key with an empty value supplies nothing, so
+a tracked placeholder file still leaves its properties to be supplied.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that
@@ -2295,6 +2329,18 @@ reads a stored value: it knows which remote keys exist, not what they hold.
 --module limits the plan to the remote keys the named modules' services read.
 Every other remote key is still read, so a scoped key keeps agreeing with what
 the store already holds, but nothing outside the scope is planned or written.
+
+--rotate <module>/<service>/<configuration>:<KEY> (or <configuration>:<KEY> for a
+workspace configuration, or the CODEFLY__… secret key) replaces a GENERATED key's
+stored value with a new one, in every remote key holding it, and rewrites every
+stored value derived from it in the same apply: a stored URL whose password is
+the old value gets the new one. Any other stored value embedding the old one,
+and any key service-secrets.generate does not declare, is refused by name. Each
+write is a new version, refused if the key moved since the plan read it; a
+rotation failing part-way restores what it wrote. The CLI changes the store
+only: force-sync the ExternalSecrets, make the server accept the new credential
+(a restart only does that for an agent that re-applies it on every start), then
+restart its consumers. An identifier or signing key is never rotated.
 ```
 
 ```
@@ -2309,6 +2355,7 @@ Flags:
       --env string       Environment whose rendered ExternalSecrets to seed (default "local")
       --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
       --module strings   Plan only these modules' remote keys (comma-separated or repeated)
+      --rotate strings   Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
   -y, --yes              Write without an interactive confirmation
 ```
 
@@ -2412,6 +2459,7 @@ service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
 agent_dev_build, runnable_binding_declined,
+runnable_binding_decline_invalid, runnable_operations_unreadable,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
@@ -2499,6 +2547,26 @@ must match the declaration; import never retargets a contract.
 Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
 --coordinate-contract -.
+
+--product-intent <file> additionally imports what the product, not the cell,
+decides per environment, from an authored product file:
+
+  environments:
+    <env>:
+      exclude-services: []          # required; [] clears
+      service-secrets:              # optional
+        generate:                   # keys minted at random by deploy secrets
+          - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [tracing/evidence]}
+        may-be-empty: [<stored key>] # keys whose correct value here is empty
+
+The intent owns exclude-services, service-secrets.generate and
+service-secrets.may-be-empty: a contract declaring one of them too is refused,
+and an entry the intent no longer carries is withdrawn on re-import. The
+contract keeps the rest of service-secrets (secret-store, defaults, services),
+which names the cell's store. Each entry is checked against the secret
+configurations the environment's profile declares; an unknown service,
+configuration or key is refused by name. Any other field is refused; the legacy
+full delivery.intent.yaml is not interpreted.
 ```
 
 ```
@@ -2511,6 +2579,7 @@ Flags:
       --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
       --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
       --namespace string             Assert the namespace declared by the producer
+      --product-intent string        Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
 ```
 
 ## `codefly environment show`
@@ -2662,6 +2731,8 @@ Subcommands:
 
 - [`codefly generate client`](#codefly-generate-client)
 - [`codefly generate contracts`](#codefly-generate-contracts)
+- [`codefly generate fixture-composition`](#codefly-generate-fixture-composition)
+- [`codefly generate permissions`](#codefly-generate-permissions)
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
 - [`codefly generate runnables`](#codefly-generate-runnables)
@@ -2698,7 +2769,7 @@ Flags:
       --no-facade            generate bindings only, no facade
       --npm-scope string     npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
       --output string        output directory (default: <workspace>/libraries/<name>)
-      --services strings     restrict the facade to these protobuf services (protobuf contracts only)
+      --services strings     restrict the library to these protobuf services (short or fully qualified names; ambiguous short names are refused) and the declarations they need: contract, catalog, bindings and facade
 ```
 
 ## `codefly generate contracts`
@@ -2712,14 +2783,21 @@ module package carries the contract.
 
 gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
-document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
-contract and are skipped, as is a connect endpoint whose service has no proto.
+document (openapi.json). An HTTP endpoint gets the OpenAPI document its service
+carries (openapi/api.swagger.json), when it carries one: a solution backend
+publishes its routes there, each with its x-codefly-authority-policy. TCP and
+MCP endpoints have no machine-readable contract and are skipped, as are an HTTP
+endpoint whose service carries no document and a connect endpoint whose
+service has no proto.
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
 configuration, separate from the agent's spec. Multiple exported protobuf
 endpoints require an inventory; a full descriptor alone does not establish what
-each listener serves. See docs/commands.md#generate-contracts.
+each listener serves. An inventory may include implemented interfaces from other
+protobuf packages; every named procedure must exist in the descriptor. For such
+multi-package endpoints, package is empty and services[].fullName identifies
+each package. See docs/commands.md#generate-contracts.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -2736,6 +2814,83 @@ Flags:
       --check           do not write; exit 1 if the on-disk catalog differs from what would be generated
       --format string   output format: text|json (default "text")
       --output string   output directory for generated contracts (default: <module dir>/contracts/api)
+      --permissions     also generate typed permission constants; with --check, verify their freshness
+```
+
+## `codefly generate fixture-composition`
+
+Merge every composed module's fixture-composition fragment into the workspace's document
+
+```
+Merge the fixture-composition fragment every module of the workspace ships
+(configurations/<profile>/fixture-composition.yaml in the module's own directory)
+into the workspace's configurations/<profile>/fixture-composition.yaml, the document
+the local authority reads.
+
+Each module states, once, what the local authority's standard fixture roles may
+do at its kinds; the composition's own module states only what is its own (a
+collection its seed writes). Every grant of a role on one kind, every
+installation and every stand-in module has exactly one source: two fragments
+stating the same one are refused, naming both. The rules are the authority's
+(codefly-dev/authority libraries/fixture-composition).
+
+`codefly run` writes the same document before the local authority boots, so a
+developer never runs this first. The written file says it is generated in its
+first line; a hand-written document is never overwritten, and this command
+refuses it by name.
+
+Examples:
+  codefly generate fixture-composition
+  codefly generate fixture-composition --env local
+```
+
+```
+codefly generate fixture-composition [flags]
+```
+
+Flags:
+
+```
+      --env string   environment whose configuration profile the document is written for (default "local")
+```
+
+## `codefly generate permissions`
+
+Generate typed Go and TypeScript permissions from published contracts
+
+```
+Read the same digest-checked published method policies used by authority delivery.
+Generate typed permission constants and a method requirement table in Go and
+TypeScript. Run codefly generate contracts first after editing an API.
+
+By default each Go service gets its own table in its own Go module:
+<service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
+generates its bindings into (source-dir is the Go agent's setting, "code"
+unless the service declares another). A service's table holds the methods its
+published contracts serve plus the module contract's foreign methods, which
+name no service. What an endpoint serves is what the contract catalog records
+for it (the declared surface, or every service of its package); a method a
+published descriptor declares that no endpoint serves, such as a protocol other
+modules serve, is left out with a note and needs no policy. The TypeScript file
+sits beside the Go file. A Python service
+gets no table: nothing in it reads one, since the authority's hop in front of it
+decides every call, so it is skipped with a note. Any other service that
+publishes a contract but has no go.mod at its Go source root fails by name.
+--output writes the whole module's table to one directory instead.
+--check compares every generated file without writing. A served method with no
+policy, contradictory policies and colliding identifiers fail by name. This validates vocabulary,
+not a person's resource access, installation or consent.
+```
+
+```
+codefly generate permissions [module]
+```
+
+Flags:
+
+```
+      --check           fail on missing or stale output without writing
+      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions)
 ```
 
 ## `codefly generate proto`
@@ -2796,7 +2951,7 @@ For each derived operation the value is one JSON document
 (codefly.runnable-prepared/v3):
 
   operation        the owner coordinates, and the operation as the owner spells
-                   it: /pkg.Service/Method, or "POST /path"
+                   it: /pkg.Service/Method, or "GET /path" for a route
   call             where one call is sent: the resolved base URL, and a typed
                    route — connect (the procedure, POSTed as JSON on the owner's
                    Connect endpoint) or rest (the owner's own verb and path)
@@ -2813,17 +2968,38 @@ A gRPC owner is therefore called on its **Connect** endpoint: a service that
 publishes a runnable-marked method and declares no connect endpoint is refused
 here, by name, rather than at a call.
 An operation published directly on a Connect endpoint uses that endpoint.
+A solution's route is called on the http (or rest) endpoint whose OpenAPI
+document published it, with its own verb and path, and keyed by the solution's
+name exactly as a module operation is by its module's (SOLUTION__OPERATION).
 
 The address is resolved, never configured: it is the one a run or a render of
-the same environment gives the owner. A service that installs derived
+the same environment gives the owner. Locally that is the address of the run's
+naming scope: the environment's declared naming-scope, or --naming-scope, which
+like `codefly run` overrides it for this invocation (an explicit empty value
+clears it). A live run of that scope answers with its concrete allocation; with
+no run the address is the one the run will bind. A service that installs derived
 operations declares runnable-bindings as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
+
+An environment's runnable-call-endpoint: <module>/<service>/<endpoint> in
+workspace.codefly.yaml sends every call prepared for it to that declared
+endpoint instead of the owner's listener: the composition's hop in front of its
+modules, for example. Declared there, the file and its --check depend on the
+workspace alone. --call-endpoint overrides the declaration for one invocation,
+and an explicitly empty value sends each call to its owner. It must be an HTTP-based
+endpoint of a workspace module, and it is resolved like an owner's (same
+environment, same naming scope). Only the address moves: the owner is still
+loaded and held to its served surface and published contract, and the
+operation, the Connect procedure or REST verb and path, the contract, its
+digest and the policy stay the owner's. The endpoint forwards the call; the
+owner must still serve it.
 
 In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
 binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
 and lookup. Every required slot needs exact resource kinds, actions and ids;
-missing selections, wildcards and overlapping kinds are refused. Tool exposure
-is carried from the owner. See docs/runnable.md for the selection YAML.
+missing selections, wildcards and overlapping kinds are refused. Every
+operation is a tool; its presentation and effect are carried from the derived
+policy. See docs/runnable.md for the selection YAML.
 
 An environment that installs an operation for no resource answers its key with
 an explicitly empty list, KEY: []. That operation is declined: its key is absent
@@ -2837,10 +3013,19 @@ environment's first configuration profile. --check regenerates in memory and
 exits non-zero when the file differs, including after a scope selection or a
 decline changes.
 
+When no module derives an operation, no file is written. An absent
+runnable-bindings group is how an environment prepares no runnable binding: a
+service that declares the group receives nothing for it on a run, a build and
+a render, and reads every key as not configured. `codefly doctor workspace`
+accepts the group absent or empty exactly when the environment selects no
+binding.
+
 Examples:
   codefly generate runnable-bindings
   codefly generate runnable-bindings --env staging
   codefly generate runnable-bindings --env staging --check
+  codefly generate runnable-bindings --env local --naming-scope demo --call-endpoint authority/hop/http
+  codefly generate runnable-bindings --env local --call-endpoint ""   # owners, despite a declared runnable-call-endpoint
 ```
 
 ```
@@ -2850,27 +3035,44 @@ codefly generate runnable-bindings [flags]
 Flags:
 
 ```
-      --check        do not write; exit 1 if the on-disk file differs from what would be generated
-      --env string   environment supplying resolved addresses and runnable-scope-selections (default "local")
+      --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)
+      --check                                   do not write; exit 1 if the on-disk file differs from what would be generated
+      --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
+      --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
 ```
 
 ## `codefly generate runnables`
 
-Derive SERVICE-facility Runnable packages from the methods a module's contracts mark
+Derive SERVICE-facility Runnable packages, and so tools, from a module's served methods and a solution's routes
 
 ```
 Derive a Runnable package for every gRPC method a module's published contracts
-mark with the codefly.runnable.v0.operation option.
+serve behind the authority hop, and every REST route a solution's published
+OpenAPI document marks. Every Runnable is a tool.
 
-A unary, idempotent method an owner service already publishes becomes a
-Runnable by derivation, not by authoring: the method option says which methods
-are operations and under what execution policy, and the message descriptors say
-what the contract is. Nothing is written twice.
+A method that declares its authority policy (authority.hop.v1.policy) is an
+operation with nothing added: a policy requiring only "read" derives a
+read-only tool that is safe to re-run and carries no receipt; anything else
+derives a mutation resolved by its effect receipt through the SDK's generic
+lookup. The codefly.runnable.v0.operation option overrides those defaults, and
+codefly.runnable.v0.exclude keeps a method from every agent. The message
+descriptors say what the contract is, by their proto3 JSON. Nothing is written
+twice.
+
+A solution publishes its routes as one OpenAPI document (Swagger 2.0 or
+OpenAPI 3), and every route marked x-codefly-operation derives the same way:
+solution-runtime-go marks each read the backend serves, so a GET read becomes a
+read-only tool whose query parameters are its input. Its directory is named by
+the route's operationId. No flag names a route. A document that marks no route
+although its routes declare read-only policies — rendered by the runtime's
+InterfaceDocument rather than Server.InterfaceArtifact, or by a runtime from
+before the marker — names each such read as not an operation.
 
 The input is what `codefly generate contracts` already wrote — each endpoint's
-served procedures in the API catalog and its serialized FileDescriptorSet.
-Run that first. Only served methods carrying the option are derived; their
-paired Lookup must be served on the same endpoint. No flag names a method.
+served procedures in the API catalog and its serialized FileDescriptorSet, or
+its OpenAPI document.
+Run that first. Only served methods are derived; a declared Lookup must be
+served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 
@@ -2878,12 +3080,15 @@ For each marked method this writes, under contracts/runnables:
   <service>/<endpoint>/<Method>/operation.json          its execution policy and authority
   index.json                                            one row per operation
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. A module with no marked method writes an empty index, not an error.
+and the same, under <service>/<endpoint>/<operationId>/, for each marked route.
 
-A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named and skipped, and the command exits non-zero after
-reporting every one of them.
+The tree is fully owned: a method that is no longer an operation loses its
+directory. A module with no operation writes an empty index, not an error.
+
+A method derived by default that cannot be one — a stream, a policy requiring
+nothing, a payload proto3 JSON cannot carry — is listed and left a plain call.
+A method carrying the option that core refuses is named and skipped, and the
+command exits non-zero after reporting every one of them.
 
 --check is the CI drift gate: it regenerates into a temporary directory and
 prints a unified diff of what differs, without writing anything.
@@ -2891,6 +3096,7 @@ prints a unified diff of what differs, without writing anything.
 Examples:
   codefly generate runnables
   codefly generate runnables documents
+  codefly generate runnables releases          # a solution: its marked routes
   codefly generate runnables --check
 ```
 
@@ -3194,10 +3400,17 @@ codefly login [flags]
 Read or follow logs from the current Codefly session
 
 ```
-Show codefly's detailed session logs (~/.codefly/logs/<date>.log).
+Show codefly's detailed session logs (under the Codefly home logs directory).
 
-By default prints the last 100 lines of today's log, pretty-printed. This is the
-log the failure hint points at, so the usual flow after a command fails is:
+By default prints the last 100 lines from the latest-started invocation,
+pretty-printed. Each invocation owns a separate directory; late shutdown records
+from an older process stay in its files. The failure hint names the exact file.
+CODEFLY_HOME (or --plugin-path) controls the log root. Old daily logs remain
+readable, and are the default fallback when no invocation logs exist.
+
+Follow stays on the selected file, including across later runs; it does not
+switch files on rotation. Use --file to select a known invocation segment.
+The usual flow after a command fails is:
 
   codefly logs            # what just happened
   codefly logs -f         # follow live (e.g. in a second terminal during a run)
@@ -3213,7 +3426,7 @@ codefly logs [flags]
 Flags:
 
 ```
-      --file string   Read a specific log file instead of today's
+      --file string   Read a specific log file instead of the latest invocation segment
   -f, --follow        Follow the log live
       --path          Print only the log file path
       --raw           Print raw JSON lines (for jq/grep)
@@ -3690,6 +3903,14 @@ Requires the gh CLI to be authenticated.
 
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
 their module package is built from; they do not publish service-loader assets.
+A module agent's release carries its version everywhere the module states one:
+the release commit also sets the top-level version: of every service.codefly.yaml
+the repository's workspace composes (the value Codefly hands each service as
+CODEFLY__SERVICE_VERSION) and of each module.package.codefly.yaml, and
+regenerates each packageable module's API catalog and derived runnables at that
+version through the generators. The workspace is read without the machine-local
+codefly.local.yaml, and a pinned module reference is skipped. A manifest already
+past the release version is refused: a release never moves a version backwards.
 
 Running from CI (--ci, on by default when CI=true): the runner has no git
 identity and no signing key, so the release commit and tag are made as the
@@ -3994,16 +4215,15 @@ Run the composition on the local k3d cluster through the signed delivery a cell 
 
 ```
 Run the composition on the environment's local k3d cluster, through the same
-delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
+delivery a cell receives (docs/module-manifests.md, "Local runs"):
 
-  1. Argo CD and the SPIFFE workload issuer (installed if absent), the platform-authority
-     namespace with its delivery ServiceAccount, the modules' namespaces, and
+  1. Argo CD (installed if absent), the modules' namespaces, and
      the local host's trust anchor (one public-key verification policy admitting
      this machine's key when host.developers lists it, bound to this cluster's
      CA; re-written, and the host restarted, when the cluster is recreated);
   2. for each module (every composed module when none is named): build and
-     push its images, render its tree with its presence and authority
-     documents, sign them as you (a developer the environment's
+     push its images, render its tree with its module manifest, sign it as
+     you (a developer the environment's
      host.developers lists — using this machine's delivery key), and
      promote it locally;
   3. the latest promotion served to the cluster's Argo CD, each module's Argo
@@ -4011,10 +4231,10 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
 The environment must declare a k3d cluster (kind and context), a host,
 host.developers, and host.trust_anchor (the path the host reads its trust
-anchor from). Services declaring workload-identity also require host.gateway
-(<module>/<service>); their SVIDs and peer files are projected by the render.
+anchor from). Transport identity is the cell's mesh (a workload's ServiceAccount
+is its principal): no SVID or peer file is issued or projected.
 Stopping a run is not removal: withdrawing a binding is a
-published tombstone.
+published withdrawal (the manifest with removed: true).
 ```
 
 ```
@@ -4185,12 +4405,15 @@ Flags:
       --fixture string                            Fixture override (defaults to the selected Codefly environment)
       --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
       --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
+      --output-env string                         Write one service's full SDK/runtime environment to an owner-only file
+      --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the first composition root)
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 10m0s)
       --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
       --set strings                               Per-service runtime env override (repeatable)
       --silent strings                            Silence services in CLI output
       --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
+      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
 ```
 
 ## `codefly sbom`
@@ -4757,8 +4980,15 @@ Aggregate one client library per solution from api.consumes
 ```
 Reads api.consumes in solution.codefly.yaml and produces one aggregated
 client library per solution, carrying only the declared services, generated
-from the contracts of the module packages the workspace composes. Also keeps
-the runtime service-dependencies in step with the declaration.
+from the contracts of the module packages the workspace composes. A consume
+of a module's rest or connect endpoint is generated from that service's
+protobuf contract. Each consumed module's facade and bindings get a
+directory of their own.
+
+A consume of another module is reached through the authority hop, which
+fronts every module behind it on one Connect face, and needs no
+service-dependencies entry; only a consume of the solution's own module is a
+direct call, and that one is kept in step with the declaration.
 ```
 
 ```
@@ -4768,8 +4998,9 @@ codefly sync solution-sdk [flags]
 Flags:
 
 ```
-      --apply-dependencies   add missing service-dependencies entries for every bound consume entry
+      --apply-dependencies   add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the authority hop)
       --check                do not write; exit 1 if the library or service-dependencies are out of date
+      --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
 ```
 

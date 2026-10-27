@@ -806,3 +806,70 @@ func TestImportDryRunSkipsPostValidation(t *testing.T) {
 		t.Fatalf("dry-run ran post-import validation %d time(s)", *calls)
 	}
 }
+
+// A coordinate contract that answers a runnable binding key with null is
+// refused and writes nothing, whether it creates the environment or merges
+// into an existing one. The null is not a decline: only an explicit [] is,
+// and the two must not collapse into each other on the way through the
+// import's encode. Without ScopeSelections encoding a nil list as null, the
+// new-environment path would write `KEY: []` and import a decline nobody
+// declared.
+func TestImportRefusesANullRunnableScopeSelectionWithoutWriting(t *testing.T) {
+	contract := strings.Replace(fixtureContract, `"name": "azure",`,
+		`"name": "azure","runnable-scope-selections":{"SAAS__INVOKE_SOURCE":null},`, 1)
+	for name, workspace := range map[string]string{
+		"new environment":      "name: acme\nlayout: modules\n",
+		"existing environment": existingAzureWorkspace,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeWorkspace(t, workspace)
+			path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+			before := readFile(t, path)
+			err := runImport(t.Context(), &importOptions{
+				dir: dir, envName: "azure", contractData: []byte(contract), stdout: io.Discard,
+			})
+			if err == nil || !strings.Contains(err.Error(), "runnable-scope-selections[SAAS__INVOKE_SOURCE] is null") {
+				t.Fatalf("err = %v, want the null selection refused", err)
+			}
+			if after := readFile(t, path); after != before {
+				t.Fatal("a refused import modified the workspace")
+			}
+		})
+	}
+}
+
+func TestReimportWithdrawsArtifactsAndAuthTheContractNoLongerCarries(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	declared := strings.Replace(fixtureContract, `"registry": {"url": "x.azurecr.io"}`,
+		`"registry": {"url": "x.azurecr.io", "auth": "acr", "artifacts": "x.azurecr.io/bundles"}`, 1)
+	doImport(t, dir, importOptions{contractData: []byte(declared)})
+	if got := loadWorkspace(t, dir).FindEnvironment("azure").Registry; got.Auth != "acr" || got.Artifacts != "x.azurecr.io/bundles" {
+		t.Fatalf("auth and artifacts not imported: %+v", got)
+	}
+	doImport(t, dir, importOptions{contractData: []byte(fixtureContract)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if env.Registry.Auth != "" || env.Registry.Artifacts != "" || env.Registry.URL != "x.azurecr.io" {
+		t.Fatalf("a value the contract withdrew survived re-import: %+v", env.Registry)
+	}
+	if strings.Contains(readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)), "bundles") {
+		t.Fatal("the withdrawn artifacts registry is still written in the workspace")
+	}
+}
+
+func TestReimportWithdrawsAMirrorTheContractNoLongerCarries(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	mirrored := strings.Replace(fixtureContract, `"registry": {"url": "x.azurecr.io"}`,
+		`"registry": {"url": "x.azurecr.io", "mirrors": {"docker.io": "x.azurecr.io/docker-hub"}}`, 1)
+	doImport(t, dir, importOptions{contractData: []byte(mirrored)})
+	if got := loadWorkspace(t, dir).FindEnvironment("azure").Registry.Mirrors; got["docker.io"] != "x.azurecr.io/docker-hub" {
+		t.Fatalf("mirror not imported: %v", got)
+	}
+	doImport(t, dir, importOptions{contractData: []byte(fixtureContract)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if len(env.Registry.Mirrors) != 0 || env.Registry.URL != "x.azurecr.io" {
+		t.Fatalf("a mirror the contract withdrew survived re-import: %+v", env.Registry)
+	}
+	if strings.Contains(readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)), "docker-hub") {
+		t.Fatal("the withdrawn mirror is still written in the workspace")
+	}
+}

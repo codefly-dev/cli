@@ -1,8 +1,8 @@
 // Package localcluster is the local half of solution and module delivery
 // (cli#918): one run that takes a composition onto the developer's k3d
 // cluster through the SAME delivery a cell receives. Each module is built and
-// rendered (presence and authority derived from its contract, against the real
-// bytes the build produced), published as a promotion the developer signs —
+// rendered (its module manifest derived from its contract and the workloads
+// it renders), published as a promotion the developer signs —
 // on a local cluster the developer's signed publish is the approval, so it
 // advances the local base branch itself — and served to the cluster's Argo
 // CD, which syncs the tree and runs the delivery Jobs that POST the signed
@@ -26,11 +26,6 @@ import (
 type Driver interface {
 	// EnsureArgoCD installs Argo CD unless the cluster serves it already.
 	EnsureArgoCD(ctx context.Context) (installed bool, err error)
-	// EnsureWorkloadIssuer installs the local SPIFFE issuer when absent.
-	EnsureWorkloadIssuer(ctx context.Context) (installed bool, err error)
-	// EnsureDeliveryAccount provisions the authority namespace and its
-	// delivery account, which a cell's platform provides.
-	EnsureDeliveryAccount(ctx context.Context) error
 	// EnsureNamespaces provisions the modules' namespaces, which a cell's
 	// platform provides (every Application syncs with CreateNamespace=false).
 	EnsureNamespaces(ctx context.Context, modules []string) error
@@ -65,12 +60,11 @@ type Delivery struct {
 
 // Report is what a run did.
 type Report struct {
-	ArgoCDInstalled         bool                   `json:"argoCDInstalled"`
-	WorkloadIssuerInstalled bool                   `json:"workloadIssuerInstalled"`
-	ClusterAuthority        string                 `json:"clusterAuthority"`
-	Published               []gitops.PublishResult `json:"published"`
-	Revision                string                 `json:"revision"`
-	Deliveries              []Delivery             `json:"deliveries"`
+	ArgoCDInstalled  bool                   `json:"argoCDInstalled"`
+	ClusterAuthority string                 `json:"clusterAuthority"`
+	Published        []gitops.PublishResult `json:"published"`
+	Revision         string                 `json:"revision"`
+	Deliveries       []Delivery             `json:"deliveries"`
 }
 
 // Check holds an environment to what a local cluster run needs before
@@ -86,7 +80,7 @@ func Check(env *environments.Environment) error {
 		return fmt.Errorf("environment %s does not declare a k3d cluster with its context (cluster.kind: k3d, cluster.context: k3d-<name>); a local cluster run takes a composition onto a developer's k3d cluster only", env.Name)
 	}
 	if env.Host == nil {
-		return fmt.Errorf("environment %s declares no host, so a cluster run would deliver nothing to it; declare the local host (see docs/solution-host-bindings.md, \"Local runs\")", env.Name)
+		return fmt.Errorf("environment %s declares no host, so a cluster run would deliver nothing to it; declare the local host (see docs/module-manifests.md, \"Local runs\")", env.Name)
 	}
 	if len(env.Host.Developers) == 0 {
 		return fmt.Errorf("environment %s lists no developer in host.developers; a local run signs as the developer the local host admits, and an unsigned delivery is refused by every host", env.Name)
@@ -117,16 +111,6 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 	report.ArgoCDInstalled = installed
 	if installed {
 		say("Installed Argo CD (%s) into the cluster", "argocd")
-	}
-	report.WorkloadIssuerInstalled, err = driver.EnsureWorkloadIssuer(ctx)
-	if err != nil {
-		return report, err
-	}
-	if report.WorkloadIssuerInstalled {
-		say("Installed the local SPIFFE workload issuer into the cluster")
-	}
-	if err = driver.EnsureDeliveryAccount(ctx); err != nil {
-		return report, err
 	}
 	if err = driver.EnsureNamespaces(ctx, modules); err != nil {
 		return report, err

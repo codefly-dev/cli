@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/distribution/reference"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
@@ -111,13 +112,22 @@ func (b *Builder) buildLocalRuntimeImage(ctx context.Context) (string, error) {
 	if err := b.instance.RequireAgentCapabilities(contract.RuntimeInitImage); err != nil {
 		return "", fmt.Errorf("cannot supply a local runtime image to %s: %w", b.instance.Unique(), err)
 	}
-	if err := b.buildFromPlan(ctx, planned.outputDir, plan, planned.proxies); err != nil {
+	if err := b.buildFromPlan(ctx, planned.outputDir, plan, planned.prefetched, planned.reuse); err != nil {
 		return "", err
 	}
-	if err := recordBuildRecipe(ctx, b.instance.Service, planned.recipeRoot, plan); err != nil {
+	built := b.localRuntimeBuilt
+	if built == nil {
+		return "", fmt.Errorf("local runtime build of %s ran no recipe", b.instance.Unique())
+	}
+	// The archive under the runtime build root records the recipe as this
+	// machine built it — the input-derived name and the engine's platform — not
+	// the deployable form the agent emitted.
+	asBuilt := proto.CloneOf(plan)
+	asBuilt.Recipes = []*builderv0.DockerBuildRecipe{built}
+	if err := recordBuildRecipe(ctx, b.instance.Service, planned.recipeRoot, asBuilt); err != nil {
 		return "", err
 	}
-	return plan.GetRecipes()[0].GetImage(), nil
+	return built.GetImage(), nil
 }
 
 func localRuntimeRecipeRoot(workspaceDir, module, service string) (string, error) {
@@ -132,42 +142,46 @@ func localRuntimeRecipeRoot(workspaceDir, module, service string) (string, error
 	return filepath.Join(workspaceDir, ".codefly", "runtime-build", module, service), nil
 }
 
-// prepareLocalRuntimeRecipe runs after plan verification. The destination is
-// normalized before hashing so the resulting tag is not its own input. The
-// original verified plan digest (including agent metadata) remains bound.
-func (b *Builder) prepareLocalRuntimeRecipe(recipe *builderv0.DockerBuildRecipe) error {
-	if !b.localRuntime {
-		return nil
-	}
+// localRuntimeRecipe is the recipe as a local runtime build runs it
+// (recipeAsBuilt): narrowed to the one platform this machine's container engine
+// runs, since a loaded image has exactly one, and named by a placeholder so the
+// identity that names the image is not its own input. The agent's recipe is
+// left as emitted; the verified plan digest (including agent metadata) stays
+// bound to it.
+func (b *Builder) localRuntimeRecipe(recipe *builderv0.DockerBuildRecipe) (*builderv0.DockerBuildRecipe, error) {
 	host := b.world.hostArchitecture
 	if host == nil {
 		host = dockerEngineArchitecture
 	}
 	arch, err := host()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	platform := "linux/" + arch
 	if !recipeBuildsPlatform(recipe.GetPlatforms(), platform) {
-		return fmt.Errorf("local container engine requires %s, which recipe %s does not build (it builds %v)", platform, recipe.GetName(), recipe.GetPlatforms())
+		return nil, fmt.Errorf("local container engine requires %s, which recipe %s does not build (it builds %v)", platform, recipe.GetName(), recipe.GetPlatforms())
 	}
-	recipe.Platforms = []string{platform}
-	recipe.Image = "codefly-local/runtime:recipe-inputs"
-	return nil
+	local := proto.CloneOf(recipe)
+	local.Platforms = []string{platform}
+	local.Image = localRuntimeImagePlaceholder
+	return local, nil
 }
 
-func (b *Builder) nameLocalRuntimeImage(recipe *builderv0.DockerBuildRecipe, identity imageIdentity, identityErr error) error {
-	if !b.localRuntime {
-		return nil
-	}
+// localRuntimeImagePlaceholder stands in for the image name while the identity
+// is computed; localRuntimeImageName replaces it.
+const localRuntimeImagePlaceholder = "codefly-local/runtime:recipe-inputs"
+
+// localRuntimeImageName names a local runtime image by the inputs it was built
+// from. Unlike a deployment, which rebuilds when an input cannot be bound, a
+// local image with no identity has nothing to claim and is refused.
+func localRuntimeImageName(recipe *builderv0.DockerBuildRecipe, identity imageIdentity, identityErr error) (string, error) {
 	if identityErr != nil {
-		return fmt.Errorf("cannot identify local runtime image inputs: %w", identityErr)
+		return "", fmt.Errorf("cannot identify local runtime image inputs: %w", identityErr)
 	}
 	if identity.Key == "" {
-		return fmt.Errorf("cannot identify local runtime image inputs for %s", recipe.GetName())
+		return "", fmt.Errorf("cannot identify local runtime image inputs for %s", recipe.GetName())
 	}
-	recipe.Image = "codefly-local/runtime:sha256-" + strings.TrimPrefix(identity.Key, "sha256:")
-	return nil
+	return "codefly-local/runtime:sha256-" + strings.TrimPrefix(identity.Key, "sha256:"), nil
 }
 
 // Unlike a deployment's mutable version tag, the local tag claims particular

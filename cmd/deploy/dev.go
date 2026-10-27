@@ -30,6 +30,10 @@ var DevCmd = &cobra.Command{
 	Long: `Build and push ONE service from local code — --path, else its machine-local
 service override — through the same build path ` + "`deploy gitops render`" + ` uses, then
 re-pin only that service's image digest in the environment's rendered tree.
+When the environment declares a host, its cell file is re-derived as well: the
+cell admits only the builds that file names, so the new digest goes with it.
+It refuses, before building, when the re-derived file would move anything but
+this service's images against the file the branch carries.
 
 The environment then runs code no release describes. The render inventory
 records it under "dev", ` + "`codefly doctor workspace`" + ` warns while it is active, and
@@ -83,6 +87,7 @@ the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clea
 		for _, path := range result.Changed {
 			cli.Info("  changed %s", path)
 		}
+		printCell(result.Cell)
 		if err := gitops.StageDevDeployment(ctx, workspace.Dir(), module.Name, &result, devCommit, devPush); err != nil {
 			return err
 		}

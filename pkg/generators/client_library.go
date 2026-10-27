@@ -1,15 +1,19 @@
 package generators
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -26,6 +30,10 @@ const (
 	pinnedConnectVersion  = "v1.20.0"
 	pinnedProtobufVersion = "v1.36.11"
 	goLanguageVersion     = "1.24"
+	// pinnedTypeScriptVersion builds the generated library's dist/. The
+	// scaffold declares it so `pnpm build` works in a fresh checkout of the
+	// library without the consumer supplying a compiler.
+	pinnedTypeScriptVersion = "^5.9.3"
 )
 
 // langDir itself is never wiped by any of the wipe*/merge*/finalize*
@@ -46,23 +54,45 @@ func wipeGoLibrary(langDir string) error {
 	if err := os.RemoveAll(filepath.Join(langDir, "gen")); err != nil {
 		return err
 	}
-	return removeMatching(langDir, "*_facade.pb.go")
+	if err := removeMatching(langDir, "*_facade.pb.go"); err != nil {
+		return err
+	}
+	// A facade package (FacadePackages) is go/<module>/: its facade file is
+	// this command's, the directory only while nothing else lives in it.
+	packages, err := filepath.Glob(filepath.Join(langDir, "*", "*_facade.pb.go"))
+	if err != nil {
+		return err
+	}
+	for _, facade := range packages {
+		if err := os.Remove(facade); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		_ = os.Remove(filepath.Dir(facade)) // kept when a hand-added file remains
+	}
+	return nil
 }
 
 // mergeGoEntry rewrites raw's hardcoded import prefix to goModule/gen (keyed
 // to this entry's own facade module name) and moves it into langDir: the
-// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/.
-func mergeGoEntry(langDir, raw, moduleName, goModule string) error {
+// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/. With
+// facadePackages the entry's facade moves to its own package go/<module>/ and
+// its bindings to go/gen/<module>/: buf writes a binding where its proto file
+// sits in the contract, and two contracts each rooted at an api.proto would
+// otherwise write one go/gen/api.pb.go.
+func mergeGoEntry(langDir, raw, moduleName, goModule string, facadePackages bool) error {
 	service := moduleName
 	if service == "" {
 		service = defaultFacadeModule
 	}
+	genDir, genImport, facadeDir := filepath.Join(langDir, "gen"), goModule+"/gen", langDir
+	if facadePackages {
+		genDir, genImport, facadeDir = filepath.Join(genDir, service), genImport+"/"+service, filepath.Join(langDir, service)
+	}
 	oldPrefix := "github.com/codefly-dev/cli/pkg/builder/clients/" + service
-	if err := rewriteGoImportPrefix(raw, oldPrefix, goModule+"/gen"); err != nil {
+	if err := rewriteGoImportPrefix(raw, oldPrefix, genImport); err != nil {
 		return fmt.Errorf("cannot rewrite generated import paths: %w", err)
 	}
-	genDir := filepath.Join(langDir, "gen")
-	return moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go")
+	return moveTreeSplitBySuffix(raw, genDir, facadeDir, "_facade.pb.go")
 }
 
 // finalizeGoLibrary writes go.mod (if absent), resolves it and proves the
@@ -86,12 +116,19 @@ func wipeTypeScriptLibrary(langDir string) error {
 	return os.RemoveAll(filepath.Join(langDir, "src"))
 }
 
-// mergeTypeScriptEntry moves raw's tree under src/gen/, hoists the
+// mergeTypeScriptEntry moves raw's tree under src/gen/ — src/gen/<module>/
+// with facadePackages, for the reason mergeGoEntry gives — hoists the
 // *_facade.ts file(s) to src/, and rewrites the facade's same-directory
 // relative import ("./x") to reach into its new location under gen/ instead.
-func mergeTypeScriptEntry(langDir, raw string) error {
+// The entry point over all of them is writeTypeScriptIndex's namespaced
+// barrel, which already keeps two contracts' same-named messages apart.
+func mergeTypeScriptEntry(langDir, raw, moduleName string, facadePackages bool) error {
 	srcDir := filepath.Join(langDir, "src")
-	genDir := filepath.Join(srcDir, "gen")
+	gen := "gen"
+	if facadePackages {
+		gen = path.Join(gen, moduleName)
+	}
+	genDir := filepath.Join(srcDir, filepath.FromSlash(gen))
 	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, srcDir, "_facade.ts")
 	if err != nil {
 		return err
@@ -102,7 +139,11 @@ func mergeTypeScriptEntry(langDir, raw string) error {
 		if err != nil {
 			return err
 		}
-		rewritten := relImportRe.ReplaceAll(data, []byte(`${1}./gen/`+filepath.ToSlash(relDir)+`/`))
+		// path.Join cleans the facade's directory into the specifier: a facade
+		// at raw's root (a proto with no package-derived subdirectory) has
+		// relDir ".", which spliced in verbatim reads "./gen/./x".
+		prefix := "./" + path.Join(gen, filepath.ToSlash(relDir)) + "/"
+		rewritten := relImportRe.ReplaceAll(data, []byte("${1}"+prefix))
 		if err := os.WriteFile(facadePath, rewritten, 0o644); err != nil { //nolint:gosec
 			return err
 		}
@@ -114,16 +155,98 @@ func finalizeTypeScriptLibrary(langDir, npmPackage string) (generatedLanguageExp
 	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
 		return generatedLanguageExport{}, err
 	}
+	if err := writeTypeScriptIndex(langDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
 }
 
 // wipePythonLibrary clears pkgDir's generated content once, before any entry
-// is merged in.
+// is merged in: _gen/, which is entirely its own, and each facade at the
+// package root — a file whose generated-code notice names a protoc plugin,
+// as the Python facade plugin's does. Every other file at the root is the
+// developer's (a reader beside the facade, a helper the package exports, its
+// __init__.py) and survives regeneration, exactly as the scaffold does: the
+// package root is not a purely generated directory, so ownership is read from
+// what a file says wrote it, never from its extension.
 func wipePythonLibrary(pkgDir string) error {
 	if err := os.RemoveAll(filepath.Join(pkgDir, "_gen")); err != nil {
 		return err
 	}
-	return removeMatching(pkgDir, "*.py", "__init__.py")
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		// Only a regular file can be a facade the plugin wrote; a link or a
+		// directory at the root is the developer's.
+		if !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".py" {
+			continue
+		}
+		path := filepath.Join(pkgDir, entry.Name())
+		generator, err := pythonNoticeGenerator(path)
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(generator, "protoc-gen-") {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// pythonNoticeWindow bounds how much of a file is read for its leading notice.
+const pythonNoticeWindow = 8 << 10
+
+// pythonGeneratedNotice is a generated-code notice in either spelling a
+// Python file carries one: the standard `# Code generated by <generator>. DO
+// NOT EDIT.` comment, or the line the Python facade plugin writes in its
+// module docstring, `generated by <generator> from <package>; do not edit`.
+var pythonGeneratedNotice = regexp.MustCompile(`^(?:# Code generated by (\S.*?)\. DO NOT EDIT\.|generated by (\S+) from \S+; do not edit)$`)
+
+// pythonNoticeGenerator names the generator a Python file's notice says wrote
+// it, "" when it carries none. Only the file's leading block is read — the
+// comments and the module docstring it opens with — so a notice quoted in its
+// body (a test asserting the facade's header, say) is never its own.
+func pythonNoticeGenerator(path string) (string, error) {
+	file, err := os.Open(path) //nolint:gosec // path is a file directly in this command's own output package
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(io.LimitReader(file, pythonNoticeWindow))
+	docstring := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !docstring {
+			switch {
+			case line == "" || strings.HasPrefix(line, "#"):
+			case strings.HasPrefix(line, `"""`):
+				docstring, line = true, strings.TrimPrefix(line, `"""`)
+			default:
+				return "", nil // the first statement: the leading block is over
+			}
+		}
+		closing := false
+		if docstring {
+			if before, _, found := strings.Cut(line, `"""`); found {
+				line, closing = strings.TrimSpace(before), true
+			}
+		}
+		if match := pythonGeneratedNotice.FindStringSubmatch(line); match != nil {
+			return match[1] + match[2], nil
+		}
+		if closing {
+			return "", nil
+		}
+	}
+	return "", scanner.Err()
 }
 
 // mergePythonEntry moves raw's bindings under pkgDir/_gen/, hoists the facade
@@ -152,11 +275,16 @@ func finalizePythonLibrary(langDir, pyPackage string, upstreamPackages []string)
 	if err := writePythonScaffold(langDir, pyPackage); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	if err := ensurePythonDependencies(langDir, upstreamPackages); err != nil {
+	if err := ensurePythonDependencies(langDir, append([]string{pythonGrpcRequirement}, upstreamPackages...)); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "python", Path: "python/", Exports: []string{pyPackage}}, nil
 }
+
+// pythonGrpcRequirement is the grpcio the generated `*_pb2_grpc` stubs need:
+// they refuse to import under a grpcio older than the grpc_tools that
+// generated them (GRPC_GENERATED_VERSION), which the proto companion pins.
+const pythonGrpcRequirement = "grpcio>=1.71.0"
 
 // pyprojectDependenciesRe matches pyproject.toml's single-line project
 // dependencies array, the shape writePythonScaffold writes.
@@ -185,9 +313,13 @@ func ensurePythonDependencies(langDir string, packages []string) error {
 		return fmt.Errorf("cannot find a dependencies array in %s", path)
 	}
 	existing := string(data[match[2]:match[3]])
+	declared := map[string]bool{}
+	for _, requirement := range strings.Split(existing, ",") {
+		declared[pythonDistribution(strings.Trim(strings.TrimSpace(requirement), `"`))] = true
+	}
 	var missing []string
 	for _, pkg := range packages {
-		if !strings.Contains(existing, `"`+pkg+`"`) {
+		if !declared[pythonDistribution(pkg)] {
 			missing = append(missing, `"`+pkg+`"`)
 		}
 	}
@@ -205,21 +337,51 @@ func ensurePythonDependencies(langDir string, packages []string) error {
 	return os.WriteFile(path, updated, 0o644) //nolint:gosec
 }
 
-// assembleOpenAPILibrary synthesizes a basev0.Endpoint carrying the raw
-// OpenAPI document (the only thing proto.GenerateOpenAPI reads) and runs it.
-// OpenAPI clients have no facade: proto.GenerateOpenAPI's contract-derived
-// codegen is a plain typed HTTP client.
-func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule, npmPackage string) (generatedLanguageExport, error) {
-	if lang != languages.GO && lang != languages.TYPESCRIPT {
-		return generatedLanguageExport{}, fmt.Errorf("openapi clients support go or typescript, not %s", lang)
+// pythonDistribution is the distribution a requirement names, without its
+// version specifier, so a developer's own pin of a package counts as declaring
+// it.
+func pythonDistribution(requirement string) string {
+	name, _, _ := strings.Cut(requirement, ";")
+	if i := strings.IndexAny(name, "<>=!~[ "); i >= 0 {
+		name = name[:i]
 	}
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "_", "-"))
+}
 
-	genDir := filepath.Join(langDir, "gen")
-	if err := os.RemoveAll(genDir); err != nil {
-		return generatedLanguageExport{}, err
+// stageOpenAPIEntry synthesizes a basev0.Endpoint carrying the raw OpenAPI
+// document (the only thing proto.GenerateOpenAPI reads) and generates it into
+// a scratch directory laid out as the library's language directory: gen/, and
+// for Go the go.mod go-swagger derives its import paths from — the library's
+// own when it has one, the scaffold's otherwise — so the staged tree imports
+// exactly what generating in place would have. OpenAPI clients have no
+// facade: proto.GenerateOpenAPI's contract-derived codegen is a plain typed
+// HTTP client.
+func stageOpenAPIEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, goModule string) (_ string, err error) {
+	if lang != languages.GO && lang != languages.TYPESCRIPT {
+		return "", fmt.Errorf("openapi clients support go or typescript, not %s", lang)
 	}
-	if err := os.MkdirAll(genDir, 0o755); err != nil {
-		return generatedLanguageExport{}, err
+	raw, err := os.MkdirTemp("", "codefly-client-openapi")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(raw)
+		}
+	}()
+
+	if lang == languages.GO {
+		existing := filepath.Join(langDir, "go.mod")
+		if _, statErr := os.Stat(existing); statErr == nil {
+			if err = copyFile(existing, filepath.Join(raw, "go.mod")); err != nil {
+				return "", err
+			}
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		if err = writeGoModule(raw, goModule); err != nil {
+			return "", err
+		}
 	}
 
 	endpoint := &basev0.Endpoint{
@@ -231,27 +393,38 @@ func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDi
 			Value: &basev0.API_Rest{Rest: &basev0.RestAPI{Openapi: entry.ContractBytes}},
 		},
 	}
+	if err = coreproto.GenerateOpenAPI(ctx, lang, filepath.Join(raw, "gen"), "", endpoint); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// applyOpenAPILibrary replaces langDir's gen/ with the staged one and writes
+// the scaffold where it is missing.
+func applyOpenAPILibrary(lang languages.Language, langDir, raw, goModule, npmPackage string) (generatedLanguageExport, error) {
+	genDir := filepath.Join(langDir, "gen")
+	if err := os.RemoveAll(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if err := copyTree(filepath.Join(raw, "gen"), genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 
 	if lang == languages.GO {
 		// go.mod lives at langDir, not genDir: genDir is fully regenerated
 		// every run (it is proto.GenerateOpenAPI's own output), but go.mod is
 		// a scaffold file a developer may hand-edit (an added dependency, a
-		// replace directive) and findModRoot walks up from genDir to find it
-		// either way, so placing it one level up costs nothing and makes it
-		// write-once like the protobuf path's go.mod.
+		// replace directive), so it is write-once like the protobuf path's.
 		if err := writeGoModule(langDir, goModule); err != nil {
 			return generatedLanguageExport{}, err
 		}
-	}
-	if err := coreproto.GenerateOpenAPI(ctx, lang, genDir, "", endpoint); err != nil {
-		return generatedLanguageExport{}, err
-	}
-
-	if lang == languages.GO {
 		bestEffortGoModTidy(langDir)
 		return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 	}
 	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
+		return generatedLanguageExport{}, err
+	}
+	if err := writeTypeScriptIndex(langDir); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
@@ -485,6 +658,20 @@ func copyFile(src, dst string) error {
 	return err
 }
 
+// copyTree copies every file under src to the same relative path under dst.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		return copyFile(p, filepath.Join(dst, rel))
+	})
+}
+
 // removeMatching removes every file directly in dir (non-recursive) whose
 // basename matches pattern, except any name listed in keep. Used to clear a
 // stale generated artifact (e.g. a facade file left over from a
@@ -594,21 +781,30 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
   "version": "0.0.1",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
     "dist",
     "README.md"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
   "dependencies": {
     "@bufbuild/protobuf": "^2.0.0",
     "@connectrpc/connect": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": %q
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   }
 }
-`, npmPackage)
+`, npmPackage, pinnedTypeScriptVersion)
 	if err := writeFileIfMissing(filepath.Join(langDir, "package.json"), []byte(packageJSON)); err != nil {
 		return err
 	}
@@ -629,11 +825,130 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
 	return writeFileIfMissing(filepath.Join(langDir, "tsconfig.json"), []byte(tsconfig))
 }
 
+// pyprojectVersionRe matches pyproject.toml's project version line, the shape
+// writePythonScaffold writes.
+var pyprojectVersionRe = regexp.MustCompile(`(?m)^version = ("[^"]*")$`)
+
+// stampPackageVersion sets the version a language's package manifest declares
+// to the library's own. The scaffold is written once and kept, so without this
+// every generated TypeScript and Python client stays at the scaffold's 0.0.1
+// while library.codefly.yaml says the producer's version, and is published
+// under the wrong one. Only the version member is edited; every hand-edit
+// around it stays. A Go module's version is its tag, which nothing here sets.
+func stampPackageVersion(lang languages.Language, langDir, version string) error {
+	if strings.TrimSpace(version) == "" {
+		return fmt.Errorf("the library declares no version")
+	}
+	path, ok := packageManifest(lang, langDir)
+	if !ok {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is a file this command just wrote
+	if err != nil {
+		return err
+	}
+	start, end, err := locatePackageVersion(lang, path, data)
+	if err != nil {
+		return err
+	}
+	value := strconv.Quote(version)
+	if lang == languages.TYPESCRIPT {
+		quoted, err := json.Marshal(version)
+		if err != nil {
+			return err
+		}
+		value = string(quoted)
+	}
+	updated := append([]byte{}, data[:start]...)
+	updated = append(updated, value...)
+	updated = append(updated, data[end:]...)
+	return os.WriteFile(path, updated, 0o644) //nolint:gosec
+}
+
+// checkPackageVersionStampable refuses, before anything is generated, a package
+// manifest already in langDir whose version stampPackageVersion could not set,
+// so that refusal leaves the library exactly as it was. A manifest that does
+// not exist yet is written from the scaffold, which declares one.
+func checkPackageVersionStampable(lang languages.Language, langDir string) error {
+	path, ok := packageManifest(lang, langDir)
+	if !ok {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is the library's own package manifest
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, _, err = locatePackageVersion(lang, path, data)
+	return err
+}
+
+// packageManifest is the file in langDir that declares a language's package
+// version, and false for a language whose version is not in a file.
+func packageManifest(lang languages.Language, langDir string) (string, bool) {
+	switch lang {
+	case languages.TYPESCRIPT:
+		return filepath.Join(langDir, "package.json"), true
+	case languages.PYTHON:
+		return filepath.Join(langDir, "pyproject.toml"), true
+	default:
+		return "", false
+	}
+}
+
+// locatePackageVersion returns where in data the manifest's version value
+// lies, quotes included.
+func locatePackageVersion(lang languages.Language, path string, data []byte) (start, end int, err error) {
+	if lang == languages.TYPESCRIPT {
+		return locatePackageJSONVersion(path, data)
+	}
+	match := pyprojectVersionRe.FindSubmatchIndex(data)
+	if match == nil {
+		return 0, 0, fmt.Errorf("cannot find a version in %s", path)
+	}
+	return match[2], match[3], nil
+}
+
+// locatePackageJSONVersion finds the value of package.json's top-level
+// "version" member, whatever the file's formatting: the member is found by
+// walking the document's tokens, so a nested "version" key or a reformatted
+// file never takes the edit.
+func locatePackageJSONVersion(path string, data []byte) (start, end int, err error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if token, tokenErr := decoder.Token(); tokenErr != nil || token != json.Delim('{') {
+		return 0, 0, fmt.Errorf("%s is not a JSON object", path)
+	}
+	for decoder.More() {
+		key, keyErr := decoder.Token()
+		if keyErr != nil {
+			return 0, 0, fmt.Errorf("cannot parse %s: %w", path, keyErr)
+		}
+		afterKey := decoder.InputOffset()
+		if key != "version" {
+			var skip json.RawMessage
+			if skipErr := decoder.Decode(&skip); skipErr != nil {
+				return 0, 0, fmt.Errorf("cannot parse %s: %w", path, skipErr)
+			}
+			continue
+		}
+		var current string
+		if valueErr := decoder.Decode(&current); valueErr != nil {
+			return 0, 0, fmt.Errorf("%s: \"version\" is not a string: %w", path, valueErr)
+		}
+		afterValue := decoder.InputOffset()
+		valueStart := afterKey + int64(bytes.IndexByte(data[afterKey:afterValue], '"'))
+		return int(valueStart), int(afterValue), nil
+	}
+	return 0, 0, fmt.Errorf("cannot find a version in %s", path)
+}
+
 func writePythonScaffold(langDir, pyPackage string) error {
 	pyproject := fmt.Sprintf(`[project]
 name = %q
 version = "0.0.1"
-dependencies = ["protobuf>=5.29.3,<7"]
+dependencies = ["protobuf>=5.29.3,<7", %q]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -641,6 +956,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = [%q, %q]
-`, strings.ReplaceAll(pyPackage, "_", "-"), pyPackage, pyPackage+".*")
+`, strings.ReplaceAll(pyPackage, "_", "-"), pythonGrpcRequirement, pyPackage, pyPackage+".*")
 	return writeFileIfMissing(filepath.Join(langDir, "pyproject.toml"), []byte(pyproject))
 }

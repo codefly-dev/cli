@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"sync"
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/tui"
@@ -10,7 +11,24 @@ import (
 
 type RuntimeStartPolicy struct {
 	ExecutorManager
+	// mu guards dependencies: Flow.Extend replaces the graph while the
+	// playbook's goroutine computes next actions from it.
+	mu           sync.RWMutex
 	dependencies *architecture.ServiceDependencies
+}
+
+// SetDependencies makes the policy compute next actions from the graph a run
+// now manages, after an extension added services to it.
+func (policy *RuntimeStartPolicy) SetDependencies(dependencies *architecture.ServiceDependencies) {
+	policy.mu.Lock()
+	defer policy.mu.Unlock()
+	policy.dependencies = dependencies
+}
+
+func (policy *RuntimeStartPolicy) graph() *architecture.ServiceDependencies {
+	policy.mu.RLock()
+	defer policy.mu.RUnlock()
+	return policy.dependencies
 }
 
 // stateEmitter is implemented by the Flow so the policy can report per-service
@@ -100,20 +118,21 @@ func (policy *RuntimeStartPolicy) Execute(ctx context.Context, action Action) ([
 }
 
 func (policy *RuntimeStartPolicy) BasicNext(ctx context.Context, change *OutputProperty, action Action, nextType ActionType) ([]Action, error) {
-	return BasicNext(ctx, policy.dependencies, change, action, nextType)
+	return BasicNext(ctx, policy.graph(), change, action, nextType)
 }
 
 func (policy *RuntimeStartPolicy) Restrict(ctx context.Context, unique string) error {
 	w := wool.Get(ctx).In("RuntimeStartPolicy.Restrict")
-	if policy.dependencies == nil {
+	dependencies := policy.graph()
+	if dependencies == nil {
 		return nil
 	}
-	dependencies, err := policy.dependencies.Restrict(ctx, unique)
+	restricted, err := dependencies.Restrict(ctx, unique)
 	if err != nil {
 		return w.Wrapf(err, "cannot get Dependencies")
 	}
-	policy.dependencies = dependencies
-	w.Trace("restricted", wool.Field("graph", policy.dependencies.Print()))
+	policy.SetDependencies(restricted)
+	w.Trace("restricted", wool.Field("graph", restricted.Print()))
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -122,22 +123,20 @@ func digestRecordedGroups(ctx context.Context, workspace *resources.Workspace, e
 }
 
 func currentGroupDigests(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, module *resources.Module) (map[string]string, error) {
-	services := make([]*resources.Service, 0, len(module.ServiceReferences))
-	for _, reference := range module.ServiceReferences {
-		service, err := module.LoadServiceFromName(ctx, reference.Name)
-		if err != nil {
-			return nil, fmt.Errorf("load service %s: %w", reference.Name, err)
-		}
-		services = append(services, service)
+	// The services this environment renders: a group only an excluded
+	// service reads is baked into no tree here.
+	services, err := loadModuleServices(ctx, module, env)
+	if err != nil {
+		return nil, err
 	}
 	var slotGroups []string
-	contract, err := modulecontract.Load(module.Dir())
+	contract, contractErr := modulecontract.Load(module.Dir())
 	switch {
-	case err == nil:
+	case contractErr == nil:
 		slotGroups = contract.SlotGroups()
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(contractErr, os.ErrNotExist):
 	default:
-		return nil, err
+		return nil, contractErr
 	}
 	return workspaceConfigurationDigests(ctx, workspace, env, services, slotGroups)
 }
@@ -196,6 +195,15 @@ func staleGroupConsumers(workspaceDir, module, environment string, digests map[s
 			// be read, and silence here would read as agreement.
 			return nil, fmt.Errorf("the rendered tree of module %s carries no inventory, so whether it agrees about the groups it consumes is unknown; render it again", entry.Name())
 		}
+		if errors.Is(err, ErrUnsupportedInventorySchema) {
+			// A tree rendered by another CLI: it cannot say whether it agrees,
+			// and the answer is to render it again — reported as stale on
+			// every group this module consumes, never read as agreement.
+			for group := range digests {
+				stale[group] = append(stale[group], entry.Name())
+			}
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("the rendered tree of module %s cannot be read, so whether it agrees about the groups %s consumes cannot be told: %w", entry.Name(), module, err)
 		}
@@ -213,6 +221,51 @@ func staleGroupConsumers(workspaceDir, module, environment string, digests map[s
 		sort.Strings(stale[group])
 	}
 	return stale, nil
+}
+
+// RenderGroupReaders renders module, then — one at a time, in the same run —
+// every module a render reports as a reader of a workspace configuration
+// group that changed since that module rendered it (StaleGroupConsumers),
+// each once, so publish finds every reader agreeing on the group's value.
+// A module that reads no changed group is never rendered. rerendering is
+// told, before each reader renders, which changed groups it reads.
+func RenderGroupReaders(
+	ctx context.Context,
+	module string,
+	render func(context.Context, string) (RenderResult, error),
+	rerendering func(reader string, groups []string),
+) ([]RenderResult, error) {
+	queue := []string{module}
+	causes := map[string][]string{module: nil}
+	var results []RenderResult
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if next != module {
+			rerendering(next, causes[next])
+		}
+		result, err := render(ctx, next)
+		if err != nil {
+			return results, fmt.Errorf("render %s: %w", next, err)
+		}
+		results = append(results, result)
+		groups := make([]string, 0, len(result.StaleGroupConsumers))
+		for group := range result.StaleGroupConsumers {
+			groups = append(groups, group)
+		}
+		sort.Strings(groups)
+		for _, group := range groups {
+			for _, reader := range result.StaleGroupConsumers[group] {
+				if _, known := causes[reader]; !known {
+					queue = append(queue, reader)
+				}
+				if !slices.Contains(causes[reader], group) {
+					causes[reader] = append(causes[reader], group)
+				}
+			}
+		}
+	}
+	return results, nil
 }
 
 // refuseStaleGroupConsumers refuses a publish while a sibling consumer's local
@@ -309,7 +362,7 @@ func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module 
 		return nil, nil
 	}
 	ref := "refs/remotes/origin/" + baseBranch
-	modulesPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules"))
+	modulesPath := deliveryModulesPath(pathRoot)
 	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+modulesPath)
 	if err != nil {
 		if gitSaysAbsent(err) {

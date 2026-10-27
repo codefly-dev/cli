@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -17,10 +16,7 @@ import (
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 )
@@ -490,11 +486,7 @@ func probeHTTPStatus(ctx context.Context, target string) error {
 }
 
 func probeGRPCHealth(ctx context.Context, address string, secure bool, services []string) error {
-	transport := insecure.NewCredentials()
-	if secure {
-		transport = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
-	}
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(transport))
+	conn, err := GRPCTarget{Address: address, Secure: secure}.Dial()
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -19,20 +20,33 @@ import (
 // Two projections, each into the one container that authenticates and no
 // other (the rule refuseSharedTokens holds the tree to):
 //
-//   - every serving workload a presence document declares gets a projected
-//     ServiceAccount token minted for the host's audience. It is how the pod
-//     proves who it is when it mints (the host reviews the token and reads
-//     the pod's running image — module-saas-starter#1056): nothing else
-//     carries a module's identity, and no secret or prefix is projected.
-//   - on a k3d environment that declares the host's trust-anchor path, the
-//     host's verifier (the service host.delivery names) gets the local trust
-//     anchor mounted there: one projected volume, the local trust ConfigMap
+//   - every identity workload of the module — each service declaring
+//     module-identity, the workloads its manifest lists — gets a projected
+//     ServiceAccount token minted for the host's audience, mounted ONLY into
+//     the container the manifest declares for it. It is how the pod proves
+//     who it is when it mints: the host reviews the token and nothing else,
+//     so which container holds it is decided here, at deploy time, and a
+//     sidecar never does. No secret or prefix is projected.
+//   - the host's verifier (the service host.delivery names) gets its trust
+//     anchor mounted: one projected volume, one ConfigMap
 //     (verification_policy.json) as its only source, keys not remapped,
-//     read-only. A local cluster run provisions that ConfigMap.
+//     read-only. On a k3d environment that declares the host's trust-anchor
+//     path it is the local trust ConfigMap a local cluster run provisions,
+//     at that path. On any other environment that declares a host it is the
+//     platform's `<host.component>-delivery-trust` ConfigMap at the host's
+//     constant path, as one projected ConfigMap source — the shape the
+//     platform's admission pins (obin-ai/infra-base#1366): the platform
+//     renders that ConfigMap, the composition's Deployment carries the
+//     mount, and this render is that Deployment. The same workloads, and
+//     no other, mount their ServiceAccount's Kubernetes API credential
+//     (automountServiceAccountToken: true): the host authorises every
+//     delivered carrier by TokenReview, and reads the in-cluster CA and
+//     token at the standard paths the ServiceAccount admission plugin
+//     injects them at — nothing else. Every other workload keeps the
+//     agents' default, false.
 //
 // Both land as patches in the unit's environment overlay, so the base the
-// agent rendered is untouched and the overlay's bytes — which the presence
-// document digests — are what runs.
+// agent rendered is untouched and the overlay's bytes are what runs.
 
 const (
 	// identityTokenVolume, identityTokenMount and identityTokenFile are where
@@ -53,6 +67,27 @@ const (
 	// render mounts into the verifier.
 	LocalTrustAnchorObjects = "codefly-delivery-trust"
 
+	// HostedTrustAnchorPath is where a deployed host reads its trust anchor,
+	// and the other half of the host's own constant
+	// (module-saas-starter accounts `SolutionHostTrustAnchorPath`, which the
+	// host refuses to relocate from inside a pod). It is never a workspace
+	// value: the workspace environment is the composition's, so a
+	// composition that could name the path could point the verifier at a
+	// policy it wrote itself and sign its own documents against it. The
+	// anchor stays reachable only by whoever mounts into the pod, which the
+	// render does here at the one path, and workspace.go refuses
+	// host.trust_anchor on every environment that is not a local k3d one.
+	HostedTrustAnchorPath = "/etc/obin/delivery-trust"
+
+	// hostedTrustAnchorSuffix completes the platform's name for the trust
+	// ConfigMap it renders in the verifier's namespace,
+	// `<host.component>-delivery-trust` (obin-ai/infra-base cell_contract.py,
+	// `{cell.delivery}-delivery-trust`). The render projects it as one
+	// ConfigMap source, no items, read-only, at the constant path — the shape
+	// the platform's admission pins (obin-ai/infra-base#1366) — and declares
+	// nothing about its content.
+	hostedTrustAnchorSuffix = "-delivery-trust"
+
 	// TrustAnchorAnnotation is the pod-template annotation a local cluster
 	// run stamps with the trust anchor's digest. It is the run's, and the
 	// render refuses a workload that carries it in desired state: a value
@@ -60,14 +95,18 @@ const (
 	TrustAnchorAnnotation = "codefly.dev/trust-anchor"
 
 	// The manifest keys a projection writes and reads.
-	keyName                = "name"
-	keyKind                = "kind"
-	keySpec                = "spec"
-	keyAPIVersion          = "apiVersion"
-	keyMetadata            = "metadata"
-	keyConfigMap           = "configMap"
-	keyContainers          = "containers"
-	keyNamespace           = "namespace"
+	keyName           = "name"
+	keyKind           = "kind"
+	keySpec           = "spec"
+	keyAPIVersion     = "apiVersion"
+	keyMetadata       = "metadata"
+	keyConfigMap      = "configMap"
+	keyContainers     = "containers"
+	keyNamespace      = "namespace"
+	keyAutomountToken = "automountServiceAccountToken"
+	// keyPatchTarget names the object a kustomize patch applies to.
+	keyPatchTarget         = "target"
+	keyPatch               = "patch"
 	LocalTrustAnchorVolume = "codefly-delivery-trust"
 )
 
@@ -79,10 +118,10 @@ func projectWorkloadIdentity(tree *renderRoot, owned string, opts *RenderOptions
 	if err := refuseReservedAnnotation(tree, owned, opts); err != nil {
 		return err
 	}
-	for index := range opts.SolutionInstances {
-		for _, unit := range opts.SolutionInstances[index].Units {
-			if err := projectIdentityToken(tree, owned, opts, unit); err != nil {
-				return fmt.Errorf("%s %s artifact %s: %w", opts.SolutionInstances[index].Kind, opts.SolutionInstances[index].Name, unit.Name, err)
+	if instance := opts.Instance; instance != nil {
+		for _, identity := range instance.Identities {
+			if err := projectIdentityToken(tree, owned, opts, identity); err != nil {
+				return fmt.Errorf("%s %s service %s: %w", instance.Kind, instance.Name, identity.Service, err)
 			}
 		}
 	}
@@ -119,21 +158,21 @@ func refuseReservedAnnotation(tree *renderRoot, owned string, opts *RenderOption
 }
 
 // projectIdentityToken projects the host-audience token into the
-// authenticating container of each serving workload of the unit, unless that
-// container already mounts one for the audience.
-func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, unit SolutionArtifactUnit) error {
-	unitDir := filepath.Join(owned, filepath.FromSlash(unit.Path))
+// authenticating container of each serving workload of an identity service's
+// unit, unless that container already mounts one for the audience.
+func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, identity IdentityWorkload) error {
+	unitDir := filepath.Join(owned, filepath.FromSlash(identity.Path))
 	workloads, err := renderedWorkloadsInTree(tree, unitDir, opts.Environment)
 	if err != nil {
 		return err
 	}
-	var patches []podProjection
+	var patches []*podProjection
 	for index := range workloads {
 		workload := &workloads[index]
 		if !servingKind(workload.Kind) {
 			continue
 		}
-		container, _, err := authenticatingContainer(unit.Name, workload)
+		container, err := authenticatingContainer(identity.Service, workload)
 		if err != nil {
 			return fmt.Errorf("workload %s: %w", workload.Name, err)
 		}
@@ -151,20 +190,56 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, u
 		if workload.hasVolume(identityTokenVolume) {
 			return fmt.Errorf("workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, identityTokenVolume)
 		}
-		patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
+		patches = append(patches, &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
 	}
 	return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 }
 
-// projectTrustAnchor mounts the local trust anchor into the verifier, on a
-// k3d environment that declares the host's trust-anchor path.
-func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) error {
-	if !opts.Target.DeclaresLocalK3d() || opts.Host.TrustAnchor == "" {
-		return nil
+// configMapNamePattern is a DNS-1123 subdomain, the shape a ConfigMap name
+// takes, with configMapNameLimit its length; a host component they refuse
+// cannot name the platform's trust ConfigMap.
+var configMapNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
+const configMapNameLimit = 253
+
+// trustAnchorSource is the ConfigMap the verifier's trust anchor is projected
+// from and the path it is mounted at, or empty when this render mounts none:
+// a render with no target environment, or a k3d environment that states no
+// trust-anchor path.
+func trustAnchorSource(opts *RenderOptions) (configMap, mountPath string, err error) {
+	switch {
+	case opts.Target == nil:
+		return "", "", nil
+	case opts.Target.DeclaresLocalK3d():
+		if opts.Host.TrustAnchor == "" {
+			return "", "", nil
+		}
+		return LocalTrustAnchorObjects, opts.Host.TrustAnchor, nil
+	case opts.Host.TrustAnchor != "":
+		return "", "", fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; a deployed host's trust anchor is its platform's, mounted at %s", opts.Target.Name, HostedTrustAnchorPath)
 	}
+	name := opts.Host.Component + hostedTrustAnchorSuffix
+	if len(name) > configMapNameLimit || !configMapNamePattern.MatchString(name) {
+		return "", "", fmt.Errorf("environment %s declares host.component %q, which cannot name the platform's trust anchor ConfigMap %s: a ConfigMap name is a lowercase DNS subdomain of at most %d characters", opts.Target.Name, opts.Host.Component, name, configMapNameLimit)
+	}
+	return name, HostedTrustAnchorPath, nil
+}
+
+// projectTrustAnchor mounts the host's trust anchor into the verifier: the
+// local trust ConfigMap at the declared path on a k3d environment, the
+// platform's trust ConfigMap at the host's constant path on a hosted one.
+// The same workloads mount their ServiceAccount's API credential, which the
+// host's TokenReview of a delivered carrier needs and no other workload
+// holds. Only the verifier's module is judged, so a host block the source
+// refuses refuses that one render and no other module's.
+func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) error {
 	module, service, _ := opts.Host.DeliveryEndpoint()
 	if module != opts.Module {
 		return nil
+	}
+	configMap, mountPath, err := trustAnchorSource(opts)
+	if err != nil || configMap == "" {
+		return err
 	}
 	for index := range opts.Units {
 		unit := &opts.Units[index]
@@ -176,59 +251,88 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 		if err != nil {
 			return err
 		}
-		var patches []podProjection
+		var patches []*podProjection
 		for index := range workloads {
 			workload := &workloads[index]
 			if !servingKind(workload.Kind) {
 				continue
 			}
-			container, _, err := authenticatingContainer(service, workload)
+			container, err := authenticatingContainer(service, workload)
 			if err != nil {
 				return fmt.Errorf("the host's verifier %s workload %s: %w", service, workload.Name, err)
 			}
 			volume := projectedVolume(LocalTrustAnchorVolume,
-				map[string]any{"configMap": map[string]any{keyName: LocalTrustAnchorObjects}})
-			mount := readOnlyMount(LocalTrustAnchorVolume, opts.Host.TrustAnchor)
+				map[string]any{keyConfigMap: map[string]any{keyName: configMap}})
+			mount := readOnlyMount(LocalTrustAnchorVolume, mountPath)
 			if workload.hasVolume(LocalTrustAnchorVolume) {
 				return fmt.Errorf("the host's verifier workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, LocalTrustAnchorVolume)
 			}
-			patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
+			patches = append(patches, &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount, automountToken: true})
 		}
 		if len(patches) == 0 {
-			return fmt.Errorf("the host's verifier %s/%s renders no serving workload to mount the local trust anchor into", module, service)
+			return fmt.Errorf("the host's verifier %s/%s renders no serving workload to mount the trust anchor into", module, service)
 		}
-		for i := range opts.workloadIdentityChecks {
-			check := &opts.workloadIdentityChecks[i]
-			if check.path == unit.Path && requestsWorkloadIdentity(check.service) {
-				current, err := check.currentObjects(tree, owned)
-				if err != nil {
-					return err
-				}
-				if err = validateOwnedObjects(current, check); err != nil {
-					return err
-				}
-			}
-		}
-		if err := addOverlayPatches(tree, unitDir, opts.Environment, patches); err != nil {
-			return err
-		}
-		// This is the final CLI-owned projection into this service. Retain
-		// its completed output before any enclosing overlay is built.
-		for i := range opts.workloadIdentityChecks {
-			check := &opts.workloadIdentityChecks[i]
-			if check.path == unit.Path {
-				if err := check.capture(tree, owned); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
+		return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 	}
-	return fmt.Errorf("the host's delivery API %s names service %s, which module %s does not render, so the local trust anchor has nowhere to be mounted", opts.Host.Delivery, service, module)
+	return fmt.Errorf("the host's delivery API %s names service %s, which module %s does not render, so the trust anchor has nowhere to be mounted", opts.Host.Delivery, service, module)
 }
 
 func servingKind(kind string) bool {
 	return kind == kindDeployment || kind == kindStatefulSet || kind == kindDaemonSet
+}
+
+// authenticatingContainer is the container of a workload that authenticates
+// for a service: the one named like the service, or the only one. A workload
+// with several containers and none named like the service is refused rather
+// than guessed — "whichever one presented the token" is how a sidecar ends up
+// holding a workload's authority — and so is a pod template in which any
+// other container mounts a token minted for an audience (refuseSharedTokens).
+func authenticatingContainer(service string, workload *renderedWorkload) (renderedContainer, error) {
+	var chosen *renderedContainer
+	for index := range workload.Containers {
+		if workload.Containers[index].Name == service {
+			chosen = &workload.Containers[index]
+			break
+		}
+	}
+	if chosen == nil && len(workload.Containers) == 1 {
+		chosen = &workload.Containers[0]
+	}
+	if chosen == nil {
+		names := make([]string, 0, len(workload.Containers))
+		for _, container := range workload.Containers {
+			names = append(names, container.Name)
+		}
+		return renderedContainer{}, fmt.Errorf("none of its containers (%s) is named %q, so the one that authenticates cannot be told from a sidecar", strings.Join(names, ", "), service)
+	}
+	if err := refuseSharedTokens(chosen.Name, workload); err != nil {
+		return renderedContainer{}, err
+	}
+	return *chosen, nil
+}
+
+// refuseSharedTokens refuses a pod template in which a projected token minted
+// for an explicit audience is mounted by a container other than the one that
+// authenticates — a sidecar or an init container, which would present it as
+// the workload. The rule keys on the token's audience: the token the
+// ServiceAccount plugin injects is projected too, mounted everywhere, and
+// names none.
+func refuseSharedTokens(authenticating string, workload *renderedWorkload) error {
+	var shared []string
+	for _, container := range append(append([]renderedContainer(nil), workload.Containers...), workload.InitContainers...) {
+		if container.Name == authenticating {
+			continue
+		}
+		for _, mount := range workload.tokenMounts[container.Name] {
+			shared = append(shared, fmt.Sprintf("%s mounts %s (audience %q)", container.Name, mount.volume, mount.audience))
+		}
+	}
+	if len(shared) == 0 {
+		return nil
+	}
+	sort.Strings(shared)
+	return fmt.Errorf("a projected token minted for an audience is mounted by a container other than the authenticating one, %q: %s; a token the pod shares is a token a sidecar can present as the workload, and the cell's admission refuses the pod for it, so mount it into %q alone",
+		authenticating, strings.Join(shared, ", "), authenticating)
 }
 
 // providesIdentityToken reports whether the container already has the
@@ -309,6 +413,10 @@ type podProjection struct {
 	volume, mount         map[string]any
 	// env binds CLI-owned file paths to the same container as their volume.
 	env map[string]string
+	// automountToken mounts the pod's ServiceAccount API credential at the
+	// standard paths (automountServiceAccountToken: true), the one the
+	// host's verifier reviews tokens with.
+	automountToken bool
 }
 
 func (projection *podProjection) environmentEntries() []any {
@@ -332,20 +440,21 @@ func (projection *podProjection) patch() (map[string]any, error) {
 	if len(projection.env) > 0 {
 		container["env"] = projection.environmentEntries()
 	}
+	spec := map[string]any{"volumes": []any{projection.volume}, keyContainers: []any{container}}
+	if projection.automountToken {
+		spec[keyAutomountToken] = true
+	}
 	body := map[string]any{
 		keyAPIVersion: "apps/v1",
 		keyKind:       projection.kind,
 		"metadata":    map[string]any{keyName: projection.name},
-		keySpec: map[string]any{"template": map[string]any{keySpec: map[string]any{
-			"volumes":     []any{projection.volume},
-			keyContainers: []any{container},
-		}}},
+		keySpec:       map[string]any{"template": map[string]any{keySpec: spec}},
 	}
 	encoded, err := yaml.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"target": map[string]any{keyKind: projection.kind, keyName: projection.name}, "patch": string(encoded)}, nil
+	return map[string]any{keyPatchTarget: map[string]any{keyKind: projection.kind, keyName: projection.name}, keyPatch: string(encoded)}, nil
 }
 
 // applyTo adds the projection to a decoded manifest of its workload.
@@ -358,6 +467,9 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 		return false
 	}
 	spec["volumes"] = append(sliceField(spec, "volumes"), projection.volume)
+	if projection.automountToken {
+		spec[keyAutomountToken] = true
+	}
 	for _, entry := range sliceField(spec, "containers") {
 		if container, _ := entry.(map[string]any); container != nil && container[keyName] == projection.container {
 			container["volumeMounts"] = append(sliceField(container, "volumeMounts"), projection.mount)
@@ -377,10 +489,23 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 	return true
 }
 
+// target names the workload the projection patches.
+func (projection *podProjection) target() (kind, name string) {
+	return projection.kind, projection.name
+}
+
+// overlayProjection is one change the render makes to an object of a unit's
+// environment overlay: a pod projection, or a Service's labels.
+type overlayProjection interface {
+	patch() (map[string]any, error)
+	applyTo(document map[string]any) bool
+	target() (kind, name string)
+}
+
 // addOverlayPatches writes the projections into the unit's environment
 // overlay: as inline patches in its kustomization, or — an overlay of plain
 // manifests, as a tree assembled without an agent is — into the manifests.
-func addOverlayPatches(tree *renderRoot, unitDir, environment string, projections []podProjection) error {
+func addOverlayPatches[P overlayProjection](tree *renderRoot, unitDir, environment string, projections []P) error {
 	if len(projections) == 0 {
 		return nil
 	}
@@ -431,7 +556,7 @@ func addOverlayPatches(tree *renderRoot, unitDir, environment string, projection
 }
 
 // projectIntoManifests applies the projections to the overlay's manifests.
-func projectIntoManifests(tree *renderRoot, overlay string, projections []podProjection) error {
+func projectIntoManifests[P overlayProjection](tree *renderRoot, overlay string, projections []P) error {
 	entries, err := tree.readDir(overlay)
 	if err != nil {
 		return err
@@ -484,7 +609,8 @@ func projectIntoManifests(tree *renderRoot, overlay string, projections []podPro
 	}
 	for index, done := range applied {
 		if !done {
-			return fmt.Errorf("overlay %s carries no manifest of %s %s to project into", overlay, projections[index].kind, projections[index].name)
+			kind, name := projections[index].target()
+			return fmt.Errorf("overlay %s carries no manifest of %s %s to project into", overlay, kind, name)
 		}
 	}
 	return nil

@@ -127,6 +127,10 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 				}
 				secret, seen := byKey[data.RemoteRef.Key]
 				store := environments.EnvironmentSecretStoreReference{Name: projection.Spec.SecretStoreRef.Name, Kind: projection.Spec.SecretStoreRef.Kind}
+				// An item that names its own store is read through that one.
+				if data.SourceRef != nil {
+					store = environments.EnvironmentSecretStoreReference{Name: data.SourceRef.StoreRef.Name, Kind: data.SourceRef.StoreRef.Kind}
+				}
 				switch {
 				case !seen:
 					secret = &RenderedServiceSecret{Store: store, Namespace: projection.Metadata.Namespace, RemoteKey: data.RemoteRef.Key}

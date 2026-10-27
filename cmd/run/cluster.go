@@ -33,16 +33,15 @@ var ClusterCmd = &cobra.Command{
 	Use:   "cluster [module...]",
 	Short: "Run the composition on the local k3d cluster through the signed delivery a cell receives",
 	Long: `Run the composition on the environment's local k3d cluster, through the same
-delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
+delivery a cell receives (docs/module-manifests.md, "Local runs"):
 
-  1. Argo CD and the SPIFFE workload issuer (installed if absent), the platform-authority
-     namespace with its delivery ServiceAccount, the modules' namespaces, and
+  1. Argo CD (installed if absent), the modules' namespaces, and
      the local host's trust anchor (one public-key verification policy admitting
      this machine's key when host.developers lists it, bound to this cluster's
      CA; re-written, and the host restarted, when the cluster is recreated);
   2. for each module (every composed module when none is named): build and
-     push its images, render its tree with its presence and authority
-     documents, sign them as you (a developer the environment's
+     push its images, render its tree with its module manifest, sign it as
+     you (a developer the environment's
      host.developers lists — using this machine's delivery key), and
      promote it locally;
   3. the latest promotion served to the cluster's Argo CD, each module's Argo
@@ -50,10 +49,10 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
 The environment must declare a k3d cluster (kind and context), a host,
 host.developers, and host.trust_anchor (the path the host reads its trust
-anchor from). Services declaring workload-identity also require host.gateway
-(<module>/<service>); their SVIDs and peer files are projected by the render.
+anchor from). Transport identity is the cell's mesh (a workload's ServiceAccount
+is its principal): no SVID or peer file is issued or projected.
 Stopping a run is not removal: withdrawing a binding is a
-published tombstone.`,
+published withdrawal (the manifest with removed: true).`,
 	RunE: func(_ *cobra.Command, args []string) error {
 		return runCluster(args)
 	},
@@ -79,7 +78,7 @@ func runCluster(modules []string) error {
 	if err = localcluster.Check(env); err != nil {
 		return err
 	}
-	if _, err = environments.WorkloadIdentityServices(ctx, workspace, env); err != nil {
+	if err = environments.ValidateHostComposition(ctx, workspace, env); err != nil {
 		return err
 	}
 	target, err := deployments.VerifyLocalK3dTarget(ctx, env)
@@ -90,6 +89,9 @@ func runCluster(modules []string) error {
 		for _, reference := range workspace.Modules {
 			modules = append(modules, reference.Name)
 		}
+	}
+	if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true, modules...); err != nil {
+		return err
 	}
 	plane, err := control.NewAt(workspace.Dir())
 	if err != nil {

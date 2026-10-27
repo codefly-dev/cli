@@ -18,7 +18,6 @@ import (
 	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution"
-	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/grpc"
 )
 
@@ -70,17 +69,9 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		return RenderResult{}, err
 	}
 	destination := filepath.Join(req.Workspace.Dir(), "deployments", "modules", req.Name)
-	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", req.Name))
-	gitopsPath := ""
-	if env.Gitops != nil {
-		gitopsPath = env.Gitops.Path
-	} else if defaults, err := environments.WorkspaceGitops(req.Workspace); err != nil {
+	ownedPath, err := moduleOwnedPath(req.Workspace, env, req.Name)
+	if err != nil {
 		return RenderResult{}, err
-	} else if defaults != nil {
-		gitopsPath = defaults.Path
-	}
-	if gitopsPath != "" {
-		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
 	}
 	options := &RenderOptions{
 		Destination: destination,
@@ -148,23 +139,11 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 			Path:   filepath.ToSlash(filepath.Join(solutionUnitDir, req.Name)),
 			Output: solutionRenderAttestation(),
 		}}
-		// One solution instance, declared from the same resolution that just
-		// rendered it: the executor's own artifact identity is the release, and
-		// the unit it wrote is the artifact the binding pins. An executor
-		// reports manifest paths and nothing about endpoints or module pins, so
-		// the binding declares none rather than inventing them.
-		options.SolutionInstances = []SolutionInstance{{
-			Kind:          solutionhost.KindSolution,
-			Name:          req.Name,
-			Alias:         req.Name,
-			Package:       req.Agent.Publisher + "/" + req.Agent.Name,
-			Version:       req.Agent.Version,
-			ReleaseDigest: solutionhost.ReleaseDigest(packaged.GetArtifactDigest()),
-			Units: []SolutionArtifactUnit{{
-				Name: req.Name, Path: filepath.ToSlash(filepath.Join(solutionUnitDir, req.Name)),
-				Subject: solutionWorkloadSubject(env, req.Name),
-			}},
-		}}
+		// A packaged solution declares no service, so no service declares
+		// module-identity: nothing runs as it, and a module manifest names at
+		// least one workload that does. It is rendered and delivered as
+		// workloads, and declared present on no host.
+		options.UndeclaredManifest = fmt.Sprintf("packaged solution %s declares no module-identity service, so nothing runs as it and it declares no module manifest", req.Name)
 		return nil
 	})
 }
@@ -305,17 +284,4 @@ func solutionRenderAttestation() *InventoryKubernetesOutput {
 			Violations:           []string{},
 		},
 	}
-}
-
-// solutionWorkloadSubject is the principal a packaged solution's workload
-// presents in this environment. A packaged solution has no codefly service to
-// key an identity off, so the environment's own declaration for the solution's
-// deploy name is the only thing that names it; an environment that declares
-// none leaves it empty, and the binding render refuses rather than guessing.
-func solutionWorkloadSubject(env *environments.Environment, name string) string {
-	identity := env.WorkloadIdentity(name)
-	if identity == nil {
-		return ""
-	}
-	return identity.Principal
 }

@@ -1,0 +1,135 @@
+package orchestration
+
+import (
+	"context"
+	"net"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+)
+
+// The loopback and wildcard addresses of each family, as Docker and the
+// socket table spell them.
+const (
+	loopbackIPv4 = "127.0.0.1"
+	loopbackIPv6 = "::1"
+	wildcardIPv4 = "0.0.0.0"
+	wildcardIPv6 = "::"
+)
+
+// listOwnedContainers lists the codefly containers carrying one exact recovery
+// scope. It is a variable so a test can stand in for the Docker engine.
+var listOwnedContainers = func(ctx context.Context, scopeID string) ([]container.Summary, error) {
+	cli, err := dockerrun.NewClient()
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close()
+	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return cli.ContainerList(listCtx, container.ListOptions{Filters: filters.NewArgs(
+		filters.Arg("label", dockerrun.LabelCodeflyOwner+"=true"),
+		filters.Arg("label", dockerrun.LabelCodeflyRecoveryScope+"="+scopeID),
+	)})
+}
+
+// adoptedContainerAddresses answers which loopback addresses the first-Init
+// port guard must not treat as a squatter: the ones published by the
+// container attributed to this service. A Docker store with
+// keep-running leaves its container up so the next run reattaches to it by
+// name, and that container still publishes the service's deterministic port.
+// The agent decides actual reuse during Init; this check establishes ownership.
+//
+// Core supplies exact parent-service attribution for containers with arbitrary
+// agent-owned names. Scope, namespace, lifecycle, the concrete name and the
+// published loopback family are checked separately. Unlabelled containers retain
+// only the existing exact-bare-name compatibility path; suffixes prove nothing.
+// A present conflicting or malformed parent label always refuses the exception.
+func (runner *Runner) adoptedContainerAddresses(ctx context.Context) func(address string) bool {
+	scopeID, namespace, ok := strings.Cut(runner.containerRecoveryIdentity, ":")
+	if !ok || scopeID == "" || runner.instance == nil || runner.instance.Identity == nil ||
+		runner.world == nil || runner.world.Workspace == nil || runner.world.Env == nil {
+		return func(string) bool { return false }
+	}
+	// The workspace and naming scope the agent's Load receives
+	// (RuntimeInstance.Load sends the run's workspace name, not the identity's).
+	identity, workspace := runner.instance.Identity, runner.world.Workspace.Name
+	unique := identity.UniqueWithWorkspace(workspace)
+	if scope := runner.world.Env.NamingScope; scope != "" {
+		unique = identity.UniqueWithWorkspaceAndScope(workspace, scope)
+	}
+	name := dockerrun.ContainerName(unique)
+	var containers []container.Summary
+	listed := false
+	return func(address string) bool {
+		if !listed {
+			listed = true
+			containers, _ = listOwnedContainers(ctx, scopeID)
+		}
+		return slices.ContainsFunc(containers, func(c container.Summary) bool {
+			return adoptableContainer(&c, identity, name, scopeID, namespace) && publishesAddress(&c, address)
+		})
+	}
+}
+
+func adoptableContainer(c *container.Summary, service *resources.ServiceIdentity, name, scopeID, namespace string) bool {
+	labels := c.Labels
+	if labels[dockerrun.LabelCodeflyOwner] != "true" || labels[dockerrun.LabelCodeflyRecoveryScope] != scopeID ||
+		labels[dockerrun.LabelCodeflyEphemeral] == "true" || c.State != "running" {
+		return false
+	}
+	if found := labels[dockerrun.LabelCodeflyRecoveryNamespace]; found != "" && found != namespace {
+		return false
+	}
+	parent, err := dockerrun.ContainerServiceIdentity(labels)
+	if err != nil || service == nil {
+		return false
+	}
+	logicalName := labels[dockerrun.LabelCodeflyName]
+	if logicalName == "" {
+		return false
+	}
+	if parent != nil {
+		if parent.Unique() != service.Unique() {
+			return false
+		}
+	} else if logicalName != name {
+		// Compatibility for the pre-existing exact-name guard only. An absent
+		// label cannot extend ownership to a suffixed container.
+		return false
+	}
+	return slices.ContainsFunc(c.Names, func(dockerName string) bool {
+		return strings.TrimPrefix(dockerName, "/") == logicalName
+	})
+}
+
+// publishesAddress reports whether c publishes the loopback host:port address
+// on that address's own family.
+func publishesAddress(c *container.Summary, address string) bool {
+	host, rawPort, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	port, err := strconv.ParseUint(rawPort, 10, 16)
+	if err != nil {
+		return false
+	}
+	var covering []string
+	switch host {
+	case loopbackIPv4:
+		covering = []string{loopbackIPv4, wildcardIPv4}
+	case loopbackIPv6:
+		covering = []string{loopbackIPv6, wildcardIPv6}
+	default:
+		return false
+	}
+	return slices.ContainsFunc(c.Ports, func(p container.Port) bool {
+		return uint64(p.PublicPort) == port && p.Type == "tcp" && slices.Contains(covering, p.IP)
+	})
+}

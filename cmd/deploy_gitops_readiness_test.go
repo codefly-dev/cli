@@ -140,10 +140,10 @@ func TestReadinessScopedToAnUnknownModule(t *testing.T) {
 	requireCode(t, report, codeModuleNotFound, "fail")
 }
 
-// On a local k3d environment the render supplies workload-identity and
-// module-authority per workload, so no configuration directory has to hold
-// them. Elsewhere their absence warns and leaves the service to decide whether
-// it can run without those values.
+// On a local k3d environment the render supplies module-authority per
+// workload, so no configuration directory has to hold it. Elsewhere its
+// absence warns and leaves the service to decide whether it can run without
+// those values.
 func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -159,7 +159,7 @@ func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) 
 			dir := writeTestWorkspace(t, map[string]string{
 				"workspace.codefly.yaml":                            "name: demo\nlayout: modules\nmodules:\n    - name: backend\nenvironments:\n  - name: local\n" + tc.cluster,
 				"modules/backend/module.codefly.yaml":               testModuleYAML("api"),
-				"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "workload-identity", "module-authority"),
+				"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "module-authority"),
 			})
 			report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 			if report.Status != readinessStatusReady {
@@ -167,7 +167,7 @@ func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) 
 			}
 			requireNoCode(t, report, codeConfigurationMissing)
 			requireNoCode(t, report, codeConfigurationDirMissing)
-			for _, group := range []string{"workload-identity", "module-authority"} {
+			for _, group := range []string{"module-authority"} {
 				found := false
 				for _, check := range report.Checks {
 					if check.Name == "workspace configurations" && check.Status == tc.status &&
@@ -185,4 +185,27 @@ func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) 
 			}
 		})
 	}
+}
+
+// The egress group is generated from the environment's egress declaration on
+// every run and render, so the doctor never asks a configuration directory
+// for it, on any environment.
+func TestReadinessCountsTheEgressGroupAsGenerated(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                            "name: demo\nlayout: modules\nmodules:\n    - name: backend\nenvironments:\n  - name: local\n",
+		"modules/backend/module.codefly.yaml":               testModuleYAML("api"),
+		"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "egress"),
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	if report.Status != readinessStatusReady {
+		t.Fatalf("status = %q, want ready\n%s", report.Status, reportJSON(t, report))
+	}
+	requireNoCode(t, report, codeConfigurationMissing)
+	for _, check := range report.Checks {
+		if check.Name == "workspace configurations" && check.Status == "ok" && strings.Contains(check.Message, `"egress"`) &&
+			strings.Contains(check.Message, "generated from the environment's egress declaration") && strings.Contains(check.Message, "backend/api") {
+			return
+		}
+	}
+	t.Fatalf("missing ok report for egress: %s", reportJSON(t, report))
 }

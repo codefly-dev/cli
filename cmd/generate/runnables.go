@@ -1,7 +1,9 @@
 package generate
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +18,7 @@ import (
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/shared"
@@ -35,19 +38,34 @@ var (
 // published contracts mark as an operation.
 var RunnablesCmd = &cobra.Command{
 	Use:   "runnables [module]",
-	Short: "Derive SERVICE-facility Runnable packages from the methods a module's contracts mark",
+	Short: "Derive SERVICE-facility Runnable packages, and so tools, from a module's served methods and a solution's routes",
 	Long: `Derive a Runnable package for every gRPC method a module's published contracts
-mark with the codefly.runnable.v0.operation option.
+serve behind the authority hop, and every REST route a solution's published
+OpenAPI document marks. Every Runnable is a tool.
 
-A unary, idempotent method an owner service already publishes becomes a
-Runnable by derivation, not by authoring: the method option says which methods
-are operations and under what execution policy, and the message descriptors say
-what the contract is. Nothing is written twice.
+A method that declares its authority policy (authority.hop.v1.policy) is an
+operation with nothing added: a policy requiring only "read" derives a
+read-only tool that is safe to re-run and carries no receipt; anything else
+derives a mutation resolved by its effect receipt through the SDK's generic
+lookup. The codefly.runnable.v0.operation option overrides those defaults, and
+codefly.runnable.v0.exclude keeps a method from every agent. The message
+descriptors say what the contract is, by their proto3 JSON. Nothing is written
+twice.
+
+A solution publishes its routes as one OpenAPI document (Swagger 2.0 or
+OpenAPI 3), and every route marked x-codefly-operation derives the same way:
+solution-runtime-go marks each read the backend serves, so a GET read becomes a
+read-only tool whose query parameters are its input. Its directory is named by
+the route's operationId. No flag names a route. A document that marks no route
+although its routes declare read-only policies — rendered by the runtime's
+InterfaceDocument rather than Server.InterfaceArtifact, or by a runtime from
+before the marker — names each such read as not an operation.
 
 The input is what ` + "`codefly generate contracts`" + ` already wrote — each endpoint's
-served procedures in the API catalog and its serialized FileDescriptorSet.
-Run that first. Only served methods carrying the option are derived; their
-paired Lookup must be served on the same endpoint. No flag names a method.
+served procedures in the API catalog and its serialized FileDescriptorSet, or
+its OpenAPI document.
+Run that first. Only served methods are derived; a declared Lookup must be
+served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 
@@ -55,12 +73,15 @@ For each marked method this writes, under contracts/runnables:
   <service>/<endpoint>/<Method>/operation.json          its execution policy and authority
   index.json                                            one row per operation
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. A module with no marked method writes an empty index, not an error.
+and the same, under <service>/<endpoint>/<operationId>/, for each marked route.
 
-A streaming method, a payload outside the bounded schema profile, or an option
-core refuses is named and skipped, and the command exits non-zero after
-reporting every one of them.
+The tree is fully owned: a method that is no longer an operation loses its
+directory. A module with no operation writes an empty index, not an error.
+
+A method derived by default that cannot be one — a stream, a policy requiring
+nothing, a payload proto3 JSON cannot carry — is listed and left a plain call.
+A method carrying the option that core refuses is named and skipped, and the
+command exits non-zero after reporting every one of them.
 
 --check is the CI drift gate: it regenerates into a temporary directory and
 prints a unified diff of what differs, without writing anything.
@@ -68,6 +89,7 @@ prints a unified diff of what differs, without writing anything.
 Examples:
   codefly generate runnables
   codefly generate runnables documents
+  codefly generate runnables releases          # a solution: its marked routes
   codefly generate runnables --check`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -118,9 +140,7 @@ Examples:
 		if err = writeDerivedTree(ctx, derived.files, output); err != nil {
 			return err
 		}
-		for _, entry := range derived.index.Operations {
-			cli.Info("runnables: %s  %s  %s", entry.Name, entry.Method, entry.Digest)
-		}
+		derived.report()
 		cli.Header(1, "Derived %d runnable operation(s)", len(derived.index.Operations))
 		return nil
 	},
@@ -144,6 +164,11 @@ type derivation struct {
 	// give one release a different digest per machine.
 	workspaceDir string
 	refusals     []string
+	// notices are methods a default derivation left plain calls, and why.
+	notices []string
+	// origins says, per operation name, whether the owner declared it and
+	// what its tool's effect is.
+	origins map[string]derivedOperation
 }
 
 // refusal reports every method that could not be derived. They are collected
@@ -153,13 +178,71 @@ func (d *derivation) refusal() error {
 	if len(d.refusals) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%d method(s) carry the operation option but cannot be derived:\n  %s",
+	return fmt.Errorf("%d method(s) cannot be derived as runnable operations:\n  %s",
 		len(d.refusals), strings.Join(d.refusals, "\n  "))
+}
+
+// derivedOperation is what the report says of one operation: where it came
+// from and what it does.
+type derivedOperation struct {
+	explicit bool
+	// marker is a route its document marks (x-codefly-operation).
+	marker bool
+	effect string
+}
+
+// report says what the run made of the module, so an owner learns which of
+// its methods became tools without reading the tree: each operation with its
+// origin and effect, the methods left plain calls and why, and — when any
+// operation was derived by default — how to keep a method from every agent.
+//
+// One method published on several endpoints (gRPC and Connect) is several
+// operations but one method, so the summary counts and names methods, each
+// once, and a notice is printed once per method.
+func (d *derivation) report() {
+	var defaults, mutations []string
+	for i := range d.index.Operations {
+		entry := &d.index.Operations[i]
+		operation := d.origins[entry.Name]
+		origin := "option"
+		switch {
+		case operation.marker:
+			origin = "marker"
+		case !operation.explicit:
+			origin = "default"
+			defaults = appendOnce(defaults, entry.Method)
+			if operation.effect == runnablev0.ToolExposure_EFFECT_MUTATION.String() {
+				mutations = appendOnce(mutations, entry.Method)
+			}
+		}
+		cli.Info("runnables: %s  %s  %s  %s  %s", entry.Name, entry.Method, origin, strings.TrimPrefix(operation.effect, "EFFECT_"), entry.Digest)
+	}
+	var notices []string
+	for _, notice := range d.notices {
+		notices = appendOnce(notices, notice)
+	}
+	for _, notice := range notices {
+		cli.Info("runnables: not an operation: %s", notice)
+	}
+	if len(defaults) == 0 {
+		return
+	}
+	cli.Info("runnables: %d method(s) derived by default from their authority policy, %d of them mutations: %s",
+		len(defaults), len(mutations), strings.Join(mutations, ", "))
+	cli.Info("runnables: every operation is a tool, offered only to callers whose grants cover its binding; " +
+		"a method no agent may ever call declares `option (codefly.runnable.v0.exclude) = true;`")
 }
 
 // deriveRunnables walks every protobuf contract the module published and
 // derives the operations its methods declare.
 func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module *resources.Module) (*derivation, error) {
+	return deriveRunnablesIn(ctx, workspace.Name, workspace.Dir(), module)
+}
+
+// deriveRunnablesIn is deriveRunnables for a caller that holds the workspace's
+// name and root rather than a loaded workspace — a release, which reads the
+// repository's committed declarations only.
+func deriveRunnablesIn(ctx context.Context, workspaceName, workspaceDir string, module *resources.Module) (*derivation, error) {
 	catalog, err := loadPublishedContracts(module)
 	if err != nil {
 		return nil, err
@@ -172,14 +255,15 @@ func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module
 
 	derived := &derivation{
 		release:      release,
-		workspaceDir: workspace.Dir(),
+		workspaceDir: workspaceDir,
 		index: &runnablespkg.Index{
 			Schema:     runnablespkg.IndexSchema,
-			Workspace:  workspace.Name,
+			Workspace:  workspaceName,
 			Module:     module.Name,
 			Operations: []runnablespkg.IndexEntry{},
 		},
-		files: map[string][]byte{},
+		files:   map[string][]byte{},
+		origins: map[string]derivedOperation{},
 	}
 
 	var endpoints []composition.APIContractEndpoint
@@ -196,7 +280,12 @@ func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module
 	agents := map[string]*basev0.Agent{}
 	for i := range endpoints {
 		endpoint := &endpoints[i]
-		if endpoint.Kind != composition.APIContractKindProtobuf {
+		derive := deriveEndpoint
+		switch endpoint.Kind {
+		case composition.APIContractKindProtobuf:
+		case composition.APIContractKindOpenAPI:
+			derive = deriveOpenAPIEndpoint
+		default:
 			continue
 		}
 		agent, ok := agents[endpoint.Service]
@@ -206,7 +295,7 @@ func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module
 			}
 			agents[endpoint.Service] = agent
 		}
-		if err = deriveEndpoint(module, endpoint, agent, derived); err != nil {
+		if err = derive(module, endpoint, agent, derived); err != nil {
 			return nil, err
 		}
 	}
@@ -284,49 +373,179 @@ func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractE
 // derivation refuses is recorded and the walk continues.
 func deriveMethod(module *resources.Module, endpoint *composition.APIContractEndpoint, owner corerunnable.ServiceOwner, files *protoregistry.Files, fullMethod string, served []string, derived *derivation) error {
 	name := methodName(fullMethod)
-	relativeDir, err := derivedRelativeDir(derived.workspaceDir, module, endpoint, name)
+	location, err := derived.location(module, endpoint, name, name)
 	if err != nil {
 		return err
 	}
-	location := &resources.RunnableLocation{
-		Identity: &resources.RunnableIdentity{
-			Name:      derivedName(endpoint.Service, endpoint.Endpoint, name),
-			Module:    module.Name,
-			Workspace: derived.index.Workspace,
-			Version:   derivedVersion(derived.release, endpoint),
-		},
-		WorkspacePath:       derived.workspaceDir,
-		RelativeToWorkspace: relativeDir,
-	}
-
 	pkg, spec, err := corerunnable.PackageFromMethod(files, location, owner, fullMethod)
-	if err != nil {
-		if errors.Is(err, corerunnable.ErrNotAnOperation) {
-			return nil
-		}
-		derived.refusals = append(derived.refusals, fmt.Sprintf("%s: %v", fullMethod, err))
+	if !derived.admitted(fullMethod, err) {
 		return nil
 	}
 	if spec.LookupMethod != "" && !slices.Contains(served, spec.LookupMethod) {
 		derived.refusals = append(derived.refusals, fmt.Sprintf("%s: endpoint %s/%s does not serve lookup method %s", fullMethod, endpoint.Service, endpoint.Endpoint, spec.LookupMethod))
 		return nil
 	}
+	return derived.record(endpoint, name, pkg, spec, derivedOperation{explicit: spec.Declared, effect: spec.Tool.GetEffect().String()})
+}
 
+// deriveOpenAPIEndpoint derives every route one OpenAPI contract marks with
+// x-codefly-operation — a solution's backend publishes one, marking each read
+// it serves — through the same writers a method goes through, so a route and a
+// method land in one tree, one index and one binding key space. Routes are
+// walked in path then method order, so the index is a function of the document.
+func deriveOpenAPIEndpoint(module *resources.Module, endpoint *composition.APIContractEndpoint, agent *basev0.Agent, derived *derivation) error {
+	contract := filepath.Join(module.Dir(), filepath.FromSlash(endpoint.Path))
+	document, err := os.ReadFile(contract) //nolint:gosec // the path comes from the module's own contract catalog
+	if err != nil {
+		return fmt.Errorf("cannot read the contract of %s/%s: %w", endpoint.Service, endpoint.Endpoint, err)
+	}
+	parsed, err := corerunnable.ParseOpenAPIDocument(document)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", contract, err)
+	}
+	owner := corerunnable.ServiceOwner{Module: module.Name, Service: endpoint.Service, Endpoint: endpoint.Endpoint, Agent: agent}
+	paths := make([]string, 0, len(parsed.Paths))
+	for path := range parsed.Paths {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	marked := 0
+	for _, path := range paths {
+		item := parsed.Paths[path]
+		if item == nil {
+			continue
+		}
+		for _, route := range []struct {
+			method    string
+			operation *corerunnable.OpenAPIOperation
+		}{{"GET", item.Get}, {"POST", item.Post}, {"PUT", item.Put}} {
+			if route.operation == nil || len(route.operation.Marker) == 0 {
+				continue
+			}
+			marked++
+			if err = deriveRoute(module, endpoint, owner, document, route.method, path, route.operation.OperationID, derived); err != nil {
+				return err
+			}
+		}
+	}
+	if marked == 0 {
+		derived.notices = append(derived.notices, unmarkedReads(document, endpoint)...)
+	}
+	return nil
+}
+
+// unmarkedReads names the reads of a document that marks no route at all
+// although its routes declare policies requiring only read: the signature of
+// an artifact rendered by solution-runtime-go's InterfaceDocument rather than
+// Server.InterfaceArtifact, or by a runtime from before the marker existed.
+// Either way every read is silently no tool, so each is named. A document that
+// marks some routes and not others is the owner's choice (Operation.Exclude)
+// and says nothing.
+func unmarkedReads(document []byte, endpoint *composition.APIContractEndpoint) []string {
+	type requirement struct {
+		Actions []string `json:"actions"`
+	}
+	var parsed struct {
+		Paths map[string]map[string]struct {
+			Policy *struct {
+				Requires []requirement `json:"requires"`
+			} `json:"x-codefly-authority-policy"`
+		} `json:"paths"`
+	}
+	if json.Unmarshal(document, &parsed) != nil {
+		return nil
+	}
+	var notices []string
+	for path, methods := range parsed.Paths {
+		for method, operation := range methods {
+			if operation.Policy == nil || len(operation.Policy.Requires) == 0 ||
+				slices.ContainsFunc(operation.Policy.Requires, func(r requirement) bool {
+					return len(r.Actions) != 1 || r.Actions[0] != corerunnable.ReadOnlyScopeAction
+				}) {
+				continue
+			}
+			notices = append(notices, fmt.Sprintf("%s: %s/%s requires only %q but its document marks no route x-codefly-operation; render the artifact with solution-runtime-go's Server.InterfaceArtifact (InterfaceDocument, and a runtime before the marker, mark none)",
+				corerunnable.Route(method, path), endpoint.Service, endpoint.Endpoint, corerunnable.ReadOnlyScopeAction))
+		}
+	}
+	sort.Strings(notices)
+	return notices
+}
+
+// deriveRoute derives one marked route. Its directory is named by the route's
+// operationId — the identity the document publishes it under, as a method's
+// is its name — or, when the document gives none, by the route itself.
+func deriveRoute(module *resources.Module, endpoint *composition.APIContractEndpoint, owner corerunnable.ServiceOwner, document []byte, method, path, operationID string, derived *derivation) error {
+	spelling := corerunnable.Route(method, path)
+	words := strings.FieldsFunc(cmp.Or(operationID, spelling), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	for i, word := range words {
+		words[i] = kebab(word)
+	}
+	name := cmp.Or(operationID, strings.Join(words, "-"))
+	location, err := derived.location(module, endpoint, name, strings.Join(words, "-"))
+	if err != nil {
+		return err
+	}
+	pkg, spec, err := corerunnable.PackageFromOpenAPIOperation(document, location, owner, method, path)
+	if !derived.admitted(spelling, err) {
+		return nil
+	}
+	return derived.record(endpoint, name, pkg, spec, derivedOperation{marker: true, effect: spec.Tool.GetEffect().String()})
+}
+
+// location is where one operation's release lives: its directory, named dir,
+// and its identity, the release name spelled from words.
+func (d *derivation) location(module *resources.Module, endpoint *composition.APIContractEndpoint, dir, words string) (*resources.RunnableLocation, error) {
+	relativeDir, err := derivedRelativeDir(d.workspaceDir, module, endpoint, dir)
+	if err != nil {
+		return nil, err
+	}
+	return &resources.RunnableLocation{
+		Identity: &resources.RunnableIdentity{
+			Name:      derivedName(endpoint.Service, endpoint.Endpoint, words),
+			Module:    module.Name,
+			Workspace: d.index.Workspace,
+			Version:   derivedVersion(d.release, endpoint),
+		},
+		WorkspacePath:       d.workspaceDir,
+		RelativeToWorkspace: relativeDir,
+	}, nil
+}
+
+// admitted sorts one derivation's answer: no operation is an answer, an
+// operation the default derivation cannot make is a notice, anything else core
+// refuses is a refusal, and only a derived operation is admitted.
+func (d *derivation) admitted(subject string, err error) bool {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, corerunnable.ErrNotAnOperation):
+	case errors.Is(err, corerunnable.ErrNotDerivable):
+		d.notices = append(d.notices, fmt.Sprintf("%s: %v", subject, err))
+	default:
+		d.refusals = append(d.refusals, fmt.Sprintf("%s: %v", subject, err))
+	}
+	return false
+}
+
+// record writes one derived operation into the tree and the index.
+func (d *derivation) record(endpoint *composition.APIContractEndpoint, name string, pkg *basev0.RunnablePackage, spec *corerunnable.OperationSpec, origin derivedOperation) error {
+	operation := pkg.GetServiceOperations()[0]
 	packageBytes, err := runnablespkg.CanonicalJSON(pkg)
 	if err != nil {
-		return fmt.Errorf("%s: cannot encode the derived package: %w", fullMethod, err)
+		return fmt.Errorf("%s: cannot encode the derived package: %w", operation.GetOperation(), err)
 	}
 	operationBytes, err := marshalIndented(newOperationDocument(spec))
 	if err != nil {
-		return fmt.Errorf("%s: cannot encode the derived operation: %w", fullMethod, err)
+		return fmt.Errorf("%s: cannot encode the derived operation: %w", operation.GetOperation(), err)
 	}
 
 	dir := filepath.Join(endpoint.Service, endpoint.Endpoint, name)
-	derived.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.PackageFileName))] = append(packageBytes, '\n')
-	derived.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.OperationFileName))] = operationBytes
+	d.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.PackageFileName))] = append(packageBytes, '\n')
+	d.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.OperationFileName))] = operationBytes
 
-	operation := pkg.GetServiceOperations()[0]
-	derived.index.Operations = append(derived.index.Operations, runnablespkg.IndexEntry{
+	d.origins[pkg.GetIdentity().GetName()] = origin
+	d.index.Operations = append(d.index.Operations, runnablespkg.IndexEntry{
 		Name:          pkg.GetIdentity().GetName(),
 		Version:       pkg.GetIdentity().GetVersion(),
 		Digest:        pkg.GetDigest(),
@@ -416,13 +635,31 @@ func derivedVersion(release string, endpoint *composition.APIContractEndpoint) s
 	return "0.0.0-contract-" + digest
 }
 
-// derivedName names the release a method derives. The endpoint is part of it
+// derivedName names the release an operation derives, its words spelled as a
+// resource name is (kebab): a method's name, or a route's words, which are
+// already. The endpoint is part of it
 // because one proto service may be published on both a grpc and a connect
 // endpoint: those are two operations reached two ways, and a name that dropped
 // the endpoint would give them one identity and two digests.
-func derivedName(service, endpoint, method string) string {
-	return strings.Join([]string{service, endpoint, kebab(method)}, "-")
+//
+// A release name is at most maxDerivedName characters. A longer one is
+// shortened deterministically — a stable prefix and a short digest of the
+// whole name — so a long method name never fails generation and two long
+// names never collapse into one.
+func derivedName(service, endpoint, words string) string {
+	return corerunnable.BoundedName(strings.Join([]string{service, endpoint, kebab(words)}, "-"), maxDerivedName, "-")
 }
+
+// appendOnce appends value unless the list already holds it.
+func appendOnce(list []string, value string) []string {
+	if slices.Contains(list, value) {
+		return list
+	}
+	return append(list, value)
+}
+
+// maxDerivedName is the longest release name a RunnableIdentity admits.
+const maxDerivedName = 50
 
 // kebab spells a method name the way a resource name is spelled. An acronym
 // stays one word: ApplyHTTPText is apply-http-text, not apply-h-t-t-p-text.

@@ -33,6 +33,35 @@ func TestProtoGenerationPathArgs(t *testing.T) {
 	}
 }
 
+func TestProtoGenerationArgsPreserveBufInputSelection(t *testing.T) {
+	previous := protoPaths
+	t.Cleanup(func() { protoPaths = previous })
+	for _, tc := range []struct {
+		name, template string
+		paths, want    []string
+	}{
+		{"v1 default", "version: v1\n", nil, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml"}},
+		{"v2 default", "version: v2\n", nil, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml"}},
+		{"empty inputs", "version: v2\ninputs: []\n", nil, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml"}},
+		{"declared selection", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n  - directory: ../other\n", nil, []string{"generate", "--template", "/staging/template.yaml"}},
+		// One declared input keeps its input-level options beside a caller's
+		// --path: nothing else can be targeted by it.
+		{"caller override", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n", []string{"chosen.proto"}, []string{"generate", "--template", "/staging/template.yaml", "--path", "/workspace/proto/chosen.proto"}},
+		{"caller selection keeps a single input's options", "version: v2\ninputs:\n  - directory: .\n    types: [acme.v1.Api]\n    exclude_paths: [internal]\n", []string{"api.proto"}, []string{"generate", "--template", "/staging/template.yaml", "--path", "/workspace/proto/api.proto"}},
+		// buf applies --path to every input: a second input that does not hold
+		// the caller's file would target nothing and fail the run.
+		{"caller selection over two inputs", "version: v2\ninputs:\n  - directory: .\n    paths: [api.proto]\n  - directory: ../deps\n", []string{"api.proto"}, []string{"generate", "/workspace/proto", "--template", "/staging/template.yaml", "--path", "/workspace/proto/api.proto"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			protoPaths = tc.paths
+			got, err := protoGenerationArgs("/workspace/proto", "/staging/template.yaml", []byte(tc.template))
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Buf invocation = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveProtoTemplate(t *testing.T) {
 	root := t.TempDir()
 	input, output := filepath.Join(root, "proto"), filepath.Join(root, "generated")

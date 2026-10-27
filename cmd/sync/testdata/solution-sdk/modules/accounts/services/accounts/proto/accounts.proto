@@ -1,0 +1,11 @@
+syntax = "proto3";
+package fixture.accounts.v1;
+
+// GetRequest and GetResponse share their names with the records contract's,
+// so one TypeScript barrel re-exporting both contracts' bindings collides.
+message GetRequest { string id = 1; }
+message GetResponse { string name = 1; }
+
+service AccountsService {
+  rpc Get(GetRequest) returns (GetResponse);
+}

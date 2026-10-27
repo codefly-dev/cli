@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "cli": "source",
-  "core": "v0.19.5",
+  "core": "v0.19.8",
   "rows": [
     {
       "id": "linux-amd64-source",
@@ -57,7 +57,7 @@
     },
     {
       "id": "linux-amd64-docker-generate",
-      "status": "not-yet-qualified",
+      "status": "qualified",
       "summary": "Contract and client generation through the real proto companion image, including the solution SDK facade compiled from a buf-built descriptor set.",
       "os": "linux",
       "arch": "amd64",
@@ -67,13 +67,14 @@
         "buf"
       ],
       "gate_env": "CODEFLY_GENERATE_QUALIFY",
-      "blockers": [
-        "No CI job provisions the proto companion image, so no run has ever proved this row."
-      ],
       "gates": [
         "cmd/generate",
         "cmd/sync"
-      ]
+      ],
+      "ci": [
+        "generate-qualification.yml#generate"
+      ],
+      "build_tag": "proto_companion_required"
     },
     {
       "id": "linux-amd64-docker-mcp-run",

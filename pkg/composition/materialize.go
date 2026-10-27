@@ -8,10 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/modulecache"
 
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -187,7 +190,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), roots.owned...) {
 			continue
 		}
-		mode := ResolutionModeFor(directive, receipt, declared[ref.Name])
+		mode := ResolutionModeFor(ref, directive, receipt, declared[ref.Name])
 		if receipt != nil && receipt.Mode != mode {
 			// The user changed how this module is materialized — an explicit
 			// `pinned: true` revoking a git opt-out, or a `git: true` opting out
@@ -463,10 +466,7 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), roots.owned...) {
 			continue
 		}
-		if directive == nil || directive.Path == "" || directive.Path != receipt.ResolvedPath() {
-			return false, nil
-		}
-		if !receipt.Answers(ref, ResolutionModeFor(directive, receipt, declared[ref.Name])) {
+		if !moduleReceiptAnswers(ref, directive, receipt, ResolutionModeFor(ref, directive, receipt, declared[ref.Name])) {
 			return false, nil
 		}
 		// The receipt answers the request, but only where the materialization it
@@ -490,22 +490,13 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 		if directive == nil {
 			continue
 		}
-		moduleMode := ResolutionModeFor(directive, receipts[ref.Name], declared[ref.Name])
+		moduleMode := ResolutionModeFor(ref, directive, receipts[ref.Name], declared[ref.Name])
 		for service, serviceDirective := range directive.Services {
 			receipt := receipts[serviceReceiptKey(ref.Name, service)]
 			if !serviceManaged(serviceDirective, receipt.ResolvedPath(), roots.owned...) {
 				continue
 			}
-			// A directive still naming a version has not been materialized into a
-			// path yet, whatever a receipt records.
-			if serviceDirective.Version != "" || serviceDirective.Path != receipt.ResolvedPath() {
-				return false, nil
-			}
-			// The request itself lives only on the receipt, so there is no second
-			// copy to compare it against. What can still have moved underneath it
-			// is the module identity the package was pulled from, and the mode it
-			// was pulled in.
-			if receipt.Source != ref.Source || receipt.Module != ref.Module || receipt.Mode != moduleMode {
+			if !serviceReceiptAnswers(ref, serviceDirective, receipt, moduleMode) {
 				return false, nil
 			}
 			// Same gate as the module loop above: a path under a root that is no
@@ -523,6 +514,31 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 // highest published version rather than naming one. An absent version means the
 // same thing.
 const latestVersion = "latest"
+
+// commitPin is the one spelling of a commit pin: the full 40-hex object name,
+// lowercase, as `git rev-parse` prints it. An abbreviated SHA is refused
+// because it is not immutable — it can become ambiguous as the repository
+// grows — and a branch name is refused because it moves; both keep today's
+// "no such tag" error.
+var commitPin = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// CommitPin reports the commit a `version:` pins, when it pins one: exactly
+// 40 lowercase hex characters. Such a pin is for validation — a cell composes
+// modules at commits, and the tag is cut once the cell is green — so a release
+// still needs a tag.
+func CommitPin(version string) (string, bool) {
+	version = strings.TrimSpace(version)
+	if !commitPin.MatchString(version) {
+		return "", false
+	}
+	return version, true
+}
+
+// IsCommitPin reports whether version is a commit pin (see CommitPin).
+func IsCommitPin(version string) bool {
+	_, ok := CommitPin(version)
+	return ok
+}
 
 func requestedVersionLabel(version string) string {
 	if strings.TrimSpace(version) == "" {
@@ -589,16 +605,25 @@ type materialization struct {
 // different files.
 func materializeModule(ctx context.Context, workspaceDir string, ref *resources.ModuleReference, cacheRoot string, mode ResolutionMode) (*materialization, error) {
 	if mode.Unverified() {
-		if mode == ResolutionModeDeclaredGit {
+		switch mode {
+		case ResolutionModeCommit:
+			cli.Warning("commit pin for %s: cloned at %s, unverified — a commit pin is for validation; release from a tag", ref.Name, ref.Version)
+		case ResolutionModeDeclaredGit:
 			cli.Warning("unverified git clone for %s (declared in %s)", ref.Name, resources.WorkspaceConfigurationName)
-		} else {
+		default:
 			cli.Warning("unverified git clone for %s", ref.Name)
 		}
 		dir, tag, err := ensurePinnedArtifact(ctx, ref, cacheRoot)
 		if err != nil {
 			return nil, err
 		}
-		return &materialization{dir: dir, version: tag}, nil
+		resolved := &materialization{dir: dir, version: tag}
+		if commit, ok := CommitPin(tag); ok {
+			// The commit is the one fact a commit pin establishes, so the receipt
+			// records it where a verified package records its peeled commit.
+			resolved.commit = commit
+		}
+		return resolved, nil
 	}
 	resolved, err := ResolvePinnedModule(ctx, workspaceDir, ref)
 	if err != nil {
@@ -656,22 +681,10 @@ func (roots moduleCacheRoots) holds(path string) bool {
 	return underAnyDir([]string{roots.clone, roots.verified}, path)
 }
 
-// verifiedPinnedModuleCacheRoot is the content-addressed module cache the core
-// Materializer writes into. By default it is workspace-scoped — the digest tree
-// NewMaterializer(workspaceDir) picks — while the git-clone cache root is
-// process-global (pinnedModuleCacheRoot); both are recognized when deciding
-// whether an overlay path is CLI-managed. A configured ModuleCacheEnv moves it
-// beside the clones, under the one reserved subdirectory, so a workspace
-// repository holds no module bytes at all.
+// verifiedPinnedModuleCacheRoot is the verified-package cache root
+// (modulecache.VerifiedRoot).
 func verifiedPinnedModuleCacheRoot(workspaceDir string) (string, error) {
-	configured, err := configuredModuleCacheRoot()
-	if err != nil {
-		return "", err
-	}
-	if configured != "" {
-		return filepath.Join(configured, verifiedPackageCacheDirName), nil
-	}
-	return filepath.Join(workspaceDir, ".codefly", "cache", "modules"), nil
+	return modulecache.VerifiedRoot(workspaceDir)
 }
 
 // pruneStalePinnedEntries drops auto-managed cache entries whose module is no
@@ -764,12 +777,14 @@ func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleRe
 	return directive.Path == recordedPath || underAnyDir(cacheRoots, directive.Path)
 }
 
-// ensurePinnedArtifact resolves ref's version to an immutable tag, pulls the
-// artifact into the version-keyed cache if it is not already there, and returns
-// the module directory (the checkout, joined with the optional module subpath)
-// along with the tag it resolved to. A concrete version consults only the cache
-// — no network — when the checkout is already present, so a cached solution
-// boots offline.
+// ensurePinnedArtifact resolves ref's version to an immutable tag (or the
+// commit a commit pin names), pulls the artifact into the version-keyed cache
+// if it is not already there, and returns the module directory (the checkout,
+// joined with the optional module subpath) along with the tag or commit it
+// resolved to. A concrete version consults only the cache — no network — when
+// the checkout is already present, so a cached solution boots offline. The
+// cache key is `<source>@<version>` either way: a commit lands at
+// `<source>/<sha>/` beside the `<source>/<tag>/` checkouts.
 func ensurePinnedArtifact(ctx context.Context, ref *resources.ModuleReference, cacheRoot string) (string, string, error) {
 	url := PinnedSourceURL(ref.Source)
 	sourceCache := filepath.Join(cacheRoot, filepath.FromSlash(ref.Source))
@@ -797,6 +812,11 @@ func ensurePinnedArtifact(ctx context.Context, ref *resources.ModuleReference, c
 // (same filesystem, so the promotion is an atomic rename), verifies the ref is an
 // immutable tag rather than a moved branch, then promotes it to checkout. A
 // concurrent run that populated checkout first wins; this one discards its clone.
+//
+// When tag is a commit pin the clone is of that commit (cloneAtCommit) and the
+// immutability check holds by construction: a commit's name is the hash of its
+// content, so there is nothing a remote can move it to. What is verified
+// instead is that the checkout's HEAD is the pinned commit.
 func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout string, ref *resources.ModuleReference) error {
 	staging := filepath.Join(cacheRoot, stagingCacheDirName)
 	if err := os.MkdirAll(staging, 0o755); err != nil {
@@ -811,11 +831,17 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 	defer os.RemoveAll(tmp)
 
 	cli.Info("pulling pinned module <%s> from %s@%s", ref.Name, ref.Source, tag)
-	if out, err := gitCommand(ctx, "clone", "--quiet", "--depth", "1", "--branch", tag, url, tmp).CombinedOutput(); err != nil {
-		return fmt.Errorf("clone %s@%s: %w: %s", url, tag, err, strings.TrimSpace(string(out)))
-	}
-	if err := gitCommand(ctx, "-C", tmp, "show-ref", "--verify", "--quiet", "refs/tags/"+tag).Run(); err != nil {
-		return fmt.Errorf("%s@%s is not an immutable tag", ref.Source, tag)
+	if commit, ok := CommitPin(tag); ok {
+		if err := cloneAtCommit(ctx, url, commit, tmp); err != nil {
+			return fmt.Errorf("clone %s@%s: %w", url, commit, err)
+		}
+	} else {
+		if out, err := gitCommand(ctx, "clone", "--quiet", "--depth", "1", "--branch", tag, url, tmp).CombinedOutput(); err != nil {
+			return fmt.Errorf("clone %s@%s: %w: %s", url, tag, err, strings.TrimSpace(string(out)))
+		}
+		if err := gitCommand(ctx, "-C", tmp, "show-ref", "--verify", "--quiet", "refs/tags/"+tag).Run(); err != nil {
+			return fmt.Errorf("%s@%s is not an immutable tag", ref.Source, tag)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(checkout), 0o755); err != nil {
 		return fmt.Errorf("create cache directory: %w", err)
@@ -829,7 +855,43 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 	return nil
 }
 
-// resolvePinnedTag maps a committed version constraint to a concrete tag. An
+// cloneAtCommit populates dir with a checkout of url at exactly commit. It
+// first asks for that one object shallowly — a `fetch --depth 1 origin <sha>`,
+// which GitHub and any server with uploadpack.allowReachableSHA1InWant honour —
+// and, when the server refuses a request for an unadvertised object, fetches
+// every branch and tag and checks the commit out of that. Either way the
+// result is judged by one fact: HEAD is the pinned commit.
+func cloneAtCommit(ctx context.Context, url, commit, dir string) error {
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"remote", "add", "origin", url},
+	} {
+		if out, err := gitCommand(ctx, append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+		}
+	}
+	if out, err := gitCommand(ctx, "-C", dir, "fetch", "--quiet", "--depth", "1", "origin", commit).CombinedOutput(); err != nil {
+		// The refusal is the server's policy, not a missing commit; a commit the
+		// remote does not hold fails the full fetch's checkout below by name.
+		if full, fullErr := gitCommand(ctx, "-C", dir, "fetch", "--quiet", "--tags", "origin").CombinedOutput(); fullErr != nil {
+			return fmt.Errorf("fetch commit %s: %w: %s; full fetch: %w: %s", commit, err, strings.TrimSpace(string(out)), fullErr, strings.TrimSpace(string(full)))
+		}
+	}
+	if out, err := gitCommand(ctx, "-C", dir, "checkout", "--quiet", "--detach", commit).CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout commit %s: %w: %s", commit, err, strings.TrimSpace(string(out)))
+	}
+	head, err := gitCommand(ctx, "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return fmt.Errorf("read HEAD: %w", err)
+	}
+	if got := strings.TrimSpace(string(head)); got != commit {
+		return fmt.Errorf("checked out %s, want commit %s", got, commit)
+	}
+	return nil
+}
+
+// resolvePinnedTag maps a committed version constraint to a concrete tag. A
+// commit pin is its own answer — no "v" prefix, no lookup. An
 // explicit version is used as its tag (gaining the conventional "v" prefix when it
 // is a bare semver) and never touches the network. A "latest" (or empty)
 // constraint asks the remote for the highest published tag; a semver range (e.g.
@@ -842,6 +904,9 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 // differs from `latest`, which selects a pre-release when no stable tag exists.
 func resolvePinnedTag(ctx context.Context, url, version, sourceCache string) (string, error) {
 	version = strings.TrimSpace(version)
+	if commit, ok := CommitPin(version); ok {
+		return commit, nil
+	}
 	if version == "" || version == latestVersion {
 		return highestTag(ctx, url, sourceCache, nil, version)
 	}
@@ -1043,20 +1108,12 @@ func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// ModuleCacheEnv relocates the module cache — both the git-clone cache and the
-// verified-package cache — to a directory the developer chooses, so the modules
-// a workspace composes can be browsed (and deleted) where they expect them
-// rather than inside CODEFLY_HOME and inside the workspace respectively. It
-// must name an absolute path; a leading "~" is expanded.
-const ModuleCacheEnv = "CODEFLY_MODULE_CACHE"
+// ModuleCacheEnv relocates the module cache (modulecache.Env).
+const ModuleCacheEnv = modulecache.Env
 
-// verifiedPackageCacheDirName is the subdirectory of a configured cache root
-// that holds verified module packages. Those are content-addressed by digest
-// (that addressing is what makes a cache hit checkable against what was
-// verified), so they cannot share the browsable <owner>/<repo>/<version> tree
-// the git clones occupy; keeping them under one reserved name is what lets both
-// live under the single root the developer configured.
-const verifiedPackageCacheDirName = ".packages"
+// verifiedPackageCacheDirName is the verified packages' subdirectory of a
+// configured cache root (modulecache.VerifiedDirName).
+const verifiedPackageCacheDirName = modulecache.VerifiedDirName
 
 // stagingCacheDirName is the subdirectory of a cache root that holds in-flight
 // clones. They live under one reserved name rather than as `.pull-*` siblings of
@@ -1066,53 +1123,14 @@ const verifiedPackageCacheDirName = ".packages"
 // the checkouts it is promoted into, which being under the same root guarantees.
 const stagingCacheDirName = ".staging"
 
-// configuredModuleCacheRoot returns the root named by ModuleCacheEnv, or "" when
-// it is unset. A value that is not usable as a root is an error rather than an
-// ignored setting: silently falling back would put the modules somewhere other
-// than where the developer said, and they would look for them where they asked.
-func configuredModuleCacheRoot() (string, error) {
-	raw := strings.TrimSpace(os.Getenv(ModuleCacheEnv))
-	if raw == "" {
-		return "", nil
-	}
-	expanded := raw
-	if raw == "~" || strings.HasPrefix(raw, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("%s is %q but the home directory cannot be resolved: %w", ModuleCacheEnv, raw, err)
-		}
-		expanded = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(raw, "~"), "/"))
-	}
-	if !filepath.IsAbs(expanded) {
-		return "", fmt.Errorf("%s must be an absolute path (or start with ~), got %q", ModuleCacheEnv, raw)
-	}
-	return filepath.Clean(expanded), nil
-}
+// configuredModuleCacheRoot is modulecache.Configured.
+func configuredModuleCacheRoot() (string, error) { return modulecache.Configured() }
 
-// pinnedModuleCacheRoot is the root of the git-clone cache: the configured root
-// when there is one, otherwise the process-global default. Under either, a
-// module lands at <root>/<owner>/<repo>/<tag>/ plus its optional module
-// subpath, which is the layout a developer pointing ModuleCacheEnv at their own
-// vendor directory browses.
-func pinnedModuleCacheRoot() (string, error) {
-	configured, err := configuredModuleCacheRoot()
-	if err != nil {
-		return "", err
-	}
-	if configured != "" {
-		return configured, nil
-	}
-	return filepath.Join(resources.CodeflyHomeDir(), "modules"), nil
-}
+// pinnedModuleCacheRoot is the git-clone cache root (modulecache.CloneRoot).
+func pinnedModuleCacheRoot() (string, error) { return modulecache.CloneRoot() }
 
 // underDir reports whether path is dir itself or nested inside it.
-func underDir(dir, path string) bool {
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
-}
+func underDir(dir, path string) bool { return modulecache.Under(dir, path) }
 
 // underAnyDir reports whether path is under any of dirs (empty entries are
 // skipped). Used to recognize both the git-clone fallback's cache root and the
@@ -1217,7 +1235,7 @@ func materializeServiceOverrides(ctx context.Context, workspaceDir string, modul
 		if directive == nil {
 			continue
 		}
-		moduleMode := ResolutionModeFor(directive, receipts[ref.Name], declared[ref.Name])
+		moduleMode := ResolutionModeFor(ref, directive, receipts[ref.Name], declared[ref.Name])
 		for _, service := range sortedKeys(directive.Services) {
 			serviceDirective := directive.Services[service]
 			key := serviceReceiptKey(ref.Name, service)

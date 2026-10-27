@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/composition"
+	"github.com/codefly-dev/core/resources"
 )
 
 // contractCatalogPath is the module-relative location of the catalog of API
@@ -74,18 +77,46 @@ func (catalog *contractCatalogDocument) exposedContracts(moduleName, serviceName
 }
 
 // modulePackage loads a module's package manifest (module.package.codefly.yaml)
-// and returns its identity, or nil when the module has no directory (a bare
-// in-memory resources.Module in a test) or carries no package manifest.
-func modulePackage(moduleDir string) (*InventoryPackage, error) {
+// and returns its identity and the release artifacts it declares, or nil when
+// the module has no directory (a bare in-memory resources.Module in a test)
+// or carries no package manifest.
+func modulePackage(moduleDir string) (*InventoryPackage, []composition.ReleaseArtifact, error) {
 	if moduleDir == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	manifest, err := composition.LoadPackageManifest(moduleDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load module package manifest: %w", err)
+		return nil, nil, fmt.Errorf("load module package manifest: %w", err)
 	}
-	return &InventoryPackage{ID: manifest.ID, Version: manifest.Version}, nil
+	return &InventoryPackage{ID: manifest.ID, Version: manifest.Version}, manifest.ReleaseArtifacts, nil
+}
+
+// compositionPin is how workspace composes the module named name, as the
+// inventory records it: nil for a module composed from the workspace's own
+// tree (no source, nothing pinned); otherwise the source and the version the
+// composition asks for, spelled `tag` unless that version is a full commit
+// SHA, in which case the pin is `commit` and carries it. The render records
+// the pin and judges nothing: whether a commit pin may be delivered is the
+// cell's call, by its class.
+func compositionPin(workspace *resources.Workspace, name string) *InventoryPin {
+	if workspace == nil {
+		return nil
+	}
+	for _, ref := range workspace.Modules {
+		if ref.Name != name || ref.Source == "" {
+			continue
+		}
+		pin := &InventoryPin{Source: ref.Source, Version: strings.TrimSpace(ref.Version), Mode: PinModeTag}
+		if pin.Version == "" {
+			pin.Version = "latest"
+		}
+		if commit, ok := clicomposition.CommitPin(ref.Version); ok {
+			pin.Mode, pin.Commit = PinModeCommit, commit
+		}
+		return pin
+	}
+	return nil
 }

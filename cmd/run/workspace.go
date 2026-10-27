@@ -43,8 +43,8 @@ var WorkspaceCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		pinsAlreadyResolved = true
-		defer func() { pinsAlreadyResolved = false }()
+		pinsAlreadyResolved, workspaceRun = true, true
+		defer func() { pinsAlreadyResolved, workspaceRun = false, false }()
 		return runServiceCommand(cmd, roots)
 	},
 }
@@ -65,6 +65,11 @@ var WorkspaceCmd = &cobra.Command{
 // The host module is the one exception: its ingress services are the roots,
 // and the rest of it is reached through their dependencies, as a person would
 // reach it.
+//
+// A service the environment withdraws (exclude-services) is no root: the
+// dependency graph is built without it, so a root naming it would be a sort
+// target the graph does not hold. A module the environment withdraws whole
+// contributes nothing, its service-entry included — it is not composed there.
 func CompositionRoots(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
 	env, err := orchestration.SelectEnvironment(workspace, environmentName)
 	if err != nil {
@@ -114,10 +119,13 @@ func CompositionRoots(ctx context.Context, workspace *resources.Workspace) ([]st
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", ref.Name, err)
 		}
-		if mod.ServiceEntry != "" {
+		if env.WithdrawsModule(mod) {
+			continue
+		}
+		if mod.ServiceEntry != "" && !env.Excludes(mod.Name, mod.ServiceEntry) {
 			add(resources.ServiceUnique(mod.Name, mod.ServiceEntry))
 		}
-		for _, service := range mod.ServiceReferences {
+		for _, service := range env.ComposedServices(mod) {
 			add(resources.ServiceUnique(mod.Name, service.Name))
 		}
 	}
@@ -139,6 +147,9 @@ func init() {
 	WorkspaceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	WorkspaceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free)")
 	WorkspaceCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
+	WorkspaceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
+	WorkspaceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
+	WorkspaceCmd.Flags().StringVar(&outputEnvService, "output-env-service", "", "Service whose runtime environment to export (module/service; defaults to the first composition root)")
 	WorkspaceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	WorkspaceCmd.Flags().BoolVar(&startDocker, "start-docker", true, "Auto-start a local Docker engine if a service needs Docker and it isn't running")
 }

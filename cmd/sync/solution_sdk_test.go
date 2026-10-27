@@ -224,11 +224,11 @@ func loadFixtureWorkspace(t *testing.T, wsDir string) *resources.Workspace {
 
 func resetSolutionSDKFlags(t *testing.T) {
 	t.Helper()
-	prevLangs, prevCheck, prevApply, prevSkip := solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, skipGenerateForTests
-	solutionSDKLanguages, solutionSDKCheck, solutionSDKApply = nil, false, false
+	prevLangs, prevCheck, prevApply, prevForce, prevSkip := solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce, skipGenerateForTests
+	solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce = nil, false, false, false
 	skipGenerateForTests = true
 	t.Cleanup(func() {
-		solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, skipGenerateForTests = prevLangs, prevCheck, prevApply, prevSkip
+		solutionSDKLanguages, solutionSDKCheck, solutionSDKApply, solutionSDKForce, skipGenerateForTests = prevLangs, prevCheck, prevApply, prevForce, prevSkip
 	})
 }
 
@@ -319,6 +319,10 @@ func TestSyncSolutionSDKRejectsUnknownService(t *testing.T) {
 	}
 }
 
+// TestSyncSolutionSDKApplyDependencies: the only consume the entry service
+// calls directly is one of the solution's own module, and --apply-dependencies
+// adds exactly that edge, node-preserving. A consume of another module (here
+// host's accounts) is called through the authority hop and gets none.
 func TestSyncSolutionSDKApplyDependencies(t *testing.T) {
 	root := t.TempDir()
 	hostDir := filepath.Join(root, "host")
@@ -348,28 +352,48 @@ func TestSyncSolutionSDKApplyDependencies(t *testing.T) {
 		t.Fatalf("runSyncSolutionSDK: %v", err)
 	}
 
-	servicePath := filepath.Join(backendDir, "services", "api", resources.ServiceConfigurationName)
-	data, err := os.ReadFile(servicePath)
+	serviceDir := filepath.Join(backendDir, "services", "api")
+	service, err := resources.LoadServiceFromDir(ctx, serviceDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(data)
-	if !strings.Contains(content, "# hand-written note: do not remove") {
-		t.Fatalf("hand-written comment was dropped:\n%s", content)
+	if len(service.ServiceDependencies) != 0 {
+		t.Fatalf("--apply-dependencies added a mesh edge past the hop to another module: %+v", service.ServiceDependencies)
 	}
 
-	service, err := resources.LoadServiceFromDir(ctx, filepath.Join(backendDir, "services", "api"))
+	ws := loadFixtureWorkspace(t, wsDir)
+	solution, err := ws.LoadModuleFromName(ctx, "backend")
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, dep := range service.ServiceDependencies {
-		if dep.Name == "accounts" && dep.Module == "host" {
-			found = true
-		}
+	consumes := []manifest.APIDeclaration{
+		{ID: "accounts", Protocol: standards.CONNECT, Module: "host", Service: "accounts", Endpoint: "connect"},
+		{ID: "worker", Protocol: standards.GRPC, Module: "backend", Service: "worker", Endpoint: "grpc"},
 	}
-	if !found {
-		t.Fatalf("service-dependencies missing accounts/host: %+v", service.ServiceDependencies)
+	missing, err := missingServiceDependencies(solution, service, consumes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0] != (missingDependency{Module: "backend", Service: "worker", Endpoint: "grpc"}) {
+		t.Fatalf("missing = %+v, want only the solution's own backend/worker", missing)
+	}
+	if err := applyServiceDependencies(service, missing); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(serviceDir, resources.ServiceConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "# hand-written note: do not remove") {
+		t.Fatalf("hand-written comment was dropped:\n%s", data)
+	}
+	service, err = resources.LoadServiceFromDir(ctx, serviceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(service.ServiceDependencies) != 1 || service.ServiceDependencies[0].Name != "worker" || service.ServiceDependencies[0].Module != "backend" {
+		t.Fatalf("service-dependencies = %+v, want backend/worker alone", service.ServiceDependencies)
 	}
 }
 

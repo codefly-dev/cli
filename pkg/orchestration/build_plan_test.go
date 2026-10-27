@@ -94,7 +94,7 @@ func TestBuildxArgsSinglePlatformPushOnCallerBuilder(t *testing.T) {
 }
 
 func TestBuildxCreateArgsUsesHostNetworkContainerDriver(t *testing.T) {
-	args := buildxCreateArgs()
+	args := buildxCreateArgs("codefly", "")
 	joined := strings.Join(args, " ")
 
 	require.Equal(t, []string{"buildx", "create"}, args[:2])
@@ -104,6 +104,15 @@ func TestBuildxCreateArgsUsesHostNetworkContainerDriver(t *testing.T) {
 	// tailnet split-DNS private registry instead of stalling on DNS.
 	require.Contains(t, joined, "--driver-opt network=host")
 	require.Contains(t, joined, "--bootstrap")
+	// No mirrors, no buildkitd configuration at all: the builder keeps the
+	// host's registry configuration.
+	require.NotContains(t, joined, "--config")
+
+	// A declared mirror is carried as the builder's buildkitd configuration,
+	// and the builder it configures is named for it.
+	mirrored := buildxCreateArgs("codefly-abc123", "/tmp/buildkitd.toml")
+	require.Contains(t, strings.Join(mirrored, " "), "--name codefly-abc123 ")
+	require.Contains(t, strings.Join(mirrored, " "), "--config /tmp/buildkitd.toml")
 }
 
 func TestBuilderHasHostNetwork(t *testing.T) {
@@ -402,4 +411,18 @@ func TestRecordBuildRecipeOfMaterializedServiceArchivesUnderWorkspaceScratch(t *
 	require.FileExists(t, filepath.Join(archive, buildRecipeManifest))
 	require.NoDirExists(t, filepath.Join(serviceDir, buildRecipeArchiveDir))
 	require.Equal(t, before, treeDigest(t, serviceDir), "recording the archive must not write into a materialized service tree")
+}
+
+func TestReleasedVersionTagIsAnExactPublishedVersion(t *testing.T) {
+	for image, released := range map[string]bool{
+		"us-east1-docker.pkg.dev/p/r/platform-obin/documents/store:0.1.12": true,
+		"registry.local:5000/team/app:v1.2.3":                              true,
+		"us-east1-docker.pkg.dev/p/r/platform-obin/saas/accounts:0.0.0":    false,
+		"registry.local:5000/team/app":                                     false,
+		"example.test/app:latest":                                          false,
+		"example.test/app:1.2.3-rc.1":                                      false,
+		"example.test/app@sha256:" + strings.Repeat("a", 64):               false,
+	} {
+		require.Equal(t, released, releasedVersionTag(image), image)
+	}
 }

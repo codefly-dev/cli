@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -252,11 +253,17 @@ func ErrorChain(err error, format string, args ...any) {
 
 // printErrorChain renders a wrapped error so the user sees what blew up.
 //
-// In normal mode we show ONLY the root cause — the innermost layer is what
-// the user can actually act on ("docker daemon not reachable"), and the
+// In normal mode we show ONLY the root cause — the innermost layer the user
+// can actually act on ("docker daemon not reachable"), and the
 // "↳ full logs … (re-run with --debug for more)" hint points anyone who
 // needs the wrap chain at it. Dumping every `errors.Wrap` layer to the
 // terminal on each failure is noise.
+//
+// A child process's exit is not that layer: "exit status 1" names nothing
+// the user can act on, and the layer above it — the one that ran the command
+// and read its stderr — is the cause. So the root shown is the innermost
+// layer that is not a bare process exit (actionableRoot); the exit status
+// stays in the debug chain and the log file.
 //
 // In debug mode we render the full vertical chain (each layer on its own
 // indented row, root cause highlighted) so the wrap path is visible without
@@ -268,8 +275,7 @@ func printErrorChain(err error) {
 	}
 	if !wool.IsDebug() {
 		// Just the root cause, indented one level under the headline.
-		root := layers[len(layers)-1]
-		fmt.Fprintln(os.Stderr, tui.RenderError("  ↳ "+root))
+		fmt.Fprintln(os.Stderr, tui.RenderError("  ↳ "+actionableRoot(err)))
 		return
 	}
 	// Debug: render each layer on its own row. Last layer = root cause.
@@ -287,6 +293,37 @@ func printErrorChain(err error) {
 			fmt.Fprintln(os.Stderr, tui.RenderErrorDetail(line))
 		}
 	}
+}
+
+// actionableRoot is the message plain mode shows for err: its innermost
+// layer, unless that layer is a child process's exit status — a bare
+// *exec.ExitError says "exit status N" and nothing a user can act on — in
+// which case it is the innermost layer above the exit, the one that ran the
+// command and names what it was doing. An error that is nothing but an exit
+// status keeps it.
+//
+// A sentinel is not that layer either. fmt.Errorf("%w: reason", ErrX) puts
+// the sentinel innermost and its reason in the layer above, so showing the
+// innermost layer alone would print the refusal's class ("module contract
+// negotiation failed") and drop the reason it names. When the layer above
+// the root reads "root: …", that layer is shown whole.
+func actionableRoot(err error) string {
+	layers := unwrapErrorLayers(err)
+	var chain []error
+	for cur := err; cur != nil; cur = errors.Unwrap(cur) {
+		chain = append(chain, cur)
+	}
+	root := len(chain) - 1
+	for i, cur := range chain {
+		if _, exit := cur.(*exec.ExitError); exit && i > 0 {
+			root = i - 1
+			break
+		}
+	}
+	if root > 0 && strings.HasPrefix(chain[root-1].Error(), chain[root].Error()+": ") {
+		return layers[root-1]
+	}
+	return layers[root]
 }
 
 // unwrapErrorLayers walks the Unwrap chain and returns each layer's

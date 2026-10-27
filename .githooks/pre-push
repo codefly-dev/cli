@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# pre-push: run, on what this push changes, the checks that otherwise bounce a PR
+# in the merge queue twenty minutes later:
+#   - golangci-lint at CI's pinned version (GOLANGCI_LINT_VERSION, the Makefile and
+#     .github/workflows/go.yml), over every package the push changes;
+#   - the CLI reference test, when a command or the docs changed.
+# Enabled by `make hooks`; `git push --no-verify` skips it.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1)
+changed=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD)
+[ -z "$changed" ] && exit 0
+
+go_files=$(printf '%s\n' "$changed" | grep -E '\.go$' || true)
+if [ -n "$go_files" ]; then
+  version=$(sed -n 's/^GOLANGCI_LINT_VERSION ?= //p' Makefile)
+  lint="$(go env GOPATH)/bin/golangci-lint"
+  if ! "$lint" version 2>/dev/null | grep -q "${version#v}"; then
+    echo "pre-push: installing golangci-lint $version (once)" >&2
+    make -s install-golangci-lint >/dev/null
+  fi
+  packages=$(printf '%s\n' "$go_files" | xargs -n1 dirname | sort -u | sed 's|^|./|')
+  echo "pre-push: golangci-lint $version on $(printf '%s\n' "$packages" | wc -l | tr -d ' ') package(s)" >&2
+  "$lint" run $packages
+fi
+
+if printf '%s\n' "$changed" | grep -qE '^(cmd/|docs/cli-reference\.md$)'; then
+  echo "pre-push: CLI reference is current" >&2
+  go test ./cmd -run TestCLIReferenceIsCurrent -count=1 >/dev/null || {
+    echo "pre-push: docs/cli-reference.md is out of date — run: go test ./cmd -run TestCLIReferenceIsCurrent -update-reference" >&2
+    exit 1
+  }
+fi

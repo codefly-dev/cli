@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -25,7 +26,10 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 	if err != nil {
 		return err
 	}
-	if err := projectConfigurationValuesInTree(ctx, tree, root, service.Name, env); err != nil {
+	if injection, err = artifactCacheInjection(service, env, scope, injection); err != nil {
+		return err
+	}
+	if err := projectConfigurationValuesInTree(ctx, tree, root, resources.ServiceUnique(scope.Module, service.Name), env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
 	// Before the secret projection: the derived secretKeyRefs are part of what
@@ -42,21 +46,42 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 	if err := projectManagedIdentityInTree(ctx, tree, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
-	if err := projectWorkloadSVID(tree, root, service, env, scope); err != nil {
-		return fmt.Errorf("project service %s workload identity: %w", service.Name, err)
-	}
-	if err := validateProjectedWorkloadSVID(tree, root, service, env, scope); err != nil {
-		return err
-	}
 	if err := validateProjectedConfigurationInTree(tree, root, service, env, scope); err != nil {
 		return err
 	}
 	return validateProjectedInjectionInTree(tree, root, service.Name, env, injection)
 }
 
-// projectManagedIdentity attaches the declared runtime identity and gives
-// workload-identity consumers and the gateway Core's resolved ServiceAccount.
-// Endpoint addresses and container choices remain owned by their renderers.
+// workloadAccount is the ServiceAccount name a service's pod runs as: Core
+// owns it, both when projecting a ServiceAccount and when generating an
+// agent's pod overlay, so the mesh principal derived from it names the account
+// the pod really runs as.
+func workloadAccount(service string) string {
+	overlay := &coreservices.PodTemplateOverlay{ServiceAccount: &coreservices.WorkloadServiceAccount{}}
+	overlay.DefaultServiceAccountName(service)
+	return overlay.ServiceAccountName()
+}
+
+// holdsMeshPrincipal reports whether the composition hands out a service's
+// mesh principal: the host's gateway (every edge names it), a service that
+// declares module-authority (its PRINCIPAL is that identity), and a service
+// that presents its module's identity to the host (module-identity: true) —
+// the module manifest lists that workload by the account it runs as, and
+// refuses one running as the namespace's default, so it must have its own.
+func holdsMeshPrincipal(service *resources.Service, env *environments.Environment, module string) bool {
+	if env.Host != nil && env.Host.Gateway == resources.ServiceUnique(module, service.Name) {
+		return true
+	}
+	if service.ModuleIdentity {
+		return true
+	}
+	return slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration)
+}
+
+// projectManagedIdentity attaches the declared runtime identity and gives the
+// workloads whose mesh principal the composition hands out Core's resolved
+// ServiceAccount. Endpoint addresses and container choices remain owned by
+// their renderers.
 func projectManagedIdentity(
 	ctx context.Context,
 	serviceRoot string,
@@ -88,7 +113,11 @@ func projectManagedIdentityInTree(
 		return err
 	}
 	if identity == nil {
-		if !requestsWorkloadIdentity(service) && (env.Host == nil || env.Host.Gateway != resources.ServiceUnique(scope.Module, service.Name)) {
+		// A workload whose mesh principal the composition hands out — the
+		// host's gateway, and a service that declares module-authority —
+		// runs as the account that principal names, never as the
+		// namespace's default. Nothing else is projected an account for.
+		if !holdsMeshPrincipal(service, env, scope.Module) {
 			return nil
 		}
 		identity = &environments.EnvironmentWorkloadIdentity{}
@@ -185,18 +214,6 @@ func projectRenderedServiceConfiguration(
 	templates renderTemplates,
 	options *RenderOptions,
 ) error {
-	var peers workloadPeers
-	for unique, service := range graph {
-		if !requestsWorkloadIdentity(service) && (env.Host == nil || env.Host.Gateway != unique) {
-			continue
-		}
-		var err error
-		peers, err = resolveWorkloadPeers(ctx, workspace, env)
-		if err != nil {
-			return err
-		}
-		break
-	}
 	tree := options.renderRoot
 	if err := tree.inspect(stage); err != nil {
 		return err
@@ -230,7 +247,6 @@ func projectRenderedServiceConfiguration(
 				continue
 			}
 			scope := moduleScope(env, workspace, moduleEntry.Name())
-			scope.WorkloadPeers = peers
 			scope.Templates = templates
 			if err := projectServiceConfiguration(
 				ctx, tree,
@@ -243,11 +259,6 @@ func projectRenderedServiceConfiguration(
 
 				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
 			}
-			check := workloadIdentityCheck{path: filepath.ToSlash(filepath.Join("modules", moduleEntry.Name(), serviceUnitDir, serviceEntry.Name())), service: service, environment: env, scope: scope}
-			if err := check.capture(tree, stage); err != nil {
-				return err
-			}
-			options.workloadIdentityChecks = append(options.workloadIdentityChecks, check)
 		}
 	}
 	return nil

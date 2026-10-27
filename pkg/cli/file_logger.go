@@ -8,10 +8,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/core/agents"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
 
-// FileLogger writes JSON log entries to date-stamped files in a directory.
+// FileLogger owns one invocation directory and its dated JSON log segments.
 // Rotates when file exceeds maxSize bytes.
 type FileLogger struct {
 	mu      sync.Mutex
@@ -20,18 +22,25 @@ type FileLogger struct {
 	file    *os.File
 	size    int64
 	date    string // current date for rotation
+	segment uint64
+	closed  bool
 }
 
 const defaultMaxSize = 50 * 1024 * 1024 // 50MB
 
-// NewFileLogger creates a file logger writing to dir/<date>.log.
-// Rotates daily and when file exceeds maxSize.
+// NewFileLogger allocates an exclusive invocation directory under dir.
+// Every rotation remains in that directory, including late shutdown records.
 func NewFileLogger(dir string) (*FileLogger, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("cannot create log directory: %w", err)
 	}
-	fl := &FileLogger{dir: dir, maxSize: defaultMaxSize}
+	invocation, err := os.MkdirTemp(dir, "run-"+time.Now().UTC().Format("2006-01-02T150405.000000000Z")+"-")
+	if err != nil {
+		return nil, fmt.Errorf("cannot create invocation log directory: %w", err)
+	}
+	fl := &FileLogger{dir: invocation, maxSize: defaultMaxSize}
 	if err := fl.rotate(); err != nil {
+		_ = os.Remove(invocation) // Only the empty directory allocated above.
 		return nil, err
 	}
 	return fl, nil
@@ -42,29 +51,18 @@ func (fl *FileLogger) rotate() error {
 	if fl.file != nil && fl.date == today && (fl.maxSize == 0 || fl.size < fl.maxSize) {
 		return nil
 	}
+	name := filepath.Join(fl.dir, fmt.Sprintf("%s-%06d.log", today, fl.segment))
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("cannot open log file: %w", err)
+	}
 	if fl.file != nil {
 		if err := fl.file.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: cannot close log file: %v\n", err)
 		}
 	}
-	fl.date = today
-	name := filepath.Join(fl.dir, today+".log")
-
-	// If file is too big, add a suffix
-	info, err := os.Stat(name)
-	if err == nil && fl.maxSize > 0 && info.Size() >= fl.maxSize {
-		name = filepath.Join(fl.dir, fmt.Sprintf("%s-%d.log", today, time.Now().Unix()))
-	}
-
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("cannot open log file: %w", err)
-	}
-	info, _ = f.Stat()
-	if info != nil {
-		fl.size = info.Size()
-	}
-	fl.file = f
+	fl.file, fl.date, fl.size = f, today, 0
+	fl.segment++
 	return nil
 }
 
@@ -84,6 +82,9 @@ func (fl *FileLogger) Process(log *wool.Log) {
 func (fl *FileLogger) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
+	if fl.closed {
+		return
+	}
 
 	if err := fl.rotate(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: log rotation failed: %v\n", err)
@@ -116,6 +117,10 @@ func (fl *FileLogger) ProcessWithSource(source *wool.Identifier, log *wool.Log) 
 func (fl *FileLogger) Close() error {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
+	if fl.closed {
+		return nil
+	}
+	fl.closed = true
 	if fl.file != nil {
 		return fl.file.Close()
 	}
@@ -124,32 +129,37 @@ func (fl *FileLogger) Close() error {
 
 // --- Global file logger setup ---
 
-var globalFileLogger *FileLogger
+var (
+	fileLoggerMu     sync.Mutex
+	globalFileLogger *FileLogger
+)
 
-// EnableFileLogging starts writing logs to ~/.codefly/logs/<date>.log
+// EnableFileLogging registers one sink for the CLI invocation, including all
+// helper contexts and final teardown. The process owns its descriptor lifetime.
 func EnableFileLogging() {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	fileLoggerMu.Lock()
+	defer fileLoggerMu.Unlock()
+	if globalFileLogger != nil {
 		return
 	}
-	dir := filepath.Join(home, ".codefly", "logs")
-	fl, err := NewFileLogger(dir)
+	fl, err := NewFileLogger(LogsDir())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cannot enable file logging: %v\n", err)
 		return
 	}
 	globalFileLogger = fl
-	// Register as an agent log processor too
-	// (agents.AddProcessor is called in logger.go init)
+	agents.AddProcessor(fl)
 }
 
-// GetFileLogger returns the global file logger (nil if not enabled).
+// GetFileLogger returns the invocation's sink (nil if not enabled).
 func GetFileLogger() *FileLogger {
+	fileLoggerMu.Lock()
+	defer fileLoggerMu.Unlock()
 	return globalFileLogger
 }
 
-// Path returns the absolute path of the file currently being written, or ""
-// if the logger isn't open.
+// Path returns the current segment, retaining the final path after Close so
+// a failure report can still name it. An uninitialized logger returns "".
 func (fl *FileLogger) Path() string {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
@@ -162,20 +172,13 @@ func (fl *FileLogger) Path() string {
 // LogFilePath returns the active log file path (or "" when file logging is off).
 // Used to point users at the detailed log on failure.
 func LogFilePath() string {
-	if globalFileLogger == nil {
+	fl := GetFileLogger()
+	if fl == nil {
 		return ""
 	}
-	return globalFileLogger.Path()
+	return fl.Path()
 }
 
-// LogsDir returns the directory codefly writes its logs to (~/.codefly/logs),
-// or "" if the home directory can't be resolved. Standalone — does not enable
-// file logging, so the `codefly logs` command can read existing logs without
-// creating a new file.
-func LogsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".codefly", "logs")
-}
+// LogsDir resolves the existing Codefly home policy without creating a logger.
+// Read-only log commands must not allocate a new invocation.
+func LogsDir() string { return filepath.Join(resources.CodeflyHomeDir(), "logs") }

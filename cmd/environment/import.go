@@ -47,7 +47,27 @@ must match the declaration; import never retargets a contract.
 
 Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
---coordinate-contract -.`,
+--coordinate-contract -.
+
+--product-intent <file> additionally imports what the product, not the cell,
+decides per environment, from an authored product file:
+
+  environments:
+    <env>:
+      exclude-services: []          # required; [] clears
+      service-secrets:              # optional
+        generate:                   # keys minted at random by deploy secrets
+          - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [tracing/evidence]}
+        may-be-empty: [<stored key>] # keys whose correct value here is empty
+
+The intent owns exclude-services, service-secrets.generate and
+service-secrets.may-be-empty: a contract declaring one of them too is refused,
+and an entry the intent no longer carries is withdrawn on re-import. The
+contract keeps the rest of service-secrets (secret-store, defaults, services),
+which names the cell's store. Each entry is checked against the secret
+configurations the environment's profile declares; an unknown service,
+configuration or key is refused by name. Any other field is refused; the legacy
+full delivery.intent.yaml is not interpreted.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -66,18 +86,34 @@ entries are preserved, comments included. Read from stdin with
 			return err
 		}
 
+		productPath, err := cmd.Flags().GetString("product-intent")
+		if err != nil {
+			return err
+		}
+		var productData []byte
+		if cmd.Flags().Changed("product-intent") {
+			if productPath == "" || productPath == "-" {
+				return fmt.Errorf("--product-intent requires an authored file path")
+			}
+			productData, err = os.ReadFile(productPath)
+			if err != nil {
+				return err
+			}
+		}
+
 		dir, err := resources.FindUp[resources.Workspace](ctx)
 		if err != nil || dir == nil {
 			return fmt.Errorf("no %s found from the current directory upward", resources.WorkspaceConfigurationName)
 		}
 
 		opts := importOptions{
-			dir:          *dir,
-			envName:      args[0],
-			contractData: data,
-			namespace:    importNamespace,
-			namespaceSet: cmd.Flags().Changed("namespace"),
-			dryRun:       importDryRun,
+			dir:               *dir,
+			envName:           args[0],
+			contractData:      data,
+			productIntentData: productData,
+			namespace:         importNamespace,
+			namespaceSet:      cmd.Flags().Changed("namespace"),
+			dryRun:            importDryRun,
 			// UTC so the provenance timestamp does not vary by the operator's
 			// machine timezone and churn the diff on re-import across a team.
 			now:    time.Now().UTC(),
@@ -133,14 +169,15 @@ func readContract(stdin io.Reader, path string) ([]byte, error) {
 }
 
 type importOptions struct {
-	dir          string
-	envName      string
-	contractData []byte
-	namespace    string
-	namespaceSet bool
-	dryRun       bool
-	now          time.Time
-	stdout       io.Writer
+	dir               string
+	envName           string
+	contractData      []byte
+	productIntentData []byte
+	namespace         string
+	namespaceSet      bool
+	dryRun            bool
+	now               time.Time
+	stdout            io.Writer
 }
 
 // runImport parses the contract, merges its owned fields into the named
@@ -179,6 +216,11 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	envs := yamledit.MapValue(root, "environments")
 	envNode := findExistingEnvironment(envs, opts.envName)
 
+	intent, err := applyProductIntent(opts, declaredEnvironment, envNode, contract)
+	if err != nil {
+		return err
+	}
+
 	namespace := contract.Environment.Namespace
 	if opts.namespaceSet {
 		namespace = opts.namespace
@@ -209,6 +251,10 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
 		applyContractFields(envNode, declaredEnvironment)
+		withdrawOwnedAbsences(envNode, declaredEnvironment, contractOwnedOptional, false)
+		if intent != nil {
+			withdrawOwnedAbsences(envNode, declaredEnvironment, productOwnedOptional, true)
+		}
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
 	}
@@ -222,6 +268,25 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	}
 	if _, err := environments.FromWorkspace(merged); err != nil {
 		return fmt.Errorf("merged environment declarations: %w", err)
+	}
+	if intent != nil {
+		selected, err := environments.Select(merged, opts.envName)
+		if err != nil {
+			return err
+		}
+		workspace, err := resources.LoadWorkspaceFromDir(ctx, opts.dir)
+		if err != nil {
+			return err
+		}
+		if err := environments.ValidateEnvironmentExclusions(ctx, workspace, selected); err != nil {
+			return fmt.Errorf("product intent: %w", err)
+		}
+		if err := environments.ValidateSecretPolicy(ctx, workspace, selected, intent.ServiceSecrets); err != nil {
+			return fmt.Errorf("product intent: %w", err)
+		}
+	}
+	if err := materializeConfigurationProfile(ctx, opts.dir, env, opts.dryRun); err != nil {
+		return err
 	}
 	if opts.dryRun {
 		diff, derr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
@@ -410,11 +475,123 @@ func applyContractFields(target, declaration *yaml.Node) {
 	}
 }
 
+// contractOwnedOptional names the keys a coordinate contract owns whose ABSENCE is
+// itself a statement (docs/coordinate-contract-conventions.md in infra-base): an absent
+// registry.mirrors means "pull the upstream as the Dockerfile names it", an absent
+// registry.artifacts "publish bundles to registry.url", an absent registry.auth "log
+// in to nothing". Merging alone would keep a value the contract withdrew, and the
+// render would keep pulling from, publishing to or logging in to a registry the
+// environment no longer holds.
+var contractOwnedOptional = map[string][]string{"registry": {"mirrors", "artifacts", "auth"}}
+
+// productOwnedOptional names the service-secrets keys a product intent owns
+// (environments.ProductSecretPolicyKeys). Once an import reads a product intent,
+// the intent is their only source, so a key it no longer carries is withdrawn
+// even when it declares no service-secrets at all: a generator left behind would
+// keep minting, and keep a rotation admitted for, a key the product dropped.
+var productOwnedOptional = map[string][]string{"service-secrets": environments.ProductSecretPolicyKeys}
+
+// withdrawOwnedAbsences removes each owned optional key the declaration no longer
+// carries. Contract-owned keys are withdrawn only under a parent the contract
+// declares (parentOptional false); a parent it omits, and every operator-owned
+// key, are left to applyContractFields' merge.
+func withdrawOwnedAbsences(target, declaration *yaml.Node, owned map[string][]string, parentOptional bool) {
+	for parent, keys := range owned {
+		declared, current := yamledit.MapValue(declaration, parent), yamledit.MapValue(target, parent)
+		if (declared == nil && !parentOptional) || current == nil || current.Kind != yaml.MappingNode {
+			continue
+		}
+		for _, key := range keys {
+			if yamledit.MapValue(declared, key) != nil {
+				continue
+			}
+			for i := 0; i+1 < len(current.Content); i += 2 {
+				if current.Content[i].Value == key {
+					current.Content = append(current.Content[:i], current.Content[i+2:]...)
+					break
+				}
+			}
+		}
+	}
+}
+
+// applyProductIntent adds the product intent's decisions, when one was passed,
+// to the contract declaration being merged and to the contract's environment.
+// It returns nil when the import reads no product intent.
+func applyProductIntent(opts *importOptions, declared, existing *yaml.Node, contract *environments.CoordinateContract) (*productIntent, error) {
+	if opts.productIntentData == nil {
+		return nil, nil
+	}
+	intent, err := parseProductIntent(opts.productIntentData, opts.envName)
+	if err != nil {
+		return nil, err
+	}
+	if yamledit.MapValue(declared, "exclude-services") != nil {
+		return nil, fmt.Errorf("exclude-services is declared by both coordinate contract and product intent; select one owner")
+	}
+	node, err := yamledit.Encode(intent.ExcludeServices)
+	if err != nil {
+		return nil, err
+	}
+	yamledit.SetMapValue(declared, "exclude-services", node)
+	contract.Environment.ExcludeServices = intent.ExcludeServices
+	if err := applyProductSecretPolicy(declared, existing, &contract.Environment, intent.ServiceSecrets); err != nil {
+		return nil, err
+	}
+	return intent, nil
+}
+
+// applyProductSecretPolicy adds the intent's service-secrets policy to the
+// declaration being merged, and to the contract's environment for an
+// environment the workspace does not hold yet. The contract keeps every other
+// service-secrets field; one that also declares a product-owned key is refused,
+// as exclude-services is, rather than one owner silently winning.
+func applyProductSecretPolicy(declared, existing *yaml.Node, contractEnv *environments.Environment, policy *environments.ProductSecretPolicy) error {
+	secrets := yamledit.MapValue(declared, "service-secrets")
+	for _, key := range environments.ProductSecretPolicyKeys {
+		if yamledit.MapValue(secrets, key) != nil {
+			return fmt.Errorf("service-secrets.%s is declared by both coordinate contract and product intent; select one owner", key)
+		}
+	}
+	if policy.Empty() {
+		return nil
+	}
+	if contractEnv.ServiceSecrets == nil && yamledit.MapValue(existing, "service-secrets") == nil {
+		return fmt.Errorf("product intent declares service-secrets for environment %q, but neither the coordinate contract nor the workspace declares its service-secrets secret-store", contractEnv.Name)
+	}
+	if contractEnv.ServiceSecrets != nil {
+		contractEnv.ServiceSecrets.Generate, contractEnv.ServiceSecrets.MayBeEmpty = policy.Generate, policy.MayBeEmpty
+	}
+	if secrets == nil {
+		secrets = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		yamledit.SetMapValue(declared, "service-secrets", secrets)
+	}
+	for _, field := range []struct {
+		key   string
+		value any
+		set   bool
+	}{{"generate", policy.Generate, len(policy.Generate) > 0}, {"may-be-empty", policy.MayBeEmpty, len(policy.MayBeEmpty) > 0}} {
+		if !field.set {
+			continue
+		}
+		node, err := yamledit.Encode(field.value)
+		if err != nil {
+			return err
+		}
+		yamledit.SetMapValue(secrets, field.key, node)
+	}
+	return nil
+}
+
 // stampProvenance writes (or, on re-import, replaces) the provenance comment
 // above the environment item, keeping any operator comment lines around it.
 func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContract, opts *importOptions) {
 	line := fmt.Sprintf("# %s%s on %s; re-run: codefly environment import %s --coordinate-contract …",
 		provenanceMarker, labelled(contract.Coordinate), opts.now.Format(time.RFC3339), opts.envName)
+
+	if opts.productIntentData != nil {
+		line += " --product-intent …"
+	}
 
 	kept := make([]string, 0)
 	for _, existing := range strings.Split(envNode.HeadComment, "\n") {
@@ -430,6 +607,7 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 
 func init() {
 	importCmd.Flags().String("coordinate-contract", "", "Path to a codefly/coordinate/v1 descriptor, or - for stdin")
+	importCmd.Flags().String("product-intent", "", "Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty")
 	importCmd.Flags().String("cell-contract", "", "Former spelling of --coordinate-contract")
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")

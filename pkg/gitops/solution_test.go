@@ -57,7 +57,7 @@ func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv0.RenderR
 		"namespace.yaml":     fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n", f.renderNamespace),
 		"configmap.yaml":     fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: hello\n  namespace: %s\ndata:\n  release: qualified\n", f.renderNamespace),
 		// The workload the solution runs, pinned by digest and running as its
-		// own account: what a presence document names.
+		// own account.
 		"deployment.yaml": fmt.Sprintf("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: hello\n  namespace: %s\nspec:\n  selector:\n    matchLabels:\n      app: hello\n  template:\n    metadata:\n      labels:\n        app: hello\n    spec:\n      serviceAccountName: hello\n      containers:\n        - name: hello\n          image: ghcr.io/example/hello@sha256:%s\n", f.renderNamespace, strings.Repeat("b", 64)),
 	}
 	for name, body := range files {
@@ -124,7 +124,6 @@ environments:
       domain: example
       audience: accounts
       trust_domain: cluster.local
-      envelope_revision: 1
       delivery: hello/host/rest
     service-identity:
       default:
@@ -294,6 +293,22 @@ func TestSolutionPublicationDoesNotRequireAModuleResource(t *testing.T) {
 	}
 }
 
+// A publication of a module the workspace does not hold is refused for its
+// own reason — the unit that is not the solution's — never for the module
+// load that sent it down the solution path.
+func TestSolutionPublicationRefusalNamesTheUnit(t *testing.T) {
+	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
+	mixed := []InventoryUnit{{Kind: UnitKindService, Module: "checkout", Name: "api", Path: "services/api"}}
+	err := validatePublicationPermissions(context.Background(), workspace, "checkout", nil, mixed)
+	if err == nil || !strings.Contains(err.Error(), `non-solution unit "api"`) || strings.Contains(err.Error(), "cannot find module") {
+		t.Fatalf("refusal = %v, want the non-solution unit named", err)
+	}
+	solution := []InventoryUnit{{Kind: UnitKindSolution, Module: "checkout", Name: "checkout", Path: "solutions/checkout"}}
+	if err := validatePublicationPermissions(context.Background(), workspace, "checkout", nil, solution); err != nil {
+		t.Fatalf("a solution's own units pass: %v", err)
+	}
+}
+
 // TestLocalGitopsPublishSolutionGeneratesBootstrap drives the real publish path
 // for a solution and asserts the CLI generates the Argo ApplicationSet — the
 // transport a solution has no service module or module-agent to trigger. Without
@@ -343,20 +358,19 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/lastlogin-go/overlays/local") {
 		t.Fatalf("published bootstrap does not stamp the solution Application:\n%s", appSet)
 	}
-	// Every Application reads the one immutable snapshot revision, the one
-	// delivering the bindings included — so the overlay it reads must be IN
-	// that revision, not only on the publication commit. It once was not:
-	// the overlays were settled after the snapshot was committed, and every
-	// delivery Application pointed at a revision where its path did not exist.
+	// Every Application reads the one immutable snapshot revision, so the
+	// overlay it reads must be IN that revision.
 	if !strings.Contains(appSet, "targetRevision: "+result.SnapshotRevision) {
 		t.Fatalf("the bootstrap does not target the snapshot %s:\n%s", result.SnapshotRevision, appSet)
 	}
-	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/local/"
-	snapshotOverlay := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", result.SnapshotRevision, overlay)
-	for _, want := range []string{overlay + "hello.local.lastlogin-go.yaml", overlay + "kustomization.yaml"} {
-		if !strings.Contains(snapshotOverlay, want) {
-			t.Fatalf("the snapshot revision %s does not hold %s, so the delivery Application would read a path that does not exist:\n%s", result.SnapshotRevision, want, snapshotOverlay)
-		}
+	snapshot := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", result.SnapshotRevision, result.Path+"/")
+	if !strings.Contains(snapshot, result.Path+"/solutions/lastlogin-go/overlays/local/") {
+		t.Fatalf("the snapshot revision %s does not hold the solution's overlay:\n%s", result.SnapshotRevision, snapshot)
+	}
+	// A packaged solution declares no service, so nothing runs as it and it
+	// is declared present on no host: no manifest overlay is delivered.
+	if strings.Contains(snapshot, moduleManifestDir+"/") || strings.Contains(appSet, moduleManifestDir) {
+		t.Fatalf("a packaged solution delivered a module manifest:\n%s", snapshot)
 	}
 	// The packaged solution's own Namespace is authorized by the generated
 	// AppProject: destination namespace plus a cluster-scoped Namespace whitelist.
@@ -405,5 +419,30 @@ func TestRenderSolutionReportsAnUnavailableExecutorUnderTheSentinel(t *testing.T
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not say %q", err, want)
 		}
+	}
+}
+
+// TestAPackagedSolutionDeclaresNoManifest: a packaged solution declares no
+// service, so no service declares module-identity and nothing runs as it; the
+// render delivers its workloads and declares it present on no host, saying
+// why.
+func TestAPackagedSolutionDeclaresNoManifest(t *testing.T) {
+	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
+	workspace := loadSolutionWorkspace(t, createBareRepository(t))
+	env := selectedEnvironment(t, workspace, "local")
+	result, err := RenderSolution(context.Background(), &SolutionRenderRequest{
+		Workspace: workspace, Environment: env,
+		Agent:  &resources.Agent{Kind: resources.SolutionAgent, Publisher: "example", Name: "lastlogin", Version: "0.0.1"},
+		Name:   "lastlogin-go",
+		Source: filepath.Join(workspace.Dir(), "solution-src"), Reference: "ghcr.io/codefly-dev/hello-solution:0.0.1", AppProject: "hello",
+	})
+	if err != nil {
+		t.Fatalf("RenderSolution: %v", err)
+	}
+	if result.ModuleManifest != nil || result.Inventory.ModuleManifestPath != "" {
+		t.Fatalf("a packaged solution declared a manifest: %+v", result.ModuleManifest)
+	}
+	if !strings.Contains(result.UndeclaredManifest, "packaged solution lastlogin-go declares no module-identity service") {
+		t.Fatalf("the render does not say why it declares nothing: %q", result.UndeclaredManifest)
 	}
 }

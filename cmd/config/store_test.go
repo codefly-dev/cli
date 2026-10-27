@@ -216,6 +216,13 @@ func TestGenerateRejectsNonPositiveSize(t *testing.T) {
 }
 
 func TestParseFormatRejectsUnknownEncoding(t *testing.T) {
+	// A local configuration value is random bytes: the store-only formats are
+	// not offered here, so a lifelong signing key is never minted into a file.
+	for _, storeOnly := range []string{"identifier", "ed25519-pkcs8"} {
+		if _, err := ParseFormat(storeOnly); err == nil {
+			t.Fatalf("ParseFormat accepted the store-only format %q", storeOnly)
+		}
+	}
 	if _, err := ParseFormat("uuid"); err == nil {
 		t.Fatal("expected an error for an unknown format")
 	}

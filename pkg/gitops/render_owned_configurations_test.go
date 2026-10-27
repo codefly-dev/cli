@@ -28,6 +28,7 @@ func installConfigurationResolvingAgents(t *testing.T) {
 		_ func(map[string]map[string]string),
 		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 		recordPorts func(map[string]map[string]uint32),
+		_ func(map[string]string),
 	) error {
 		flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 		if err != nil {
@@ -41,7 +42,7 @@ func installConfigurationResolvingAgents(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		require.Empty(t, configurations, "the render owns both groups; neither needs a manager entry")
+		require.Empty(t, configurations, "the render owns the group; it needs no manager entry")
 		writeConsumerTree(t, destination(module, service), env.Name, env.ModuleNamespace(workspace, module.Name), service.Name, "database.example:5432")
 		unique := resources.ServiceUnique(module.Name, service.Name)
 		if record != nil {
@@ -54,71 +55,50 @@ func installConfigurationResolvingAgents(t *testing.T) {
 	}
 }
 
-func TestRenderSuppliesDeclaredIdentityGroupsWithoutConfigurationFiles(t *testing.T) {
+// The render supplies module-authority per workload, with no configuration
+// file and on any cluster: the principal is the mesh's, which every cell has,
+// so nothing about the group is local to a k3d environment any more.
+func TestRenderSuppliesModuleAuthorityWithoutConfigurationFiles(t *testing.T) {
 	for _, target := range []string{"module", "service"} {
-		t.Run(target, func(t *testing.T) {
-			workspace, env := workloadIdentityComposition(t)
-			servicePath := filepath.Join(workspace.Dir(), "modules/app/services/api", resources.ServiceConfigurationName)
-			require.NoError(t, os.WriteFile(servicePath, []byte(devServiceYAML("api")+"workspace-configuration-dependencies:\n  - workload-identity\n  - module-authority\n"), 0o600))
-			var err error
-			workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
-			require.NoError(t, err)
-			module, err := workspace.LoadModuleFromName(t.Context(), "app")
-			require.NoError(t, err)
-			service, err := module.LoadServiceFromName(t.Context(), "api")
-			require.NoError(t, err)
-			env.Host.Delivery = "edge/gateway/http"
-			env.Registry = &environments.EnvironmentRegistry{URL: "registry.example.test/example"}
-			env.ServiceSecrets = storeEnvironment().ServiceSecrets
-			installConfigurationResolvingAgents(t)
-			var result RenderResult
-			unit := filepath.Join("services", "api")
-			if target == "module" {
-				result, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
-			} else {
-				result, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
-				unit = filepath.Join("modules", "app", unit)
-			}
-			require.NoError(t, err)
-			rendered := buildOverlay(t, filepath.Join(result.Path, unit), env.Name)
-			variables := containerEnvironment(t, rendered)
-			for key, value := range workloadIdentityPaths() {
-				require.Equal(t, value, variables["CODEFLY__WORKSPACE_CONFIGURATION__WORKLOAD_IDENTITY__"+key]["value"])
-			}
-			data := configMapData(t, rendered)
-			require.Equal(t, "spiffe://local.example/ns/example-app/sa/api", data[authorityPrefix+"PRINCIPAL"])
-			require.Equal(t, env.Host.ModuleAudience, data[authorityPrefix+"AUDIENCE"])
-			require.Equal(t, env.Host.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
-			require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-api", "key": storedSecretKey, "optional": false}}, variables[authorityToken]["valueFrom"])
-			require.NotContains(t, variables[authorityToken], "value")
-			require.NoDirExists(t, filepath.Join(workspace.Dir(), "configurations"))
-		})
-	}
-}
-
-func TestRenderRefusesWorkloadIdentityWithoutSVIDIssuance(t *testing.T) {
-	for _, kind := range []string{"eks", "kind", "undeclared"} {
-		t.Run(kind, func(t *testing.T) {
-			workspace, env := workloadIdentityComposition(t)
-			env.Cluster = &environments.EnvironmentCluster{Kind: kind, Context: "other-cluster"}
-			if kind == "undeclared" {
-				env.Cluster = nil
-			}
-			module, err := workspace.LoadModuleFromName(t.Context(), "app")
-			require.NoError(t, err)
-			service, err := module.LoadServiceFromName(t.Context(), "api")
-			require.NoError(t, err)
-			for _, target := range []string{"module", "service"} {
+		for _, kind := range []string{"k3d", "eks"} {
+			t.Run(target+"/"+kind, func(t *testing.T) {
+				workspace, env := hostComposition(t)
+				env.Cluster = &environments.EnvironmentCluster{Kind: kind, Context: kind + "-example"}
+				servicePath := filepath.Join(workspace.Dir(), "modules/app/services/api", resources.ServiceConfigurationName)
+				require.NoError(t, os.WriteFile(servicePath, []byte(devServiceYAML("api")+"workspace-configuration-dependencies:\n  - module-authority\n"), 0o600))
+				var err error
+				workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+				require.NoError(t, err)
+				module, err := workspace.LoadModuleFromName(t.Context(), "app")
+				require.NoError(t, err)
+				service, err := module.LoadServiceFromName(t.Context(), "api")
+				require.NoError(t, err)
+				env.Host.Delivery = "edge/gateway/http"
+				env.Registry = &environments.EnvironmentRegistry{URL: "registry.example.test/example"}
+				env.ServiceSecrets = storeEnvironment().ServiceSecrets
+				installConfigurationResolvingAgents(t)
+				var result RenderResult
+				unit := filepath.Join("services", "api")
 				if target == "module" {
-					_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
+					result, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
 				} else {
-					_, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
+					result, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
+					unit = filepath.Join("modules", "app", unit)
 				}
-				require.ErrorContains(t, err, "workload-identity")
-				require.ErrorContains(t, err, "k3d")
-				require.ErrorContains(t, err, "SVID issuance")
-				require.NotContains(t, err.Error(), "no configuration found")
-			}
-		})
+				require.NoError(t, err)
+				rendered := buildOverlay(t, filepath.Join(result.Path, unit), env.Name)
+				variables := containerEnvironment(t, rendered)
+				data := configMapData(t, rendered)
+				require.Equal(t, "spiffe://local.example/ns/example-app/sa/api", data[authorityPrefix+"PRINCIPAL"])
+				require.Equal(t, env.Host.ModuleAudience, data[authorityPrefix+"AUDIENCE"])
+				require.Equal(t, env.Host.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
+				require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-api", "key": storedSecretKey, "optional": false}}, variables[authorityToken]["valueFrom"])
+				require.NotContains(t, variables[authorityToken], "value")
+				for key := range variables {
+					require.NotContains(t, key, "WORKLOAD_IDENTITY")
+				}
+				require.NoDirExists(t, filepath.Join(workspace.Dir(), "configurations"))
+			})
+		}
 	}
 }

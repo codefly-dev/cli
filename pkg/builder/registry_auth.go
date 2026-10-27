@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -30,7 +32,10 @@ import (
 //	         (<name>.azurecr.io).
 //	"gar"  — Google Artifact Registry. Stubbed (returns ErrUnimplemented)
 //	         until someone needs it.
-//	"ghcr" — GitHub Container Registry. Stubbed.
+//	"ghcr" — GitHub Container Registry. The token is GITHUB_TOKEN, else
+//	         GH_TOKEN, else `gh auth token --hostname github.com`; the user
+//	         is GITHUB_ACTOR, else `gh api user --jq .login`. The token is
+//	         piped to `docker login ghcr.io --password-stdin`.
 //
 // Called from cli/cmd/build/service.go before flow.Build runs. Failures
 // here are loud — bad to discover at push time after a long build.
@@ -48,7 +53,7 @@ func RegistryLogin(ctx context.Context, registryURL, authKind string) error {
 	case "gar", "gcr":
 		return fmt.Errorf("registry auth %q not yet wired — file an issue or add it in cli/pkg/builder/registry_auth.go", authKind)
 	case "ghcr":
-		return fmt.Errorf("registry auth %q not yet wired — set GITHUB_TOKEN and run `echo $GITHUB_TOKEN | docker login ghcr.io -u <user> --password-stdin` manually for now", authKind)
+		return ghcrLogin(ctx)
 	default:
 		return fmt.Errorf("unknown registry auth %q (supported: ecr, acr, gar, ghcr)", authKind)
 	}
@@ -172,4 +177,68 @@ func acrLogin(ctx context.Context, registryURL string) error {
 
 	w.Info("ACR login succeeded", wool.Field("host", host), wool.Field("name", name))
 	return nil
+}
+
+// ghcrHost is the registry the ghcr auth logs in to.
+const ghcrHost = "ghcr.io"
+
+// runRegistryCommand runs one credential command with stdin and returns its
+// stdout; its stderr is folded into the error. A seam so a test needs neither
+// gh nor docker.
+var runRegistryCommand = func(ctx context.Context, stdin io.Reader, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = stdin
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// lookupRegistryEnv reads the environment; a seam for tests.
+var lookupRegistryEnv = os.Getenv
+
+// ghcrLogin logs docker in to ghcr.io with the caller's GitHub identity: a CI
+// token from the environment, or the GitHub CLI's login. The token only ever
+// reaches docker on stdin and is never logged.
+func ghcrLogin(ctx context.Context) error {
+	w := wool.Get(ctx).In("ghcrLogin")
+	token := firstNonEmpty(lookupRegistryEnv("GITHUB_TOKEN"), lookupRegistryEnv("GH_TOKEN"))
+	if token == "" {
+		out, err := runRegistryCommand(ctx, nil, "gh", "auth", "token", "--hostname", "github.com")
+		if err != nil {
+			return fmt.Errorf("registry auth ghcr: no GITHUB_TOKEN or GH_TOKEN, and `gh auth token` failed: %w", err)
+		}
+		token = strings.TrimSpace(string(out))
+	}
+	if token == "" {
+		return fmt.Errorf("registry auth ghcr: no GitHub token (set GITHUB_TOKEN or run `gh auth login`)")
+	}
+	user := lookupRegistryEnv("GITHUB_ACTOR")
+	if user == "" {
+		out, err := runRegistryCommand(ctx, nil, "gh", "api", "user", "--jq", ".login")
+		if err != nil {
+			return fmt.Errorf("registry auth ghcr: no GITHUB_ACTOR, and `gh api user` failed: %w", err)
+		}
+		user = strings.TrimSpace(string(out))
+	}
+	if user == "" {
+		return fmt.Errorf("registry auth ghcr: no GitHub user (set GITHUB_ACTOR or run `gh auth login`)")
+	}
+	if _, err := runRegistryCommand(ctx, strings.NewReader(token), "docker", "login", "--username", user, "--password-stdin", ghcrHost); err != nil {
+		return fmt.Errorf("docker login %s failed: %w", ghcrHost, err)
+	}
+	w.Info("GHCR login succeeded", wool.Field("host", ghcrHost), wool.Field("user", user))
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

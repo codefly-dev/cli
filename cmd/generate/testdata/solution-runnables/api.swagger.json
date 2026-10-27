@@ -1,0 +1,742 @@
+{
+  "consumes": [
+    "application/json"
+  ],
+  "definitions": {
+    "AppAccess": {
+      "additionalProperties": false,
+      "properties": {
+        "installedOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Board": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/AppAccess"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/definitions/Component"
+          },
+          "type": "array"
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "unreadable": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ChatBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "installation": {
+          "type": "string"
+        },
+        "intent": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ChatInstallResult": {
+      "additionalProperties": false,
+      "properties": {
+        "imported": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Component": {
+      "additionalProperties": false,
+      "properties": {
+        "composition": {
+          "type": "string"
+        },
+        "latest": {
+          "type": "string"
+        },
+        "latestAt": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Error": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "History": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "type": "string"
+        },
+        "pins": {
+          "items": {
+            "$ref": "#/definitions/PinEvent"
+          },
+          "type": "array"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "$ref": "#/definitions/TagEvent"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "LinkBeginRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "redirectUri": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LinkBeginResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "authorizeUrl": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LinkCompleteRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PinEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "type": "string"
+        },
+        "composition": {
+          "type": "string"
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RecordResult": {
+      "additionalProperties": false,
+      "properties": {
+        "observedAt": {
+          "type": "string"
+        },
+        "pins": {
+          "type": "integer"
+        },
+        "tags": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "StatusReport": {
+      "additionalProperties": false,
+      "properties": {
+        "declared": {
+          "type": "boolean"
+        },
+        "linked": {
+          "type": "boolean"
+        },
+        "organization": {
+          "type": "string"
+        },
+        "recordTypeRevision": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TagEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "taggedAt": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "info": {
+    "description": "",
+    "title": "releases solution backend",
+    "version": "0.3.0"
+  },
+  "paths": {
+    "/v1/releases/chat": {
+      "get": {
+        "description": "Any member of the organization\n\nThe intent and the installation the gateway stamped on the request",
+        "operationId": "Releases_Get_V1_Releases_Chat",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ChatBinding"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Name the Robin intent and installation the page binds its chat to",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "any_checked_caller": true
+        }
+      }
+    },
+    "/v1/releases/chat/install": {
+      "post": {
+        "description": "An organization administrator\n\nRobin asks the host to approve each intent version before writing it",
+        "operationId": "Releases_Post_V1_Releases_Chat_Install",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ChatInstallResult"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Import this solution's Robin intent into the installation",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "robin.intents",
+              "actions": [
+                "import",
+                "activate"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "/v1/releases/history": {
+      "get": {
+        "description": "Any member who may read records\n\nNewest first; pins only when a component is named",
+        "operationId": "Releases_Get_V1_Releases_History",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "repo",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "in": "query",
+            "name": "component",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/History"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Read the recorded tags of one repository and the recorded pins of one component",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "records.records",
+              "actions": [
+                "read"
+              ]
+            }
+          ]
+        },
+        "x-codefly-operation": {
+          "attempt_timeout": "30s",
+          "audience": "releases",
+          "backoff": "1s",
+          "completion": "COMPLETION_CALL",
+          "invoke_scopes": [
+            {
+              "actions": [
+                "read"
+              ],
+              "resource_kind": "records.records"
+            }
+          ],
+          "max_attempts": 3,
+          "recovery": "RECOVERY_RECOMPUTE",
+          "retryable_codes": [
+            "503"
+          ],
+          "tool": {
+            "description": "Read the recorded tags of one repository and the recorded pins of one component",
+            "effect": "EFFECT_READ_ONLY",
+            "name": "Releases_Get_V1_Releases_History"
+          },
+          "total_timeout": "90s"
+        }
+      }
+    },
+    "/v1/releases/link/begin": {
+      "post": {
+        "description": "An organization administrator\n\nCreates the viewer's personal api source",
+        "operationId": "Releases_Post_V1_Releases_Link_Begin",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LinkBeginRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/LinkBeginResponse"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Connect the viewer's GitHub source and begin its OAuth sign-in",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "datasource.sources",
+              "actions": [
+                "add",
+                "declare"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "/v1/releases/link/complete": {
+      "post": {
+        "description": "The member who began the link\n\nThe status report after the host sealed the provider's tokens",
+        "operationId": "Releases_Post_V1_Releases_Link_Complete",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LinkCompleteRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StatusReport"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Redeem the code GitHub sent back and link the account to the source",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "datasource.sources",
+              "actions": [
+                "link"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "/v1/releases/mcp": {
+      "post": {
+        "description": "Agent clients, through the authority's edge, as the person whose Work Context the request carries; every call is held to this route's policy.\n\nThe MCP Streamable HTTP transport, stateless: one JSON-RPC message per POST, answered with its result. Each tool runs as the viewer and reaches a module only through a child the authority issues through one of this solution's bindings. Any other method is refused.",
+        "operationId": "Releases_Post_V1_Releases_Mcp",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "type": "object"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "type": "object"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Call the releases MCP server's tools as the viewer",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "records.records",
+              "actions": [
+                "read"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "/v1/releases/record": {
+      "post": {
+        "description": "A member who may write records\n\nCreates one event per new tag and per new pin, and says how many",
+        "operationId": "Releases_Post_V1_Releases_Record",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/RecordResult"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Record every tag and pin the board shows that is not recorded yet",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "records.records",
+              "actions": [
+                "read",
+                "write"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "/v1/releases/recorded": {
+      "get": {
+        "description": "Any member who may read records\n\nThe newest recorded pin of every component; 404 when nothing is recorded yet",
+        "operationId": "Releases_Get_V1_Releases_Recorded",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/Board"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Read the board as records holds it, without asking GitHub",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "records.records",
+              "actions": [
+                "read"
+              ]
+            }
+          ]
+        },
+        "x-codefly-operation": {
+          "attempt_timeout": "30s",
+          "audience": "releases",
+          "backoff": "1s",
+          "completion": "COMPLETION_CALL",
+          "invoke_scopes": [
+            {
+              "actions": [
+                "read"
+              ],
+              "resource_kind": "records.records"
+            }
+          ],
+          "max_attempts": 3,
+          "recovery": "RECOVERY_RECOMPUTE",
+          "retryable_codes": [
+            "503"
+          ],
+          "tool": {
+            "description": "Read the board as records holds it, without asking GitHub",
+            "effect": "EFFECT_READ_ONLY",
+            "name": "Releases_Get_V1_Releases_Recorded"
+          },
+          "total_timeout": "90s"
+        }
+      }
+    },
+    "/v1/releases/releases": {
+      "get": {
+        "description": "A member holding datasource:invoke on the connected source\n\nThe board, read live from GitHub",
+        "operationId": "Releases_Get_V1_Releases_Releases",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/Board"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Read every composition's pins and every component's latest tag",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "requires": [
+            {
+              "resource_kind": "datasource.sources",
+              "actions": [
+                "invoke"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "/v1/releases/status": {
+      "get": {
+        "description": "Any member of the organization\n\nOne object; never an error for a missing source or type, which are states the page shows",
+        "operationId": "Releases_Get_V1_Releases_Status",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/StatusReport"
+            }
+          },
+          "401": {
+            "description": "The request carried no Work Context the authority checks for this solution.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes to a module failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Report whether the viewer's GitHub source is connected and the event types installed",
+        "tags": [
+          "releases"
+        ],
+        "x-codefly-authority-policy": {
+          "any_checked_caller": true
+        }
+      }
+    }
+  },
+  "produces": [
+    "application/json"
+  ],
+  "security": [
+    {
+      "workContext": []
+    }
+  ],
+  "securityDefinitions": {
+    "workContext": {
+      "description": "The signed-in person's Work Context for this solution, sent by the authority's edge. Every operation requires it.",
+      "in": "header",
+      "name": "x-codefly-work-context",
+      "type": "apiKey"
+    }
+  },
+  "swagger": "2.0"
+}

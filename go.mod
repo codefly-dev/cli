@@ -1,6 +1,6 @@
 module github.com/codefly-dev/cli
 
-go 1.27.2
+go 1.27.3
 
 require (
 	connectrpc.com/connect v1.21.0
@@ -11,12 +11,18 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.19.5-0.20261013183203-29fc1d724376
+	github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261026143932-67b85b14a942
+	github.com/codefly-dev/authority/libraries/authority-core/go v0.0.0-20261026143932-67b85b14a942
+	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261026023425-000d44495d93
+	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027171336-5178f01696e3
+	github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261026175541-3afad7224855
+	github.com/codefly-dev/core v0.19.8-0.20261027203111-6eadd92dd156
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
-	github.com/codefly-dev/sdk-go/workcontext v0.1.0
+	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/creack/pty v1.1.24
+	github.com/distribution/reference v0.6.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/fatih/color v1.19.0
 	github.com/go-git/go-git/v5 v5.19.3
@@ -38,9 +44,11 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/mod v0.41.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.46.0
+	google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b
 	// HELD at v1.83.2: v1.84.0 is affected by GO-2026-6443 (server panic via a
 	// missing :authority/Host header) and the advisory's only fix for the 1.84
 	// line is an unreleased v1.85.0-dev pseudo-version, so there is nothing to
@@ -62,6 +70,7 @@ require (
 	buf.build/go/protovalidate v1.4.0 // indirect
 	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
+	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	code.gitea.io/sdk/gitea v0.25.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/42wim/httpsig v1.2.4 // indirect
@@ -94,6 +103,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
+	github.com/codefly-dev/authority/libraries/resources/go v0.0.0-20261026023425-000d44495d93 // indirect
 	github.com/codefly-dev/gortk v0.2.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
@@ -103,7 +113,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/davidmz/go-pageant v1.0.2 // indirect
 	github.com/dekobon/tree-sitter-groovy v0.3.0 // indirect
-	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.7.1 // indirect
 	github.com/docker/go-connections v0.8.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
@@ -166,7 +175,7 @@ require (
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
-	github.com/moby/buildkit v0.32.2 // indirect
+	github.com/moby/buildkit v0.34.1 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/monochromegane/go-gitignore v0.0.0-20200626010858-205db1a8cc00 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
@@ -186,7 +195,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shoenig/go-m1cpu v0.2.2 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/sirupsen/logrus v1.10.0 // indirect
+	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
@@ -233,11 +242,9 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
+	golang.org/x/time v0.16.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect

@@ -22,7 +22,15 @@ Older rendered ExternalSecrets already contain the `secretKey` and `remoteRef`
 needed for resolution. There is no render-inventory migration.
 
 Valid stored values remain unchanged. A seed operation does not rotate them or
-prove that a manually seeded value authenticates to its intended service.
+prove that a manually seeded value authenticates to its intended service. Only
+`--rotate` replaces a stored value, and only a generated one: it rewrites a
+stored URL whose decoded password is the old value and refuses any other stored
+value holding it, raw or percent-encoded, so no derived value in the store is
+left on the old one. It does not change the credential the server accepts, and
+it does not see a copy outside the store it plans. Its output names keys,
+properties and store versions; the old and new values are never printed, and a
+derived URL that fails to parse is refused without echoing it
+([commands](commands.md#rotating-a-generated-key)).
 Configuration aliases must agree across every referenced property, including
 properties in one document. Aliases use one generated value when none exists,
 or reuse the consistent value already held anywhere in that alias group.
@@ -35,3 +43,6 @@ permits contradictory sources.
 
 These checks validate the render and store relationship. They do not verify live
 service authentication, cluster health, durable storage, or historical disclosure.
+
+Secret rotation resolves the generator’s format and size through the same
+environment declaration as initial generation, including its defaults.

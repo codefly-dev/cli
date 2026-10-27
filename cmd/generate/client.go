@@ -4,10 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/codefly-dev/core/standards"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -75,7 +76,7 @@ contracts directory on disk (--from contracts:<dir>).
 func init() {
 	ClientCmd.Flags().StringVar(&clientFrom, "from", "", "contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>")
 	ClientCmd.Flags().StringSliceVar(&clientLanguages, "language", nil, "languages to generate: go,typescript,python")
-	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the facade to these protobuf services (protobuf contracts only)")
+	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the library to these protobuf services (short or fully qualified names; ambiguous short names are refused) and the declarations they need: contract, catalog, bindings and facade")
 	ClientCmd.Flags().StringVar(&clientName, "name", "", "library name (default: <module>-<service>-client)")
 	ClientCmd.Flags().StringVar(&clientModuleName, "module-name", "", "facade entry-point name (default: derived from the contract)")
 	ClientCmd.Flags().BoolVar(&clientNoFacade, "no-facade", false, "generate bindings only, no facade")
@@ -242,16 +243,10 @@ type resolvedContractSource struct {
 	facadeModuleDefault string
 
 	// protoSources, when set (the local module/service source only), carries
-	// the service's own .proto files. proto.GenerateClient's DescriptorSet
-	// path mishandles a --services subset once more than one file is present
-	// (core bug: a facade plugin invoked over a multi-file descriptor set —
-	// unavoidable once the module's proto imports anything, e.g. a REST
-	// gateway's google/api/annotations.proto — reports the target service as
-	// undeclared, even though the same content generates fine as Sources).
-	// The local source has the original files on hand, so it is generated
-	// from Sources instead, sidestepping the bug; contracts:/package:
-	// sources only ever have the persisted descriptor bytes and remain
-	// exposed to it (see docs/commands.md).
+	// the service's own .proto files, which a library binding the whole
+	// contract is generated from. A --services library is generated from its
+	// narrowed descriptor set instead, since the sources declare every
+	// service (see generators.ContractEntry.ProtoSources).
 	protoSources []coreproto.Source
 }
 
@@ -333,7 +328,7 @@ func resolveLocalSource(ctx context.Context, workspace *resources.Workspace, fro
 func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hint, moduleName, serviceName string) (*basev0.Endpoint, error) {
 	var candidates []*basev0.Endpoint
 	for _, e := range endpoints {
-		if resources.IsGRPC(ctx, e) != nil || resources.IsRest(ctx, e) != nil {
+		if servesContract(ctx, e) {
 			candidates = append(candidates, e)
 		}
 	}
@@ -343,10 +338,10 @@ func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hin
 				return e, nil
 			}
 		}
-		return nil, fmt.Errorf("service %s/%s has no grpc or rest endpoint named %q", moduleName, serviceName, hint)
+		return nil, fmt.Errorf("service %s/%s has no grpc, connect or rest endpoint named %q", moduleName, serviceName, hint)
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("service %s/%s has no grpc or rest endpoint", moduleName, serviceName)
+		return nil, fmt.Errorf("service %s/%s has no grpc, connect or rest endpoint", moduleName, serviceName)
 	}
 	if len(candidates) > 1 {
 		var names []string
@@ -364,12 +359,20 @@ func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hin
 // a flat "contract.binpb"/"openapi.json" path (a generated library owns its
 // own contract/ directory, not a module's committed contracts tree).
 func buildLocalContractEndpoint(ctx context.Context, service *resources.Service, endpoint *basev0.Endpoint) ([]byte, *composition.APIContractEndpoint, []coreproto.Source, error) {
-	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil {
+	// A Connect endpoint serves the service's protobuf contract over the
+	// Connect protocol family; its contract is the gRPC one.
+	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil || endpoint.GetApi() == standards.CONNECT {
+		if grpc == nil {
+			grpc = &basev0.GrpcAPI{}
+		}
 		protoDir := filepath.Join(service.Dir(), "proto")
 		if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 			return nil, nil, nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
 		}
-		descriptorSet, err := buildDescriptorSet(ctx, protoDir)
+		// buf compiles the descriptor set and names its own source set in the
+		// same companion run, so Sources are exactly the files and import names
+		// the descriptor set was built from.
+		descriptorSet, protoSources, err := compileProtoDir(ctx, protoDir, true)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot build descriptor set: %w", err)
 		}
@@ -377,19 +380,24 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
 		}
-		protoSources, err := collectProtoSources(protoDir)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot read proto sources: %w", err)
+		// The contract's package is the one the service's own protos declare
+		// their services in, as `generate contracts` settles it; an endpoint
+		// declaring none in service.codefly.yaml is the common case.
+		pkg := grpc.Package
+		if pkg == "" {
+			if pkg, err = serviceContractPackage(&set, protoDir, nil); err != nil {
+				return nil, nil, nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
+			}
 		}
 		return descriptorSet, &composition.APIContractEndpoint{
 			Service:  service.Name,
 			Endpoint: endpoint.Name,
 			API:      endpoint.Api,
 			Kind:     composition.APIContractKindProtobuf,
-			Package:  grpc.Package,
+			Package:  pkg,
 			Path:     "contract.binpb",
 			Digest:   composition.APIContractDigest(descriptorSet),
-			Services: composition.ProtobufServices(&set, grpc.Package),
+			Services: composition.ProtobufServices(&set, pkg),
 		}, protoSources, nil
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
@@ -400,12 +408,7 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
 		}
-		var routes []composition.APIContractRoute
-		for _, group := range rest.Groups {
-			for _, route := range group.Routes {
-				routes = append(routes, composition.APIContractRoute{Method: route.Method.String(), Path: filepath.ToSlash(filepath.Join(group.Path, route.Path))})
-			}
-		}
+		routes := contractRoutes(rest.Groups)
 		return rest.Openapi, &composition.APIContractEndpoint{
 			Service:  service.Name,
 			Endpoint: endpoint.Name,
@@ -418,36 +421,6 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		}, nil, nil
 	}
 	return nil, nil, nil, fmt.Errorf("endpoint %s reports neither a grpc nor a rest contract", endpoint.Name)
-}
-
-// collectProtoSources reads every .proto file directly (and doubly) under
-// protoDir into proto.GenerateClient's Sources form, path relative to
-// protoDir — the same files buildDescriptorSet compiled, so generation from
-// Sources produces the same code the persisted descriptor set describes.
-func collectProtoSources(protoDir string) ([]coreproto.Source, error) {
-	var sources []coreproto.Source
-	err := filepath.WalkDir(protoDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".proto") {
-			return err
-		}
-		rel, err := filepath.Rel(protoDir, p)
-		if err != nil {
-			return err
-		}
-		content, err := os.ReadFile(p) //nolint:gosec // p is walked from a service's own committed proto directory
-		if err != nil {
-			return err
-		}
-		sources = append(sources, coreproto.Source{Path: filepath.ToSlash(rel), Content: content})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(sources) == 0 {
-		return nil, fmt.Errorf("no .proto files under %s", protoDir)
-	}
-	return sources, nil
 }
 
 // resolvePackageSource handles --from package:<id>@<version>: it finds the
@@ -601,4 +574,11 @@ func defaultLibraryName(source *resolvedContractSource) string {
 func lastPathSegment(s string) string {
 	parts := strings.Split(s, "/")
 	return parts[len(parts)-1]
+}
+
+// servesContract is whether an endpoint has a contract a client is generated
+// from: a protobuf one (grpc, or connect, which serves the same proto over the
+// Connect protocol family) or an OpenAPI one (rest).
+func servesContract(ctx context.Context, e *basev0.Endpoint) bool {
+	return resources.IsGRPC(ctx, e) != nil || resources.IsRest(ctx, e) != nil || e.GetApi() == standards.CONNECT
 }

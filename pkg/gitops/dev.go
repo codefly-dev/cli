@@ -107,9 +107,12 @@ type DevResult struct {
 	// Root is the rendered module tree that was patched.
 	Root string
 	// Changed are the workspace-relative paths the deployment rewrote,
-	// including the render inventory.
+	// including the render inventory and, in an environment with a host, the
+	// environment's cell file.
 	Changed []string
 	Entry   InventoryDevDeployment
+	// Cell is the re-derived cell file, in an environment with a host.
+	Cell *CellResult
 }
 
 // buildServiceImage is the build/push boundary of a dev deployment. It is a
@@ -143,7 +146,7 @@ func buildRenderedServiceImages(
 	}
 	defer os.RemoveAll(scratch)
 	destinations := serviceRenderDestinations(scratch)
-	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
 	}
 	return digestImages(destinations(module, service))
@@ -187,23 +190,30 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if err != nil {
 		return DevResult{}, err
 	}
-	// A tree that declares presence or authority pins, in signed documents,
-	// the exact build each workload runs. A dev re-pin changes the build
-	// under those documents and leaves them describing bytes nobody runs: the
-	// host refuses the new pod, and publishing the tree would sign a false
-	// declaration. The declaration is re-derived by a render, so a render is
-	// what a delivering module gets.
-	if inventory.SolutionHostBindingPath != "" || inventory.SolutionAuthorityPath != "" {
-		return DevResult{}, fmt.Errorf("module %s declares presence or authority to a host in environment %s, and a dev deployment would re-pin %s's image under documents that declare the build it runs; render the module instead (codefly deploy gitops %s --env %s), which re-derives the declaration with the new build",
-			request.Module.Name, request.Environment.Name, request.Service, request.Module.Name, request.Environment.Name)
-	}
 	service, err := loadDevService(ctx, request.Module, request.Service, request.Source)
 	if err != nil {
+		return DevResult{}, err
+	}
+	if err = validateModulePermissions(ctx, request.Workspace, request.Module, request.Environment, service); err != nil {
 		return DevResult{}, err
 	}
 	// A configuration error refuses the deploy before the image is built.
 	if err = orchestration.PlanConfigurationReferences(ctx, request.Workspace, request.Environment, []*resources.Service{service}, true); err != nil {
 		return DevResult{}, err
+	}
+	// A hosted cell admits only the builds its cell file names, so the file is
+	// committed with the new digest. Whether it can be — re-derived, and moving
+	// nothing but this service's images — is settled before anything is built.
+	hosted := request.Environment.Host != nil
+	cellService := request.Module.Name + "/" + request.Service
+	var startCell devCell
+	if hosted {
+		if startCell, err = loadDevCell(ctx, request.Workspace, request.Environment); err != nil {
+			return DevResult{}, err
+		}
+		if _, _, err = deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, nil); err != nil {
+			return DevResult{}, err
+		}
 	}
 	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, request.Environment, request.Rebuild, request.Sink)
 	if err != nil {
@@ -230,8 +240,29 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		}
 		relative = append(relative, filepath.ToSlash(rel))
 	}
+	// A cell admits only the builds its cell file names: a validation cell takes
+	// that approval from the branch head's file, so a new digest the file does
+	// not carry is refused at admission and the deployment never runs. The cell
+	// file is re-derived from the rendered trees exactly as a render does, and
+	// committed with the digest it now approves.
+	var cell *CellResult
+	if hosted {
+		file, derived, cellErr := deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, images)
+		if cellErr == nil {
+			cellErr = writeCell(&file, derived.Path)
+		}
+		if cellErr != nil {
+			return DevResult{}, fmt.Errorf("the dev image is pushed and re-pinned in %s, but nothing is staged: %w", strings.Join(relative, ", "), cellErr)
+		}
+		rel, relErr := filepath.Rel(request.Workspace.Dir(), derived.Path)
+		if relErr != nil {
+			return DevResult{}, relErr
+		}
+		relative = append(relative, filepath.ToSlash(rel))
+		cell = &derived
+	}
 	entry = inventory.Dev[devEntryIndex(inventory.Dev, request.Service)]
-	return DevResult{Root: root, Changed: relative, Entry: entry}, nil
+	return DevResult{Root: root, Changed: relative, Entry: entry, Cell: cell}, nil
 }
 
 // moduleRenderDestination is where a full module render writes its owned tree.
@@ -263,17 +294,24 @@ func loadDevTarget(root, module, service, environment, appProject string) (Inven
 	if err != nil {
 		return Inventory{}, InventoryUnit{}, err
 	}
-	if err := validateInventory(&inventory, &actual, "rendered tree"); err != nil {
+	// The delivery overlay is publish's, not the render's: publish settles
+	// and signs the manifest the render wrote provisionally, adds the Job that
+	// delivers it, and the branch carries that version. A dev deployment
+	// re-pins one service's image and leaves the overlay as it finds it, so
+	// the overlay is left out of this comparison and carried into the
+	// re-derived inventory as found.
+	if err := validateInventoryOutside(&inventory, &actual, inventory.ModuleManifestPath, "rendered tree"); err != nil {
 		return Inventory{}, InventoryUnit{}, fmt.Errorf("%w; the tree was edited since it was rendered: %s", err, renderFirst)
 	}
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Kind != UnitKindService || unit.Name != service {
 			continue
 		}
 		if unit.Path == "" {
 			return Inventory{}, InventoryUnit{}, fmt.Errorf("service %s/%s is managed outside the rendered tree in %s; there is no image to deploy", module, service, environment)
 		}
-		return inventory, unit, nil
+		return inventory, *unit, nil
 	}
 	return Inventory{}, InventoryUnit{}, fmt.Errorf("the render of module %s does not contain service %s: %s", module, service, renderFirst)
 }
@@ -284,14 +322,13 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 	return &RenderOptions{
 		Module: inventory.Module, Unit: inventory.Unit, Environment: inventory.Environment,
 		Namespace: inventory.Namespace, AppProject: inventory.AppProject, OwnedPath: inventory.OwnedPath,
-		ModulePath: inventory.ModulePath, Package: inventory.Package, Units: inventory.Units,
+		ModulePath: inventory.ModulePath, Package: inventory.Package, Pin: inventory.Pin, Units: inventory.Units,
 		// A dev deployment re-derives the inventory in place, so every field
 		// the render recorded has to be carried back or it is dropped without
 		// a diff. Dropping this one stops Argo delivering the declared
-		// bindings on the next publish while the documents stay in the tree.
-		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
+		// manifest on the next publish while it stays in the tree.
+		ModuleManifestPath:            inventory.ModuleManifestPath,
 		HostsDelivery:                 inventory.HostsDelivery,
-		SolutionAuthorityPath:         inventory.SolutionAuthorityPath,
 		Delivered:                     inventory.Delivery,
 		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
 	}

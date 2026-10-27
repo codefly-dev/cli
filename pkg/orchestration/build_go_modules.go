@@ -227,13 +227,26 @@ func (p *goModulePrefetch) Close() error {
 // repaired (a downloaded toolchain ignores -modcacherw; removeTree covers it).
 // The one thing it does impose on git is gitPrefetchConfig.
 func goPrefetchEnv(base []string, modCache string) []string {
+	env := make([]string, 0, len(base)+3)
+	for _, entry := range base {
+		switch key, _, _ := strings.Cut(entry, "="); key {
+		case "GOMODCACHE", "GOFLAGS", "GOWORK":
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env, "GOMODCACHE="+modCache, "GOFLAGS=-mod=readonly -modcacherw", "GOWORK=off")
+	return withGitPrefetchConfig(env)
+}
+
+// withGitPrefetchConfig is base with gitPrefetchConfig appended after the git
+// configuration entries the host already passes in the environment.
+func withGitPrefetchConfig(base []string) []string {
 	configured := hostGitConfigCount(base)
-	env := make([]string, 0, len(base)+4+2*len(gitPrefetchConfig))
+	env := make([]string, 0, len(base)+1+2*len(gitPrefetchConfig))
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
 		switch {
-		case key == "GOMODCACHE", key == "GOFLAGS", key == "GOWORK":
-			continue
 		case key == "GIT_CONFIG_COUNT":
 			// Re-emitted below with the prefetch's own entries counted in.
 			continue
@@ -245,7 +258,6 @@ func goPrefetchEnv(base []string, modCache string) []string {
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GOMODCACHE="+modCache, "GOFLAGS=-mod=readonly -modcacherw", "GOWORK=off")
 	for _, setting := range gitPrefetchConfig {
 		env = append(env,
 			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", configured, setting[0]),
