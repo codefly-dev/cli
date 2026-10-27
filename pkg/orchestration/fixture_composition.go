@@ -2,10 +2,10 @@ package orchestration
 
 import (
 	"context"
-	"github.com/codefly-dev/core/configurations"
 	"maps"
 	"slices"
 
+	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 

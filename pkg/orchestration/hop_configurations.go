@@ -81,7 +81,7 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 			if config.GetOrigin() != resources.ConfigurationWorkspace {
 				continue
 			}
-			replacement := proto.Clone(config).(*basev0.Configuration)
+			replacement := proto.CloneOf(config)
 			replacement.Infos = slices.DeleteFunc(replacement.Infos, func(info *basev0.ConfigurationInformation) bool {
 				return info.GetName() == fixturefragments.Group
 			})
