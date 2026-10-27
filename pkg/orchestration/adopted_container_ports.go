@@ -41,10 +41,10 @@ var listOwnedContainers = func(ctx context.Context, scopeID string) ([]container
 
 // adoptedContainerAddresses answers which loopback addresses the first-Init
 // port guard must not treat as a squatter: the ones published by the
-// container this service's agent will adopt. A Docker store with
+// container attributed to this service. A Docker store with
 // keep-running leaves its container up so the next run reattaches to it by
-// name, and that container still publishes the service's deterministic port —
-// the one this Init proposes.
+// name, and that container still publishes the service's deterministic port.
+// The agent decides actual reuse during Init; this check establishes ownership.
 //
 // Core supplies exact parent-service attribution for containers with arbitrary
 // agent-owned names. Scope, namespace, lifecycle, the concrete name and the

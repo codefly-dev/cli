@@ -58,7 +58,8 @@ func TestFirstInitAdoptsItsOwnKeptContainerAndRefusesAnyOtherHolder(t *testing.T
 		// An agent may run several containers for one service and names each
 		// after itself: service-object-storage publishes the service's own
 		// grpc port from `<unique>-gateway`, beside `<unique>-minio` and
-		// `<unique>-network`. Each is this service's container.
+		// a separate `<unique>-network` Docker network. Each container belongs
+		// to this service.
 		{name: "its agent's gateway container", mutate: func(c *container.Summary) {
 			suffixed(c, "-gateway")
 		}, refused: false},
