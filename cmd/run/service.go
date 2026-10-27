@@ -893,6 +893,12 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		return nil, w.Wrap(err)
 	}
 
+	// The local authority's fixture-composition document is merged from the
+	// composed modules' fragments before anything reads the configuration.
+	if err := provisionFixtureComposition(ctx, workspace, env); err != nil {
+		return nil, w.Wrap(err)
+	}
+
 	// Parse remote services
 	remoteServices, err := parseRemote(workspace, remotes)
 	if err != nil {

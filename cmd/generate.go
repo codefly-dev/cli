@@ -19,6 +19,7 @@ func init() {
 	GenerateCmd.AddCommand(generate.PermissionsCmd)
 	GenerateCmd.AddCommand(generate.RunnablesCmd)
 	GenerateCmd.AddCommand(generate.RunnableBindingsCmd)
+	GenerateCmd.AddCommand(generate.FixtureCompositionCmd)
 	GenerateCmd.AddCommand(generate.ClientCmd)
 	GenerateCmd.AddCommand(generate.TenantOverlaysCmd)
 }

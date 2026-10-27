@@ -2731,6 +2731,7 @@ Subcommands:
 
 - [`codefly generate client`](#codefly-generate-client)
 - [`codefly generate contracts`](#codefly-generate-contracts)
+- [`codefly generate fixture-composition`](#codefly-generate-fixture-composition)
 - [`codefly generate permissions`](#codefly-generate-permissions)
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
@@ -2814,6 +2815,43 @@ Flags:
       --format string   output format: text|json (default "text")
       --output string   output directory for generated contracts (default: <module dir>/contracts/api)
       --permissions     also generate typed permission constants; with --check, verify their freshness
+```
+
+## `codefly generate fixture-composition`
+
+Merge every composed module's fixture-composition fragment into the workspace's document
+
+```
+Merge the fixture-composition fragment every module of the workspace ships
+(configurations/<profile>/fixture-composition.yaml in the module's own directory)
+into the workspace's configurations/<profile>/fixture-composition.yaml, the document
+the local authority reads.
+
+Each module states, once, what the local authority's standard fixture roles may
+do at its kinds; the composition's own module states only what is its own (a
+collection its seed writes). Every grant of a role on one kind, every
+installation and every stand-in module has exactly one source: two fragments
+stating the same one are refused, naming both. The rules are the authority's
+(codefly-dev/authority libraries/fixture-composition).
+
+`codefly run` writes the same document before the local authority boots, so a
+developer never runs this first. The written file says it is generated in its
+first line; a hand-written document is never overwritten, and this command
+refuses it by name.
+
+Examples:
+  codefly generate fixture-composition
+  codefly generate fixture-composition --env local
+```
+
+```
+codefly generate fixture-composition [flags]
+```
+
+Flags:
+
+```
+      --env string   environment whose configuration profile the document is written for (default "local")
 ```
 
 ## `codefly generate permissions`
