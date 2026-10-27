@@ -58,7 +58,13 @@ func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
 	if err != nil || image == "" {
 		return "", err
 	}
-	return localRuntimeImageReference(ctx, image)
+	immutable, err := localRuntimeImageReference(ctx, image)
+	if err != nil {
+		return "", err
+	}
+	wool.Get(ctx).In("Runner.localRuntimeImage", wool.ThisField(runner.instance)).Info(
+		"handing the agent the image this machine built", wool.Field("runtime_image", immutable), wool.Field("loaded_as", image))
+	return immutable, nil
 }
 
 // Init's image contract uses a canonical repository reference, not a bare
