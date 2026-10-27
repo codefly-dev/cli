@@ -53,6 +53,21 @@ func TestFirstInitAdoptsItsOwnKeptContainerAndRefusesAnyOtherHolder(t *testing.T
 			c.Names = []string{"/codefly-other"}
 			c.Labels[dockerrun.LabelCodeflyName] = "codefly-other"
 		}, refused: true},
+		// An agent may run several containers for one service and names each
+		// after itself: service-object-storage publishes the service's own
+		// grpc port from `<unique>-gateway`, beside `<unique>-minio` and
+		// `<unique>-network`. Each is this service's container.
+		{name: "its agent's gateway container", mutate: func(c *container.Summary) {
+			suffixed(c, "-gateway")
+		}, refused: false},
+		{name: "its agent's minio container", mutate: func(c *container.Summary) {
+			suffixed(c, "-minio")
+		}, refused: false},
+		// A sibling service is still not this one, suffix or no suffix.
+		{name: "a sibling service's container", mutate: func(c *container.Summary) {
+			c.Names = []string{"/codefly-other-web-gateway-minio"}
+			c.Labels[dockerrun.LabelCodeflyName] = "codefly-other-web-gateway-minio"
+		}, refused: true},
 		{name: "ephemeral", mutate: func(c *container.Summary) { c.Labels[dockerrun.LabelCodeflyEphemeral] = "true" }, refused: true},
 		{name: "not running", mutate: func(c *container.Summary) { c.State = "exited" }, refused: true},
 		{name: "published on another port", mutate: func(c *container.Summary) { c.Ports[0].PublicPort++ }, refused: true},
@@ -106,6 +121,14 @@ func TestFirstInitAdoptsItsOwnKeptContainerAndRefusesAnyOtherHolder(t *testing.T
 func TestAdoptedContainerAddressesExcuseNothingWithoutARecoveryIdentity(t *testing.T) {
 	runner := &Runner{}
 	require.False(t, runner.adoptedContainerAddresses(context.Background())("127.0.0.1:5432"))
+}
+
+// suffixed renames a kept container the way an agent that runs more than one
+// container for a service does, through Core's own ContainerName.
+func suffixed(c *container.Summary, suffix string) {
+	name := c.Labels[dockerrun.LabelCodeflyName] + suffix
+	c.Names = []string{"/" + name}
+	c.Labels[dockerrun.LabelCodeflyName] = name
 }
 
 // A publication covers only its own loopback family.

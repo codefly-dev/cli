@@ -48,7 +48,14 @@ var listOwnedContainers = func(ctx context.Context, scopeID string) ([]container
 // The container is identified the way the agent's runner reuses it: the name
 // every Core service agent gives it (dockerrun.ContainerName over the
 // service's unique name in the run's workspace and naming scope, as
-// Base.UniqueWithWorkspace spells it), owned by codefly,
+// Base.UniqueWithWorkspace spells it) — or that name with a suffix, because an
+// agent may run SEVERAL containers for one service and names each after
+// itself: service-object-storage's runtime publishes the service's own grpc
+// port from `<unique>-gateway` and keeps `<unique>-minio` and
+// `<unique>-network` beside it. Requiring the bare name excused none of them,
+// so the first Init of a second flow in one job found the port its own agent
+// had left published and refused it — deterministically, which is what
+// saas#1265 hit on every phase. Owned by codefly,
 // labelled with this flow's exact recovery scope and, when it carries one, its
 // namespace (the rule dockerrun applies before reusing a container), running,
 // and not an ephemeral one, which is never reused across sessions. An address
@@ -86,13 +93,30 @@ func (runner *Runner) adoptedContainerAddresses(ctx context.Context) func(addres
 func adoptableContainer(c *container.Summary, name, scopeID, namespace string) bool {
 	labels := c.Labels
 	if labels[dockerrun.LabelCodeflyOwner] != "true" || labels[dockerrun.LabelCodeflyRecoveryScope] != scopeID ||
-		labels[dockerrun.LabelCodeflyName] != name || labels[dockerrun.LabelCodeflyEphemeral] == "true" || c.State != "running" {
+		labels[dockerrun.LabelCodeflyEphemeral] == "true" || c.State != "running" {
 		return false
 	}
 	if found := labels[dockerrun.LabelCodeflyRecoveryNamespace]; found != "" && found != namespace {
 		return false
 	}
-	return slices.Contains(c.Names, "/"+name)
+	// This service's container, or one its agent derived from it: Core's
+	// ContainerName only prefixes and replaces slashes, so an agent's
+	// `<unique>-minio` is this name plus that suffix. The logical name label
+	// and the Docker name must agree on it, and the caller still requires the
+	// container to publish the proposed port on its own loopback family — so
+	// a sibling service whose name merely EXTENDS this one is excused only if
+	// it published this service's port, which is a misconfiguration this
+	// guard was never the detector for.
+	return ownedByService(labels[dockerrun.LabelCodeflyName], name) &&
+		slices.ContainsFunc(c.Names, func(dockerName string) bool {
+			return ownedByService(strings.TrimPrefix(dockerName, "/"), name)
+		})
+}
+
+// ownedByService reports whether a container name is the service's own or one
+// its agent derived from it by suffix.
+func ownedByService(candidate, name string) bool {
+	return candidate == name || strings.HasPrefix(candidate, name+"-")
 }
 
 // publishesAddress reports whether c publishes the loopback host:port address
