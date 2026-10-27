@@ -10,7 +10,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -447,19 +446,12 @@ func SelectRunnableBindings(ctx context.Context, workspace *resources.Workspace,
 	return selection, nil
 }
 
-// RunnableBindingKey is the configuration key an operation is bound under:
-// its module and its derived name, upper-cased with every other character an
-// underscore, so the SDK's workspace-value lookup finds it.
+// RunnableBindingKey is the configuration key an operation is bound under.
+// The spelling belongs to pkg/runnables, because the listing that reports what
+// an environment has answered must key by exactly what this writes; this stays
+// as the name generation's own call sites and tests read by.
 func RunnableBindingKey(module, name string) string {
-	var key strings.Builder
-	for _, r := range strings.ToUpper(module + "__" + name) {
-		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			key.WriteRune(r)
-			continue
-		}
-		key.WriteByte('_')
-	}
-	return key.String()
+	return runnablespkg.BindingKey(module, name)
 }
 
 // prepareRunnable prepares one derived operation for the environment the
@@ -486,7 +478,7 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 	if kind == composition.APIContractKindOpenAPI {
 		codes = corerunnable.HTTPStatusCodes
 	}
-	spec, err := operationSpec(operation.Operation, descriptor.GetOperation(), codes)
+	spec, err := operation.Operation.Spec(descriptor.GetOperation(), codes)
 	if err != nil {
 		return nil, err
 	}
@@ -511,65 +503,6 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 // operationSpec reads the derived document back into Core's spec so Core can
 // resolve its slots once and write the resulting policy with Policy(). The
 // document round-trip test holds both conversions to every Operation field.
-func operationSpec(declared *runnablespkg.Operation, spelling string, codes corerunnable.CodeVocabulary) (*corerunnable.OperationSpec, error) {
-	if declared == nil {
-		return nil, errors.New("the operation declares no execution policy")
-	}
-	durations := map[string]time.Duration{}
-	for field, spelled := range map[string]string{
-		"attempt_timeout": declared.AttemptTimeout,
-		"total_timeout":   declared.TotalTimeout,
-		"backoff":         declared.Backoff,
-	} {
-		parsed, err := time.ParseDuration(spelled)
-		if err != nil {
-			return nil, fmt.Errorf("%s %q is not a duration: %w", field, spelled, err)
-		}
-		durations[field] = parsed
-	}
-	completion, named := basev0.RunnableExecution_Completion_value[declared.Completion]
-	if !named || basev0.RunnableExecution_Completion(completion) == basev0.RunnableExecution_COMPLETION_UNKNOWN {
-		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
-			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
-	}
-	var recovery basev0.RunnableExecution_Recovery
-	if declared.Recovery != "" {
-		value, known := basev0.RunnableExecution_Recovery_value[declared.Recovery]
-		if !known || basev0.RunnableExecution_Recovery(value) == basev0.RunnableExecution_RECOVERY_UNKNOWN {
-			return nil, fmt.Errorf("recovery %q is not a recovery; %s and %s are the two",
-				declared.Recovery, basev0.RunnableExecution_RECOVERY_RECOMPUTE, basev0.RunnableExecution_RECOVERY_RECEIPT)
-		}
-		recovery = basev0.RunnableExecution_Recovery(value)
-	}
-	return &corerunnable.OperationSpec{
-		Method:             spelling,
-		Codes:              codes,
-		AttemptTimeout:     durations["attempt_timeout"],
-		TotalTimeout:       durations["total_timeout"],
-		MaxAttempts:        declared.MaxAttempts,
-		Backoff:            durations["backoff"],
-		RetryableCodes:     declared.RetryableCodes,
-		Audience:           declared.Audience,
-		InvokeScopes:       preparedScopes(declared.InvokeScopes),
-		LookupScopes:       preparedScopes(declared.LookupScopes),
-		LookupMethod:       declared.LookupMethod,
-		MaxInputBytes:      declared.MaxInputBytes,
-		MaxOutputBytes:     declared.MaxOutputBytes,
-		Completion:         basev0.RunnableExecution_Completion(completion),
-		Tool:               declared.Tool,
-		RequiredScopeSlots: declared.RequiredScopeSlots,
-		Recovery:           recovery,
-	}, nil
-}
-
-func preparedScopes(declared []runnablespkg.Scope) []*basev0.WorkScopeV1 {
-	scopes := make([]*basev0.WorkScopeV1, 0, len(declared))
-	for _, scope := range declared {
-		scopes = append(scopes, &basev0.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: scope.Actions, ResourceIds: scope.ResourceIDs})
-	}
-	return scopes
-}
-
 // verifyPublishedContract holds the owner's published contract to the bytes the
 // API contract catalog recorded for it. A prepared value states the digest of
 // the bounded contract derived from it, so a catalog that no longer describes

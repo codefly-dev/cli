@@ -69,7 +69,7 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 		require.Contains(t, fields, string(field.Name()), "carry every Core field through the document")
 	}
 	require.Len(t, fields, coreFields.Len()+1, "only method is document-specific")
-	spec, err := operationSpec(document, document.Method, corerunnable.GRPCStatusNames)
+	spec, err := document.Spec(document.Method, corerunnable.GRPCStatusNames)
 	require.NoError(t, err)
 	require.True(t, proto.Equal(declared, spec.Policy()), "declared %v; read %v", declared, spec.Policy())
 	// Check the Go shape too, so an omitempty zero cannot hide a new field.
