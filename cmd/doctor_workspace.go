@@ -1117,6 +1117,13 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		// whose references are checked below, never from a name exemption.
 		if checked != nil {
 			for _, info := range checked.Infos {
+				// A group this invocation supplies is not ambiguous, whoever
+				// supplies it: core reports fixture-composition ambiguous
+				// because every composed module ships a fragment of it, and
+				// the merge of those fragments is what the resolution
+				// supplies. Keyed on what was supplied rather than on a name,
+				// so a second generated group needs no second exemption.
+				delete(provided.Ambiguous, info.Name)
 				if _, authored := byName[info.Name]; authored {
 					// Generated binding decisions must judge the values the
 					// invocation delivers, including Core-applied overrides.

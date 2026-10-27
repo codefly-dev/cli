@@ -8,12 +8,14 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/authority/libraries/hop/go/routing"
+	"github.com/codefly-dev/cli/pkg/fixturefragments"
 	"github.com/codefly-dev/cli/pkg/methodpolicy"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -63,6 +65,29 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	r.combined = slices.Clone(configs)
 	if group != nil {
 		r.combined = append(r.combined, group)
+	}
+	// The one fixture-composition document of this composition, merged from
+	// the composed modules' fragments: the group is multi-provider by design,
+	// and this is its provider where the workspace has no answer of its own
+	// (fixture_composition.go).
+	fixture, err := mergedFixtureComposition(ctx, r.workspace, env, r.CompositionRootWorkspaceConfigurationNames())
+	if err != nil {
+		return err
+	}
+	if fixture != nil {
+		// Replace any module default with the complete merge. Core may have
+		// resolved a single fragment (or identical fragments) without ambiguity.
+		for i, config := range r.combined {
+			if config.GetOrigin() != resources.ConfigurationWorkspace {
+				continue
+			}
+			replacement := proto.CloneOf(config)
+			replacement.Infos = slices.DeleteFunc(replacement.Infos, func(info *basev0.ConfigurationInformation) bool {
+				return info.GetName() == fixturefragments.Group
+			})
+			r.combined[i] = replacement
+		}
+		r.combined = append(r.combined, fixture)
 	}
 	return nil
 }

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
@@ -250,20 +251,28 @@ func TestALegacyHTTPDeliveryRefusedWith503IsRetriedUntilAccepted(t *testing.T) {
 // At the deadline the error carries why the host is still not serving and the
 // last refusal it answered.
 func TestANativeDeliveryAtTheDeadlineNamesTheReasonAndTheLastRefusal(t *testing.T) {
-	refusing := deliverTo(t, serveComposition(t, &refusingComposition{refusals: []codes.Code{codes.Unavailable, codes.Unavailable, codes.Unavailable, codes.Unavailable}}))
-	ready := true
-	delivery := testDelivery(func(context.Context) error {
-		if ready {
-			ready = false
-			return nil
-		}
-		return errors.New("the host is not ready: saas/auth-gateway: lifecycle: runtime start has not completed")
-	}, refusing)
-	delivery.schedule.Deadline = 30 * time.Millisecond
-	err := delivery.run(context.Background())
-	require.ErrorContains(t, err, "configured bound 30ms")
-	require.ErrorContains(t, err, "saas/auth-gateway: lifecycle: runtime start has not completed")
-	require.ErrorContains(t, err, "refused with Unavailable")
+	refusing := deliverTo(t, serveComposition(t, &refusingComposition{refusals: []codes.Code{codes.Unavailable}}))
+	// Obtain the real client's refusal before entering virtual time. Socket
+	// scheduling must not consume the short deadline used to test retry state.
+	ctx, cancel := context.WithTimeout(context.Background(), testDeliverySchedule.Deadline)
+	defer cancel()
+	refusal := refusing(ctx)
+	require.ErrorContains(t, refusal, "refused with Unavailable")
+	synctest.Test(t, func(t *testing.T) {
+		ready := true
+		delivery := testDelivery(func(context.Context) error {
+			if ready {
+				ready = false
+				return nil
+			}
+			return errors.New("the host is not ready: saas/auth-gateway: lifecycle: runtime start has not completed")
+		}, func(context.Context) error { return refusal })
+		delivery.schedule.Deadline = 30 * time.Millisecond
+		err := delivery.run(context.Background())
+		require.ErrorContains(t, err, "configured bound 30ms")
+		require.ErrorContains(t, err, "saas/auth-gateway: lifecycle: runtime start has not completed")
+		require.ErrorContains(t, err, "refused with Unavailable")
+	})
 }
 
 // fakeLauncherFlow answers readiness per service from ready, and counts the
