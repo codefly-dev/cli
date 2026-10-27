@@ -150,7 +150,6 @@ homebrew_casks:
     skip_upload: auto
     url:
       template: "https://github.com/codefly-dev/cli/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-      verified: "github.com/codefly-dev/cli/"
     repository:
       owner: codefly-dev
       name: homebrew-cli

@@ -56,11 +56,11 @@ func TestMissingPlatforms(t *testing.T) {
 }
 
 func TestReleasePRBodyIncludesPin(t *testing.T) {
-	with := releasePRBody(releaseOptions{pin: "v0.3.11"}, "0.1.0", "v0.1.1")
+	with := releasePRBody(releaseOptions{pin: "v0.3.11"}, "0.1.0", "v0.1.1", nil)
 	if !strings.Contains(with, "v0.3.11") {
 		t.Fatalf("body = %q, want it to mention the pin", with)
 	}
-	without := releasePRBody(releaseOptions{}, "0.1.0", "v0.1.1")
+	without := releasePRBody(releaseOptions{}, "0.1.0", "v0.1.1", nil)
 	if strings.Contains(without, "pinned") {
 		t.Fatalf("body = %q, want no pin line when --pin is unset", without)
 	}
@@ -186,9 +186,12 @@ func TestRunAgentReleaseHappyPath(t *testing.T) {
 
 	var gateCalledWith string
 	restore := runReleaseGate
-	runReleaseGate = func(_ context.Context, gateDir, pin string) error {
-		gateCalledWith = gateDir + "|" + pin
-		return nil
+	runReleaseGate = func(_ context.Context, target *releaseTarget, options releaseOptions) (*releaseSourceReport, error) {
+		if !options.noAttestation {
+			t.Fatal("--no-attestation was not forwarded to the release gate")
+		}
+		gateCalledWith = target.dir + "|" + options.pin
+		return nil, nil
 	}
 	t.Cleanup(func() { runReleaseGate = restore })
 
@@ -199,7 +202,7 @@ func TestRunAgentReleaseHappyPath(t *testing.T) {
 	server := fakeGitHub(t, fakeGitHubState{mergeSHA: mergeSHA, capturedRefSHA: &tagRefSHA})
 	useFakeGitHub(t, server)
 
-	err := runAgentRelease(context.Background(), releaseOptions{dir: dir, pin: "v0.3.11", bump: "patch"})
+	err := runAgentRelease(context.Background(), releaseOptions{dir: dir, pin: "v0.3.11", bump: "patch", noAttestation: true})
 	if err != nil {
 		t.Fatalf("runAgentRelease: %v", err)
 	}
@@ -227,7 +230,7 @@ func TestRunAgentReleaseNoWaitStopsAfterPR(t *testing.T) {
 	initAgentRepo(t, dir, "0.1.0")
 
 	restore := runReleaseGate
-	runReleaseGate = func(context.Context, string, string) error { return nil }
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) { return nil, nil }
 	t.Cleanup(func() { runReleaseGate = restore })
 
 	var refCreated bool
@@ -253,7 +256,10 @@ func TestRunAgentReleaseResumesMergedPRViaList(t *testing.T) {
 
 	var gateCalled bool
 	restore := runReleaseGate
-	runReleaseGate = func(context.Context, string, string) error { gateCalled = true; return nil }
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) {
+		gateCalled = true
+		return nil, nil
+	}
 	t.Cleanup(func() { runReleaseGate = restore })
 
 	stubReleases(t, []releaseInfo{{version: "0.1.1", platforms: []string{ciPlatform}}})
@@ -294,7 +300,10 @@ func TestRunAgentReleaseResumeVerifiesUnpublishedTag(t *testing.T) {
 
 	var gateCalled bool
 	restore := runReleaseGate
-	runReleaseGate = func(context.Context, string, string) error { gateCalled = true; return nil }
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) {
+		gateCalled = true
+		return nil, nil
+	}
 	t.Cleanup(func() { runReleaseGate = restore })
 
 	// v0.1.4 was tagged but shipped no asset.
@@ -333,7 +342,10 @@ func TestRunAgentReleaseProceedsWhenLatestPublished(t *testing.T) {
 
 	var gateCalled bool
 	restore := runReleaseGate
-	runReleaseGate = func(context.Context, string, string) error { gateCalled = true; return nil }
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) {
+		gateCalled = true
+		return nil, nil
+	}
 	t.Cleanup(func() { runReleaseGate = restore })
 
 	stubReleases(t, []releaseInfo{
@@ -373,7 +385,7 @@ func TestOpenReleasePRDeletesRemoteBranchOnPRCreateFailure(t *testing.T) {
 	origin := initAgentRepo(t, dir, "0.1.0")
 
 	restore := runReleaseGate
-	runReleaseGate = func(context.Context, string, string) error { return nil }
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) { return nil, nil }
 	t.Cleanup(func() { runReleaseGate = restore })
 
 	server := fakeGitHub(t, fakeGitHubState{createPRStatus: http.StatusInternalServerError})

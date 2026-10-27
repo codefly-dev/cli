@@ -21,7 +21,7 @@ import (
 // collects it, neither of which depends on what runs inside it — and pulling
 // the companion image here would make a recovery proof fail on a buf or
 // registry problem. Keep the tag in step with the image the workflow pulls.
-const qualificationImage = "alpine:3.22"
+const qualificationImage = "mirror.gcr.io/library/alpine:3.22"
 
 // interruptedGenerateEnv marks the re-exec'd child below as the interrupted
 // generate. The owner recorded on a container is the PID that created it, and

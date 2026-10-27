@@ -142,6 +142,78 @@ func TestTheRetiredRolesDeclarationIsRefusedByName(t *testing.T) {
 // The roles reach the authority's document (AuthorityManifestV1.roles) exactly
 // as declared, and the solution's own kind reaches its scope ceilings once.
 func TestContractRolesReachTheAuthorityDocument(t *testing.T) {
+	doc := deliveredAuthorityDocument(t, writeContract(t, wikiContract))
+	requireRoles(t, wikiRoles, doc.GetRoles())
+	require.Len(t, doc.GetScopeCeilings(), 1)
+	require.True(t, proto.Equal(wikiPage, doc.GetScopeCeilings()[0]))
+}
+
+// ownedContract declares a viewer that reads the wiki's own pages and, of the
+// collections it consumes through a binding, only those its installation owns.
+const ownedContract = `schema: codefly/module-contract/v1
+principal: shop
+namespaces: []
+queues: []
+scope_ceilings:
+  - resource_kind: wiki.page
+    actions: [read, write]
+roles:
+  - name: installer
+    scopes:
+      - {resource_kind: wiki.page, actions: [read, write]}
+    installation_owned_scopes:
+      - {resource_kind: documents.collection, actions: [read, write]}
+  - name: viewer
+    scopes:
+      - {resource_kind: wiki.page, actions: [read]}
+    installation_owned_scopes:
+      - {resource_kind: documents.collection, actions: [read]}
+bindings:
+  - id: collections
+    operations: [invoke]
+    audience: {from: shop/collections-audience}
+    scope_ceiling:
+      invoke:
+        - {resource_kind: documents.collection, actions: [read, write]}
+destinations: []
+`
+
+// A role's installation_owned_scopes reach the authority's document as
+// RoleV1.installation_owned_scopes (field 3), apart from its scopes and naming
+// no ids, so the authority limits each to what the installation owns rather
+// than granting the whole kind.
+func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
+	doc := deliveredAuthorityDocument(t, writeContract(t, ownedContract))
+	requireRoles(t, []*compositionv1.RoleV1{
+		{
+			Name:                    modulecontract.InstallerRole,
+			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}},
+			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read", "write"}}},
+		},
+		{
+			Name:                    "viewer",
+			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
+			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read"}}},
+		},
+	}, doc.GetRoles())
+
+	// Core's rules hold the installation-owned scopes too: one naming ids has
+	// no field for them, and one beyond what the unit asks for is refused,
+	// both before anything is delivered.
+	for name, c := range map[string]struct{ document, reason string }{
+		"ids":           {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents.collection, actions: [read], resource_ids: [a]}", 1), "resource_ids"},
+		"beyond a kind": {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents, actions: [read]}", 1), `role "viewer" grants installation-owned documents:read`},
+	} {
+		_, err := Roles(writeContract(t, c.document))
+		require.ErrorContains(t, err, c.reason, name)
+	}
+}
+
+// deliveredAuthorityDocument delivers a solution whose module contract is at
+// dir through the composition delivery and returns the authority document the
+// host received.
+func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.AuthorityManifestV1 {
+	t.Helper()
 	stub := &compositionStub{held: map[string]uint64{}}
 	server := grpc.NewServer()
 	compositionv1.RegisterCompositionServiceServer(server, stub)
@@ -152,14 +224,15 @@ func TestContractRolesReachTheAuthorityDocument(t *testing.T) {
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
 	_, private, _ := ed25519.GenerateKey(nil)
 	signer, err := solutionhost.NewInMemorySigner("release", private)
 	require.NoError(t, err)
-	dir := writeContract(t, wikiContract)
 	d := NewCompositionDelivery(conn, signer,
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
 		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
-		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) })
+		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) },
+		func(context.Context, string) (bool, error) { return OwnerAware(dir) })
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},
@@ -171,7 +244,5 @@ func TestContractRolesReachTheAuthorityDocument(t *testing.T) {
 	require.NoError(t, err)
 	var doc compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(stub.seen[0].GetAuthority().GetDocument(), &doc))
-	requireRoles(t, wikiRoles, doc.GetRoles())
-	require.Len(t, doc.GetScopeCeilings(), 1)
-	require.True(t, proto.Equal(wikiPage, doc.GetScopeCeilings()[0]))
+	return &doc
 }

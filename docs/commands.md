@@ -323,7 +323,12 @@ configuration does not hold yet to a value minted by the same generator, into
 the file `codefly config generate` writes (`configurations/<profile>/<group>.secret.env`,
 0600, refused when git would track it), and says which keys it generated,
 never their values. A held value is never rotated. A `service` generator names
-the services it covers; a local run guesses none. An environment whose
+the services it covers; a local run guesses none. A `workspace` generator for a
+group the workspace inherits from a composed workspace, and does not author, is
+refused unless the group is declared under `configuration-extensions`: the
+generated file is an own group, which would replace the inherited one whole
+(the hop's `MODULES` lost, and every route with it); declared, the generated
+keys extend it. An environment whose
 `service-secrets` names a store keeps its secrets there, and a run writes
 nothing for it; a render refuses a secret in an environment that names no
 store, since it carries secrets only as references into one. So a playground
@@ -3074,6 +3079,34 @@ codefly agent ci                     # Run source, release, generated-service, a
 codefly agent deps --pin vX.Y.Z      # Pin Core across root, base and generated factory locks
 codefly agent deps --pin vX.Y.Z --dependency github.com/codefly-dev/sdk-go@vA.B.C
 ```
+
+`codefly agent release` gates a service-agent release, opens its version PR,
+waits for a human merge, tags the merge commit and verifies published assets.
+Before the `source` stage it queries GitHub check runs for the checkout's exact
+HEAD SHA and matches them to a completed, successful CI workflow run in the
+same repository. CI means a workflow named `ci` (case-insensitive) or stored at
+`.github/workflows/ci.yml` or `.github/workflows/ci.yaml`. A passing individual
+job alone does not attest a workflow.
+
+With that attestation, local source tests are skipped; source preparation,
+build, audit, conformance and drift checks still run. Without it (including an
+API lookup failure), source tests run locally as usual. A checkout changed from
+HEAD, including changes from `--pin`, also requires local tests.
+`--no-attestation` forces the local run without querying CI:
+
+```bash
+codefly agent release --no-wait                # gate and open the version PR
+codefly agent release --no-attestation        # force local source tests
+```
+
+The command prints the chosen source path and the location of
+`release-report.json` in a temporary directory outside the checkout, retained
+with `report.json` and CI artifacts even if CI fails. The release report
+records `source.path` (`attested`, `local`, or `not-run` when an earlier stage
+fails), the reason, and the attesting workflow name, run ID and full SHA when
+present, alongside the full CI report. The version PR also records the source
+path and attestation. Standalone `codefly agent ci` always runs source tests
+locally.
 
 `agent deps --dependency` is repeatable and requires `--pin`. It updates only
 modules that already require the selected library, then verifies their standalone

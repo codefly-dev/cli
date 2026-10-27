@@ -24,18 +24,52 @@ func command(directory, name string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func previousTag(directory, currentTag string) (string, error) {
+// previousTag names the release this one is compared against: the newest
+// stable tag merged into HEAD that has a published GitHub release. A tag alone
+// is not a release — a tag whose release workflow failed stays on origin, since
+// published tags are never moved — so a stable tag without a release is passed
+// over rather than read. Stable tags with no release among them is an error,
+// never a first release.
+func previousTag(directory, currentTag string, published func() (map[string]bool, error)) (string, error) {
 	output, err := command(directory, "git", "tag", "--merged", "HEAD", "--sort=-version:refname")
 	if err != nil {
 		return "", err
 	}
 	stable := regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+	var candidates []string
 	for _, tag := range strings.Fields(string(output)) {
 		if tag != currentTag && stable.MatchString(tag) {
+			candidates = append(candidates, tag)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	releases, err := published()
+	if err != nil {
+		return "", fmt.Errorf("list published CLI releases: %w", err)
+	}
+	for _, tag := range candidates {
+		if releases[tag] {
 			return tag, nil
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("none of the %d stable tags before %s has a published release", len(candidates), currentTag)
+}
+
+// publishedReleases lists the tags of the CLI's published (non-draft) releases.
+func publishedReleases(directory string) func() (map[string]bool, error) {
+	return func() (map[string]bool, error) {
+		output, err := command(directory, "gh", "release", "list", "--repo", "codefly-dev/cli", "--exclude-drafts", "--limit", "10000", "--json", "tagName", "--jq", ".[].tagName")
+		if err != nil {
+			return nil, err
+		}
+		releases := map[string]bool{}
+		for _, tag := range strings.Fields(string(output)) {
+			releases[tag] = true
+		}
+		return releases, nil
+	}
 }
 
 func releaseNotes(current, previous *agentv0.AgentContract, previousTag string) string {
@@ -80,7 +114,7 @@ func generate(directory, tag, output string) error {
 	}
 	required := contract.Current()
 	required.Capabilities = []string{contract.ContainerRecoveryScope}
-	previous, err := previousTag(directory, tag)
+	previous, err := previousTag(directory, tag, publishedReleases(directory))
 	if err != nil {
 		return err
 	}

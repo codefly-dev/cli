@@ -85,7 +85,7 @@ jobs:
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -v "$SYFT_PATH:/usr/local/bin/syft:ro" \
             -w /workspace \
-            ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
+            ghcr.io/goreleaser/goreleaser-cross:v1.27.3 \
             check
           docker run --rm \
             -e CODEFLY_RELEASE_SIGNING_KEY_PATH \
@@ -94,7 +94,7 @@ jobs:
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -v "$SYFT_PATH:/usr/local/bin/syft:ro" \
             -w /workspace \
-            ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
+            ghcr.io/goreleaser/goreleaser-cross:v1.27.3 \
             release --snapshot --clean
 
           for target in darwin:amd64 darwin:arm64 linux:amd64 linux:arm64; do
@@ -147,7 +147,7 @@ jobs:
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -v "$SYFT_PATH:/usr/local/bin/syft:ro" \
             -w /workspace \
-            ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
+            ghcr.io/goreleaser/goreleaser-cross:v1.27.3 \
             release --clean
 
   attest:
