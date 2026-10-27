@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
 )
 
@@ -127,4 +128,89 @@ func TestAnOrdinaryGroupTwoModulesDisagreeOnStaysAmbiguous(t *testing.T) {
 	require.Contains(t, reader.AmbiguousWorkspaceConfigurations(), "engine")
 	require.NotContains(t, reader.AmbiguousWorkspaceConfigurations(), fixturefragments.Group)
 	require.ErrorContains(t, reader.AmbiguousWorkspaceConfigurations()["engine"], "provided by composed modules")
+}
+
+func TestIdenticalFragmentsMustStillConflict(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	ws := fragmentWorkspace(t, "")
+	modules, err := ws.LoadModules(context.Background())
+	require.NoError(t, err)
+	var doc []byte
+	for _, m := range modules {
+		if m.Name == "documents" {
+			doc, err = os.ReadFile(filepath.Join(m.Dir(), "configurations/local/fixture-composition.yaml"))
+			require.NoError(t, err)
+		}
+	}
+	for _, m := range modules {
+		require.NoError(t, os.WriteFile(filepath.Join(m.Dir(), "configurations/local/fixture-composition.yaml"), doc, 0600))
+	}
+	_, err = fixturefragments.Prepare(context.Background(), ws, &environments.Environment{Name: "local"})
+	require.ErrorIs(t, err, fixturecomposition.ErrConflict, "run generation rejects the duplicate")
+	reader, err := NewWorkspaceConfigurationReader(context.Background(), ws)
+	require.NoError(t, err)
+	require.ErrorIs(t, reader.Load(context.Background(), resources.LocalEnvironment()), fixturecomposition.ErrConflict, "read-only consumers must reject the same duplicate")
+}
+
+func TestLocalFragmentMustJoinForeignFragment(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	external := fragmentWorkspace(t, "")
+	modules, err := external.LoadModules(context.Background())
+	require.NoError(t, err)
+	var authority string
+	for _, m := range modules {
+		if m.Name == "authority" {
+			authority = m.Dir()
+		}
+	}
+	ws := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                                        "name: mixed\nlayout: modules\nmodules:\n - name: authority\n   path: " + authority + "\n - name: product\n",
+		"modules/product/module.codefly.yaml":                           "name: product\nservices: []\n",
+		"modules/product/configurations/local/fixture-composition.yaml": fragmentHead + "roles: [{organization: acme, name: viewer, scopes: [{kind: product, actions: [read]}]}]\n",
+	})
+	prepared, err := fixturefragments.Prepare(context.Background(), ws, &environments.Environment{Name: "local"})
+	require.NoError(t, err)
+	expected, err := fixturecomposition.Decode(prepared.Content)
+	require.NoError(t, err)
+	require.Len(t, expected.Roles, 1)
+	groups := fixtureGroups(readerFor(t, ws))
+	require.Len(t, groups, 1)
+	got, err := fixturecomposition.Decode([]byte(groups[0]))
+	require.NoError(t, err)
+	require.Equal(t, expected, got, "run and read-only consumers must see the same merged grants")
+}
+
+func TestNoFragmentsMatchesGeneratedEmptyDocument(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	ws := fragmentWorkspace(t, "")
+	modules, err := ws.LoadModules(context.Background())
+	require.NoError(t, err)
+	for _, m := range modules {
+		require.NoError(t, os.Remove(filepath.Join(m.Dir(), "configurations/local/fixture-composition.yaml")))
+	}
+	prepared, err := fixturefragments.Prepare(context.Background(), ws, &environments.Environment{Name: "local"})
+	require.NoError(t, err)
+	expected, err := fixturecomposition.Decode(prepared.Content)
+	require.NoError(t, err)
+	groups := fixtureGroups(readerFor(t, ws))
+	require.Len(t, groups, 1, "run generation supplies an empty valid document, so read-only consumers must too")
+	got, err := fixturecomposition.Decode([]byte(groups[0]))
+	require.NoError(t, err)
+	require.Equal(t, expected, got)
+}
+
+// A structured workspace override still belongs to the module for Core's
+// delivery scoping; that must not cause the fixture provider to replace it.
+func TestWorkspaceDocumentOverridesAnUnambiguousModuleFragment(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	own := fragmentHead + "roles: [{organization: acme, name: admin, scopes: [{kind: product, actions: [read]}]}]\n"
+	ws := fragmentWorkspace(t, own)
+	modules, err := ws.LoadModules(context.Background())
+	require.NoError(t, err)
+	for _, module := range modules {
+		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), "configurations/local/fixture-composition.yaml"), []byte(fragmentHead), 0o600))
+	}
+	reader := readerFor(t, ws)
+	require.NotContains(t, reader.CompositionRootWorkspaceConfigurationNames(), fixturefragments.Group, "Core retains the composed delivery scope")
+	require.Equal(t, []string{own}, fixtureGroups(reader))
 }

@@ -171,15 +171,12 @@ func sourceName(workspace *resources.Workspace, module, path string) string {
 // Merged is the merged document alone, for a caller that supplies the group
 // rather than writing the file: the same merge Prepare performs, without the
 // generated header, so what a reader is handed and what `codefly generate
-// fixture-composition` writes come from one place. It is nil when no composed
-// module ships a fragment.
+// fixture-composition` writes come from one place, including a schema-only
+// document when no module ships a fragment.
 func Merged(ctx context.Context, workspace *resources.Workspace, profiles []string) ([]byte, error) {
 	sources, err := fragments(ctx, workspace, profiles)
 	if err != nil {
 		return nil, err
-	}
-	if len(sources) == 0 {
-		return nil, nil
 	}
 	merged, err := fixturecomposition.Merge(sources)
 	if err != nil {

@@ -2,7 +2,9 @@ package orchestration
 
 import (
 	"context"
+	"github.com/codefly-dev/core/configurations"
 	"maps"
+	"slices"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -10,47 +12,31 @@ import (
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
 )
 
-// mergedFixtureComposition is the one fixture-composition document of this
-// composition: the merge of the fragment every composed module ships
-// (fixturefragments, whose rules are the authority's).
-//
-// It is why this group is MULTI-PROVIDER, alone among workspace
-// configurations. Core's single-provider rule is right for a group whose value
-// one module owns — two modules defining it differently is ambiguity with no
-// principled winner — and wrong for this one, where every composed module is
-// *expected* to carry its own part and the parts combine. Since cli#1197 every
-// module ships a fragment, so the moment a composition composes a second one
-// core reports an ambiguity and the readiness check refuses a composition a
-// run handles happily. Its suggested remedy — declare the group in the
-// solution workspace — is also a refusal now: `codefly generate
-// fixture-composition` will not overwrite a hand-written document, and the
-// local authority reads the merge, not one module's part.
-//
-// Supplying the merge here resolves it where every path can see the same
-// answer: this reader is the one loader run, CI, deployment and `codefly
-// doctor workspace` share, so none of them can disagree about this group.
-// Nothing is exempted from the single-provider rule — the group simply has a
-// provider, this one, exactly as hop-routes does.
-//
-// A workspace that provides the group itself keeps it: a developer's
-// `codefly generate fixture-composition` writes that file, a run writes it
-// before it loads any configuration, and core's own precedence (the consuming
-// workspace's declaration wins, and resolves an ambiguity between composed
-// modules) then applies untouched. This supplies the merge only where the
-// workspace has no answer of its own, which is the case in CI and in a render.
-func mergedFixtureComposition(ctx context.Context, workspace *resources.Workspace, env *resources.Environment, configs []*basev0.Configuration) (*basev0.Configuration, error) {
-	for _, info := range workspaceConfigurationInfos(configs) {
+// mergedFixtureComposition supplies the Authority-owned merge unless the
+// workspace itself supplies the document. A module's resolved default is still
+// a fragment, even when Core sees just one provider or identical providers.
+func mergedFixtureComposition(ctx context.Context, workspace *resources.Workspace, env *resources.Environment, rootNames []string) (*basev0.Configuration, error) {
+	if slices.Contains(rootNames, fixturefragments.Group) {
+		return nil, nil
+	}
+	profiles, err := env.ConfigurationProfileNames()
+	if err != nil {
+		return nil, err
+	}
+	// Core overlays an explicit workspace document onto a single module's
+	// default without classifying that group as a root-delivered group. Read
+	// the root's profile through Core to preserve that explicit declaration too.
+	own, err := configurations.LoadProfileConfigurations(ctx, workspace.Dir(), "configurations", profiles)
+	if err != nil {
+		return nil, err
+	}
+	for _, info := range own.Infos {
 		if info.GetName() == fixturefragments.Group {
-			// The workspace (or core's resolution of it) already answers.
 			return nil, nil
 		}
 	}
 	declared, err := fixturefragments.Declared(ctx, workspace)
 	if err != nil || !declared {
-		return nil, err
-	}
-	profiles, err := env.ConfigurationProfileNames()
-	if err != nil {
 		return nil, err
 	}
 	document, err := fixturefragments.Merged(ctx, workspace, profiles)
