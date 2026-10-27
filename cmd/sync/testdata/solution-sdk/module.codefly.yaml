@@ -1,0 +1,5 @@
+kind: module
+name: portal
+service-entry: backend
+services:
+    - name: backend

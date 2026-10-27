@@ -590,11 +590,13 @@ rejected as a diamond, the same rule `pkg/composition/coherence.go` enforces
 for a service's transitive library closure, applied here to the contracts one
 generation aggregates.
 
-This single declaration drives three outputs, kept in step by the same
-command: the generated SDK above; the entry service's runtime
-`service-dependencies` (`--apply-dependencies` adds any entry missing there,
-never removing an existing one); and the `SolutionBundle`'s
-`platform.consumes`, which lodestar derives from the same manifest. Before
+This declaration drives the generated SDK above. It does not drive the entry
+service's `service-dependencies`: a solution calls another module through the
+authority hop's Connect face, which routes each module behind it from that
+module's published API catalog and checks every call against the method's
+policy, so a direct edge would be a mesh path past the hop. Only a consume of
+the solution's own module is a direct call, and `--apply-dependencies` adds
+that edge when it is missing, never removing an existing one. Before
 `api.consumes`, a solution declared what it consumed in up to four
 disconnected places — `service-dependencies`, a vendored `solution-sdk.yaml`,
 a `go.mod` replace pin, and a hand-written `Manifest{}` struct for host

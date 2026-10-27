@@ -76,7 +76,7 @@ contracts directory on disk (--from contracts:<dir>).
 func init() {
 	ClientCmd.Flags().StringVar(&clientFrom, "from", "", "contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>")
 	ClientCmd.Flags().StringSliceVar(&clientLanguages, "language", nil, "languages to generate: go,typescript,python")
-	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)")
+	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the library to these protobuf services (short or fully qualified names; ambiguous short names are refused) and the declarations they need: contract, catalog, bindings and facade")
 	ClientCmd.Flags().StringVar(&clientName, "name", "", "library name (default: <module>-<service>-client)")
 	ClientCmd.Flags().StringVar(&clientModuleName, "module-name", "", "facade entry-point name (default: derived from the contract)")
 	ClientCmd.Flags().BoolVar(&clientNoFacade, "no-facade", false, "generate bindings only, no facade")

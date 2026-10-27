@@ -168,7 +168,7 @@ func TestTypeScriptFacadeImportsReachIntoGen(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "api_pb.ts"), []byte("export const Pdf = {};\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := mergeTypeScriptEntry(langDir, raw); err != nil {
+			if err := mergeTypeScriptEntry(langDir, raw, "", false); err != nil {
 				t.Fatalf("mergeTypeScriptEntry: %v", err)
 			}
 			got, err := os.ReadFile(filepath.Join(langDir, "src", "pdf_facade.ts"))

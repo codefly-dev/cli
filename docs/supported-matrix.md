@@ -67,7 +67,7 @@ Keep the required rows and receipt verifier enabled; absence is still a failure.
 
 | Status | Meaning |
 |---|---|
-| `qualified` | A CI job drives this row on every change and lists it in `CODEFLY_CONFORMANCE_REQUIRED`, so its tests cannot skip themselves when the backend is missing. Every qualified row must declare a gate call site — without one nothing could hold it to the claim. |
+| `qualified` | A CI job drives this row on every change and lists it in `CODEFLY_CONFORMANCE_REQUIRED`, so its tests cannot skip themselves when the backend is missing. The job may pass over a change that touches only documentation, which cannot alter the row's outcome. Every qualified row must declare a gate call site — without one nothing could hold it to the claim. |
 | `not-yet-qualified` | Real tests and a real gate exist, but nothing proves the row outside a developer machine. **This is not a support claim.** Each row lists what blocks it. |
 | `unsupported` | Not shipped and not tested. |
 
@@ -78,12 +78,35 @@ Keep the required rows and receipt verifier enabled; absence is still a failure.
 | `linux-amd64-source` | qualified | linux/amd64 | none | — | `go.yml` — `coverage`, `race`, `lint` |
 | `linux-amd64-native-npm` | qualified | linux/amd64 | native | `npm` | `go.yml` — `coverage`, `race` |
 | `linux-amd64-native-control` | qualified | linux/amd64 | native protocol peers | `go` | `go.yml` — `control-integration` |
-| `linux-amd64-docker-generate` | not-yet-qualified | linux/amd64 | docker | `docker`, `buf` | `CODEFLY_GENERATE_QUALIFY=1`, developer machine only |
+| `linux-amd64-docker-generate` | qualified | linux/amd64 | docker | `docker`, `buf` | `generate-qualification.yml` — `generate`, reported as `docker-generate` |
 | `linux-amd64-docker-mcp-run` | not-yet-qualified | linux/amd64 | docker | `docker` | `CODEFLY_MCP_RUN_QUALIFY=1`, developer machine only |
 | `linux-amd64-network-mcp-agent` | not-yet-qualified | linux/amd64 | native | — | `CODEFLY_MCP_AGENT_QUALIFY=1`, developer machine only |
 | `linux-amd64-k3d-deploy` | not-yet-qualified | linux/amd64 | k3d | `docker`, `k3d`, `kubectl`, `ssh-keygen`, `git` | `CODEFLY_GITOPS_K3D_QUALIFY=1`, developer machine only |
 | `darwin-arm64-native-user-service` | not-yet-qualified | darwin/arm64 | native | `launchctl` | `CODEFLY_SERVICE_INTEGRATION=1`, developer machine only |
 | `windows-amd64-native-run` | unsupported | windows/amd64 | native | — | none |
+
+The Docker generate job runs every gate package of the row and every package
+holding a file built under its `build_tag` (`proto_companion_required`), with
+that tag and `CODEFLY_GENERATE_QUALIFY=1`. Both come from the matrix and the
+tagged sources through
+[`scripts/conformance-packages`](../scripts/conformance-packages), never from
+a list in the script, and a test in `pkg/conformance` fails if the script's
+loop drifts from them. It pulls the published proto image resolved by Core
+once per runner, and extracts that image's `buf` for the SDK fixture. Each
+package is compiled once per shard; three runners split the discovered tests
+round-robin, and every top-level test runs in a fresh process with its own
+Codefly home, so package globals cannot leak between tests. The shards retain
+per-test output, timings and conformance receipts.
+
+It runs on every pull request, every merge-queue entry and nightly. One job,
+`docker-generate`, always reports: it fails unless every shard passed and the
+receipts of all shards together prove the row. A change touching only
+documentation (`docs/` or Markdown outside `testdata/`) cannot alter what
+generation compiles or reads, so there the shards are skipped and
+`docker-generate` passes without them; every other change runs them.
+[`scripts/generate-qualification-scope.sh`](../scripts/generate-qualification-scope.sh)
+decides, with rename detection off: a file moved into `docs/` or renamed to
+`.md` counts by its old path too.
 
 ### Qualification gaps
 
@@ -149,7 +172,8 @@ the test step's exit code.
    test actually uses.
 3. Add the row to this table.
 4. When a CI job provisions the backend, add the job to the row's `ci` list,
-   name the row in that gate's `conformance_rows` in `go.yml`, drop the
+   name the row in that gate's `CODEFLY_CONFORMANCE_REQUIRED` (or its
+   `conformance_rows` matrix value), drop the
    blockers, and flip the status to `qualified`. The tests in `pkg/conformance`
    fail if any of those four are missing — the `ci` entry is resolved against
    the workflow's real jobs and matrix gates, not matched as a substring.

@@ -82,6 +82,19 @@ type ClientLibraryRequest struct {
 	Force      bool
 	GoModule   string
 	NpmPackage string
+
+	// FacadePackages gives every entry's facade and bindings a directory of
+	// their own, named after its facade entry-point: in Go the facade is the
+	// package go/<module>/ (import <GoModule>/<module>) over go/gen/<module>/,
+	// and in TypeScript the bindings sit under src/gen/<module>/ beside the
+	// facade at src/. An aggregated library needs it: each Go facade carries
+	// its own package clause, so two cannot share go/, and buf writes a
+	// binding where its proto file sits in the contract, so two contracts each
+	// rooted at an api.proto would write one gen/api binding. The TypeScript
+	// entry point is the namespaced barrel either way (writeTypeScriptIndex).
+	// Without it the single facade sits at the root, the layout
+	// `generate client` has always produced.
+	FacadePackages bool
 }
 
 // generatedLanguageExport is one languages: entry of library.codefly.yaml.
@@ -124,6 +137,9 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 	// narrowed entries.
 	entries, err := narrowEntries(req.Entries)
 	if err != nil {
+		return err
+	}
+	if err = checkFacadeNames(entries); err != nil {
 		return err
 	}
 	openAPICount := 0
@@ -203,7 +219,7 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		s, genErr := stageLanguage(ctx, lang, filepath.Join(req.Output, string(lang)), entries, !req.NoFacade, req.GoModule)
+		s, genErr := stageLanguage(ctx, lang, filepath.Join(req.Output, string(lang)), entries, !req.NoFacade, req.FacadePackages, req.GoModule)
 		if genErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
 		}
@@ -277,6 +293,26 @@ func checkContractDiamond(entries []ContractEntry) error {
 	return nil
 }
 
+// checkFacadeNames refuses two entries generating the same facade entry-point:
+// in every language the name is a file (and, with FacadePackages, a package
+// directory), so the second would overwrite the first.
+func checkFacadeNames(entries []ContractEntry) error {
+	seen := map[string]*ContractEntry{}
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Endpoint.Kind != composition.APIContractKindProtobuf {
+			continue
+		}
+		name := entryModuleName(entry)
+		if previous, exists := seen[name]; exists {
+			return fmt.Errorf("%s/%s/%s and %s/%s/%s both generate the facade %q; give one of them its own name (`as` in api.consumes)",
+				previous.ModuleName, previous.Endpoint.Service, previous.Endpoint.Endpoint, entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint, name)
+		}
+		seen[name] = entry
+	}
+	return nil
+}
+
 // stagedLanguage is one language's generated output, held in scratch
 // directories until every language of the run has generated, then applied
 // to langDir. An OpenAPI contract has no facade to aggregate and is only ever
@@ -287,6 +323,9 @@ type stagedLanguage struct {
 	langDir string
 	entries []stagedEntry
 	openAPI string
+	// facadePackages is ClientLibraryRequest.FacadePackages: where apply
+	// merges each entry.
+	facadePackages bool
 }
 
 // stagedEntry is one protobuf contract entry generated into raw, with the
@@ -309,8 +348,8 @@ func (s *stagedLanguage) remove() {
 
 // stageLanguage runs the companion for every entry of one language, writing
 // only into scratch directories. On error it leaves nothing behind.
-func stageLanguage(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade bool, goModule string) (_ *stagedLanguage, err error) {
-	staged := &stagedLanguage{lang: lang, langDir: langDir}
+func stageLanguage(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade, facadePackages bool, goModule string) (_ *stagedLanguage, err error) {
+	staged := &stagedLanguage{lang: lang, langDir: langDir, facadePackages: facadePackages}
 	defer func() {
 		if err != nil {
 			staged.remove()
@@ -367,9 +406,9 @@ func (s *stagedLanguage) apply(goModule, npmPackage, pyPackage string) (generate
 		var mergeErr error
 		switch s.lang {
 		case languages.GO:
-			mergeErr = mergeGoEntry(s.langDir, entry.raw, entry.moduleName, goModule)
+			mergeErr = mergeGoEntry(s.langDir, entry.raw, entry.moduleName, goModule, s.facadePackages)
 		case languages.TYPESCRIPT:
-			mergeErr = mergeTypeScriptEntry(s.langDir, entry.raw)
+			mergeErr = mergeTypeScriptEntry(s.langDir, entry.raw, entry.moduleName, s.facadePackages)
 		case languages.PYTHON:
 			mergeErr = mergePythonEntry(pkgDir, entry.raw, entry.moduleName, pyPackage)
 		}

@@ -2769,7 +2769,7 @@ Flags:
       --no-facade            generate bindings only, no facade
       --npm-scope string     npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
       --output string        output directory (default: <workspace>/libraries/<name>)
-      --services strings     restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)
+      --services strings     restrict the library to these protobuf services (short or fully qualified names; ambiguous short names are refused) and the declarations they need: contract, catalog, bindings and facade
 ```
 
 ## `codefly generate contracts`
@@ -4963,8 +4963,15 @@ Aggregate one client library per solution from api.consumes
 ```
 Reads api.consumes in solution.codefly.yaml and produces one aggregated
 client library per solution, carrying only the declared services, generated
-from the contracts of the module packages the workspace composes. Also keeps
-the runtime service-dependencies in step with the declaration.
+from the contracts of the module packages the workspace composes. A consume
+of a module's rest or connect endpoint is generated from that service's
+protobuf contract. Each consumed module's facade and bindings get a
+directory of their own.
+
+A consume of another module is reached through the authority hop, which
+fronts every module behind it on one Connect face, and needs no
+service-dependencies entry; only a consume of the solution's own module is a
+direct call, and that one is kept in step with the declaration.
 ```
 
 ```
@@ -4974,7 +4981,7 @@ codefly sync solution-sdk [flags]
 Flags:
 
 ```
-      --apply-dependencies   add missing service-dependencies entries for every bound consume entry
+      --apply-dependencies   add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the authority hop)
       --check                do not write; exit 1 if the library or service-dependencies are out of date
       --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
