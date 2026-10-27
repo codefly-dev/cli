@@ -14,7 +14,7 @@ require (
 	github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261026143932-67b85b14a942
 	github.com/codefly-dev/authority/libraries/authority-core/go v0.0.0-20261026143932-67b85b14a942
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261026023425-000d44495d93
-	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027160913-bfe4876a8b96
+	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027171336-5178f01696e3
 	github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261026175541-3afad7224855
 	github.com/codefly-dev/core v0.19.7-0.20261026194550-a8599bd3991a
 	github.com/codefly-dev/golor v0.1.3
