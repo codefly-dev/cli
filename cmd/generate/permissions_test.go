@@ -154,6 +154,51 @@ services:
 	return module
 }
 
+func TestPermissionsForeignServiceSelectorsReachGeneratedTables(t *testing.T) {
+	module := permissionsModule(t)
+	path := filepath.Join(module.Dir(), "module.contract.codefly.yaml")
+	contract, err := os.ReadFile(path)
+	require.NoError(t, err)
+	contract = append(contract, []byte(`  - method: /foreign.Api/Read
+    service: api
+    requires:
+      - resource_kind: ledger.entry
+        actions: [read]
+  - method: /foreign.Admin/Approve
+    service: admin
+    requires:
+      - resource_kind: ledger.entry
+        actions: [approve]
+`)...)
+	require.NoError(t, os.WriteFile(path, contract, 0o644))
+	module, err = resources.LoadModuleFromDir(t.Context(), module.Dir())
+	require.NoError(t, err)
+	require.NoError(t, generatePermissions(t.Context(), module, "", false))
+	require.NoError(t, generatePermissions(t.Context(), module, "", true))
+	union := t.TempDir()
+	require.NoError(t, generatePermissions(t.Context(), module, union, false))
+	for _, file := range []string{"permissions_gen.go", "permissions_gen.ts"} {
+		read := func(root string) string {
+			data, err := os.ReadFile(filepath.Join(root, file))
+			require.NoError(t, err)
+			return string(data)
+		}
+		api := read(filepath.Join(module.Dir(), "services/api/code/pkg/gen/permissions"))
+		admin := read(filepath.Join(module.Dir(), "services/admin/go/pkg/gen/permissions"))
+		all := read(union)
+		require.Contains(t, api, "/foreign.Api/Read")
+		require.NotContains(t, api, "/foreign.Admin/Approve")
+		require.Contains(t, admin, "/foreign.Admin/Approve")
+		require.NotContains(t, admin, "/foreign.Api/Read")
+		for _, table := range []string{api, admin, all} {
+			require.Contains(t, table, "/otlp.TraceService/Export")
+		}
+		for _, method := range []string{"/foreign.Api/Read", "/foreign.Admin/Approve", "/ledger.ApiService/Read", "/ledger.AdminService/Approve", "/ledger.EngineService/Recompute"} {
+			require.Contains(t, all, method)
+		}
+	}
+}
+
 func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	module := permissionsModule(t)
 	require.NoError(t, generatePermissions(t.Context(), module, "", false))

@@ -2829,8 +2829,9 @@ By default each Go service gets its own table in its own Go module:
 <service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
 generates its bindings into (source-dir is the Go agent's setting, "code"
 unless the service declares another). A service's table holds the methods its
-published contracts serve plus the module contract's foreign methods, which
-name no service. What an endpoint serves is what the contract catalog records
+published contracts serve plus foreign methods selected for that service.
+Unselected foreign methods appear in every Go service's table for compatibility.
+What an endpoint serves is what the contract catalog records
 for it (the declared surface, or every service of its package); a method a
 published descriptor declares that no endpoint serves, such as a protocol other
 modules serve, is left out with a note and needs no policy. The TypeScript file

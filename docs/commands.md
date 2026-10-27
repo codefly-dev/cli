@@ -4625,8 +4625,10 @@ module: `<service>/<source-dir>/pkg/gen/permissions`, where `source-dir` is the
 Go agent's setting (`code` unless the service declares another; its first
 segment is where `go.mod` lives) and `pkg/gen` is the tree the go-grpc layout
 generates its bindings into. Each service's table holds the methods its own
-published contracts serve, plus the module contract's `foreign_methods`, which
-name no service and so appear in every Go service's table. What an endpoint
+published contracts serve, plus the module contract's `foreign_methods` selected
+for that `service`. Foreign methods without a service selector retain the legacy
+behavior of appearing in every Go service's table. Their authority requirements
+remain in the module-wide policy union. What an endpoint
 serves is what the contract catalog (`contracts/api/catalog.codefly.json`)
 records for it: the module's declared surface (`contracts.codefly.yaml`, see
 [Generate contracts](#generate-contracts)), or every service of the endpoint's
@@ -4664,3 +4666,9 @@ Published package dependencies do not require local source trees.
 
 Permission generation is available through the CLI; no separate MCP generator
 was added. MCP run/test use the same composition preflight as their CLI paths.
+
+A module with multiple published protobuf services selects the serving service
+on each `foreign_methods` entry with `service:`. The hop routes it only to that
+service's published gRPC/Connect listeners. An absent selector requires exactly
+one such service; unknown or non-protobuf selections are refused. This does not
+change a method's authority policy or authorize shadowing a published method.

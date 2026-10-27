@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -145,4 +147,43 @@ func TestHopRoutesRefuseForeignMethodsTheyCannotPlace(t *testing.T) {
 	// Without foreign methods, two services each on both listeners plan.
 	_, err = hopRoutesOf(t, rpcHopWorkspace(t, []string{"chat", "host"}, nil))
 	require.NoError(t, err)
+}
+
+func TestForeignMethodSelectsOnlyItsPublishedService(t *testing.T) {
+	method := "/foreign.v1.Service/Read"
+	endpoints := []routing.RouteEndpoint{
+		{Service: "chat", Endpoint: "grpc", Transport: "grpc"},
+		{Service: "chat", Endpoint: "connect", Transport: "connect"},
+		{Service: "worker", Endpoint: "grpc", Transport: "grpc"},
+		{Service: "web", Endpoint: "http", Transport: "http"},
+	}
+	foreign := []modulecontract.ForeignMethod{{Service: "chat", Method: method}}
+	require.NoError(t, routeForeignMethods(endpoints, foreign))
+	require.Equal(t, []string{method}, endpoints[0].Methods)
+	require.Equal(t, []string{method}, endpoints[1].Methods)
+	require.Empty(t, endpoints[2].Methods)
+	require.ErrorContains(t, routeForeignMethods(endpoints, foreign), "also declared")
+	foreign[0].Service = "missing"
+	require.ErrorContains(t, routeForeignMethods(endpoints, foreign), "publishes no gRPC or Connect contract")
+	foreign[0].Service = "web"
+	require.ErrorContains(t, routeForeignMethods(endpoints, foreign), "publishes no gRPC or Connect contract")
+}
+
+func TestHopRoutesReadForeignServiceSelectionsFromContract(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := rpcHopWorkspace(t, []string{"chat", "worker"}, []string{"/foreign.v1.Service/Read", "/foreign.v1.Service/Execute"})
+	file := filepath.Join(workspace.Dir(), "modules", "owner", modulecontract.FileName)
+	raw, err := os.ReadFile(file)
+	require.NoError(t, err)
+	body := strings.Replace(string(raw), "  - method: /foreign.v1.Service/Read", "  - service: chat\n    method: /foreign.v1.Service/Read", 1)
+	body = strings.Replace(body, "  - method: /foreign.v1.Service/Execute", "  - service: worker\n    method: /foreign.v1.Service/Execute", 1)
+	require.NoError(t, os.WriteFile(file, []byte(body), 0600))
+	routes, err := hopRoutesOf(t, workspace)
+	require.NoError(t, err)
+	for method, service := range map[string]string{"/foreign.v1.Service/Read": "chat", "/foreign.v1.Service/Execute": "worker"} {
+		destination, _, err := routes.Resolve("owner", "grpc", method)
+		require.NoError(t, err)
+		require.Equal(t, service, destination.Service)
+	}
+
 }
