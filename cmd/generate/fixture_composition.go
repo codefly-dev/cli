@@ -40,7 +40,9 @@ Examples:
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, err := common.LoadWorkspace(ctx)
+		// Fragments ship inside the composed modules, so a pinned module is
+		// materialized first, as a run does.
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}
