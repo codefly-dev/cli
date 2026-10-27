@@ -175,9 +175,11 @@ func TestExcludeServicesWithdrawsAWholeModuleWithItsExports(t *testing.T) {
 	module, err := workspace.LoadModuleFromName(context.Background(), "shop")
 	require.NoError(t, err)
 	require.Empty(t, staging.ComposedServices(module))
+	require.True(t, staging.WithdrawsModule(module))
 	local, err := environments.Select(workspace, "local")
 	require.NoError(t, err)
 	require.Len(t, local.ComposedServices(module), 3, "another environment still composes the module")
+	require.False(t, local.WithdrawsModule(module))
 
 	// Leaving one service of the module composed keeps its promise in force.
 	partial := writeExclusionWorkspaceExporting(t, `    exclude-services:

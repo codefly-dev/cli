@@ -49,6 +49,9 @@ func renderModuleTree(
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if env.WithdrawsModule(module) {
+		return RenderResult{}, fmt.Errorf("environment %s withdraws every service of module %s (exclude-services), so nothing of it renders there", env.Name, module.Name)
+	}
 	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
 		return RenderResult{}, err
 	}

@@ -83,10 +83,11 @@ func (env *Environment) ComposedServices(module *resources.Module) []*resources.
 	return composed
 }
 
-// withdrawsModule reports whether this environment excludes every service of
+// WithdrawsModule reports whether this environment excludes every service of
 // the module: the module is then not composed here at all, so neither its
-// interface exports nor its service-entry are offered to the composition.
-func (env *Environment) withdrawsModule(module *resources.Module) bool {
+// interface exports nor its service-entry are offered to the composition, and
+// nothing of it renders, builds or deploys here.
+func (env *Environment) WithdrawsModule(module *resources.Module) bool {
 	if env == nil || module == nil || len(module.ServiceReferences) == 0 {
 		return false
 	}
@@ -304,7 +305,7 @@ func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
 // validateExclusionsAgainst refuses by name.
 func (env *Environment) validateModulePromises(modules []*resources.Module, excluded map[string]bool) error {
 	for _, module := range modules {
-		if module == nil || env.withdrawsModule(module) {
+		if module == nil || env.WithdrawsModule(module) {
 			continue
 		}
 		if module.ServiceEntry != "" && excluded[resources.ServiceUnique(module.Name, module.ServiceEntry)] {
