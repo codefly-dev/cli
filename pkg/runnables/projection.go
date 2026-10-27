@@ -39,13 +39,6 @@ type Identity struct {
 	// which is the distinction a reader needs: a derived row is regenerated
 	// from a contract, not edited.
 	Source string `json:"source,omitempty"`
-	// Tool is the exposure the owner declared, nil when the operation is no
-	// tool. Absent means not exposed: that is the owner's fail-closed default
-	// and this listing repeats it rather than inventing one.
-	Tool *Tool `json:"tool,omitempty"`
-	// Grant is how one environment answers this operation, set only when a
-	// listing was asked about an environment.
-	Grant *Grant `json:"grant,omitempty"`
 }
 
 // NewIdentity projects a loaded runnable. The runnable must have come from
@@ -91,35 +84,3 @@ type Tool struct {
 	// Effect is EFFECT_READ_ONLY or EFFECT_MUTATION, spelled as the enum is.
 	Effect string `json:"effect"`
 }
-
-// Grant is what one environment has answered about one derived operation: the
-// configuration key the answer is written under, whether a binding is prepared
-// for it, and — when it is not — which of the owner's scope slots are still
-// open. A module version that adds an operation adds an unanswered row, which
-// is how "this version offers a tool nobody granted" becomes visible without
-// comparing two releases by hand.
-type Grant struct {
-	// Key is the runnable-bindings key, which is also the
-	// runnable-scope-selections key an answer is written under.
-	Key string `json:"key"`
-	// State is `selected`, `declined`, or `needs-scopes`.
-	State string `json:"state"`
-	// Slots names the owner's required scope slots, when the operation
-	// declares any: the questions an answer must resolve.
-	Slots []string `json:"slots,omitempty"`
-}
-
-// Grant states, which are the whole vocabulary a listing reports.
-const (
-	// GrantSelected is an operation this environment prepares a binding for:
-	// either it needs no slot answered, or its answer resolves them.
-	GrantSelected = "selected"
-	// GrantDeclined is an operation answered with an empty list: installed
-	// for no resource, granted no authority, offered as no tool.
-	GrantDeclined = "declined"
-	// GrantNeedsScopes is an operation whose owner asks for scope slots this
-	// environment has not answered. Generation refuses it by name rather than
-	// preparing a binding with the question still open, so an unanswered slot
-	// is work to do, not a quiet omission.
-	GrantNeedsScopes = "needs-scopes"
-)

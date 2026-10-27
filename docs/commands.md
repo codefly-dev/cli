@@ -2652,22 +2652,34 @@ codefly list runnables --tools --env=staging   # Only the tools, with each one's
 ```
 
 Every Runnable a module derives from its published contracts is listed beside
-the ones it declares, carrying the tool its owner exposed it as — the
-model-facing name and the explicit effect (`codefly.runnable.v0.ToolExposure`).
-An operation with no exposure is listed without one: absent means not exposed,
-and an unstated effect is not read-only. `--tools` keeps only the exposed ones,
-which is what a composition can grant as a tool.
+the ones it declares. With `--tools` or `--env`, each row also carries the tool
+its owner exposed it as — the model-facing name and the explicit effect
+(`codefly.runnable.v0.ToolExposure`). An operation with no exposure is listed
+without one: absent means not exposed, and an unstated effect is not read-only.
+`--tools` keeps only the exposed ones, which is what a composition can grant as
+a tool. The default table is unchanged, so anything already parsing it keeps
+working.
 
 `--env <name>` adds the configuration key each derived operation's authority is
 answered under — the `runnable-scope-selections` key in
 `workspace.codefly.yaml`, see [Generate runnable-bindings](#generate-runnable-bindings)
-— and what that environment has answered:
+— and what that environment has answered, judged by the rules
+`generate runnable-bindings` judges it by rather than by whether an answer is
+present:
 
 | grant | meaning |
 | --- | --- |
-| `selected` | a binding is prepared: the operation asks for no scope slot, or the environment's answer resolves the ones it asks for |
+| `selected` | its answer resolves every scope slot the owner declared, or it declares none |
 | `declined` | answered `[]`: installed for no resource, granted no authority, offered as no tool |
-| `needs-scopes` | its owner asks for scope slots nobody has answered; `generate runnable-bindings` refuses it by name rather than preparing a binding with the question still open |
+| `needs-scopes` | its owner asks for scope slots nobody has answered |
+| `invalid` | generation refuses this answer, and the row carries core's reason: a slot left unselected, a slot named that the operation does not declare, a selection with no invoke scope, or an `[]` against an operation that has nothing to decline |
+
+An answer naming no operation at all is reported beside the rows — as
+`unanswered_keys` in `--json` — rather than dropped: a mistyped key answers no
+question and leaves the operation it meant to answer reading as unanswered,
+which is the one thing a listing must not hide. With `--env`, `--json` emits an
+object (`runnables`, `unanswered_keys`); without it, the array it has always
+emitted.
 
 `needs-scopes` is how a module version that offers a new tool becomes visible:
 the operation appears in the listing, nothing answers it, and the answer is

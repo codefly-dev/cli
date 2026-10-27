@@ -333,7 +333,6 @@ func (d *Derived) Identity() Identity {
 		Protocol:  d.Package.GetContract().GetProtocol(),
 		Execution: newPackageExecution(d.Package.GetExecution()),
 		Source:    d.Entry.Source(),
-		Tool:      d.ToolExposure(),
 	}
 }
 

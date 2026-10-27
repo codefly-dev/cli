@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
@@ -64,7 +65,16 @@ func writeWorkspaceWithAToolAndSlot(t *testing.T, selections string) string {
 // listOneDerived runs the listing over the fixture and returns its single
 // derived row. Reading the JSON rather than the table is deliberate: the row a
 // console or a picker consumes is the one under test.
-func listOneDerived(t *testing.T, dir string) runnablespkg.Identity {
+func listOneDerived(t *testing.T, dir string) runnableRow {
+	listing := listEnvironment(t, dir)
+	require.Len(t, listing.Runnables, 1, "the fixture module derives exactly one operation")
+	return listing.Runnables[0]
+}
+
+// listEnvironment runs the listing against the fixture's staging environment
+// and returns what a console or a picker consumes: the rows, and the answers
+// that match no operation.
+func listEnvironment(t *testing.T, dir string) runnableListing {
 	t.Helper()
 	t.Chdir(dir)
 	t.Cleanup(func() {
@@ -74,10 +84,9 @@ func listOneDerived(t *testing.T, dir string) runnablespkg.Identity {
 	cmd, buf := newListTestCmd()
 	require.NoError(t, listRunnables(cmd))
 
-	var entries []runnablespkg.Identity
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
-	require.Len(t, entries, 1, "the fixture module derives exactly one operation")
-	return entries[0]
+	var listing runnableListing
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &listing))
+	return listing
 }
 
 // A listing is what a composition picks its tools from, so it carries the
@@ -143,7 +152,7 @@ func TestWithoutAnEnvironmentNoGrantIsReported(t *testing.T) {
 	cmd, buf := newListTestCmd()
 	require.NoError(t, listRunnables(cmd))
 
-	var entries []runnablespkg.Identity
+	var entries []runnableRow
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 1)
 	require.Nil(t, entries[0].Grant)
@@ -174,7 +183,148 @@ func TestOnlyExposedOperationsAreListedAsTools(t *testing.T) {
 	cmd, buf := newListTestCmd()
 	require.NoError(t, listRunnables(cmd))
 
-	var entries []runnablespkg.Identity
+	var entries []runnableRow
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Empty(t, entries, "an operation with no exposure is not a tool, and an authored runnable is not one either")
+}
+
+// writeTwoSlotOperation is the case that exposed the listing's first shape as
+// wrong: an operation whose owner asks TWO questions. An environment that
+// answers one of them has answered something, and the generator still refuses
+// the run.
+func writeTwoSlotOperation(t *testing.T, selections string) string {
+	t.Helper()
+	dir := writeWorkspaceWithAToolAndSlot(t, selections)
+	operation := operationDocument(t, dir)
+	operation["required_scope_slots"] = []map[string]any{
+		{"name": "collection", "required_actions": []string{"write"}},
+		{"name": "source", "required_actions": []string{"read"}},
+	}
+	writeOperationDocument(t, dir, operation)
+	return dir
+}
+
+func operationDocument(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(operationPath(dir))
+	require.NoError(t, err)
+	document := map[string]any{}
+	require.NoError(t, json.Unmarshal(data, &document))
+	return document
+}
+
+func writeOperationDocument(t *testing.T, dir string, document map[string]any) {
+	t.Helper()
+	data, err := json.MarshalIndent(document, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(operationPath(dir), append(data, '\n'), 0o644))
+}
+
+func operationPath(dir string) string {
+	return filepath.Join(dir, "modules", "documents", "contracts", "runnables",
+		"runtime-worker", "grpc", "ApplyText", runnablespkg.OperationFileName)
+}
+
+// collectionOnly answers the `collection` slot and nothing else.
+const collectionOnly = "    runnable-scope-selections:\n" +
+	"      " + toolKey + ":\n" +
+	"        - slot: collection\n" +
+	"          invoke:\n" +
+	"            - resource_kind: documents.collection\n" +
+	"              actions: [write]\n" +
+	"              resource_ids: [acme]\n"
+
+// A selection that answers some of the owner's questions is not a grant. The
+// listing's first shape read any non-empty selection as `selected`, so an
+// operation declaring two slots and answered for one reported as granted while
+// `generate runnable-bindings` refused the run — wrong in the one place an
+// operator looks to check their work.
+func TestAPartiallyAnsweredOperationIsNotSelected(t *testing.T) {
+	entry := listOneDerived(t, writeTwoSlotOperation(t, collectionOnly))
+
+	require.NotNil(t, entry.Grant)
+	require.Equal(t, runnablespkg.GrantInvalid, entry.Grant.State,
+		"an answer generation refuses is not a grant")
+	require.Contains(t, entry.Grant.Reason, "source", "the unanswered slot is named")
+	require.Equal(t, []string{"collection", "source"}, entry.Grant.Slots)
+}
+
+// A selection naming a slot the operation does not declare is the same class
+// of mistake, and core refuses it with its own words.
+func TestASelectionNamingAnUndeclaredSlotIsInvalid(t *testing.T) {
+	wrong := "    runnable-scope-selections:\n" +
+		"      " + toolKey + ":\n" +
+		"        - slot: colection\n" +
+		"          invoke:\n" +
+		"            - resource_kind: documents.collection\n" +
+		"              actions: [write]\n" +
+		"              resource_ids: [acme]\n"
+	entry := listOneDerived(t, writeWorkspaceWithAToolAndSlot(t, wrong))
+
+	require.NotNil(t, entry.Grant)
+	require.Equal(t, runnablespkg.GrantInvalid, entry.Grant.State)
+	require.Contains(t, entry.Grant.Reason, "colection")
+}
+
+// Declining is only something an operation with a required scope slot can be
+// answered with: generate's declinableOperation refuses `[]` against an
+// operation that has nothing to decline, so reporting it as a valid `declined`
+// would legitimise a configuration that fails the run.
+func TestDecliningAnOperationWithNoSlotIsInvalid(t *testing.T) {
+	dir := writeWorkspaceWithAToolAndSlot(t, "    runnable-scope-selections:\n      "+toolKey+": []\n")
+	operation := operationDocument(t, dir)
+	delete(operation, "required_scope_slots")
+	writeOperationDocument(t, dir, operation)
+
+	entry := listOneDerived(t, dir)
+	require.NotNil(t, entry.Grant)
+	require.Equal(t, runnablespkg.GrantInvalid, entry.Grant.State)
+	require.Contains(t, entry.Grant.Reason, "nothing to decline")
+}
+
+// An answer that names no operation is the likeliest mistake with a key that
+// is typed by hand, and the listing used to drop it: the real operation read
+// as unanswered and nothing pointed at the typo, while the generator would
+// have named it.
+func TestAnAnswerThatNamesNoOperationIsReported(t *testing.T) {
+	typo := "    runnable-scope-selections:\n      " + toolKey[:len(toolKey)-1] + ": []\n"
+	listing := listEnvironment(t, writeWorkspaceWithAToolAndSlot(t, typo))
+
+	require.Equal(t, []string{toolKey[:len(toolKey)-1]}, listing.UnansweredKeys,
+		"an answer to no question is reported, not dropped")
+	require.Len(t, listing.Runnables, 1)
+	require.Equal(t, runnablespkg.GrantNeedsScopes, listing.Runnables[0].Grant.State,
+		"and the operation it meant to answer still reads as unanswered")
+}
+
+// Without --env the listing stays the array it has always been, so a reader of
+// `list runnables --json` is not handed a different shape by this change.
+func TestWithoutAnEnvironmentTheJSONStaysAnArray(t *testing.T) {
+	t.Chdir(writeWorkspaceWithAToolAndSlot(t, ""))
+	t.Cleanup(func() {
+		listRunnablesJSON, listRunnablesModule, listRunnablesEnv, listRunnablesTools = false, "", "", false
+	})
+	listRunnablesJSON = true
+	cmd, buf := newListTestCmd()
+	require.NoError(t, listRunnables(cmd))
+	require.Equal(t, byte('['), buf.Bytes()[0], "the no-environment listing is an array")
+}
+
+// The default table is the one every existing reader parses: the tool columns
+// appear when a caller asks about tools or about an environment, never before.
+func TestTheDefaultTableKeepsItsColumns(t *testing.T) {
+	t.Chdir(writeWorkspaceWithAToolAndSlot(t, ""))
+	t.Cleanup(func() {
+		listRunnablesJSON, listRunnablesModule, listRunnablesEnv, listRunnablesTools = false, "", "", false
+	})
+	cmd, buf := newListTestCmd()
+	require.NoError(t, listRunnables(cmd))
+	header := strings.Split(buf.String(), "\n")[0]
+	require.NotContains(t, header, "TOOL")
+	require.NotContains(t, header, "EFFECT")
+
+	listRunnablesTools = true
+	cmd, buf = newListTestCmd()
+	require.NoError(t, listRunnables(cmd))
+	require.Contains(t, strings.Split(buf.String(), "\n")[0], "TOOL")
 }

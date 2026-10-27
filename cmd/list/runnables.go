@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/pkg/environments"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
@@ -32,21 +32,24 @@ A runnable is identified by module/name @ version: a version is an immutable
 release and several versions of one name coexist.
 
 Every Runnable a module derives from its published contracts is listed beside
-the ones it declares, with the tool it is offered as when its owner exposed one
-— the model-facing name and the explicit effect. An operation with no exposure
-is not a tool and is shown without one: absent means not exposed.
+the ones it declares. With --tools or --env, each row also carries the tool its
+owner exposed it as — the model-facing name and the explicit effect. An
+operation with no exposure is not a tool and is shown without one: absent means
+not exposed. --tools keeps only the exposed ones.
 
 With --env, each derived operation also carries the configuration key its
 authority is answered under (` + "`runnable-scope-selections`" + ` in
-workspace.codefly.yaml) and what that environment has answered:
+workspace.codefly.yaml) and what that environment has answered, judged by the
+rules ` + "`generate runnable-bindings`" + ` judges it by:
 
-  selected      a binding is prepared: no slot to answer, or an answer resolves it
+  selected      its answer resolves every slot the owner declared, or it declares none
   declined      answered [] — installed for no resource, granted no authority
-  needs-scopes  its owner asks for scope slots nobody has answered yet
+  needs-scopes  its owner asks for scope slots nobody has answered
+  invalid       generation refuses this answer, and the row says why
 
-That last state is how a module version offering a new tool becomes visible:
-the operation appears, nothing answers it, and generation refuses it by name
-rather than preparing a binding with the question still open.
+An answer naming no operation at all is reported beside the rows rather than
+dropped, because a mistyped key answers no question and leaves its operation
+reading as unanswered.
 
 Examples:
   codefly list runnables
@@ -57,6 +60,33 @@ Examples:
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return listRunnables(cmd)
 	},
+}
+
+// runnableRow is one listed runnable. The tool and the grant live here rather
+// than on the shared projection because they are this listing's question: a
+// field on runnablespkg.Identity would also appear in `show runnable`, whose
+// report already states the operation's own exposure.
+type runnableRow struct {
+	runnablespkg.Identity
+	// Tool is the exposure the owner declared, nil when the operation is no
+	// tool. Absent means not exposed: that is the owner's fail-closed default
+	// and this listing repeats it rather than inventing one.
+	Tool *runnablespkg.Tool `json:"tool,omitempty"`
+	// Grant is how the environment answers this operation, set only when a
+	// listing was asked about one.
+	Grant *runnablespkg.Grant `json:"grant,omitempty"`
+}
+
+// runnableListing is what a listing asked about an environment answers with:
+// the rows, and the answers that match no operation. Without --env there is no
+// environment to have answered anything, and the listing stays the array it
+// has always been.
+type runnableListing struct {
+	Runnables []runnableRow `json:"runnables"`
+	// UnansweredKeys are the runnable-scope-selections keys of this
+	// environment that no listed operation binds. Generation refuses each by
+	// name; a listing that only walked the catalogue would never show them.
+	UnansweredKeys []string `json:"unanswered_keys,omitempty"`
 }
 
 func listRunnables(cmd *cobra.Command) error {
@@ -90,33 +120,37 @@ func listRunnables(cmd *cobra.Command) error {
 		}
 	}
 
-	entries, err := runnableEntries(ctx, modules, env)
+	listing, err := runnableListingOf(ctx, modules, env)
 	if err != nil {
 		return err
 	}
 
 	if listRunnablesJSON {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(entries)
+		if env == nil {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(listing.Runnables)
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(listing)
 	}
-	if len(entries) == 0 {
+	if len(listing.Runnables) == 0 && len(listing.UnansweredKeys) == 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "No runnables in workspace <%s>\n", workspace.Name)
 		return nil
 	}
-	return writeRunnables(cmd, entries, env != nil)
+	return writeRunnables(cmd, listing, env)
 }
 
-// runnableEntries is every runnable the modules hold: the ones they declare,
-// and the operations they derive. With env, each derived row carries how that
-// environment answers it.
-func runnableEntries(ctx context.Context, modules []*resources.Module, env *environments.Environment) ([]runnablespkg.Identity, error) {
-	entries := make([]runnablespkg.Identity, 0)
+// runnableListingOf is every runnable the modules hold — the ones they declare
+// and the operations they derive — and, when an environment was named, how it
+// answers each derived operation and which of its answers match nothing.
+func runnableListingOf(ctx context.Context, modules []*resources.Module, env *environments.Environment) (*runnableListing, error) {
+	listing := &runnableListing{Runnables: make([]runnableRow, 0)}
+	bound := map[string]bool{}
 	for _, mod := range modules {
 		runnables, err := mod.LoadRunnables(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("cannot load runnables: %w", err)
 		}
 		for _, r := range runnables {
-			entries = append(entries, runnablespkg.NewIdentity(r))
+			listing.Runnables = append(listing.Runnables, runnableRow{Identity: runnablespkg.NewIdentity(r)})
 		}
 		// A module's derived operations are runnables it can be asked to
 		// perform just as much as the ones it declares, so one listing
@@ -126,61 +160,68 @@ func runnableEntries(ctx context.Context, modules []*resources.Module, env *envi
 			return nil, fmt.Errorf("cannot load the derived runnables of module %s: %w", mod.Name, err)
 		}
 		for i := range derived {
-			identity := derived[i].Identity()
+			row := runnableRow{Identity: derived[i].Identity(), Tool: derived[i].ToolExposure()}
 			if env != nil {
-				identity.Grant = grantOf(env, mod.Name, &derived[i])
+				// ScopeSelections is core's own ScopeSelection messages: the
+				// environment decoded them, so the rules are applied to what
+				// an installation would carry, not to a re-parse of the YAML.
+				selections, answered := env.RunnableScopeSelections[runnablespkg.BindingKey(mod.Name, derived[i].Entry.Name)]
+				row.Grant = runnablespkg.GrantOf(mod.Name, &derived[i], selections, answered)
+				bound[row.Grant.Key] = true
 			}
-			entries = append(entries, identity)
+			listing.Runnables = append(listing.Runnables, row)
 		}
+	}
+	if env != nil {
+		answers := make([]string, 0, len(env.RunnableScopeSelections))
+		for key := range env.RunnableScopeSelections {
+			answers = append(answers, key)
+		}
+		sort.Strings(answers)
+		listing.UnansweredKeys = runnablespkg.UnansweredKeys(answers, bound)
 	}
 	if !listRunnablesTools {
-		return entries, nil
+		return listing, nil
 	}
-	tools := make([]runnablespkg.Identity, 0, len(entries))
-	for i := range entries {
-		if entries[i].Tool != nil {
-			tools = append(tools, entries[i])
+	tools := make([]runnableRow, 0, len(listing.Runnables))
+	for i := range listing.Runnables {
+		if listing.Runnables[i].Tool != nil {
+			tools = append(tools, listing.Runnables[i])
 		}
 	}
-	return tools, nil
+	listing.Runnables = tools
+	return listing, nil
 }
 
-// grantOf is how env answers one derived operation, judged the way
-// `generate runnable-bindings` judges it: an explicitly empty list declines,
-// an owner's unanswered scope slot is refused rather than skipped, and
-// everything else prepares a binding.
-func grantOf(env *environments.Environment, module string, operation *runnablespkg.Derived) *runnablespkg.Grant {
-	key := generate.RunnableBindingKey(module, operation.Entry.Name)
-	grant := &runnablespkg.Grant{Key: key, State: runnablespkg.GrantSelected, Slots: operation.Slots()}
-	switch {
-	case env.DeclinesRunnableBinding(key):
-		grant.State = runnablespkg.GrantDeclined
-	case len(grant.Slots) > 0 && len(env.RunnableScopeSelections[key]) == 0:
-		grant.State = runnablespkg.GrantNeedsScopes
-	}
-	return grant
-}
-
-func writeRunnables(cmd *cobra.Command, entries []runnablespkg.Identity, grants bool) error {
+func writeRunnables(cmd *cobra.Command, listing *runnableListing, env *environments.Environment) error {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	header := "MODULE\tNAME\tVERSION\tAGENT\tFACILITIES\tTIMEOUT\tSOURCE\tTOOL\tEFFECT"
-	if grants {
+	// The tool columns appear only when a caller asked about tools or about an
+	// environment: the default table is the one every existing reader parses.
+	tools := listRunnablesTools || env != nil
+	header := "MODULE\tNAME\tVERSION\tAGENT\tFACILITIES\tTIMEOUT\tSOURCE"
+	if tools {
+		header += "\tTOOL\tEFFECT"
+	}
+	if env != nil {
 		header += "\tKEY\tGRANT"
 	}
 	fmt.Fprintln(w, header)
-	for index := range entries {
-		e := &entries[index]
+	for index := range listing.Runnables {
+		e := &listing.Runnables[index]
 		source := e.Source
 		if source == "" {
 			source = "declared"
 		}
-		tool, effect := "", ""
-		if e.Tool != nil {
-			tool, effect = e.Tool.Name, e.Tool.Effect
+		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s",
+			e.Module, e.Name, e.Version, e.Agent, strings.Join(e.Execution.Facilities, ","), e.Execution.Timeout, source)
+		if tools {
+			name, effect := "", ""
+			if e.Tool != nil {
+				name, effect = e.Tool.Name, e.Tool.Effect
+			}
+			row += "\t" + name + "\t" + effect
 		}
-		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
-			e.Module, e.Name, e.Version, e.Agent, strings.Join(e.Execution.Facilities, ","), e.Execution.Timeout, source, tool, effect)
-		if grants {
+		if env != nil {
 			key, state := "", ""
 			if e.Grant != nil {
 				key, state = e.Grant.Key, e.Grant.State
@@ -189,7 +230,24 @@ func writeRunnables(cmd *cobra.Command, entries []runnablespkg.Identity, grants 
 		}
 		fmt.Fprintln(w, row)
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	// A refused answer is printed under the table with its reason, because the
+	// state alone ("invalid") does not say what to change.
+	for index := range listing.Runnables {
+		grant := listing.Runnables[index].Grant
+		if grant != nil && grant.Reason != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "\n%s: %s", grant.Key, grant.Reason)
+		}
+	}
+	if len(listing.UnansweredKeys) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\n\nEnvironment %s answers keys no operation binds; generation refuses each by name:\n", env.Name)
+		for _, key := range listing.UnansweredKeys {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", key)
+		}
+	}
+	return nil
 }
 
 func init() {
