@@ -272,18 +272,7 @@ func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, er
 		}
 		servedAnywhere[m.GetMethod()] = true
 		if service := selected[m.GetMethod()]; service != "" {
-			published := false
-			for _, candidate := range manifest.Services {
-				if candidate.Name != service {
-					continue
-				}
-				for _, contract := range candidate.APIContracts {
-					if contract.Kind == composition.APIContractKindProtobuf {
-						published = true
-					}
-				}
-			}
-			if !published {
+			if !publishesProtobuf(manifest, service) {
 				return served, false, fmt.Errorf("foreign method %s selects service %q, which publishes no protobuf contract", m.GetMethod(), service)
 			}
 			served.ByService[service] = append(served.ByService[service], m)
@@ -311,6 +300,24 @@ func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, er
 // declaresNothing reports a method listed with neither field set.
 func declaresNothing(m *compositionv1.MethodPolicyV1) bool {
 	return !m.GetAnyCheckedCaller() && len(m.GetRequires()) == 0
+}
+
+// publishesProtobuf reports whether the manifest's service of that name
+// publishes a protobuf contract, which is what a foreign method's service
+// selector must name: the selector chooses where a method is served, so a
+// service serving no protobuf cannot be the answer.
+func publishesProtobuf(manifest *composition.PackageManifest, service string) bool {
+	for i := range manifest.Services {
+		if manifest.Services[i].Name != service {
+			continue
+		}
+		for _, contract := range manifest.Services[i].APIContracts {
+			if contract.Kind == composition.APIContractKindProtobuf {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // foreignMethods reads the methods the module at dir serves from a protocol

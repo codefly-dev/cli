@@ -281,9 +281,9 @@ func routeForeignMethods(endpoints []routing.RouteEndpoint, foreign []modulecont
 			return fmt.Errorf("foreign method %s selects service %q, which publishes no gRPC or Connect contract", method.Method, service)
 		}
 		// A declared service does not authorize shadowing an owned method anywhere.
-		for _, endpoint := range endpoints {
-			if slices.Contains(endpoint.Methods, method.Method) {
-				return fmt.Errorf("foreign method %s is also declared by the contract %s/%s publishes", method.Method, endpoint.Service, endpoint.Endpoint)
+		for i := range endpoints {
+			if slices.Contains(endpoints[i].Methods, method.Method) {
+				return fmt.Errorf("foreign method %s is also declared by the contract %s/%s publishes", method.Method, endpoints[i].Service, endpoints[i].Endpoint)
 			}
 		}
 		for i := range endpoints {
