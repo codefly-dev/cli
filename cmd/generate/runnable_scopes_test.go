@@ -83,7 +83,7 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 var undeclarableFields = map[protoreflect.FullName]string{
 	// An owner is the authority's to select for an installation (core#845);
 	// TestRunnablesRefusesADeclaredResourceOwner proves the refusal.
-	"codefly.base.v0.WorkScopeV1.resource_owner_id": "never declared",
+	"codefly.base.v0.WorkScopeV1.resource_owner_id": "never written into an operation",
 }
 
 // Descend into every message, including repeated scopes and slots. A future

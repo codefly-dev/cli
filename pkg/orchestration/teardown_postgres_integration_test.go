@@ -14,7 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const teardownPostgresImage = "postgres:16-alpine"
+// Use the explicit public mirror for both local runs and the CI pre-pull.
+// A daemon mirror can fall back to Docker Hub's exhausted anonymous quota.
+const teardownPostgresImage = "mirror.gcr.io/library/postgres:16-alpine"
 
 func requireDocker(t *testing.T) {
 	t.Helper()

@@ -303,6 +303,15 @@ that is not a prepared binding fails the render by key. A module that asks for
 nothing — no contract, no scoped consumption — gains nothing: the host grants
 it its envelope whole, and a request would change that.
 
+**Owner-aware enforcement is declared, never inferred.** A module that checks
+resource-owner selectors declares `owner_aware: true` at the top level of its
+`module.contract.codefly.yaml`. The composition delivery carries exactly that
+boolean in the signed `AuthorityManifestV1.owner_aware` (field 7). An omitted or
+false declaration stays false, including for solutions with roles or
+`installation_owned_scopes`; authority refuses person issuance to such a
+solution by name. The declaration participates in delivery generation changes
+and is omitted from withdrawals together with other live policy.
+
 **A solution's roles are part of its contract.** A unit a person uses declares
 the roles a person may hold on an installation of it in the same
 `module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under
@@ -1118,9 +1127,11 @@ run, the CLI is:
   for its routed endpoints, signs it with the developer key and carries it,
   with a native credential for account `delivery` in the module's namespace,
   to `ApplyManifest` of the `codefly.dev/composition` interface the
-  `host.delivery` endpoint declares in its module's interface endpoints. A
-  host whose delivery endpoint declares no such interface — the saas host on
-  main — receives it through the legacy HTTP route instead, POSTed to
+  `host.delivery` endpoint declares in its module's interface endpoints —
+  a `grpc` endpoint, or a `connect` one, which answers the gRPC protocol on
+  the same listener (the saas host's Connect face). A
+  host whose delivery endpoint declares no such interface (a saas host
+  delivered at its `rest` endpoint) receives it through the legacy HTTP route instead, POSTed to
   `/platform/_delivery/manifest`, with the envelope written through its
   gateway (below); the run logs that reason on every delivery that takes it.
   A host whose module does not load receives nothing, with the reason; the
@@ -1292,7 +1303,28 @@ reject invalid declarations before their build/apply effects. Hop warning mode
 cannot bypass these checks. Unknown or contradictory method requirements are
 invalid; an intentionally restricted business role is valid. Identical policies
 published on multiple endpoints are accepted; conflicting policies for the same
-method are refused rather than silently taking the first.
+method are refused rather than silently taking the first — within one service,
+and across the services of one table (below), since a table is keyed by method
+and an HTTP route names no service. A gRPC service's OpenAPI document (its REST
+gateway or proxy face, `openapi/api.swagger.json`) is its proto rendered for
+HTTP and has no place for the policy option: a route it declares nothing for,
+which one of the service's proto methods binds with `google.api.http`, carries
+that method's policy. An `x-codefly-authority-policy` the document does declare
+is a declaration of its own, refused when it differs from the proto's.
+
+**The table a host receives.** A module's manifest carries to the host the
+table of its package less the services that stand in for that host: a service
+whose exported endpoint implements a Codefly interface the `host.delivery`
+service also implements (at any version), and which does not declare
+`module-identity`. The local authority is one — it implements the host
+interfaces so a workspace with no saas host has one, and a composition whose
+host is saas never runs it — so toward saas/accounts the authority module's
+table is its hop's alone. A call to a stand-in is the host's to answer, never
+one the host decides for the module, so the preflight does not hold its methods
+and a caller's binding does not resolve against them. A service that runs as
+the module is always in the table, whatever it implements, and so is every
+service of a module that implements nothing the host does. A host the
+workspace does not compose cannot be read, so nothing is set aside toward it.
 
 **A method that declares no policy is refused only where policies are
 consumed.** The structural checks above hold everywhere: both `requires` and
@@ -1305,7 +1337,9 @@ declares nothing at all is refused, by name and with the reason, in two cases:
   the manifest to the host's authority; or
 - the module's `module.contract.codefly.yaml` sets
   `require_method_policies: true`, which holds it to a policy on every method
-  wherever it is delivered.
+  its package publishes, stand-ins included, wherever it is delivered.
+
+In the first case the methods held are the table the host receives (above).
 
 The host's own module — the module of the `host.delivery` service, `saas` for
 `delivery: saas/accounts/connect` whatever `host.component` says (`saas` on a
@@ -1317,7 +1351,7 @@ composition is still refused by name, and the host module's own
 
 Toward any other host — the saas host every released composition delivers to —
 an unmarked method passes, listed with neither field set exactly as
-`MethodPolicies` reads it, and the hop in front of the module refuses it per
+`HostMethodPolicies` reads it, and the hop in front of the module refuses it per
 call. `codefly generate permissions` always requires a declaration: a table
 names every method.
 

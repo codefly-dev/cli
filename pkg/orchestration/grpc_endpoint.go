@@ -40,8 +40,11 @@ func grpcTransport(secure bool) credentials.TransportCredentials {
 
 // GRPCEndpointTarget resolves a running service's gRPC endpoint as this run
 // recorded it now — the host-native instance first, as GetAddressForEndpoint
-// answers — with the transport its declaration asks for. An endpoint that
-// serves another API is refused by name.
+// answers — with the transport its declaration asks for. A Connect endpoint is
+// one too: a Connect server answers the gRPC protocol on the same listener
+// (h2c in plaintext), which is the rule the hop's routing already holds — it
+// sends a service's gRPC calls to its Connect endpoint (authority#31). An
+// endpoint that serves another API is refused by name.
 func (flow *Flow) GRPCEndpointTarget(ctx context.Context, module, service, endpoint string) (GRPCTarget, error) {
 	if flow == nil || flow.SharedState == nil {
 		return GRPCTarget{}, fmt.Errorf("cannot resolve %s/%s/%s: the run records no network state", module, service, endpoint)
@@ -56,8 +59,14 @@ func (flow *Flow) GRPCEndpointTarget(ctx context.Context, module, service, endpo
 		if declared.GetName() != endpoint {
 			continue
 		}
-		if declared.GetApi() != standards.GRPC {
-			return GRPCTarget{}, fmt.Errorf("%s/%s serves %q, not gRPC", unique, endpoint, declared.GetApi())
+		var secure bool
+		switch declared.GetApi() {
+		case standards.GRPC:
+			secure = resources.IsGRPC(ctx, declared).GetSecured()
+		case standards.CONNECT:
+			secure = declared.GetApiDetails().GetHttp().GetSecured()
+		default:
+			return GRPCTarget{}, fmt.Errorf("%s/%s serves %q, which speaks neither gRPC nor Connect", unique, endpoint, declared.GetApi())
 		}
 		instance := reachableNetworkInstance(mapping.GetInstances())
 		if instance == nil {
@@ -67,7 +76,7 @@ func (flow *Flow) GRPCEndpointTarget(ctx context.Context, module, service, endpo
 		if address == "" {
 			return GRPCTarget{}, fmt.Errorf("%s/%s has no address recorded", unique, endpoint)
 		}
-		return GRPCTarget{Address: address, Secure: resources.IsGRPC(ctx, declared).GetSecured()}, nil
+		return GRPCTarget{Address: address, Secure: secure}, nil
 	}
 	return GRPCTarget{}, fmt.Errorf("%s declares no endpoint %s in this run", unique, endpoint)
 }

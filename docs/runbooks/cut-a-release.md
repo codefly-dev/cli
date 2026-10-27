@@ -127,6 +127,10 @@ codefly self check-update                                     # sees the new sta
   there is no release to supersede; run `codefly publish` and let it cut the next tag.
 - **Signing-key mismatch** — the key fingerprint must equal the cert's public-key fingerprint.
   The workflow fails fast on this; fix the secret, don't re-tag.
+- **A tag whose release workflow failed** — the tag stays on origin and its version is burned.
+  Land the fix through a pull request and run `codefly publish` again; it cuts the next version.
+  That release's agent compatibility record (`tools/agentcontract`) compares against the newest
+  stable tag that has a published release, passing over tags that have none.
 - **Re-running a tag** — a release is immutable. To ship a fix, cut a **new** tag (e.g.
   `v1.4.1`); do not force-move a published tag.
 - **Homebrew verification failed but the GitHub release exists** — the cask lives in a separate

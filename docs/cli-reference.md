@@ -555,7 +555,7 @@ Bump, PR, tag-on-merge, and verify a service agent's release
 ```
 release turns the manual per-repo release cascade into one verb:
 
-  1. gate locally BEFORE tagging: pin core (--pin) then run agent CI
+  1. gate BEFORE tagging: pin core (--pin) then run agent CI
   2. bump the manifest to the next version above the authoritative remote tag
   3. open a PR from a release branch — a human merges it, per branch policy
   4. tag the merge commit, then verify the release published a downloadable
@@ -565,6 +565,11 @@ It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
 release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
+
+Successful CI for the exact checkout HEAD can attest source tests; the release
+report records the workflow, run ID and SHA. Otherwise source tests run locally.
+Pass --no-attestation to force local source tests. Build, audit and conformance
+still run. A changed checkout (including a core pin) requires local source tests.
 
 Requires the gh CLI to be authenticated (or GITHUB_TOKEN / GH_TOKEN set).
 
@@ -584,6 +589,7 @@ Flags:
 ```
       --bump string       Version bump from the latest tag: patch | minor | major (default "patch")
       --dir string        Agent source directory (default: current directory)
+      --no-attestation    Run local source tests even when the head SHA has successful CI attestation
       --no-wait           Open the PR and stop; re-run after merge to tag and verify
       --pin string        Pin core to this published version before the CI gate (e.g. latest, v0.3.11)
       --platform string   Additional os_arch the release must ship (e.g. linux_arm64); linux_amd64 is always required
@@ -2762,7 +2768,7 @@ Flags:
       --no-facade            generate bindings only, no facade
       --npm-scope string     npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
       --output string        output directory (default: <workspace>/libraries/<name>)
-      --services strings     restrict the facade to these protobuf services (protobuf contracts only)
+      --services strings     restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)
 ```
 
 ## `codefly generate contracts`
@@ -4932,6 +4938,7 @@ Flags:
 ```
       --apply-dependencies   add missing service-dependencies entries for every bound consume entry
       --check                do not write; exit 1 if the library or service-dependencies are out of date
+      --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
 ```
 

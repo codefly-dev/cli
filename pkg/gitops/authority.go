@@ -97,7 +97,7 @@ func moduleAuthority(
 		if loadErr != nil {
 			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
 		}
-		return MethodPolicies(callee.Dir())
+		return HostMethodPolicies(ctx, workspace, env, callee)
 	})
 	resolved, err := request.contract.Resolve(workspaceValues{provided: provided}, modulecontract.WithCallees(callees))
 	if err != nil {

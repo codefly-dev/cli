@@ -43,14 +43,18 @@ go mod tidy
 
 - **`.github/workflows/release.yaml`** — the GoReleaser cross-compile image:
   ```
-  ghcr.io/goreleaser/goreleaser-cross:v1.26.4
+  ghcr.io/goreleaser/goreleaser-cross:v1.27.3
   ```
-  Bump the tag to the matching Go minor (`v1.26.x`). Release builds run **inside this image**, so
-  it — not `go.mod` — determines the compiler that ships. CGO is required (tree-sitter), so this
-  image cannot be swapped for plain `setup-go`.
+  Bump the tag to the new Go release (`v1.X.Y`; the image is published per Go patch). CGO is
+  required (tree-sitter), so this image cannot be swapped for plain `setup-go`. The image's own
+  `go` does not set the shipping compiler on its own: the container runs with `GOTOOLCHAIN=auto`,
+  so an image older than the `go` directive downloads the toolchain `go.mod` names (v0.1.197 was
+  built in `v1.26.4` and `go version` on its binary reports `go1.27.3`). Keep the tag current
+  anyway, so the image's C cross toolchains are the ones published for that Go release.
+  `pkg/cliupdate/release_contract_test.go` pins the same tag and fails until it matches.
 
-- **`test/Dockerfile`** — `FROM golang:alpine`. Currently unpinned (floats to latest). If you
-  pin it, pin to the new minor (`golang:1.26-alpine`).
+- **`contracts/deployment/go.mod`** — a separate module that the deployment-contract workflow
+  builds from its own `go-version-file`. Raise its `go` directive with the root.
 
 - **`Makefile` / `.github/workflows/go.yml`** — the `golangci-lint` version (`GOLANGCI_LINT_VERSION`)
   is pinned and must support the new Go minor. Bump it if the new Go release needs a newer linter.
@@ -94,7 +98,7 @@ older-toolchain `core`/`wool`.
 - [ ] `go.mod` (`go` + `toolchain`) bumped in **core, wool, cli, every agent repo**
 - [ ] `go mod tidy` run in each
 - [ ] `goreleaser-cross` image tag bumped in `release.yaml`
-- [ ] `test/Dockerfile` reviewed (pin if applicable)
+- [ ] `release_contract_test.go` pin and `contracts/deployment/go.mod` match
 - [ ] `golangci-lint` version compatible
 - [ ] grep sweep clean
 - [ ] prose updated (`AGENTS.md`, `docs/development.md`)

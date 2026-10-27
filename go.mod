@@ -11,10 +11,11 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261025214748-c9cef7470d20
-	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261025214748-c9cef7470d20
-	github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261025214748-c9cef7470d20
-	github.com/codefly-dev/core v0.19.7-0.20261026023455-8b5ddef6d55a
+	github.com/codefly-dev/authority/libraries/authority-client/go v0.0.0-20261026143932-67b85b14a942
+	github.com/codefly-dev/authority/libraries/authority-core/go v0.0.0-20261026143932-67b85b14a942
+	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261026023425-000d44495d93
+	github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261026175541-3afad7224855
+	github.com/codefly-dev/core v0.19.7-0.20261026194550-a8599bd3991a
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
@@ -101,6 +102,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
+	github.com/codefly-dev/authority/libraries/resources/go v0.0.0-20261026023425-000d44495d93 // indirect
 	github.com/codefly-dev/gortk v0.2.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect

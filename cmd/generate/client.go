@@ -76,7 +76,7 @@ contracts directory on disk (--from contracts:<dir>).
 func init() {
 	ClientCmd.Flags().StringVar(&clientFrom, "from", "", "contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>")
 	ClientCmd.Flags().StringSliceVar(&clientLanguages, "language", nil, "languages to generate: go,typescript,python")
-	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the facade to these protobuf services (protobuf contracts only)")
+	ClientCmd.Flags().StringSliceVar(&clientServices, "services", nil, "restrict the library to these protobuf services and the declarations they need: contract, catalog, bindings and facade (protobuf contracts only)")
 	ClientCmd.Flags().StringVar(&clientName, "name", "", "library name (default: <module>-<service>-client)")
 	ClientCmd.Flags().StringVar(&clientModuleName, "module-name", "", "facade entry-point name (default: derived from the contract)")
 	ClientCmd.Flags().BoolVar(&clientNoFacade, "no-facade", false, "generate bindings only, no facade")
@@ -243,16 +243,10 @@ type resolvedContractSource struct {
 	facadeModuleDefault string
 
 	// protoSources, when set (the local module/service source only), carries
-	// the service's own .proto files. proto.GenerateClient's DescriptorSet
-	// path mishandles a --services subset once more than one file is present
-	// (core bug: a facade plugin invoked over a multi-file descriptor set —
-	// unavoidable once the module's proto imports anything, e.g. a REST
-	// gateway's google/api/annotations.proto — reports the target service as
-	// undeclared, even though the same content generates fine as Sources).
-	// The local source has the original files on hand, so it is generated
-	// from Sources instead, sidestepping the bug; contracts:/package:
-	// sources only ever have the persisted descriptor bytes and remain
-	// exposed to it (see docs/commands.md).
+	// the service's own .proto files, which a library binding the whole
+	// contract is generated from. A --services library is generated from its
+	// narrowed descriptor set instead, since the sources declare every
+	// service (see generators.ContractEntry.ProtoSources).
 	protoSources []coreproto.Source
 }
 

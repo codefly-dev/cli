@@ -107,12 +107,8 @@ func TestGenerateClientFromModuleService(t *testing.T) {
 	resetClientFlags(t)
 	clientFrom = "billing/api/grpc"
 	clientLanguages = []string{"go"}
-	// The local source generates from the service's own proto sources (see
-	// resolvedContractSource.protoSources), so --services works here; a
-	// contracts:/package: source only has the persisted descriptor bytes and
-	// hits a core bug filtering --services over a multi-file descriptor set
-	// (tracked, not something this repo can fix) — see
-	// TestGenerateClientFromContractsDir, which does not set --services.
+	// --services narrows the local contract too: the library is generated
+	// from the narrowed descriptor set rather than the service's sources.
 	clientServices = []string{"ApiService"}
 	clientOutput = filepath.Join(t.TempDir(), "lib")
 

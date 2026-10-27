@@ -133,7 +133,11 @@ func permissionDestinations(ctx context.Context, module *resources.Module, outpu
 		return nil, nil, nil, fmt.Errorf("%s publishes no policies; run codefly generate contracts", module.Dir())
 	}
 	if output != "" {
-		return []permissionDestination{{dir: output, methods: served.All()}}, nil, served.Unserved, nil
+		methods, tableErr := served.All()
+		if tableErr != nil {
+			return nil, nil, nil, tableErr
+		}
+		return []permissionDestination{{dir: output, methods: methods}}, nil, served.Unserved, nil
 	}
 	services, err := module.LoadServices(ctx)
 	if err != nil {
