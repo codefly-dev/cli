@@ -94,9 +94,9 @@ func Prepare(ctx context.Context, workspace *resources.Workspace, env *environme
 	}
 	var sources []fixturecomposition.Source
 	for _, module := range modules {
-		dir, found, err := configurations.ProfileDirectory(ctx, module.Dir(), "configurations", profiles)
-		if err != nil {
-			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		dir, found, dirErr := configurations.ProfileDirectory(ctx, module.Dir(), "configurations", profiles)
+		if dirErr != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, dirErr)
 		}
 		if !found {
 			continue
@@ -107,12 +107,12 @@ func Prepare(ctx context.Context, workspace *resources.Workspace, env *environme
 		if resources.SameDir(filepath.Dir(path), filepath.Dir(target)) {
 			continue
 		}
-		data, err := os.ReadFile(path)
-		if errors.Is(err, os.ErrNotExist) {
+		data, readErr := os.ReadFile(path)
+		if errors.Is(readErr, os.ErrNotExist) {
 			continue
 		}
-		if err != nil {
-			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		if readErr != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, readErr)
 		}
 		sources = append(sources, fixturecomposition.Source{Name: sourceName(workspace, module.Name, path), Data: data})
 	}
@@ -169,7 +169,7 @@ func Write(prepared *Prepared) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(prepared.Target), 0o755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(prepared.Target, prepared.Content, 0o644); err != nil {
+	if err := os.WriteFile(prepared.Target, prepared.Content, 0o600); err != nil {
 		return false, err
 	}
 	return true, nil

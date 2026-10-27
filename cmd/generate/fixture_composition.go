@@ -37,7 +37,7 @@ Examples:
   codefly generate fixture-composition
   codefly generate fixture-composition --env local`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		// Fragments ship inside the composed modules, so a pinned module is
