@@ -1260,3 +1260,18 @@ process that binds a loopback address on the port after that probe, and a
 routed module that crashes or is withdrawn mid-run, whose port the hop keeps
 routing to. `--temporary-ports` derives no
 address, so a reference that needs one is refused before the hop starts.
+
+### Composed fixture fragments
+
+When a service declares `fixture-composition`, the shared workspace configuration
+reader supplies one document merged from every composed module's fragment using
+Authority's fixture-composition library. This includes modules inside the workspace
+and foreign modules. Doctor, CI and run planning use that reader; a single module's
+resolved default does not substitute for the full merge. Duplicate grants or
+installations fail the merge even when their source documents are identical.
+Other workspace groups retain Core's ordinary provider ambiguity rules.
+
+An explicit workspace document retains precedence, including a document written
+by `codefly generate fixture-composition`. Generation and the read-only provider
+share the same fragment discovery and merge. Direct Core configuration reads do
+not synthesize this CLI-owned group; consumers that need it use the shared reader.
