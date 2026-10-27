@@ -18,7 +18,7 @@ func TestAppendEnvironmentVariablesToFileIsOwnerOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := AppendEnvironmentVariablesToFile(context.Background(), path, nil); err != nil {
+	if err := AppendEnvironmentVariablesToFile(context.Background(), path, localRunEnvironment(), nil); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -40,7 +40,7 @@ func TestAppendEnvironmentVariablesToFileRejectsSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := AppendEnvironmentVariablesToFile(context.Background(), link, nil); err == nil {
+	if err := AppendEnvironmentVariablesToFile(context.Background(), link, localRunEnvironment(), nil); err == nil {
 		t.Fatal("expected symlink rejection")
 	}
 }
@@ -130,9 +130,17 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 	)
 	runtime := configuration("mind/mind", "runtime", "session_id", "session-123", false, native)
 
+	// The composition root's own structured document, handed to every service
+	// of the run as platform-core's merged fixture-composition is: it is
+	// carried under a key that hashes origin, name AND environment, so a
+	// writer that names no environment cannot write it at all.
+	document := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, RuntimeContext: native, Infos: []*basev0.ConfigurationInformation{{
+		Name: "fixture-composition",
+		Data: &basev0.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v1\nroles: []\n")},
+	}}}
 	if err := AppendServiceProcessConfigurationsToFile(
-		context.Background(), path, native, service,
-		[]*basev0.Configuration{workspace},
+		context.Background(), path, localRunEnvironment(), native, service,
+		[]*basev0.Configuration{workspace, document},
 		[]*basev0.Configuration{postgres, containerOnly},
 		[]*basev0.Configuration{runtime},
 	); err != nil {
@@ -148,10 +156,20 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 		"CODEFLY__WORKSPACE_CONFIGURATION__DOGFOOD__CAMPAIGN=headless\n",
 		"CODEFLY__SERVICE_SECRET_CONFIGURATION__INFRA__POSTGRES__POSTGRES__READ_WRITE_CONNECTION=postgres://runtime\n",
 		"CODEFLY__SERVICE_CONFIGURATION__MIND__MIND__RUNTIME__SESSION_ID=session-123\n",
+		// The document, under the key its reader derives for this environment.
+		resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false) + "=",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("service process environment is missing %q; keys=%v", expected, environmentKeys(text))
 		}
+	}
+	carrier := carrierValue(t, text, resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false))
+	content, err := resources.DecodeConfigurationDocument(carrier, resources.ConfigurationWorkspace, "fixture-composition", "local", false)
+	if err != nil {
+		t.Fatalf("the written document does not read back for environment local: %v", err)
+	}
+	if !strings.Contains(string(content), "codefly.dev/authority/fixture-composition/v1") {
+		t.Fatalf("the document lost its content: %s", content)
 	}
 	if strings.Contains(text, "REDIS") || strings.Contains(text, "redis://container") {
 		t.Fatalf("container-only dependency leaked into native environment; keys=%v", environmentKeys(text))
@@ -192,13 +210,13 @@ func TestServiceProcessOutputEnvWritesDependencyConfigsOncePerRun(t *testing.T) 
 
 	// Init phase: own + runtime only, NO dependency configurations.
 	if err := AppendServiceProcessConfigurationsToFile(
-		context.Background(), path, native, own, nil, nil, []*basev0.Configuration{runtime},
+		context.Background(), path, localRunEnvironment(), native, own, nil, nil, []*basev0.Configuration{runtime},
 	); err != nil {
 		t.Fatal(err)
 	}
 	// Start phase: refreshed dependency configurations only.
 	if err := AppendServiceProcessConfigurationsToFile(
-		context.Background(), path, native, nil, nil, []*basev0.Configuration{dependency}, nil,
+		context.Background(), path, localRunEnvironment(), native, nil, nil, []*basev0.Configuration{dependency}, nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -398,5 +416,37 @@ func TestAppendRuntimeEnvironmentToFileOmitsForbiddenDependencyEndpoint(t *testi
 	}
 	if strings.Contains(text, "CODEFLY__ENDPOINT__SAAS__ACCOUNTS__INTERNAL__CONNECT=") {
 		t.Fatalf("private endpoint reached the output environment:\n%s", text)
+	}
+}
+
+// localRunEnvironment is the run environment the writers name their carriers
+// for, as the runner reads it off the world.
+func localRunEnvironment() *basev0.Environment { return &basev0.Environment{Name: "local"} }
+
+// carrierValue is the value written for key in a KEY=value file.
+func carrierValue(t *testing.T, text, key string) string {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if value, ok := strings.CutPrefix(line, key+"="); ok {
+			return value
+		}
+	}
+	t.Fatalf("%s is not in the file; keys=%v", key, environmentKeys(text))
+	return ""
+}
+
+// A writer that names no run environment refuses before it writes anything,
+// by name, rather than failing on the first document with core's contract
+// error — which is what platform-core's composition gate saw on 0.1.219: the
+// composition root's merged fixture-composition reached every service's
+// `--output-env` and the whole run refused at the first Init.
+func TestServiceProcessOutputEnvRequiresTheRunEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.env")
+	err := AppendServiceProcessConfigurationsToFile(context.Background(), path, nil, resources.NewRuntimeContextNative(), nil, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "names no run environment") {
+		t.Fatalf("got %v, want the writer to refuse without an environment", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused write left a file: %v", statErr)
 	}
 }

@@ -372,9 +372,14 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		// every dependency secret in the owner-only file (and record stale
 		// pre-barrier values). Own, workspace, and this service's own runtime
 		// configurations are final at Init, so they are written now.
+		environment, envErr := runner.world.Env.Proto()
+		if envErr != nil {
+			return nil, w.Wrapf(envErr, "cannot name the run environment for the output environment")
+		}
 		err = AppendServiceProcessConfigurationsToFile(
 			ctx,
 			runner.outputEnv,
+			environment,
 			runtimeContext,
 			conf,
 			workspaceConfigurations,
@@ -980,9 +985,14 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		if dependencyErr != nil {
 			return nil, w.Wrapf(dependencyErr, "cannot load dependency configurations for output environment")
 		}
+		environment, envErr := runner.world.Env.Proto()
+		if envErr != nil {
+			return nil, w.Wrapf(envErr, "cannot name the run environment for the output environment")
+		}
 		err = AppendServiceProcessConfigurationsToFile(
 			ctx,
 			runner.outputEnv,
+			environment,
 			runtimeContext,
 			nil,
 			nil,
@@ -1829,11 +1839,12 @@ func (runner *Runner) WithRemote(environment *environments.Environment) {
 	runner.remoteEnvironment = environment
 }
 
-func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, confs []*basev0.Configuration) error {
+func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, environment *basev0.Environment, confs []*basev0.Configuration) error {
 	w := wool.Get(ctx).In("resources.AppendToFile", wool.Field("filePath", filePath))
 	// filter out for native
 	filtered := resources.FilterConfigurations(confs, resources.NewRuntimeContextNative())
 	m := resources.NewEnvironmentVariableManager()
+	m.SetEnvironment(environment)
 	err := m.AddConfigurations(ctx, filtered...)
 	if err != nil {
 		return w.Wrapf(err, "cannot add configurations")
@@ -1852,9 +1863,22 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, conf
 // runtime configurations are filtered to the selected backend. The output is
 // owner-only because these inputs intentionally include provider credentials
 // and dependency connection secrets.
+//
+// The run's environment is part of what is written, not decoration: a
+// structured configuration document (a workspace group that is one YAML or
+// JSON document rather than key/value pairs, such as the composition root's
+// fixture-composition) is carried under a key that hashes its origin, its name
+// AND the environment, which is how the SDK finds it again
+// (resources.ConfigurationDocumentKey). The agent's own Init request carries
+// the environment and so could always deliver such a document; this writer
+// built its manager without one, so the first root-owned document a composition
+// handed every service made `--output-env` refuse the whole run at Init with
+// core's "configuration document requires origin, name and environment" — the
+// shape platform-core's composition gate met on 0.1.219.
 func AppendServiceProcessConfigurationsToFile(
 	ctx context.Context,
 	filePath string,
+	environment *basev0.Environment,
 	runtimeContext *basev0.RuntimeContext,
 	serviceConfiguration *basev0.Configuration,
 	workspaceConfigurations []*basev0.Configuration,
@@ -1862,7 +1886,11 @@ func AppendServiceProcessConfigurationsToFile(
 	runtimeConfigurations []*basev0.Configuration,
 ) error {
 	w := wool.Get(ctx).In("resources.AppendServiceProcessConfigurationsToFile", wool.Field("filePath", filePath))
+	if environment == nil || environment.GetName() == "" {
+		return w.NewError("the service process environment names no run environment, so a configuration document could not be carried under the key its reader derives")
+	}
 	manager := resources.NewEnvironmentVariableManager()
+	manager.SetEnvironment(environment)
 	if err := manager.AddConfigurations(ctx, serviceConfiguration); err != nil {
 		return w.Wrapf(err, "cannot add service configuration")
 	}
