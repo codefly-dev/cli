@@ -3904,7 +3904,7 @@ absent or empty exactly when the environment selects no binding.
 | Flag | Description |
 |------|-------------|
 | `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
-| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes; writes no binding output. Like every command that reads composed modules, it materializes a pinned module first — cache, overlay, receipt and `.gitignore` entries — so it runs on a fresh checkout |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes; write nothing |
 
 ## Infrastructure
 
