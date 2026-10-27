@@ -69,9 +69,14 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 		return fmt.Errorf("resolve excluded root dependency endpoints: %w", err)
 	}
 
+	environment, err := flow.world.Env.Proto()
+	if err != nil {
+		return fmt.Errorf("name the run environment for the excluded root's output environment: %w", err)
+	}
 	if err := AppendServiceProcessConfigurationsToFile(
 		ctx,
 		flow.outputEnvPath,
+		environment,
 		runtimeContext,
 		serviceConfiguration,
 		workspaceConfigurations,
