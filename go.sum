@@ -109,8 +109,6 @@ github.com/codefly-dev/authority/libraries/authority-core/go v0.0.0-202610261439
 github.com/codefly-dev/authority/libraries/authority-core/go v0.0.0-20261026143932-67b85b14a942/go.mod h1:n+JVNRyv2dp7BIwUoKYn3TcjN7YpZmxMhBrWp14wsKQ=
 github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261026023425-000d44495d93 h1:PnhgA9wkib67bJnc5hkhkc80J2ch5uYiq+9/NiD/XFU=
 github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261026023425-000d44495d93/go.mod h1:XsOFnO2MQdr37vM3ULa0Uwi8ZWptyVx7hRSUyIdaZ1Q=
-github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027143708-e2fba9d058e1 h1:BAr9lEAtRzUpE0W6bsesmt8000CM9qlNY+wzTux8vms=
-github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027143708-e2fba9d058e1/go.mod h1:RxoEMLDVDjAdTwHA7cDVQ9CwYGEuLjTMsf8HdPaHrho=
 github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027160913-bfe4876a8b96 h1:ZcxEIs7jHbVhlz0x2aGiNsIvCMWWA+osozv+uD4dEjg=
 github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027160913-bfe4876a8b96/go.mod h1:RxoEMLDVDjAdTwHA7cDVQ9CwYGEuLjTMsf8HdPaHrho=
 github.com/codefly-dev/authority/libraries/hop/go v0.0.0-20261026175541-3afad7224855 h1:XmPltOHirB97RopD8WIJe9bwt1wkHAzngKoj8k2XI8U=
