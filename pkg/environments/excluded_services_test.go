@@ -433,6 +433,61 @@ environments:
 		"with no selection every environment is still held")
 }
 
+// TestSelectedEnvironmentIsStillHeldToItsOwnMalformedKeys pins what the
+// narrowing does NOT do, because Blue's real workspace is this shape and it
+// would otherwise be easy to read the fix as clearing their render.
+//
+// Narrowing holds each environment to its OWN declarations. If the selected
+// environment is itself malformed, it is still refused — the refusal moves to
+// it rather than disappearing. Blue carries BOTH "object-storage" and
+// "documents/object-storage" in the same block, because `environment import`
+// adds a producer's new key spelling and keeps the old one, so a bare key
+// outlives the rename. The qualified sibling does not redeem the bare key:
+// the bare one still resolves against a workspace composing two services of
+// that name, and is still ambiguous.
+func TestSelectedEnvironmentIsStillHeldToItsOwnMalformedKeys(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(root, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	svc := func(n string) string {
+		return "kind: service\nname: " + n + "\nversion: 0.0.0\n" +
+			"agent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n"
+	}
+	write(resources.WorkspaceConfigurationName, `name: platform
+layout: modules
+modules:
+  - name: documents
+  - name: saas
+environments:
+  - name: blue
+    namespace: platform
+    service-config:
+      services:
+        object-storage:
+          values: {A: "1"}
+        documents/object-storage:
+          values: {B: "2"}
+`)
+	write(filepath.Join("modules", "documents", resources.ModuleConfigurationName), "kind: module\nname: documents\nservices:\n    - name: object-storage\n")
+	write(filepath.Join("modules", "documents", "services", "object-storage", resources.ServiceConfigurationName), svc("object-storage"))
+	write(filepath.Join("modules", "saas", resources.ModuleConfigurationName), "kind: module\nname: saas\nservices:\n    - name: object-storage\n")
+	write(filepath.Join("modules", "saas", "services", "object-storage", resources.ServiceConfigurationName), svc("object-storage"))
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	declared, err := environments.FromWorkspace(workspace)
+	require.NoError(t, err)
+	require.Len(t, declared, 1)
+
+	err = environments.ValidateWorkspace(ctx, workspace, declared[0])
+	require.ErrorContains(t, err, `environment "blue" service-config references ambiguous service "object-storage"`,
+		"selecting an environment does not excuse its own stale bare key; the fix moves this refusal, it does not remove it")
+}
+
 // TestSelectionNarrowsTheGraphCheckAndNothingElse pins the limit of the
 // change, so the prose describing it cannot drift past the code.
 //
