@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -114,6 +115,77 @@ func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion(t *testing.T) 
 	require.NoError(t, err, "a render is held to its own environment, never refused over another's")
 	require.DirExists(t, filepath.Join(result.Path, "services", "store"),
 		"and the service the OTHER environment excludes is rendered here")
+}
+
+// TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName is the Blue
+// m106 defect, reproduced on released source: `deploy gitops render --all
+// --env blue` failed with
+//
+//	environment "staging" service-config references ambiguous service "object-storage"
+//
+// A bare service-scoped name is resolved against the WORKSPACE's service
+// graph, so it becomes ambiguous the moment a second module composes a
+// service of that name. The declaration that goes stale belongs to whichever
+// environment wrote the bare key first — here `staging` — but every
+// environment was held to it, so a correct render of `blue` was refused over
+// a declaration that is not blue's and that blue cannot repair.
+//
+// Here `depot` composes a second service named `store`, which makes staging's
+// bare `store` key ambiguous. Rendering `blue`, whose own declarations are
+// clean, must succeed.
+func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName(t *testing.T) {
+	installFakeAgents(t)
+	root := t.TempDir()
+	require.NoError(t, copyTree(filepath.Join("testdata", "container-ports"), root))
+
+	// A second module composing a service named "store": this is what makes
+	// the bare name ambiguous across the workspace.
+	depot := filepath.Join(root, "modules", "depot")
+	require.NoError(t, os.MkdirAll(filepath.Join(depot, "services", "store"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(depot, "module.codefly.yaml"),
+		[]byte("kind: module\nname: depot\nservices:\n  - name: store\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(depot, "services", "store", "service.codefly.yaml"),
+		[]byte("kind: service\nname: store\nversion: 0.0.1\n"+
+			"agent:\n  kind: codefly:service\n  name: postgres\n  version: 0.0.1\n  publisher: codefly.dev\n"+
+			"endpoints:\n  - name: tcp\n    api: tcp\n"), 0o644))
+
+	path := filepath.Join(root, resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	data = []byte(strings.Replace(string(data), "modules:\n  - name: shop\n",
+		"modules:\n  - name: shop\n  - name: depot\n", 1))
+	// staging carries the stale bare key; blue declares nothing of the sort.
+	data = append(data, []byte(`    service-config:
+      services:
+        store:
+          values:
+            DATABASE_HOST: store.database.example
+  - name: blue
+    namespace: acme
+    registry:
+      url: registry.example.com/acme
+`)...)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+
+	// staging really is ambiguous against the graph: selecting it refuses.
+	// Without this the next assertion could pass for the wrong reason.
+	staging, err := orchestration.SelectEnvironment(workspace, "staging")
+	require.NoError(t, err)
+	_, err = RenderModule(ctx, workspace, module, staging, "acme-staging", nil)
+	require.ErrorContains(t, err, `references ambiguous service "store"`,
+		"the environment that owns the stale declaration must still be refused")
+
+	// blue must not inherit it.
+	blue, err := orchestration.SelectEnvironment(workspace, "blue")
+	require.NoError(t, err)
+	_, err = RenderModule(ctx, workspace, module, blue, "acme-blue", nil)
+	require.NoError(t, err, "a render is held to its own environment's declarations, never another's")
 }
 
 // A module the environment withdraws whole renders nothing there: the render

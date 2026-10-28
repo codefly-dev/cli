@@ -367,6 +367,72 @@ func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
 	require.Error(t, err, "a nil selection must not skip the check")
 }
 
+// TestValidateWorkspaceHoldsOnlyTheSelectedScopedNames is the direct half of
+// the Blue m106 defect: a bare service-scoped name goes ambiguous when a
+// second module composes a service of that name, and every environment was
+// being held to the environment that wrote the bare key.
+//
+// Two modules each compose "store", so `stale`'s bare service-config key is
+// ambiguous. Selecting `clean`, which declares nothing of the sort, must
+// succeed; selecting `stale` must still refuse; and with no selection the
+// whole workspace is still held.
+func TestValidateWorkspaceHoldsOnlyTheSelectedScopedNames(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(root, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	service := func(name string) string {
+		return "kind: service\nname: " + name + "\nversion: 0.0.0\n" +
+			"agent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n"
+	}
+	write(resources.WorkspaceConfigurationName, `name: platform
+layout: modules
+modules:
+  - name: shop
+  - name: depot
+environments:
+  - name: clean
+    namespace: platform
+  - name: stale
+    namespace: platform
+    service-config:
+      services:
+        store:
+          values:
+            DATABASE_HOST: store.database.example
+`)
+	write(filepath.Join("modules", "shop", resources.ModuleConfigurationName), "kind: module\nname: shop\nservices:\n    - name: store\n")
+	write(filepath.Join("modules", "shop", "services", "store", resources.ServiceConfigurationName), service("store"))
+	write(filepath.Join("modules", "depot", resources.ModuleConfigurationName), "kind: module\nname: depot\nservices:\n    - name: store\n")
+	write(filepath.Join("modules", "depot", "services", "store", resources.ServiceConfigurationName), service("store"))
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	byName := map[string]*environments.Environment{}
+	declared, err := environments.FromWorkspace(workspace)
+	require.NoError(t, err)
+	for _, env := range declared {
+		byName[env.Name] = env
+	}
+
+	// The owning environment is genuinely ambiguous: it must still refuse when
+	// it is the selected one, or the next assertion proves nothing.
+	err = environments.ValidateWorkspace(ctx, workspace, byName["stale"])
+	require.ErrorContains(t, err, `references ambiguous service "store"`)
+
+	// This is the assertion that fails before the fix.
+	require.NoError(t, environments.ValidateWorkspace(ctx, workspace, byName["clean"]),
+		"a selected environment must not be refused over another environment's scoped name")
+
+	// Nothing selected: the whole workspace is still held.
+	err = environments.ValidateWorkspace(ctx, workspace)
+	require.ErrorContains(t, err, `references ambiguous service "store"`,
+		"with no selection every environment is still held")
+}
+
 // TestSelectionNarrowsTheGraphCheckAndNothingElse pins the limit of the
 // change, so the prose describing it cannot drift past the code.
 //

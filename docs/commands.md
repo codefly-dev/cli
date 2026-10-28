@@ -130,17 +130,28 @@ environment in the message itself rather than only under `--debug`.
 
 This is scoped to the graph-consistency check, which is where the
 cross-environment refusal came from. It is not a general rule that other
-environments are ignored. The check itself decodes and validates EVERY
-environment's declarations before it compares the selected one against the
-graph, so a **malformed** `exclude-services` anywhere — an unqualified name, a
-duplicate, a service withdrawn from itself — still refuses, whatever was
-selected. (Loading the workspace does not: a workspace with such a declaration
-still loads, and a clean environment still selects. It is the validation that
-refuses, not the load.) Module namespaces, host composition,
-service-scoped names (`service-config`, `service-identity`, `service-mesh`)
-and `managed-services` keys are likewise still held across every environment,
-so a bad declaration in one of those blocks in an unselected environment can
-still refuse a correct operation elsewhere.
+environments are ignored. The selection covers every check that judges an
+environment's declarations against the workspace's current service graph:
+`exclude-services`, the service-scoped names (`service-config`,
+`service-identity`, `service-mesh`, `service-secrets`) and
+`managed-services`. Those are narrowed together because they fail the same
+way — a bare `store` key becomes ambiguous the moment a second module
+composes a service of that name, and the environment that wrote the key may
+not be the one being rendered.
+
+The graph itself is still the whole workspace's. A name is ambiguous because
+of what the workspace composes; the selection decides whose declarations are
+judged against it, never what it contains.
+
+Two things still hold every environment, deliberately. The check decodes and
+validates EVERY environment's declarations before comparing the selected one
+against the graph, so a **malformed** declaration anywhere — an unqualified
+name, a duplicate, a service withdrawn from itself — still refuses, whatever
+was selected; that is a workspace that does not say what it means, not a
+disagreement with the graph. (Loading does not refuse: such a workspace still
+loads and a clean environment still selects. It is the validation that
+refuses.) Module namespaces and host composition are likewise whole-workspace,
+being invariants of the workspace rather than of a selection.
 This matters because the exclusion graph is the workspace's **current**
 composition: an environment imported before a module overlay added a service
 carries no `withdrawn-from` for it, so holding every environment to that graph
