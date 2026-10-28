@@ -2505,6 +2505,14 @@ Every rule is one that silently broke something. The two worth knowing:
                  renders into a mesh allow rule straight to that module's
                  service, past the check.
 
+Permissions are judged by reading the contract through Core's own loader,
+which refuses a role granting a scope no binding backs and no ceiling covers
+("role X grants documents:read, which is neither within the module's own scope
+ceilings nor a scope one of its bindings spells out"). That is the
+missing-permission class, caught before install rather than at the first
+refused call. What a composition's values resolve each binding to is NOT
+judged here: that needs the composition, not the directory.
+
 Exit codes:
   0  every judged solution conforms (warnings allowed)
   1  at least one check failed, or the command itself failed
@@ -2521,7 +2529,8 @@ module_contract_unreadable, owner_aware_missing, module_package_missing,
 module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
-page_shell_exported_too_widely.
+page_shell_exported_too_widely, consumed_module_without_binding,
+page_shell_has_no_app.
 ```
 
 ```

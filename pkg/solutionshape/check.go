@@ -76,6 +76,8 @@ const (
 	CodePageServiceMissing      = "page_shell_missing"
 	CodeInterfaceMissing        = "module_interface_missing"
 	CodeEntryNotExported        = "entry_endpoint_not_exported"
+	CodeConsumedWithoutBinding  = "consumed_module_without_binding"
+	CodePageShellHasNoApp       = "page_shell_has_no_app"
 	CodePageExportedTooWidely   = "page_shell_exported_too_widely"
 )
 
@@ -124,10 +126,10 @@ func Inspect(moduleName, dir string) *Report {
 		return report
 	}
 
-	report.checkManifest(raw)
+	consumed := report.checkManifest(raw)
 	module := report.checkModule(dir)
 	report.checkEntryService(dir)
-	report.checkContract(dir)
+	report.checkContract(dir, consumed)
 	report.checkPackage(dir)
 	report.checkFrontend(dir)
 	if module != nil {
@@ -139,13 +141,13 @@ func Inspect(moduleName, dir string) *Report {
 // checkManifest holds the solution manifest to the reader every render, sync
 // and authority derivation actually uses, then to the one rule those readers
 // do not enforce: a consumed entry with no route name.
-func (r *Report) checkManifest(raw []byte) {
+func (r *Report) checkManifest(raw []byte) []string {
 	loaded, err := manifest.LoadConsumption(raw)
 	if err != nil {
 		r.fail(CodeManifestUnreadable,
 			fmt.Sprintf("%s is not readable by core's consumption reader: %v", manifest.FileName, err),
 			"every render, sync and authority derivation reads the manifest this way, so nothing can resolve what this solution consumes")
-		return
+		return nil
 	}
 	r.ok(CodeManifestUnreadable, fmt.Sprintf("%s declares %d consumed binding(s)", manifest.FileName, len(loaded.API.Consumes)))
 
@@ -158,12 +160,21 @@ func (r *Report) checkManifest(raw []byte) {
 			r.fail(CodeConsumedAPIUnnamed,
 				fmt.Sprintf("api.consumes entry %q names no route (`as`)", consumed.ID),
 				"give it `as: <name>`; the runtime addresses the module by that name and an entry without one is unroutable")
-			return
+			return nil
 		}
 	}
 	if len(loaded.API.Consumes) > 0 {
 		r.ok(CodeConsumedAPIUnnamed, "every consumed API names its route")
 	}
+	seen := map[string]bool{}
+	var modules []string
+	for index := range loaded.API.Consumes {
+		if module := loaded.API.Consumes[index].Module; module != "" && !seen[module] {
+			seen[module] = true
+			modules = append(modules, module)
+		}
+	}
+	return modules
 }
 
 // checkModule holds the module manifest's service-entry, which is load-bearing
@@ -189,6 +200,7 @@ func (r *Report) checkModule(dir string) *resources.Module {
 
 	if hasService(module, PageService) {
 		r.ok(CodePageServiceMissing, "the page's shell is declared")
+		r.checkPageShellHasAnApp(dir)
 	} else {
 		r.warn(CodePageServiceMissing,
 			fmt.Sprintf("the module declares no %q service", PageService),
@@ -265,7 +277,7 @@ func (r *Report) checkEntryService(dir string) {
 }
 
 // checkContract holds the contract to the declaration that fails silently.
-func (r *Report) checkContract(dir string) {
+func (r *Report) checkContract(dir string, consumed []string) {
 	if _, err := os.Stat(filepath.Join(dir, modulecontract.FileName)); errors.Is(err, os.ErrNotExist) {
 		r.fail(CodeContractMissing, fmt.Sprintf("no %s", modulecontract.FileName),
 			"it declares the principal every credential the solution mints is issued to; without it the solution has no declared identity to issue against")
@@ -278,6 +290,7 @@ func (r *Report) checkContract(dir string) {
 		return
 	}
 	r.ok(CodeContractMissing, fmt.Sprintf("the contract declares principal %q", contract.Principal))
+	r.checkConsumedModulesHaveAuthority(consumed, contract)
 
 	// The one that fails silently, and the reason this checker exists.
 	if contract.OwnerAware {
@@ -453,4 +466,89 @@ func interfaceKey(reference string) string {
 		return ""
 	}
 	return key
+}
+
+// WHAT IS DELIBERATELY NOT CHECKED HERE, and why it would be wrong to try.
+//
+// "Can a person holding role R actually call module M?" is the
+// missing-permission question, and it cannot be answered from these documents
+// alone. A role reaches another module's authority two ways: by naming a
+// binding in role.Bindings, and by declaring that module's resource kinds in
+// role.Scopes — which is how wiki and proposals do it, granting `documents`
+// and `documents.collection` with no RoleBinding at all. A binding's own kinds
+// are composition SLOTS, so which kinds it covers is not known until the
+// composition supplies values.
+//
+// A first draft of this package failed any binding no role named by id. It
+// reported wiki and proposals — the two solutions that have been running
+// longest — as broken, which is how the second mechanism was found. The real
+// answer needs modulecontract.Contract.Resolve(values) against a composition's
+// configuration, which is a composition-scoped check and not a
+// directory-scoped one.
+
+// checkConsumedModulesHaveAuthority reports a module the solution consumes for
+// which the contract declares no binding. This is NOT always wrong — a module
+// reached with the viewer's own credential, or on nobody's behalf, asks for no
+// binding — which is why it warns rather than fails. It is reported because
+// the two declarations live in different files, so nothing else puts them side
+// by side, and "the binding was never added" and "this one needs none" look
+// identical until a call is refused.
+func (r *Report) checkConsumedModulesHaveAuthority(consumes []string, contract *modulecontract.Contract) {
+	if len(consumes) == 0 {
+		return
+	}
+	bound := map[string]bool{}
+	for i := range contract.Bindings {
+		for _, audience := range contract.Bindings[i].Calls {
+			for _, call := range audience {
+				bound[call] = true
+			}
+		}
+		bound[contract.Bindings[i].ID] = true
+	}
+	var unbound []string
+	for _, module := range consumes {
+		if !bound[module] {
+			unbound = append(unbound, module)
+		}
+	}
+	if len(unbound) == 0 {
+		r.ok(CodeConsumedWithoutBinding, "every consumed module has a binding")
+		return
+	}
+	r.warn(CodeConsumedWithoutBinding,
+		fmt.Sprintf("consumed with no binding in the contract: %s", strings.Join(unbound, ", ")),
+		"correct when the module is reached with the VIEWER'S own credential or on nobody's behalf; a bug when the solution calls it on a person's behalf, and then the call is refused at runtime with nothing failing earlier. Confirm each one")
+}
+
+// checkPageShellHasAnApp reports a shell that is declared and has no app
+// behind it — a service.codefly.yaml naming a Next.js service with no
+// package.json beside it.
+//
+// It is a real state and not a hypothetical: conforming the fleet to one shape
+// added the shell's MANIFEST to several solutions whose page had never been
+// written, because writing one would have been inventing product in a
+// conforming change. The declaration is right and the gap is real, so
+// `codefly run service web` has nothing to start on those.
+//
+// A warning, not a failure: the solution is correctly shaped, and nothing is
+// broken until someone runs the shell. It is reported because a declared
+// service with no source is otherwise invisible — every manifest reads fine,
+// and the first sign is a run that does nothing.
+func (r *Report) checkPageShellHasAnApp(dir string) {
+	shell := filepath.Join(dir, "services", PageService)
+	if _, err := os.Stat(filepath.Join(shell, "service.codefly.yaml")); err != nil {
+		// No manifest at all is the module declaring a service it does not
+		// have, which the entry-service rules already speak to.
+		return
+	}
+	for _, marker := range []string{"package.json", "next.config.ts", "next.config.js"} {
+		if _, err := os.Stat(filepath.Join(shell, marker)); err == nil {
+			r.ok(CodePageShellHasNoApp, "the page's shell has an app behind it")
+			return
+		}
+	}
+	r.warn(CodePageShellHasNoApp,
+		fmt.Sprintf("the %q shell is declared with no app behind it", PageService),
+		"`codefly run service "+PageService+"` has nothing to start. Write the shell, or drop the service from module.codefly.yaml — a declaration with no source is the one state neither reading the manifests nor running the gates reveals")
 }

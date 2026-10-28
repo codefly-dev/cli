@@ -3,6 +3,7 @@ package solutionshape
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -318,5 +319,80 @@ endpoints:
 	report := Inspect("wiki", dir)
 	if checkFor(t, report, CodeModuleIdentityMissing).Status != StatusFail {
 		t.Fatal("a backend that presents no identity was accepted")
+	}
+}
+
+// A consumed module with no binding is reported, but as a warning: it is
+// correct when the module is reached with the viewer's own credential, which
+// is what wiki does for robin, tracing and annotations. Failing it would fail
+// the reference solution.
+func TestAConsumedModuleWithNoBindingWarnsRatherThanFails(t *testing.T) {
+	report := Inspect("wiki", conformingSolution(t))
+	check := checkFor(t, report, CodeConsumedWithoutBinding)
+	if check.Status != StatusWarn {
+		t.Fatalf("a consumed module with no binding was %s, want warn", check.Status)
+	}
+	if !strings.Contains(check.Message, "documents") {
+		t.Fatalf("the warning does not name the module: %q", check.Message)
+	}
+	if !report.Conforms() {
+		t.Fatal("a warning was treated as a failure")
+	}
+}
+
+// THE MISSING-PERMISSION CLASS IS CAUGHT, and it is core that catches it: a
+// role may grant another module's resource kind only when one of the
+// contract's bindings spells that scope out, or it is within the module's own
+// ceilings. Running the contract through core's loader is what surfaces it —
+// which is the whole reason this package reads every document with the reader
+// that owns it instead of parsing YAML itself.
+func TestARoleGrantingAnUnbackedScopeIsReported(t *testing.T) {
+	dir := conformingSolution(t)
+	write(t, filepath.Join(dir, "module.contract.codefly.yaml"), `schema: codefly/module-contract/v1
+principal: wiki
+owner_aware: true
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: wiki.page
+      actions: [read, write]
+roles:
+    - name: installer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, write]
+          - resource_kind: documents
+            actions: [read]
+bindings: []
+`)
+	report := Inspect("wiki", dir)
+	check := checkFor(t, report, CodeContractUnreadable)
+	if check.Status != StatusFail {
+		t.Fatalf("a role granting a scope no binding backs was %s, want fail", check.Status)
+	}
+	if !strings.Contains(check.Message, "documents:read") {
+		t.Fatalf("the failure does not name the unbacked grant: %q", check.Message)
+	}
+}
+
+// A shell declared with no app behind it is the state conforming the fleet
+// created: the manifest was added, the page was never written. It warns rather
+// than fails — the solution is correctly shaped and nothing breaks until
+// someone runs the shell — but it is reported, because a declared service with
+// no source is invisible to every other reading.
+func TestAPageShellWithNoAppWarns(t *testing.T) {
+	dir := conformingSolution(t)
+	report := Inspect("wiki", dir)
+	if checkFor(t, report, CodePageShellHasNoApp).Status != StatusWarn {
+		t.Fatal("a shell with no app behind it was not reported")
+	}
+	if !report.Conforms() {
+		t.Fatal("a warning was treated as a failure")
+	}
+
+	// With an app beside it, the finding goes away.
+	write(t, filepath.Join(dir, "services", PageService, "package.json"), `{"name":"web","private":true}`)
+	if checkFor(t, Inspect("wiki", dir), CodePageShellHasNoApp).Status != StatusOK {
+		t.Fatal("a shell with a real app was still reported")
 	}
 }

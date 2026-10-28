@@ -52,6 +52,7 @@ func TestEveryDiagnosticCodeIsDocumented(t *testing.T) {
 		solutionshape.CodeFrontendMissing, solutionshape.CodeFrontendUnreadable,
 		solutionshape.CodePageServiceMissing, solutionshape.CodeInterfaceMissing,
 		solutionshape.CodeEntryNotExported, solutionshape.CodePageExportedTooWidely,
+		solutionshape.CodeConsumedWithoutBinding, solutionshape.CodePageShellHasNoApp,
 	} {
 		if !strings.Contains(DoctorSolutionCmd.Long, code) {
 			t.Errorf("diagnostic code %q is not documented in the command's help", code)
