@@ -27,7 +27,8 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin targets Core's published `v0.19.10` release line, including the
+The current pin targets Core's published `v0.19.13` release line, including
+proto companion `0.0.21` without Rust generation tooling and the
 Linux process-inspection correction: a missing executable link while process
 state remains is an inspection error, not successful proof of absence. The exact source
 revision is declared in `go.mod`; the CLI consumes Core's container parent
