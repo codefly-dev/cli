@@ -124,6 +124,9 @@ full delivery.intent.yaml is not interpreted.`,
 			now:    time.Now().UTC(),
 			stdout: cmd.OutOrStdout(),
 		}
+		if err := common.ResolvePinnedModules(ctx); err != nil {
+			return err
+		}
 		if err := runImport(ctx, &opts); err != nil {
 			return err
 		}
