@@ -62,6 +62,60 @@ func TestRenderModuleLeavesAnExcludedServiceOutOfTheTreeAndTheInventory(t *testi
 		`rendered unit "store" is a service environment "staging" excludes`)
 }
 
+// TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion is the render
+// caller's half of the Blue defect, and it is the one a direct test of
+// ValidateWorkspace cannot give: it fails if RenderModule stops passing the
+// environment it was given, however correct the validator underneath is.
+//
+// It covers that one entry. The other three callers that pass a selection —
+// orchestrate.go's second call, dev.go and solution.go — are reviewed source,
+// not covered here.
+//
+// `stale` excludes shop/store while shop/api still consumes it and withdraws
+// nothing, so that environment genuinely does not hold up against the
+// workspace graph. Rendering `staging`, whose own declaration is clean, must
+// still succeed — the exclusion graph is built from the workspace's CURRENT
+// composition, so an environment imported before a module overlay added a
+// service carries no withdrawal for it, and an operator cannot repair an
+// environment the product intent does not declare.
+func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion(t *testing.T) {
+	installFakeAgents(t)
+	root := t.TempDir()
+	require.NoError(t, copyTree(filepath.Join("testdata", "container-ports"), root))
+	path := filepath.Join(root, resources.WorkspaceConfigurationName)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	data = append(data, []byte(`  - name: stale
+    namespace: acme
+    registry:
+      url: registry.example.com/acme
+    exclude-services:
+      - service: shop/store
+`)...)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+
+	// The other environment really is inconsistent with the graph: selecting
+	// it is refused. Without this the next assertion would pass vacuously.
+	stale, err := orchestration.SelectEnvironment(workspace, "stale")
+	require.NoError(t, err)
+	_, err = RenderModule(ctx, workspace, module, stale, "acme-stale", nil)
+	require.ErrorContains(t, err, "shop/store",
+		"the inconsistent environment must still be refused when it is the selected one")
+
+	// Selecting the clean environment must not inherit that refusal.
+	staging, err := orchestration.SelectEnvironment(workspace, "staging")
+	require.NoError(t, err)
+	result, err := RenderModule(ctx, workspace, module, staging, "acme-staging", nil)
+	require.NoError(t, err, "a render is held to its own environment, never refused over another's")
+	require.DirExists(t, filepath.Join(result.Path, "services", "store"),
+		"and the service the OTHER environment excludes is rendered here")
+}
+
 // A module the environment withdraws whole renders nothing there: the render
 // refuses it by name instead of producing an empty tree.
 func TestRenderModuleRefusesAModuleTheEnvironmentWithdrawsWhole(t *testing.T) {

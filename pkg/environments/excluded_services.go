@@ -161,10 +161,12 @@ func ValidateEnvironmentExclusions(ctx context.Context, workspace *resources.Wor
 	if err != nil {
 		return err
 	}
-	if err := env.validateExclusionsAgainst(graph); err != nil {
-		return fmt.Errorf("environment %q: %w", env.Name, err)
-	}
-	return nil
+	// No "environment %q:" prefix here: validateExclusionsAgainst names the
+	// environment inside each message, because a prefix is a separate link in
+	// the error chain and the plain renderer shows only the leaf — which is how
+	// a `--env blue` refusal printed no environment at all and sent its reader
+	// to re-declare something that was already declared.
+	return env.validateExclusionsAgainst(graph)
 }
 
 // ValidateExcludedServices holds every environment's exclude-services to the
@@ -188,7 +190,7 @@ func ValidateExcludedServices(ctx context.Context, workspace *resources.Workspac
 			}
 		}
 		if err := env.validateExclusionsAgainst(graph); err != nil {
-			return fmt.Errorf("environment %q: %w", env.Name, err)
+			return err
 		}
 	}
 	return nil
@@ -253,21 +255,21 @@ func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
 	}
 	for _, entry := range env.ExcludeServices {
 		if !composed[entry.Service] {
-			return fmt.Errorf("exclude-services names %q, which the workspace does not compose", entry.Service)
+			return fmt.Errorf("environment %q excludes %q, which the workspace does not compose", env.Name, entry.Service)
 		}
 		for _, consumer := range consumers[entry.Service] {
 			if excluded[consumer] || slices.Contains(entry.WithdrawnFrom, consumer) {
 				continue
 			}
-			return fmt.Errorf("exclude-services withdraws %q, but %s declares a dependency on it: name %s under its withdrawn-from to withdraw that edge with it, or stop excluding %s",
-				entry.Service, consumer, consumer, entry.Service)
+			return fmt.Errorf("environment %q withdraws %q, but %s declares a dependency on it: name %s under that environment's withdrawn-from to withdraw the edge with it, or stop excluding %s there",
+				env.Name, entry.Service, consumer, consumer, entry.Service)
 		}
 		for _, consumer := range entry.WithdrawnFrom {
 			if !slices.Contains(consumers[entry.Service], consumer) {
-				return fmt.Errorf("exclude-services %q withdrawn-from names %s, which declares no dependency on it", entry.Service, consumer)
+				return fmt.Errorf("environment %q excludes %q with a withdrawn-from naming %s, which declares no dependency on it", env.Name, entry.Service, consumer)
 			}
 			if excluded[consumer] {
-				return fmt.Errorf("exclude-services %q withdrawn-from names %s, which this environment excludes too", entry.Service, consumer)
+				return fmt.Errorf("environment %q excludes %q with a withdrawn-from naming %s, which it excludes too", env.Name, entry.Service, consumer)
 			}
 		}
 	}
@@ -277,7 +279,7 @@ func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
 	for index := range graph.consumed {
 		consumption := &graph.consumed[index]
 		if excluded[resources.ServiceUnique(consumption.Module, consumption.Service)] {
-			return fmt.Errorf("solution %s consumes %s/%s/%s (api.consumes), which exclude-services withdraws from this environment", consumption.Solution, consumption.Module, consumption.Service, consumption.Endpoint)
+			return fmt.Errorf("solution %s consumes %s/%s/%s (api.consumes), which environment %q withdraws", consumption.Solution, consumption.Module, consumption.Service, consumption.Endpoint, env.Name)
 		}
 	}
 	for _, named := range env.serviceDeclarations() {
@@ -290,7 +292,7 @@ func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
 			}
 		}
 		if excluded[target] {
-			return fmt.Errorf("%s names %s, which exclude-services withdraws from this environment: drop the declaration, or stop excluding %s", named.block, named.name, target)
+			return fmt.Errorf("%s names %s, which environment %q withdraws: drop the declaration, or stop excluding %s there", named.block, named.name, env.Name, target)
 		}
 	}
 	return nil

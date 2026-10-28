@@ -191,7 +191,36 @@ func validateResourcePathComponent(kind, name string) error {
 // it earlier.
 // Loading the graph is why this is a pass separate from postLoad, mirroring
 // ValidateServiceDependencies.
-func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) error {
+// A selected environment narrows the exclusion check to that environment. The
+// exclusion graph is built from the workspace's CURRENT composition
+// (loadExclusionGraph: LoadServices, LoadModules, ConsumedEndpoints), so
+// holding EVERY environment to it refuses a flow over a declaration that is
+// not its own: an environment imported before a module overlay added a service
+// has no withdrawal for that service, and a render of a different, correct
+// environment then fails over it. Blue hit exactly that — `render --env blue`
+// refused over `staging`, whose composition predates robin/sandbox.
+//
+// So a caller that has selected an environment passes it, and gets
+// ValidateEnvironmentExclusions' contract: "a flow is held to its own
+// environment's GRAPH, never refused over another's". A caller with no
+// selection passes none and keeps holding every environment, which is right
+// for a check whose subject IS the workspace. `doctor workspace` is not that
+// caller: it selects, and calls ValidateEnvironmentExclusions directly
+// (cmd/doctor_workspace.go) rather than relying on this fallback.
+//
+// What the selection narrows is EXACTLY the graph-consistency check, and
+// nothing else in this function:
+//
+//   - FromWorkspace above decodes and validates every environment, including
+//     the SHAPE of its exclude-services (qualified names, duplicates,
+//     self-withdrawal). A malformed exclusion anywhere still refuses here.
+//   - module namespaces, host composition, service-scoped names and
+//     managed-service keys are all still held across every environment.
+//
+// Those remain whole-workspace deliberately — they are invariants of the
+// workspace, not of a selection — but they are the same cross-environment
+// shape, so narrowing them is a separate decision, not an oversight here.
+func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, selected ...*Environment) error {
 	environments, err := FromWorkspace(workspace)
 	if err != nil {
 		return err
@@ -208,7 +237,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 			return w.Wrap(hostErr)
 		}
 	}
-	if excludedErr := ValidateExcludedServices(ctx, workspace); excludedErr != nil {
+	if excludedErr := validateSelectedExclusions(ctx, workspace, selected); excludedErr != nil {
 		return w.Wrap(excludedErr)
 	}
 	needsGraph := false
@@ -379,4 +408,18 @@ func validateModuleNamespaces(workspace *resources.Workspace, environments []*En
 		}
 	}
 	return nil
+}
+
+// validateSelectedExclusions holds exclude-services to the workspace graph for
+// the one selected environment, or for every environment when nothing was
+// selected. A nil selection is the same as none: a caller that has no
+// environment must not silently skip the check.
+func validateSelectedExclusions(ctx context.Context, workspace *resources.Workspace, selected []*Environment) error {
+	for _, env := range selected {
+		if env == nil {
+			continue
+		}
+		return ValidateEnvironmentExclusions(ctx, workspace, env)
+	}
+	return ValidateExcludedServices(ctx, workspace)
 }

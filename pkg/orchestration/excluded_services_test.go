@@ -122,3 +122,54 @@ func TestPlanRefusesARootGroupReferenceToAnExcludedService(t *testing.T) {
 	require.ErrorContains(t, err, "from this environment (exclude-services")
 	require.ErrorContains(t, err, "platform/authority")
 }
+
+// TestFlowIsNotRefusedOverAnotherEnvironmentsExclusion is the Blue render
+// defect: a flow selecting one environment was refused over a DIFFERENT
+// environment's exclude-services.
+//
+// The exclusion graph is built from the workspace's current composition, so an
+// environment imported before a module overlay added a service carries no
+// withdrawal for it. Holding every environment to that graph meant a correct
+// `--env blue` render failed over `staging`, whose composition predates the
+// service — and the operator could not fix it from the declaration side,
+// because the product intent declares no `staging` to re-import.
+//
+// Here `stale` excludes shop/vault while shop/api still consumes it, so
+// `stale` genuinely does not hold up. Selecting `staging`, whose own
+// declaration is clean, must still succeed.
+func TestFlowIsNotRefusedOverAnotherEnvironmentsExclusion(t *testing.T) {
+	ctx := context.Background()
+	files := exclusionWorkspaceFiles("")
+	files["workspace.codefly.yaml"] = `name: acme
+layout: modules
+modules:
+    - name: shop
+environments:
+    - name: staging
+      namespace: acme
+    - name: stale
+      namespace: acme
+      exclude-services:
+          - service: shop/vault
+`
+	workspace := writeTempWorkspace(t, files)
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	api, err := module.LoadServiceFromName(ctx, "api")
+	require.NoError(t, err)
+
+	// The other environment really is inconsistent with the graph: selecting it
+	// refuses, which is what makes the next assertion meaningful rather than
+	// vacuous.
+	stale, err := SelectEnvironment(workspace, "stale")
+	require.NoError(t, err)
+	_, err = NewFlow(ctx, workspace, module, api, stale, RunMode)
+	require.ErrorContains(t, err, "declares a dependency on it",
+		"the inconsistent environment must still refuse when it is the selected one")
+
+	// Selecting the clean environment must not inherit that refusal.
+	staging, err := SelectEnvironment(workspace, "staging")
+	require.NoError(t, err)
+	_, err = NewFlow(ctx, workspace, module, api, staging, RunMode)
+	require.NoError(t, err, "a flow is held to its own environment, never refused over another's")
+}
