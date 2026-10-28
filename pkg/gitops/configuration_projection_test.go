@@ -439,3 +439,46 @@ func TestRejectedConfigurationCannotReplacePublishedTree(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 }
+
+func TestQualifiedSecretsReachOnlyTheirModule(t *testing.T) {
+	env := &environments.Environment{Name: "blue", Namespace: "product", ServiceSecrets: &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "default-store", Kind: "ClusterSecretStore"},
+		Services: map[string]environments.EnvironmentServiceSecretMapping{
+			"saas/accounts": {
+				SecretStore:     &environments.EnvironmentSecretStoreReference{Name: "accounts-store", Kind: "ClusterSecretStore"},
+				RefreshInterval: "2m",
+				RemoteKeys:      map[string]environments.EnvironmentSecretRemoteRef{"SIGNING_KEY": {Key: "accounts-signing", Property: "wrapped"}},
+			},
+		},
+	}}
+	for _, module := range []string{"saas", "other"} {
+		t.Run(module, func(t *testing.T) {
+			root := t.TempDir()
+			writeConsumerTree(t, root, env.Name, env.Namespace, "accounts", "declared.example")
+			scope := scopeOf(env)
+			scope.Module = module
+			require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "accounts"}, env, scope, serviceInjection{}))
+			rendered := buildOverlay(t, root, env.Name)
+			values := containerEnvironment(t, rendered)
+			if module == "other" {
+				require.NotContains(t, values, "SIGNING_KEY")
+				return
+			}
+			require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-accounts", "key": "SIGNING_KEY"}}, values["SIGNING_KEY"]["valueFrom"])
+			found := false
+			for _, doc := range rendered {
+				if doc.kind != "ExternalSecret" {
+					continue
+				}
+				spec := doc.value["spec"].(map[string]any)
+				require.Equal(t, "accounts-store", spec["secretStoreRef"].(map[string]any)["name"])
+				require.Equal(t, "2m", spec["refreshInterval"])
+				found = true
+			}
+			require.True(t, found)
+			remote := env.ServiceSecrets.RemoteRef(environments.SecretScope{Module: module, Service: "accounts"}, "SIGNING_KEY")
+			require.Equal(t, "accounts-signing", remote.Key)
+			require.Equal(t, "wrapped", remote.Property)
+		})
+	}
+}

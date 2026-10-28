@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -48,9 +49,13 @@ func registryMirrors(env *environments.Environment) map[string]string {
 	return env.Registry.Mirrors
 }
 
-// mirroredReference is the reference to read `reference` from. It is
-// environments.MirroredReference, the one spelling a cell's pull repository
-// (EnvironmentRegistry.PullRepository) is mirrored with too.
+// EnsureEnvironmentBuilder reuses the environment's registry configuration and
+// host-networked builder for auxiliary builds such as frontend bundles.
+func EnsureEnvironmentBuilder(ctx context.Context, env *environments.Environment) (string, error) {
+	return ensureBuildxBuilder(ctx, registryMirrors(env))
+}
+
+// mirroredReference uses the environment's declared read repository.
 func mirroredReference(ref string, mirrors map[string]string) string {
 	return environments.MirroredReference(ref, mirrors)
 }

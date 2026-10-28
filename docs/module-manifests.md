@@ -92,7 +92,10 @@ digest and media type, verbatim. A deployed render of a release declaring
 none builds the bundle from the release's own source, as it builds the
 release's images: `npm ci && npm run build` in the remote's npm project
 (`services/fe-remote`, else the component root), inside a digest-pinned Node
-image, on the committed tree (HEAD) of the repository the component is
+image, using the same environment-selected, host-networked BuildKit builder and
+registry mirrors as service images. This reuses the existing builder provisioner;
+the default Docker bridge can otherwise lose the operator's DNS path during npm
+installation. The build runs on the committed tree (HEAD) of the repository the component is
 released from: nothing untracked or ignored reaches the builder (nor do
 uncommitted edits), and the module cache is never written. A component in no
 repository builds from its own directory alone. It archives `services/fe-remote/dist` in core's

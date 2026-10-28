@@ -2702,10 +2702,12 @@ codefly environment import <env> --coordinate-contract <file|->
 Flags:
 
 ```
-      --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
-      --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
-      --namespace string             Assert the namespace declared by the producer
-      --product-intent string        Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
+      --configuration-profiles strings   Product configuration profile chain when absent from the coordinate declaration
+      --configuration-source string      Authored product profile inherited by the imported environment
+      --coordinate-contract string       Path to a codefly/coordinate/v1 descriptor, or - for stdin
+      --dry-run                          Print the unified diff of workspace.codefly.yaml and write nothing
+      --namespace string                 Assert the namespace declared by the producer
+      --product-intent string            Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
 ```
 
 ## `codefly environment show`

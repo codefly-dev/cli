@@ -101,6 +101,11 @@ jobs:
           "$RUNNER_TEMP/generate-bin/buf" --version
           echo "$RUNNER_TEMP/generate-bin" >> "$GITHUB_PATH"
       - name: Run tagged and qualification tests in isolated processes
+        env:
+          # Core uses this read-only token for release lookups and downloads.
+          # Each test has its own CODEFLY_HOME, so unauthenticated lookups
+          # otherwise exhaust the runner's shared GitHub API quota.
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/test-generate-isolated.sh "${{ matrix.shard }}" "${{ strategy.job-total }}"
       - name: Retain test output, timings and conformance receipts
         if: always()

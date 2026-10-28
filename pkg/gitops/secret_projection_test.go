@@ -248,6 +248,35 @@ func TestServiceSecretProjectionDefaultsAndOverridesRemoteKeys(t *testing.T) {
 	}
 }
 
+func TestServiceSecretProjectionQualifiedMappingDoesNotLeakAcrossModules(t *testing.T) {
+	secrets := azureServiceSecrets()
+	secrets.Services["saas/accounts"] = environments.EnvironmentServiceSecretMapping{
+		SecretStore: &environments.EnvironmentSecretStoreReference{Name: "signing", Kind: "ClusterSecretStore"},
+		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
+			"workos-client-secret": {Key: "accounts-signing", Property: "wrapped"},
+		},
+		Defaults:        &environments.EnvironmentSecretRemoteRef{Key: "{module}-{service}", Property: "{key}"},
+		RefreshInterval: "5m",
+	}
+	for _, module := range []string{"saas", "other", "saas"} {
+		projection, err := serviceSecretProjection(unitScope{Namespace: "product-" + module, Module: module},
+			"accounts", secrets, []string{"workos-api-key", "workos-client-secret"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if module == "saas" {
+			if projection.Spec.SecretStoreRef.Name != "signing" || projection.Spec.RefreshInterval != "5m" ||
+				projection.Spec.Data[0].RemoteRef.Key != "saas-accounts" ||
+				projection.Spec.Data[1].RemoteRef != (externalSecretRemote{Key: "accounts-signing", Property: "wrapped"}) {
+				t.Fatalf("qualified mapping lost: %+v", projection.Spec)
+			}
+		} else if projection.Spec.SecretStoreRef.Name != "azure-keyvault-prod" ||
+			projection.Spec.Data[1].RemoteRef.Key != "workos/prod/client-secret" {
+			t.Fatalf("qualified mapping leaked to another module: %+v", projection.Spec)
+		}
+	}
+}
+
 func TestServiceSecretProjectionRendersNothingWithoutStoreOrKeys(t *testing.T) {
 	if projection, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", nil, []string{"api-key"}); err != nil || projection != nil {
 		t.Fatalf("nil store rendered %v (err %v)", projection, err)
