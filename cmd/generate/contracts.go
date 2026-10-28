@@ -21,6 +21,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	resources "github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
@@ -76,6 +77,22 @@ against what's on disk, without writing anything.
 		defer done()
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
+		// This command loads service builders to read their endpoints
+		// (generators.LoadServiceEndpoints -> services.Load, which spawns the
+		// agent, then instance.LoadBuilder), so an agent subprocess exists per
+		// service. ClearAgents closes the cached connections, and Core's close
+		// is cooperative on its own account: it asks the agent to stop, waits
+		// for the agent to reap its own children, and forces the process group
+		// down only if that wait expires. Which signal it sends is Core's to
+		// decide and is not restated here — the comments around it in Core name
+		// SIGTERM while the code sends os.Interrupt. Without this,
+		// every `generate contracts` pass left its agents running — eight live
+		// private go-grpc records accumulated across two regenerations of one
+		// workspace. `generate client` already reaps the same way.
+		//
+		// It ends the processes THIS command started, which is all it claims:
+		// an agent already running from another command is not its business.
+		defer services.ClearAgents()
 
 		if contractsFormat != "text" && contractsFormat != "json" {
 			return fmt.Errorf("--format must be text or json, got %q", contractsFormat)

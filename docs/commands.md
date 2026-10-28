@@ -3034,6 +3034,40 @@ release commit also:
   in full. A catalog that no longer matches its contract files is refused —
   run `codefly generate contracts` and commit it first.
 
+**Agents the command starts, and what ends them.** Reading each service's
+exported endpoints loads that service, which starts its agent as a child
+process. The command retires them on return by closing the cached connections.
+That close is Core's, and what it attempts is cooperative: Core asks the agent
+to stop, gives it time to retire its own children (user binaries, containers),
+and forces the process group down if that wait expires. The signal it sends is
+Core's own choice and is not restated here.
+
+What that does **not** establish is that every child was retired. The close
+reports no error, the agent ignores the error from stopping its children, and
+the agent has a hard-deadline exit of its own, so an agent process that has
+gone away is evidence the agent exited — not proof that nothing it started
+survived it. Treat this as best-effort cleanup with a forced fallback.
+
+Cancelling the command once (Ctrl-C) takes the same path: the reap is deferred
+rather than conditional on success, so it still runs. A **second** Ctrl-C does
+not — it exits the process immediately and no deferred cleanup runs at all,
+which leaves exactly the agents this retirement exists to prevent.
+
+It retires the agents **that run of the command started**. An agent left
+running by an earlier command — a version of the CLI before this retirement
+existed, for instance — is not adopted or reaped here: it is a separate process
+that outlived its own command. Retiring one is `codefly recover process <PID>
+--preview` to read its identity, then `--expect FILE` with an explicit mode to
+act on exactly that birth, one process at a time, with no group or registry
+effect.
+
+The only mode this version offers is `--force`, an irreversible SIGKILL. That
+is **not** a substitute for a cooperative shutdown: it gives the agent no
+chance to reap its own children, so a leftover agent's user binaries and
+containers can survive it. A graceful mode, and what should happen when a
+target refuses to exit or is signalled twice, are not covered at this version.
+
+
 The services and modules are found through `workspace.codefly.yaml` and each
 `module.codefly.yaml` — never by searching the tree, so a fixture workspace
 elsewhere in the repository is not touched, and never through the machine-local
