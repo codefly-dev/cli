@@ -3377,7 +3377,11 @@ codefly agent ci --skip-conformance               # Source/build/drift debugging
 
 ### `codefly generate`
 
-Generate client code from service APIs.
+Generate client code from service APIs. Codefly owns the proto generation path
+and invokes the pinned proto companion for its compilers and plugins. Core
+0.19.13 selects proto companion 0.0.21, which generates Go, Python, and
+TypeScript without building or shipping Rust tooling. Rust client generation
+is not supported.
 
 ```bash
 codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service
