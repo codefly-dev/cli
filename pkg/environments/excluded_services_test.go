@@ -116,7 +116,7 @@ func TestExcludeServicesRefusesWhatStillConsumesIt(t *testing.T) {
 		"a withdrawal from a non-consumer": {`    exclude-services:
       - service: shop/vault
         withdrawn-from: [shop/api, shop/cache]
-`, "withdrawn-from names shop/cache, which declares no dependency on it"},
+`, `environment "staging" excludes "shop/vault" with a withdrawn-from naming shop/cache, which declares no dependency on it`},
 		"a service the workspace does not compose": {`    exclude-services:
       - service: shop/vaults
 `, `"shop/vaults", which the workspace does not compose`},
@@ -221,7 +221,7 @@ service-dependencies:
 	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
 	require.NoError(t, err)
 	err = environments.ValidateWorkspace(context.Background(), reloaded)
-	require.ErrorContains(t, err, `exclude-services withdraws "shop/cache", but portal/web declares a dependency on it`)
+	require.ErrorContains(t, err, `environment "staging" withdraws "shop/cache", but portal/web declares a dependency on it`)
 }
 
 // A module naming the excluded service its entry routes the host to a service
