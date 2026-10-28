@@ -245,8 +245,10 @@ dependency on it is refused unless `withdrawn-from` names it, and so are a
 solution consuming one of its endpoints, an environment declaration naming it
 and a configuration reference to one of its endpoints. **Those refusals are
 judged for the environment the operation selected, and the message names that
-environment**: an operation is never refused over a different environment's
-`exclude-services`. That distinction is load-bearing, because the graph a
+environment**: an operation is not refused because a different environment's
+`exclude-services` is inconsistent with the workspace graph. A **malformed**
+exclusion is a separate matter — every environment is validated for shape when
+the workspace loads, so one of those refuses any operation. That distinction is load-bearing, because the graph a
 declaration is held to is the workspace's current composition — an environment
 imported before a module overlay added a service carries no `withdrawn-from`
 for it, and holding every environment to that graph refuses operations on

@@ -323,8 +323,11 @@ func TestCoordinateContractCarriesExcludedServices(t *testing.T) {
 // The fixture gives `staging` an exclusion the graph refuses (shop/api still
 // consumes shop/vault) and leaves `local` clean. A render of `local` must not
 // inherit staging's refusal; a render of `staging` must still get it; and a
-// caller that selects nothing must still hold the whole workspace, which is
-// what `doctor workspace` and the other whole-workspace checks rely on.
+// caller that selects nothing must still hold the whole workspace.
+//
+// (`doctor workspace` is NOT such a caller: it selects an environment and
+// calls ValidateEnvironmentExclusions directly. The no-selection fallback is
+// for a caller whose subject really is the whole workspace.)
 func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeExclusionWorkspace(t, `    exclude-services:
@@ -353,8 +356,8 @@ func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
 	require.NoError(t, environments.ValidateWorkspace(ctx, workspace, byName["local"]),
 		"a selected environment must not be refused over another environment's exclusion")
 
-	// Nothing selected: the whole workspace is still held, so the default is
-	// preserved for doctor and the other whole-workspace callers.
+	// Nothing selected: the whole workspace is still held, preserving the
+	// default for a caller whose subject is the workspace itself.
 	err = environments.ValidateWorkspace(ctx, workspace)
 	require.Error(t, err, "with no selection every environment is still held")
 	require.ErrorContains(t, err, `environment "staging" withdraws "shop/vault"`)
@@ -362,4 +365,31 @@ func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
 	// A nil selection is the same as none, not a silent skip.
 	err = environments.ValidateWorkspace(ctx, workspace, nil)
 	require.Error(t, err, "a nil selection must not skip the check")
+}
+
+// TestSelectionNarrowsTheGraphCheckAndNothingElse pins the limit of the
+// change, so the prose describing it cannot drift past the code.
+//
+// Selecting an environment narrows the GRAPH-consistency check and only that.
+// Loading a workspace decodes and validates every environment, so a
+// MALFORMED exclusion — an unqualified name, here, in an environment nobody
+// selected — still refuses. That is deliberate: a declaration that cannot be
+// parsed is not a disagreement between an environment and the graph, it is a
+// workspace that does not say what it means.
+func TestSelectionNarrowsTheGraphCheckAndNothingElse(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeExclusionWorkspace(t, `    exclude-services:
+          - service: vault
+`)
+	// The clean environment selects fine — Select decodes only the one it is
+	// asked for, so the malformed declaration elsewhere does not block it.
+	local, err := environments.Select(workspace, "local")
+	require.NoError(t, err)
+
+	// But validating with that selection still refuses, because the first
+	// thing the check does is decode EVERY environment. This is the boundary:
+	// the selection narrows the graph comparison, not the parsing.
+	err = environments.ValidateWorkspace(ctx, workspace, local)
+	require.Error(t, err, "a malformed exclusion elsewhere still refuses a selected, clean environment")
+	require.ErrorContains(t, err, "exclude-services service")
 }

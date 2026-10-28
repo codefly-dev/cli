@@ -202,13 +202,24 @@ func validateResourcePathComponent(kind, name string) error {
 //
 // So a caller that has selected an environment passes it, and gets
 // ValidateEnvironmentExclusions' contract: "a flow is held to its own
-// environment's composition, never refused over another's". A caller with no
-// selection — a whole-workspace check such as the doctor — passes none and
-// keeps holding every environment, which is right for a check whose subject
-// IS the workspace.
+// environment's GRAPH, never refused over another's". A caller with no
+// selection passes none and keeps holding every environment, which is right
+// for a check whose subject IS the workspace. `doctor workspace` is not that
+// caller: it selects, and calls ValidateEnvironmentExclusions directly
+// (cmd/doctor_workspace.go) rather than relying on this fallback.
 //
-// The other passes stay whole-workspace: module namespaces and host
-// composition are invariants of the workspace, not of a selection.
+// What the selection narrows is EXACTLY the graph-consistency check, and
+// nothing else in this function:
+//
+//   - FromWorkspace above decodes and validates every environment, including
+//     the SHAPE of its exclude-services (qualified names, duplicates,
+//     self-withdrawal). A malformed exclusion anywhere still refuses here.
+//   - module namespaces, host composition, service-scoped names and
+//     managed-service keys are all still held across every environment.
+//
+// Those remain whole-workspace deliberately — they are invariants of the
+// workspace, not of a selection — but they are the same cross-environment
+// shape, so narrowing them is a separate decision, not an oversight here.
 func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, selected ...*Environment) error {
 	environments, err := FromWorkspace(workspace)
 	if err != nil {

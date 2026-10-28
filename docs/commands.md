@@ -122,10 +122,22 @@ out. The selected environment's `exclude-services` also removes services from
 the composition roots; a module withdrawn whole contributes no root, including
 its service-entry. CLI and run-profile exclusions still apply on top.
 
-**An operation is held to the environment it selected, never to another's
-`exclude-services`.** Run, build, deploy and `deploy gitops render` each
-validate the exclusions of the one environment they were given, and a refusal
-names that environment in the message itself rather than only under `--debug`.
+**An operation is held to the environment it selected, never refused because a
+DIFFERENT environment's `exclude-services` is inconsistent with the workspace
+graph.** Run, build, deploy and `deploy gitops render` each check the one
+environment they were given against the graph, and a refusal names that
+environment in the message itself rather than only under `--debug`.
+
+This is scoped to the graph-consistency check, which is where the
+cross-environment refusal came from. It is not a general rule that other
+environments are ignored. Every environment is still decoded and validated
+whenever a workspace is loaded, so a **malformed** `exclude-services` anywhere
+— an unqualified name, a duplicate, a service withdrawn from itself — still
+refuses any operation, selection or not. Module namespaces, host composition,
+service-scoped names (`service-config`, `service-identity`, `service-mesh`)
+and `managed-services` keys are likewise still held across every environment,
+so a bad declaration in one of those blocks in an unselected environment can
+still refuse a correct operation elsewhere.
 This matters because the exclusion graph is the workspace's **current**
 composition: an environment imported before a module overlay added a service
 carries no `withdrawn-from` for it, so holding every environment to that graph
@@ -133,12 +145,13 @@ refused a correct render of a different environment — and the operator could
 not satisfy it, since re-importing the offending environment requires the
 product intent to declare it.
 
-Every CLI path that validates exclusions selects an environment: run, build,
-test and deploy through the flow, `deploy gitops render` and the solution and
-dev renders through the workspace validation, and `codefly doctor workspace`
-through its own scope check. The whole-workspace form, which holds every
-environment at once, remains the behaviour for a caller that has selected
-none.
+Every CLI path that checks exclusions against the graph selects an
+environment: run, build, test and deploy through the flow, `deploy gitops
+render` and the solution and dev renders through the workspace validation, and
+`codefly doctor workspace` through its own scope check — doctor selects and
+calls the selected check directly, rather than relying on the fallback. The
+whole-workspace form, which holds every environment's graph at once, remains
+the behaviour for a caller that has selected none.
 The deterministic port hash folds every endpoint into a few thousand
 buckets, so a `--naming-scope` can hash two endpoints to one port and abort
 the run; `--temporary-ports` sidesteps the hash, under the ordering its
