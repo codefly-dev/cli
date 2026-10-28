@@ -43,6 +43,14 @@ owns the option, the descriptor-to-bounded-schema projection and
 published contracts, the layout on disk and the drift gate. Nothing about the
 contract is authored twice — it is the projection of the method's own messages.
 
+The selected owner's `module.contract.codefly.yaml` supplies the audience through
+Core's strict module-contract reader. Its principal is independent of the
+producer checkout's module name; generation keeps the package's module identity
+unchanged. Every generated destination must be published by that contract, and
+an explicit operation audience must match its principal. Missing, unreadable or
+contradictory publication refuses generation before output changes. A module
+with no operations still writes an empty index.
+
 Derivation is endpoint-specific: `catalog.codefly.json`'s
 `endpoints[].services[].procedures` declares the served surface; descriptor bytes
 supply each method's option and schema. Sharing a descriptor does not make every

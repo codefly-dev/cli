@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/composition"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,9 @@ func TestContractSurfaceExportAndDerivation(t *testing.T) {
 		Endpoints: []*resources.Endpoint{{Name: "invoke", API: "connect"}, {Name: "receipts", API: "grpc"}},
 	}
 	root, moduleDir := saveFixtureWorkspace(t, ctx, "documents", nil, service)
+	saveRunnablePublication(t, moduleDir, "documents.ingestion",
+		modulecontract.Destination{ID: "invoke", Service: service.Name, Endpoint: "invoke", Kind: "module"},
+		modulecontract.Destination{ID: "receipts", Service: service.Name, Endpoint: "receipts", Kind: "module"})
 	service, err := resources.LoadServiceFromDir(ctx, service.Dir())
 	require.NoError(t, err)
 	writeFixtureFile(t, filepath.Join(service.Dir(), "generated/surfaces.json"), []byte(`{

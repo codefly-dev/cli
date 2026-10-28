@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/composition"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
@@ -121,6 +122,7 @@ func saveSolutionFixture(t *testing.T, ctx context.Context, document []byte) (ro
 		},
 	)
 	publishSolutionContract(t, moduleDir, document)
+	saveRunnablePublication(t, moduleDir, "releases", modulecontract.Destination{ID: "http", Service: "backend", Endpoint: "http", Kind: "module"})
 	return root, moduleDir
 }
 
@@ -296,6 +298,7 @@ func saveCommittedSolution(t *testing.T, ctx context.Context, artifact []byte) (
 			},
 		},
 	)
+	saveRunnablePublication(t, moduleDir, "releases", modulecontract.Destination{ID: "http", Service: "backend", Endpoint: "http", Kind: "module"})
 	writeFixtureFile(t, filepath.Join(moduleDir, "services", "backend", filepath.FromSlash(standards.OpenAPIPath)), artifact)
 	writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(`schema: codefly/module-package/v2
 kind: module-package

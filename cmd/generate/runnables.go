@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
@@ -154,8 +155,10 @@ func init() {
 // derivation is everything one walk produced: the files the tree should hold,
 // the index that names them, and the methods that were refused.
 type derivation struct {
-	index *runnablespkg.Index
-	files map[string][]byte
+	index          *runnablespkg.Index
+	files          map[string][]byte
+	publication    *modulecontract.Contract
+	publicationErr error
 	// release is the module's own release version, empty for a module that
 	// declares no package manifest.
 	release string
@@ -265,6 +268,9 @@ func deriveRunnablesIn(ctx context.Context, workspaceName, workspaceDir string, 
 		files:   map[string][]byte{},
 		origins: map[string]derivedOperation{},
 	}
+	// Load the selected owner's declaration once. A module with no operations
+	// still produces an empty index; an operation cannot publish without it.
+	derived.publication, derived.publicationErr = modulecontract.Load(module.Dir())
 
 	var endpoints []composition.APIContractEndpoint
 	if catalog != nil {
@@ -352,6 +358,7 @@ func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractE
 
 	owner := corerunnable.ServiceOwner{
 		Module:   module.Name,
+		Audience: derived.audience(),
 		Service:  endpoint.Service,
 		Endpoint: endpoint.Endpoint,
 		Agent:    agent,
@@ -403,7 +410,7 @@ func deriveOpenAPIEndpoint(module *resources.Module, endpoint *composition.APICo
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", contract, err)
 	}
-	owner := corerunnable.ServiceOwner{Module: module.Name, Service: endpoint.Service, Endpoint: endpoint.Endpoint, Agent: agent}
+	owner := corerunnable.ServiceOwner{Module: module.Name, Audience: derived.audience(), Service: endpoint.Service, Endpoint: endpoint.Endpoint, Agent: agent}
 	paths := make([]string, 0, len(parsed.Paths))
 	for path := range parsed.Paths {
 		paths = append(paths, path)
@@ -528,8 +535,28 @@ func (d *derivation) admitted(subject string, err error) bool {
 	return false
 }
 
-// record writes one derived operation into the tree and the index.
+func (d *derivation) audience() string {
+	if d.publication == nil {
+		return ""
+	}
+	return d.publication.Principal
+}
+
+// record writes one derived operation into the tree and the index. The
+// publication principal is independent of the producer checkout's module name;
+// an explicitly declared operation must agree, never be silently rewritten.
 func (d *derivation) record(endpoint *composition.APIContractEndpoint, name string, pkg *basev0.RunnablePackage, spec *corerunnable.OperationSpec, origin derivedOperation) error {
+	if d.publicationErr != nil {
+		return fmt.Errorf("runnable %s/%s/%s needs its owner's module contract: %w", endpoint.Service, endpoint.Endpoint, name, d.publicationErr)
+	}
+	if d.publication == nil || !slices.ContainsFunc(d.publication.Destinations, func(destination modulecontract.Destination) bool {
+		return destination.Service == endpoint.Service && destination.Endpoint == endpoint.Endpoint
+	}) {
+		return fmt.Errorf("module contract does not publish runnable destination %s/%s", endpoint.Service, endpoint.Endpoint)
+	}
+	if spec.Audience != d.publication.Principal {
+		return fmt.Errorf("runnable %s/%s/%s audience %q differs from module contract principal %q", endpoint.Service, endpoint.Endpoint, name, spec.Audience, d.publication.Principal)
+	}
 	operation := pkg.GetServiceOperations()[0]
 	packageBytes, err := runnablespkg.CanonicalJSON(pkg)
 	if err != nil {
