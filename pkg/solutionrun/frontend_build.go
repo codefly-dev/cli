@@ -22,6 +22,8 @@ import (
 // mirror serves it like any other base.
 const FrontendBuilderImage = "docker.io/library/node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5"
 
+const frontendBuildCommand = "build"
+
 // FrontendProject is the npm project a component's frontend build runs in,
 // slash-separated and relative to the module: the remote's own directory
 // (fe-remote beside the services) when it holds a package.json, else the
@@ -149,9 +151,11 @@ func buildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 	dockerfile := fmt.Sprintf("FROM %s AS build\nWORKDIR /source\nCOPY [\".\", \".\"]\nWORKDIR %s\nRUN [\"sh\", \"-c\", \"npm ci && npm run build\"]\nFROM scratch\nCOPY --from=build [\"%s/\", \"/\"]\n",
 		FrontendBuilderImage, workdir, bundle)
 	//nolint:gosec // G204: fixed docker executable, separate arguments, no shell; the Dockerfile arrives on stdin.
-	args := []string{"build"}
+	args := make([]string, 0, 10)
 	if builder != "" {
-		args = []string{"buildx", "build", "--builder", builder}
+		args = append(args, "buildx", frontendBuildCommand, "--builder", builder)
+	} else {
+		args = append(args, frontendBuildCommand)
 	}
 	args = append(args, "--progress=plain", "--file", "-", "--output", "type=local,dest="+destination, root)
 	//nolint:gosec // G204: fixed docker executable, separate arguments, no shell.

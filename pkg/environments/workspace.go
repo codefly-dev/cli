@@ -205,8 +205,8 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 			if env == nil {
 				return fmt.Errorf("selected environment is nil")
 			}
-			if err := env.Validate(); err != nil {
-				return err
+			if validationErr := env.Validate(); validationErr != nil {
+				return validationErr
 			}
 		}
 		environments = selected

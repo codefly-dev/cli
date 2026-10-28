@@ -580,7 +580,7 @@ func (s *frontendSources) buildNatively(ctx context.Context, module *resources.M
 	if _, err := os.Stat(filepath.Join(projectDir, "node_modules")); err != nil {
 		install = true
 	}
-	steps := [][]string{{"npm", "run", "build"}}
+	steps := [][]string{{"npm", "run", frontendBuildCommand}}
 	if install {
 		steps = append([][]string{{"npm", "ci"}}, steps...)
 	}

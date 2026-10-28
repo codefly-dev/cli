@@ -19,7 +19,7 @@ func Credential(tenant string, lookup func(string) (string, bool)) (azcore.Token
 	}
 	id, err := uuid.Parse(tenant)
 	if err != nil || id == uuid.Nil || id.String() != tenant {
-		return nil, errors.New("Azure publication requires a declared tenant UUID")
+		return nil, errors.New("publication requires a declared Azure tenant UUID")
 	}
 	mode, _ := lookup("CODEFLY_AZURE_CREDENTIAL")
 	switch mode {
@@ -35,7 +35,7 @@ func Credential(tenant string, lookup func(string) (string, bool)) (azcore.Token
 		tokenFile, _ := lookup("AZURE_FEDERATED_TOKEN_FILE")
 		clientID, err := uuid.Parse(client)
 		if workloadTenant != tenant || err != nil || clientID == uuid.Nil || clientID.String() != client || !filepath.IsAbs(tokenFile) {
-			return nil, errors.New("Azure workload publication requires the declared tenant, a client UUID and an absolute federated token file")
+			return nil, errors.New("workload publication requires the declared Azure tenant, a client UUID and an absolute federated token file")
 		}
 		credential, err := azidentity.NewWorkloadIdentityCredential(&azidentity.WorkloadIdentityCredentialOptions{
 			TenantID: tenant, ClientID: client, TokenFilePath: tokenFile,

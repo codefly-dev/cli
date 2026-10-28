@@ -3,6 +3,7 @@ package environment
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -55,14 +56,19 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 		}
 	}
 	output := filepath.Join(destination, configurations.ProfileDerivationFile)
-	retired, err := retiredGeneratedConfigurations(destination, output)
+	confined, err := os.OpenRoot(configurationRoot)
+	if err != nil {
+		return err
+	}
+	defer confined.Close()
+	retired, err := retiredGeneratedConfigurations(confined, target)
 	if err != nil {
 		return err
 	}
 	if dryRun {
 		return nil
 	}
-	if err := os.MkdirAll(destination, 0o755); err != nil {
+	if err := confined.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
 	body := profileMarker + env.ConfigurationSource + "\nderives-from: " + env.ConfigurationSource + "\n"
@@ -70,7 +76,7 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 		return err
 	}
 	for _, path := range retired {
-		if err := os.Remove(path); err != nil {
+		if err := confined.Remove(path); err != nil {
 			return err
 		}
 	}
@@ -89,7 +95,12 @@ func validateConfigurationSourceLayer(layer, destination string) error {
 	if err != nil || resolved != layer {
 		return fmt.Errorf("configuration source must be an ordinary profile directory")
 	}
-	entries, err := os.ReadDir(layer)
+	confined, err := os.OpenRoot(layer)
+	if err != nil {
+		return err
+	}
+	defer confined.Close()
+	entries, err := fs.ReadDir(confined.FS(), ".")
 	if err != nil {
 		return err
 	}
@@ -108,7 +119,7 @@ func validateConfigurationSourceLayer(layer, destination string) error {
 			return fmt.Errorf("configuration-source must not contain environment-specific runnable bindings")
 		}
 		if strings.HasSuffix(entry.Name(), ".secret.env") {
-			if err := validateSecretPlaceholders(filepath.Join(layer, entry.Name()), entry.Name()); err != nil {
+			if err := validateSecretPlaceholders(confined, entry.Name()); err != nil {
 				return err
 			}
 		}
@@ -118,8 +129,8 @@ func validateConfigurationSourceLayer(layer, destination string) error {
 
 // validateSecretPlaceholders refuses a source secret file whose keys carry a value:
 // a configuration source declares which secrets exist, never what they hold.
-func validateSecretPlaceholders(path, name string) error {
-	body, err := os.ReadFile(path)
+func validateSecretPlaceholders(confined *os.Root, name string) error {
+	body, err := confined.ReadFile(name)
 	if err != nil {
 		return err
 	}
@@ -139,13 +150,13 @@ func validateSecretPlaceholders(path, name string) error {
 // retiredGeneratedConfigurations lists the generated files an earlier import left in
 // the destination, which a re-import removes; it refuses to overwrite an authored one
 // and a destination that is not an ordinary directory.
-func retiredGeneratedConfigurations(destination, output string) ([]string, error) {
-	if info, err := os.Lstat(destination); err == nil && !info.IsDir() {
+func retiredGeneratedConfigurations(confined *os.Root, target string) ([]string, error) {
+	if info, err := confined.Lstat(target); err == nil && !info.IsDir() {
 		return nil, fmt.Errorf("generated profile must be an ordinary directory")
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	previous, err := os.ReadDir(destination)
+	previous, err := fs.ReadDir(confined.FS(), target)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -154,12 +165,12 @@ func retiredGeneratedConfigurations(destination, output string) ([]string, error
 		if !strings.HasSuffix(entry.Name(), ".env") && entry.Name() != configurations.ProfileDerivationFile {
 			continue
 		}
-		path := filepath.Join(destination, entry.Name())
+		path := filepath.Join(target, entry.Name())
 		info, infoErr := entry.Info()
 		if infoErr != nil || !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("generated configuration %s must be a regular file", entry.Name())
 		}
-		body, readErr := os.ReadFile(path)
+		body, readErr := confined.ReadFile(path)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -167,7 +178,7 @@ func retiredGeneratedConfigurations(destination, output string) ([]string, error
 		if !owned && entry.Name() != "runnable-bindings.env" {
 			return nil, fmt.Errorf("refusing to overwrite authored configuration %s", entry.Name())
 		}
-		if path != output && owned {
+		if entry.Name() != configurations.ProfileDerivationFile && owned {
 			retired = append(retired, path)
 		}
 	}

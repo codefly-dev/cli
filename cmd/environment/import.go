@@ -208,29 +208,8 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return err
 	}
 	declaredEnvironment := yamledit.MapValue(declaration, "environment")
-	// Product profiles are owned by the consuming workspace. A placement-only
-	// producer need not acquire product configuration to import its target.
-	if opts.configurationSource != "" {
-		if existing := contract.Environment.ConfigurationSource; existing != "" && existing != opts.configurationSource {
-			return fmt.Errorf("--configuration-source conflicts with the coordinate declaration")
-		}
-		contract.Environment.ConfigurationSource = opts.configurationSource
-		node, encodeErr := yamledit.Encode(opts.configurationSource)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		yamledit.SetMapValue(declaredEnvironment, "configuration-source", node)
-	}
-	if len(opts.configurationProfiles) > 0 {
-		if contract.Environment.ConfigurationProfile != "" || len(contract.Environment.ConfigurationProfiles) > 0 {
-			return fmt.Errorf("--configuration-profiles cannot replace coordinate-declared profiles")
-		}
-		contract.Environment.ConfigurationProfiles = opts.configurationProfiles
-		node, encodeErr := yamledit.Encode(opts.configurationProfiles)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		yamledit.SetMapValue(declaredEnvironment, "configuration-profiles", node)
+	if profileErr := applyConfigurationProfiles(opts, contract, declaredEnvironment); profileErr != nil {
+		return profileErr
 	}
 
 	file := filepath.Join(opts.dir, resources.WorkspaceConfigurationName)
@@ -645,4 +624,33 @@ func init() {
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
+}
+
+func applyConfigurationProfiles(opts *importOptions, contract *environments.CoordinateContract, declaredEnvironment *yaml.Node) error {
+	// Product profiles are owned by the consuming workspace. A placement-only
+	// producer need not acquire product configuration to import its target.
+	if opts.configurationSource != "" {
+		if existing := contract.Environment.ConfigurationSource; existing != "" && existing != opts.configurationSource {
+			return fmt.Errorf("--configuration-source conflicts with the coordinate declaration")
+		}
+		contract.Environment.ConfigurationSource = opts.configurationSource
+		node, encodeErr := yamledit.Encode(opts.configurationSource)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		yamledit.SetMapValue(declaredEnvironment, "configuration-source", node)
+	}
+	if len(opts.configurationProfiles) > 0 {
+		if contract.Environment.ConfigurationProfile != "" || len(contract.Environment.ConfigurationProfiles) > 0 {
+			return fmt.Errorf("--configuration-profiles cannot replace coordinate-declared profiles")
+		}
+		contract.Environment.ConfigurationProfiles = opts.configurationProfiles
+		node, encodeErr := yamledit.Encode(opts.configurationProfiles)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		yamledit.SetMapValue(declaredEnvironment, "configuration-profiles", node)
+	}
+
+	return nil
 }

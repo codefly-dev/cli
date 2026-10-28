@@ -608,14 +608,7 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 		return rotatedProperty(state, property, declaredKey, generated[declaredKey])
 	}
 	if state.known() {
-		if stored, present := state.document[property.Property]; present {
-			if len(holders) > 0 && stored != holderValue {
-				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
-					strings.Join(property.Keys, ", "), state.secret.RemoteKey, holders[0])
-			}
-			if err = refuseSuppliedConflict(property, isSupplied, suppliedValue, state.secret.RemoteKey+"#"+property.Property, stored); err != nil {
-				return PropertyPlan{}, "", err
-			}
+		if _, present := state.document[property.Property]; present {
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
 		}
 	}
