@@ -4190,7 +4190,35 @@ codefly recover <subcommand>
 
 Subcommands:
 
+- [`codefly recover container`](#codefly-recover-container)
 - [`codefly recover process-group`](#codefly-recover-process-group)
+
+## `codefly recover container`
+
+Preview or stop one explicitly selected container, retaining its data
+
+```
+Select one container by its full lowercase 64-hex Docker ID.
+Use --preview to inspect it without effects and print Core's JSON receipt.
+Review and save the complete receipt, then use --expect FILE with the same ID.
+Core compares the identity, creation time, name, labels and mounts before stopping
+that ID only. AutoRemove containers refuse. No name lookup, parent-service claim,
+label rewrite, container removal, volume removal or restart is performed.
+Success requires the same container retained and stopped with unchanged mounts
+and labels. This does not prove stored data contents or qualify producer reuse.
+An error may follow a stop; inspect the reported result before any retry.
+```
+
+```
+codefly recover container ID
+```
+
+Flags:
+
+```
+      --expect string   Stop only the exact container matching this reviewed Core JSON receipt
+      --preview         Inspect one full container ID and print its receipt without stopping it
+```
 
 ## `codefly recover process-group`
 

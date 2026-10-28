@@ -4380,6 +4380,35 @@ registration and owner-death evidence; a name or environment marker alone never
 permits signaling. Missing or ambiguous proof leaves the process running and
 returns an error. Registry failures prevent fallback cleanup from bypassing refusal.
 
+### `codefly recover container`
+
+Stop one independently selected container by its full lowercase 64-hex Docker ID,
+preserving the container, writable layer and mounts. This explicit operator
+operation establishes no parent-service ownership and does not relax normal
+runtime adoption or workspace-scoped stop.
+
+```bash
+codefly recover container <full-container-id> --preview > container-stop.json
+# Review the complete Core receipt and exact target before executing it.
+codefly recover container <full-container-id> --expect container-stop.json
+```
+
+Preview is read-only. Core records the ID, creation time, exact name, labels and
+mounts; execution uses Core's strict parser and compares the receipt against
+that same immutable ID before stopping it. The CLI rejects a positional ID that
+differs from the receipt. Core owns the 64 KiB inclusive receipt limit, including
+the preview's newline; an empty mount list is explicit `[]`. AutoRemove
+containers refuse before effects because stopping them could delete the object.
+
+Success requires no owner error and all three reported postconditions:
+`stopped`, `retained`, and `mounts_unchanged`. Core also checks unchanged labels
+and identity. An error may follow an actual stop; partial results are printed,
+and uncertain or missing readback never counts as success. No name/prefix
+selection, ledger claim, relabeling, removal, restart or automatic retry occurs.
+This operation verifies retention and mount identity, not stored object contents
+or producer migration. Corrected-producer reuse and data checks remain separate.
+It is an explicit operator command; no separate MCP effect tool is added.
+
 ### `codefly recover process-group`
 
 Recover one explicitly selected orphan generation when ordinary workspace-scoped
