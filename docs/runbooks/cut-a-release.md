@@ -145,3 +145,18 @@ codefly self check-update                                     # sees the new sta
 - [ ] `release.yaml` green end to end
 - [ ] `codefly version --json` reports the tag
 - [ ] `brew` install/upgrade works; `self check-update` sees it
+
+## Dependency fixes in companion images
+
+The October 2026 refresh selects `golang.org/x/net` 0.62.0 for
+GO-2026-6860 and GO-2026-6866, and gRPC 1.85.0 supersedes the old 1.84.0
+hold. The dependency update command's automatic outdated list contains direct
+dependencies; verify indirect dependencies such as `x/net` explicitly too.
+The dependency pin command supports existing indirect requirements and performs
+a standalone build after updating and tidying the locks.
+
+Companion publication compiles this checkout into the images. Merge the CLI
+fix before dispatching `companions.yaml` against Core's exact merged commit
+with new companion versions. A CLI merge does not refresh existing images:
+inspect and scan the published executable, record each index digest, and
+rebuild the services consuming it. Do not overwrite previously published tags.

@@ -49,16 +49,8 @@ require (
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b
-	// HELD at v1.83.2: v1.84.0 is affected by GO-2026-6443 (server panic via a
-	// missing :authority/Host header) and the advisory's only fix for the 1.84
-	// line is an unreleased v1.85.0-dev pseudo-version, so there is nothing to
-	// bump to. v1.83.2 is itself the patched release for the 1.83 line. The
-	// `bootstrap-audit` gate fails on this as an actionable finding, which is
-	// correct -- do NOT add a .govulncheck.yaml suppression to get past it.
-	// Raise this to v1.85.0 (or a patched v1.84.x) once one ships; see
-	// .github/dependabot.yml, which ignores only the known-bad v1.84.0.
-	google.golang.org/grpc v1.84.0
+	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 	oras.land/oras-go/v2 v2.7.0
@@ -237,10 +229,10 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	k8s.io/kube-openapi v0.0.0-20261001230523-97fa35140926 // indirect
