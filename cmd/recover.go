@@ -73,13 +73,12 @@ An error can report partial termination; inspect the result before any retry.`,
 			defer file.Close()
 			// Bound allocation for operator input; Core enforces its own format
 			// size limit and is the sole decoder of the expectation.
-			const maxReceiptBytes = 1024 * 1024
-			data, err := io.ReadAll(io.LimitReader(file, maxReceiptBytes+1))
+			data, err := io.ReadAll(io.LimitReader(file, base.MaxProcessGroupRecoveryExpectationBytes+1))
 			if err != nil {
 				return fmt.Errorf("read recovery receipt: %w", err)
 			}
-			if len(data) > maxReceiptBytes {
-				return errors.New("recovery receipt exceeds 1 MiB")
+			if len(data) > base.MaxProcessGroupRecoveryExpectationBytes {
+				return fmt.Errorf("recovery receipt exceeds %d bytes", base.MaxProcessGroupRecoveryExpectationBytes)
 			}
 			expected, err := base.ParseProcessGroupRecoveryExpectation(data)
 			if err != nil {

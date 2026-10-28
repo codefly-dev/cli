@@ -4421,6 +4421,10 @@ namespace, registration SHA256, PGID, recorded leader/owner identities and obser
 member identities. Save it unchanged. The CLI requires one PGID and exactly one
 mode; execution uses Core's strict receipt parser and rejects a different PGID.
 There is no name/port selection, `--all`, inferred workspace or automatic retry.
+Core bounds the complete receipt to 1 MiB, including the preview's trailing
+newline. Preview refuses a generation whose receipt cannot fit; the CLI uses
+the same owner-defined bound when reading it. This is independent of the
+smaller registry-record storage limit.
 
 Core owns format compatibility and revalidates unchanged registration evidence,
 original-owner absence, supported boot identity and initial member births before

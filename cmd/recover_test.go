@@ -75,7 +75,7 @@ func TestRecoveryRefusesBeforeOwnerEffects(t *testing.T) {
 		{"trailing", nil, string(valid) + " {}"},
 		{"unknown field", nil, strings.Replace(string(valid), "{", `{"unknown":true,`, 1)},
 		{"duplicate field", nil, strings.Replace(string(valid), "{", `{"pgid":12345,`, 1)},
-		{"oversized", nil, strings.Repeat(" ", 1024*1024+1)},
+		{"oversized", nil, strings.Repeat(" ", base.MaxProcessGroupRecoveryExpectationBytes+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "receipt.json")
