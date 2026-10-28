@@ -23,7 +23,7 @@ func newRecoverCommand(
 	recoverGroup func(context.Context, base.ProcessGroupRecoveryExpectation) (*base.ProcessGroupRecoveryResult, error),
 ) *cobra.Command {
 	parent := &cobra.Command{
-		Use: "recover", Short: "Recover an explicitly selected retained Codefly resource",
+		Use: "recover", Short: "Recover an explicitly selected resource or process",
 	}
 	var previewOnly bool
 	var expectationPath string

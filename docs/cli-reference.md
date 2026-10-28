@@ -4182,7 +4182,7 @@ Flags:
 
 ## `codefly recover`
 
-Recover an explicitly selected retained Codefly resource
+Recover an explicitly selected resource or process
 
 ```
 codefly recover <subcommand>
@@ -4191,6 +4191,7 @@ codefly recover <subcommand>
 Subcommands:
 
 - [`codefly recover container`](#codefly-recover-container)
+- [`codefly recover process`](#codefly-recover-process)
 - [`codefly recover process-group`](#codefly-recover-process-group)
 
 ## `codefly recover container`
@@ -4218,6 +4219,38 @@ Flags:
 ```
       --expect string   Stop only the exact container matching this reviewed Core JSON receipt
       --preview         Inspect one full container ID and print its receipt without stopping it
+```
+
+## `codefly recover process`
+
+Preview or explicitly force one independently selected process to exit
+
+```
+Select one process by PID, independently of workspace or group ownership.
+Save --preview verbatim, review its full identity, then use --expect FILE --force.
+Execution compares the full current identity and requests SIGKILL through Core
+for that process birth only. SIGKILL is irreversible. No graceful signal,
+escalation, group operation, registry removal or orphan recovery is performed.
+Executable equality is checked at admission only: a same-birth exec can still
+receive the signal. Children may react to lost connections or parent death;
+this command does not prove that their cleanup or stored data remain untouched.
+Success requires observed absence without errors; delivery alone is not exit.
+Cancellation cannot revoke in-flight delivery. The five-second polling budget
+does not interrupt synchronous inspection or output. An error may follow an
+effect: inspect the disposition before any retry. Use the same reviewed binary
+on the same host/boot; changing implementation requires a fresh preview.
+```
+
+```
+codefly recover process PID
+```
+
+Flags:
+
+```
+      --expect string   Use the complete verbatim version-1 preview receipt
+      --force           Explicitly request irreversible SIGKILL for the selected process birth
+      --preview         Print the current process identity without signaling
 ```
 
 ## `codefly recover process-group`

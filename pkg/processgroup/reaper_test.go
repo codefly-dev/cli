@@ -578,6 +578,22 @@ func TestReaperUsesOwnerInspectionForSupportedRecords(t *testing.T) {
 	if err := syscall.Kill(-pid, 0); err != nil {
 		t.Fatalf("empty-record reconciliation signaled process group %d: %v", pid, err)
 	}
+
+	// A refused owner inspection must identify the candidate, even though its
+	// workspace remains unauthenticated. Alter only this test's own record.
+	incompatible := strings.ReplaceAll(string(recordData), leader.bootID, "incompatible-test-boot")
+	if err := os.WriteFile(recordPath, []byte(incompatible), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, previewErr := PreviewManagedProcessGroups(context.Background(), InWorkspace(t.TempDir()))
+	if previewErr == nil || !strings.Contains(previewErr.Error(), fmt.Sprintf("inspect registered group %d:", pid)) || !strings.Contains(previewErr.Error(), "incompatible boot identity") {
+		t.Fatalf("preview lost refused registration identity: %v", previewErr)
+	}
+	after, err := os.ReadFile(recordPath)
+	if err != nil || string(after) != incompatible {
+		t.Fatalf("refused preview changed record: %v", err)
+	}
+	assertPortHeld(t, port)
 }
 
 func TestReaperClearsVerifiedStaleListenerWhenOwnerPIDWasReused(t *testing.T) {

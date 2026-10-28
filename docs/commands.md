@@ -4380,6 +4380,59 @@ registration and owner-death evidence; a name or environment marker alone never
 permits signaling. Missing or ambiguous proof leaves the process running and
 returns an error. Registry failures prevent fallback cleanup from bypassing refusal.
 
+### `codefly recover process`
+
+Preview or force one independently selected process to exit. This operation
+establishes no Codefly, service or workspace ownership and does not select a
+process group, descendants, containers or registrations.
+
+```bash
+codefly recover process 12345 --preview > process-exit.json
+# Review the complete identity and independently establish the target.
+codefly recover process 12345 --expect process-exit.json --force
+```
+
+Execution requires the same PID and full current identity as the preview,
+including process group and executable at admission. PID1 and this CLI's PID
+refuse. The only signal is explicit, irreversible SIGKILL through Core's
+`SignalProcess`: there is no graceful default, escalation or automatic retry.
+Core binds delivery to process birth and group, not an immutable executable;
+a same-birth exec after admission can still receive the signal. One CLI owner
+call may involve Core's internal kernel-token retries.
+
+The result reports `signal_attempted`, `signal_accepted`, `observation` and
+`expected_birth_gone`. Success requires observed absence and no delivery,
+inspection, cancellation or output error. Already-absent is successful without
+a signal attempt. A replacement is reported as `changed_birth` with a nonzero
+exit and is never selected; its presence proves neither PID availability nor
+that this command caused the original exit. Same-birth exec/group changes do
+not prove exit. Ordinary owner inspection errors remain `unknown`, not absence.
+Delivery errors remain errors even if subsequent observation finds absence.
+The five-second polling budget does not interrupt synchronous inspection or
+output. Cancellation prevents a new owner call once observed; it cannot revoke
+in-flight delivery or its indirect effects. A nonzero exit can follow an effect.
+
+SIGKILL prevents the selected process's own handlers/deferred cleanup. Surviving
+agents can still react to lost pipes/RPCs or parent death. This command does not
+prove that older agent cleanup, stored data or descendants are untouched; assess
+the actual selected binaries and ordering separately before an operation.
+Orphan recovery and registry removal remain separate explicit operations.
+
+**Fixed local receipt exception:** Core's owner explicitly approved this
+separate native-identity exception under its architecture contract policy.
+Version1 embeds `base.ProcessIdentity` unchanged in a `schema_version`/`process`
+envelope and uses a fixed local result shape. Both ends must use the same
+reviewed implementation on the same host/boot; any change requires fresh preview.
+The command does not detect the binary that produced a receipt. It is untrusted
+comparison evidence, not a credential, ownership grant, registry or remote API.
+The complete default JSON encoding plus its single newline must be saved
+verbatim and fit within16KiB, inclusive. Reformatted, unknown-version, incomplete,
+duplicate, alias, null, trailing or noncanonical input refuses, as do non-regular
+files. The native field shape is frozen by a maintained test. Future shape or
+meaning changes require a separately versioned contract under the protobuf
+default unless another explicit exception is reviewed. This exception does not
+extend the registry or Docker receipt contracts. There is no MCP effect tool.
+
 ### `codefly recover container`
 
 Stop one independently selected container by its full lowercase 64-hex Docker ID,
