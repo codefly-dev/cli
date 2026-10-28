@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -184,4 +185,47 @@ func TestTheRetainedDeliveryIsDetached(t *testing.T) {
 	source[1].Infos[0].ConfigurationValues[0].Value = "rewritten"
 	require.Equal(t, body, detached[0].Infos[0].ConfigurationValues[0].Value,
 		"the retained delivery is what the service received, whatever happens to the slices it came from")
+}
+
+// TestTheSelectionIsComparedWholeNotByPath is the case a path-only recheck
+// cannot see.
+//
+// A non-managed selection — an explicit overlay path, carrying no receipt —
+// resolves through the overlay snapshot the workspace was LOADED with, so it
+// answers the same directory on every ask even after the overlay on disk has
+// been re-pointed. Comparing directories across the read therefore passes
+// while the selection has actually moved. The descriptor carries the disk-read
+// directive beside the resolved directory, so the move is visible.
+func TestTheSelectionIsComparedWholeNotByPath(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": `name: artifact-reselect
+layout: modules
+modules:
+    - name: wiki
+      path: modules/wiki
+`,
+		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
+		"modules/wiki/docs/install.md":                       "A\n",
+		"codefly.local.yaml":                                 "resolve:\n    wiki:\n        path: modules/wiki\n",
+	})
+
+	first, err := composition.SelectModule(ctx, workspace, "wiki")
+	require.NoError(t, err)
+	require.False(t, first.Verified, "an explicit overlay path is local development evidence")
+	require.Equal(t, "modules/wiki", first.DirectivePath)
+
+	// Re-point the module on disk, to a directory that resolves the same way
+	// through the loaded snapshot.
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace.Dir(), "elsewhere/wiki/docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "codefly.local.yaml"),
+		[]byte("resolve:\n    wiki:\n        path: elsewhere/wiki\n"), 0o600))
+
+	second, err := composition.SelectModule(ctx, workspace, "wiki")
+	require.NoError(t, err)
+	require.NotEqual(t, *first, *second, "the selection moved, and the descriptor says so")
+	require.Equal(t, "elsewhere/wiki", second.DirectivePath, "which the disk-read directive is what carries")
+	require.Equal(t, first.Dir, second.Dir,
+		"while the RESOLVED directory is unchanged — which is exactly why a path-only recheck passed")
 }

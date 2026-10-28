@@ -51,10 +51,11 @@ func acquireModuleArtifact(ctx context.Context, workspace *resources.Workspace, 
 	if err := resources.ValidateModuleArtifactReference(ref); err != nil {
 		return nil, err
 	}
-	dir, _, err := composition.SelectedModuleDir(ctx, workspace, ref.Module)
+	selected, err := composition.SelectModule(ctx, workspace, ref.Module)
 	if err != nil {
 		return nil, err
 	}
+	dir := selected.Dir
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("cannot confine module artifact reads to module %s", ref.Module)
@@ -86,19 +87,25 @@ func acquireModuleArtifact(ctx context.Context, workspace *resources.Workspace, 
 	if !os.SameFile(before, after) || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) || int64(len(content)) != before.Size() {
 		return nil, fmt.Errorf("module artifact %q in module %s changed while it was being read", ref.Path, ref.Module)
 	}
-	// And the SELECTION, re-asked around the read. The same-open-file checks
-	// above only say the file did not move under us; they say nothing about
-	// whether this is still the file the composition selects. A
-	// re-materialization or an edited overlay between the open and here
-	// re-points the module, and these bytes would then be delivered as the
-	// selected module's while another directory is what the next load reads.
-	// Re-resolving is cheap (no pull, no reload) and its refusal is the same
-	// one as before the read.
-	reselected, _, err := composition.SelectedModuleDir(ctx, workspace, ref.Module)
+	// And the SELECTION, re-asked around the read — compared WHOLE, not by
+	// path. The same-open-file checks above only say the file did not move
+	// under us; they say nothing about whether this is still the selection the
+	// composition makes.
+	//
+	// The path alone cannot answer that. ResolveModule answers from the overlay
+	// snapshot the workspace was loaded with, so a non-managed selection — an
+	// explicit path or a worktree, which carries no receipt — resolves to the
+	// same directory on both asks even after the overlay on disk has been
+	// re-pointed; and a selection can change mode or the request it answers
+	// while keeping its directory. Comparing the descriptor, which carries the
+	// disk-read directive, the receipt's request and the derived mode beside
+	// the directory, is what makes those visible. It is cheap: no pull, no
+	// reload, and the refusal is the same one as before the read.
+	reselected, err := composition.SelectModule(ctx, workspace, ref.Module)
 	if err != nil {
 		return nil, err
 	}
-	if reselected != dir {
+	if *reselected != *selected {
 		return nil, fmt.Errorf("module %s was reselected while artifact %q was being read; resolve the composition again", ref.Module, ref.Path)
 	}
 	return content, nil
