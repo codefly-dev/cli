@@ -64,8 +64,12 @@ func TestRenderModuleLeavesAnExcludedServiceOutOfTheTreeAndTheInventory(t *testi
 
 // TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion is the render
 // caller's half of the Blue defect, and it is the one a direct test of
-// ValidateWorkspace cannot give: it fails if any render entry stops passing
-// the environment it was given, however correct the validator underneath is.
+// ValidateWorkspace cannot give: it fails if RenderModule stops passing the
+// environment it was given, however correct the validator underneath is.
+//
+// It covers that one entry. The other three callers that pass a selection —
+// orchestrate.go's second call, dev.go and solution.go — are reviewed source,
+// not covered here.
 //
 // `stale` excludes shop/store while shop/api still consumes it and withdraws
 // nothing, so that environment genuinely does not hold up against the
