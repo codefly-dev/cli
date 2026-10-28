@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -122,10 +123,7 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 	// failed, so what follows runs on a budget of its own.
 	ctx, cancel := postPublicationContext(ctx)
 	defer cancel()
-	if err := verifyWorkflowRelease(ctx, client, owner, repo, tag, r.assets); err != nil {
-		return err
-	}
-	return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
+	return r.verifyPublication(ctx, client, owner, repo, tag)
 }
 
 // releaseVerifyBudget sizes the work that follows a live tag: downloading every
@@ -136,22 +134,21 @@ func postPublicationContext(ctx context.Context) (context.Context, context.Cance
 	return context.WithTimeout(context.WithoutCancel(ctx), releaseVerifyBudget)
 }
 
-// verifyWorkflowRelease confirms the release the owner workflow published
-// carries every loader archive, and that each one is the build the workflow
-// made. The workflow is the sole publisher of those assets, so every call here
-// reads: nothing is created, replaced or deleted.
+// verifyPublishedArchives checks both CLI-owned and workflow-owned publication
+// against producer checksums, GitHub digests and the downloaded bytes. Every
+// call here reads: nothing is created, replaced or deleted.
 //
 // The archive is the contract — core's downloader fetches exactly that name.
 // Whether a workflow also publishes an SBOM beside it, and under what name, is
 // its own GoReleaser configuration and nothing the manifest declares, so one is
-// verified when the release carries it and never demanded.
-func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, repo, tag string, staged []loaderAsset) error {
+// verified when present. A CLI-staged SBOM has a known filename and is required.
+func verifyPublishedArchives(ctx context.Context, client *github.Client, owner, repo, tag string, staged []loaderAsset) error {
 	release, _, err := client.Repositories.GetReleaseByTag(ctx, owner, repo, tag)
 	if err != nil {
-		return fmt.Errorf("read workflow-published release: %w", err)
+		return fmt.Errorf("read published release: %w", err)
 	}
 	if release.GetTagName() != tag || release.GetDraft() {
-		return fmt.Errorf("workflow did not publish release %s", tag)
+		return fmt.Errorf("release %s is absent or still draft", tag)
 	}
 	assets := make(map[string]*github.ReleaseAsset)
 	for _, asset := range release.Assets {
@@ -165,12 +162,19 @@ func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, re
 		archiveName := filepath.Base(candidate.archivePath)
 		archive, ok := assets[archiveName]
 		if !ok {
-			return fmt.Errorf("workflow release %s is missing loader archive %s", tag, archiveName)
+			return fmt.Errorf("release %s is missing loader archive %s", tag, archiveName)
 		}
 		if err := verifyPublishedRelease(ctx, client, owner, repo, archive, checksums); err != nil {
 			return err
 		}
-		if sbom, ok := assets[archiveName+".sbom.json"]; ok {
+		sbomName := archiveName + ".sbom.json"
+		if candidate.sbomPath != "" {
+			sbomName = filepath.Base(candidate.sbomPath)
+			if assets[sbomName] == nil {
+				return fmt.Errorf("release %s is missing staged SBOM %s", tag, sbomName)
+			}
+		}
+		if sbom, ok := assets[sbomName]; ok {
 			if err := verifyPublishedRelease(ctx, client, owner, repo, sbom, checksums); err != nil {
 				return err
 			}
@@ -180,16 +184,16 @@ func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, re
 }
 
 // verifyPublishedRelease establishes one asset three ways: the digest the
-// workflow computed from its own build output, the digest GitHub recorded when
+// publisher computed from its own build output, the digest GitHub recorded when
 // it accepted the upload, and the bytes GitHub actually serves. Comparing the
 // served bytes to GitHub's own record alone would only show GitHub agreeing
 // with itself; the checksums file is the independent producer that makes the
-// comparison mean something. Core's downloader verifies nothing at install
-// time, so this is the only place in the chain the bytes are ever checked.
+// comparison mean something. Install-time verification is owned separately
+// by Core's downloader; publication does not replace that check.
 func verifyPublishedRelease(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset, checksums map[string]string) error {
 	built, ok := checksums[asset.GetName()]
 	if !ok {
-		return fmt.Errorf("%w: %s is absent from the checksums the workflow published", errAssetVerdict, asset.GetName())
+		return fmt.Errorf("%w: %s is absent from the published checksums", errAssetVerdict, asset.GetName())
 	}
 	if recorded := asset.GetDigest(); recorded != "sha256:"+built {
 		return fmt.Errorf("%w: %s was built as sha256:%s but the release records %s",
@@ -200,10 +204,8 @@ func verifyPublishedRelease(ctx context.Context, client *github.Client, owner, r
 	})
 }
 
-// publishedChecksums reads the digest list the release workflow computed from
-// its own build output before uploading anything. It is required: without it
-// the release carries no digest source independent of GitHub's own record, and
-// nothing downstream ever checks these archives again.
+// publishedChecksums reads the producer digest list. It is required: without
+// it publication has no digest source independent of GitHub's upload record.
 func publishedChecksums(ctx context.Context, client *github.Client, owner, repo, tag string, assets map[string]*github.ReleaseAsset) (map[string]string, error) {
 	var found *github.ReleaseAsset
 	for name, asset := range assets {
@@ -211,13 +213,16 @@ func publishedChecksums(ctx context.Context, client *github.Client, owner, repo,
 			continue
 		}
 		if found != nil {
-			return nil, fmt.Errorf("workflow release %s publishes more than one checksums file (%s, %s); which one records the archives is ambiguous",
+			return nil, fmt.Errorf("release %s publishes more than one checksums file (%s, %s); which one records the archives is ambiguous",
 				tag, found.GetName(), name)
 		}
 		found = asset
 	}
 	if found == nil {
-		return nil, fmt.Errorf("workflow release %s publishes no checksums file, so its loader archives have no digest source independent of GitHub's own record (GoReleaser emits one unless `checksum: disable: true`)", tag)
+		return nil, fmt.Errorf("release %s publishes no checksums file, so its loader archives have no digest source independent of GitHub's own record (GoReleaser emits one unless `checksum: disable: true`)", tag)
+	}
+	if found.GetSize() > 1<<20 {
+		return nil, fmt.Errorf("%w: release checksums exceed 1 MiB", errAssetVerdict)
 	}
 	var raw bytes.Buffer
 	if err := retryTransientRead(ctx, func() error {
@@ -226,20 +231,36 @@ func publishedChecksums(ctx context.Context, client *github.Client, owner, repo,
 	}); err != nil {
 		return nil, err
 	}
-	return parseChecksums(raw.Bytes()), nil
+	return parseChecksums(raw.Bytes())
 }
 
-// parseChecksums reads `<hex>  <name>` lines. The leading `*` of sha256sum's
-// binary mode is stripped so a workflow that emits it still resolves by name.
-func parseChecksums(raw []byte) map[string]string {
+// parseChecksums reads SHA-256 records and refuses ambiguous producer evidence.
+// sha256sum's binary-mode marker is accepted alongside its text-mode form.
+func parseChecksums(raw []byte) (map[string]string, error) {
 	checksums := map[string]string{}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
-		if fields := strings.Fields(scanner.Text()); len(fields) == 2 {
-			checksums[strings.TrimPrefix(fields[1], "*")] = fields[0]
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 {
+			continue
 		}
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("%w: malformed checksum entry", errAssetVerdict)
+		}
+		digest, err := hex.DecodeString(fields[0])
+		if err != nil || len(digest) != sha256.Size {
+			return nil, fmt.Errorf("%w: invalid SHA-256 checksum", errAssetVerdict)
+		}
+		name := strings.TrimPrefix(fields[1], "*")
+		if _, exists := checksums[name]; exists {
+			return nil, fmt.Errorf("%w: duplicate checksum for %s", errAssetVerdict, name)
+		}
+		checksums[name] = strings.ToLower(fields[0])
 	}
-	return checksums
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%w: read checksums: %v", errAssetVerdict, err)
+	}
+	return checksums, nil
 }
 
 // retryTransientRead re-runs read while it fails for a reason a re-read could

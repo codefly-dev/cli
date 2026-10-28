@@ -43,6 +43,9 @@ func newDirectory(t *testing.T, name string) string {
 // looks like and must still be attributable from its working directory.
 func startRunFrom(t *testing.T, workspace, dir string) int {
 	t.Helper()
+	// Core transports the current parent's marker even when cmd.Env was
+	// materialized elsewhere. Model the launching run, not cached child input.
+	t.Setenv(LaunchWorkspaceEnv, workspace)
 	port := availablePort(t)
 	readyPath := filepath.Join(dir, "ready-"+strconv.Itoa(port))
 	command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
@@ -50,9 +53,6 @@ func startRunFrom(t *testing.T, workspace, dir string) int {
 		helperRoleEnv+"=listener",
 		helperPortEnv+"="+strconv.Itoa(port),
 		helperReadyEnv+"="+readyPath)
-	if workspace != "" {
-		command.Env = append(command.Env, LaunchWorkspaceEnv+"="+workspace)
-	}
 	command.Dir = dir
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard

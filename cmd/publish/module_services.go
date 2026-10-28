@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/codefly-dev/cli/cmd/generate"
+	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
@@ -99,6 +101,8 @@ func resolveModuleRelease(ctx context.Context, agentManifest, repoRoot string) (
 		return contained, nil
 	}
 	var rekey []*resources.Module
+	packages := map[string]generators.ClientReleasePackage{}
+	packageIDs := map[*resources.Module]string{}
 	for _, ref := range workspace.Modules {
 		if ref.Source != "" || ref.Module != "" || ref.Version != "" {
 			fmt.Printf("==> module %s is a pinned reference, released from its own source; its services keep their versions\n", ref.Name)
@@ -152,21 +156,131 @@ func resolveModuleRelease(ctx context.Context, agentManifest, repoRoot string) (
 			}
 			release.generated = append(release.generated, contained)
 		}
+		id, producer, loadErr := loadClientReleasePackage(module.Dir())
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		packages[id] = producer
+		packageIDs[module] = id
 		rekey = append(rekey, module)
 	}
+	clients, err := planReleasedClients(ctx, repoRoot, packages)
+	if err != nil {
+		return nil, err
+	}
+	for _, client := range clients {
+		release.generated = append(release.generated, client.Paths...)
+	}
 	sort.Strings(release.manifests)
-	if len(rekey) > 0 {
-		name := workspace.Name
-		release.regenerate = func(ctx context.Context) error {
-			for _, module := range rekey {
-				if err := generate.RekeyReleasedContracts(ctx, name, dir, module); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
+	release.regenerate = func(ctx context.Context) error {
+		return regenerateModuleClients(ctx, workspace.Name, dir, rekey, packageIDs, clients)
 	}
 	return release, nil
+}
+
+func regenerateModuleClients(ctx context.Context, name, dir string, modules []*resources.Module, packageIDs map[*resources.Module]string, clients []*generators.ClientRelease) error {
+	versions := map[string]string{}
+	for _, module := range modules {
+		if err := generate.RekeyReleasedContracts(ctx, name, dir, module); err != nil {
+			return err
+		}
+		version, err := readVersion(filepath.Join(module.Dir(), composition.PackageManifestFileName))
+		if err != nil {
+			return err
+		}
+		versions[packageIDs[module]] = version.String()
+	}
+	for _, client := range clients {
+		if err := client.Write(ctx, versions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// A module may not export contracts yet. Read its schema identity without
+// requiring an exported artifact tree, and fully verify catalogs that exist.
+func loadClientReleasePackage(dir string) (string, generators.ClientReleasePackage, error) {
+	producer := generators.ClientReleasePackage{}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", producer, err
+	}
+	producer.Directory = resolved
+	data, err := os.ReadFile(filepath.Join(dir, composition.PackageManifestFileName)) //nolint:gosec // contained module package
+	if err != nil {
+		return "", producer, err
+	}
+	var manifest composition.PackageManifest
+	if err = yaml.Unmarshal(data, &manifest); err != nil {
+		return "", producer, err
+	}
+	if err = manifest.Validate(); err != nil {
+		return "", producer, err
+	}
+	producer.Catalog, err = composition.LoadAPIContractCatalog(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return manifest.ID, producer, nil
+	}
+	if err != nil {
+		return "", producer, err
+	}
+	if producer.Catalog.Package != manifest.ID || producer.Catalog.Version != manifest.Version {
+		return "", producer, fmt.Errorf("module %s catalog disagrees with its package; regenerate contracts before release", dir)
+	}
+	return manifest.ID, producer, composition.ValidatePackageAPIContracts(dir, &manifest, producer.Catalog)
+}
+
+// planReleasedClients discovers only committed library manifests, wherever their
+// owners placed them. Untracked caches, foreign sources and hand-written
+// libraries have no release-owned source to stamp.
+func planReleasedClients(ctx context.Context, repoRoot string, packages map[string]generators.ClientReleasePackage) ([]*generators.ClientRelease, error) {
+	if len(packages) == 0 {
+		return nil, nil
+	}
+	root, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	files, err := (&Engine{WorkDir: root}).git(ctx, "ls-files", "-z")
+	if err != nil {
+		return nil, err
+	}
+	tracked := map[string]bool{}
+	for _, path := range strings.Split(files, "\x00") {
+		tracked[filepath.Join(root, path)] = true
+	}
+	check := func(path string) error {
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		contained, err := releaseManifestPath(root, relative)
+		if err != nil {
+			return err
+		}
+		if contained != path {
+			return fmt.Errorf("client release path %s follows a symlink", path)
+		}
+		if !tracked[path] {
+			return fmt.Errorf("client release path %s is not git-tracked", path)
+		}
+		return nil
+	}
+	var plans []*generators.ClientRelease
+	for _, relative := range strings.Split(files, "\x00") {
+		if filepath.Base(relative) != resources.LibraryConfigurationName {
+			continue
+		}
+		plan, err := generators.PlanClientRelease(filepath.Dir(filepath.Join(root, relative)), packages, check)
+		if err != nil {
+			return nil, fmt.Errorf("release client %s: %w", relative, err)
+		}
+		if plan != nil {
+			plans = append(plans, plan)
+		}
+	}
+	return plans, nil
 }
 
 // agentKind reads only the kind an agent manifest declares. It is lenient on

@@ -140,7 +140,12 @@ Examples:
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		workspace, err := common.LoadWorkspace(ctx)
+		// Every composed module is walked for its derived operations, so a
+		// pinned module is materialized first, as a run, a render and
+		// `generate fixture-composition` do: on a fresh checkout — a CI job —
+		// the plain loader refuses a pinned module as "not loadable as a local
+		// checkout", and --check never reaches the file it exists to judge.
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}
@@ -199,7 +204,7 @@ Examples:
 
 func init() {
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment supplying resolved addresses and runnable-scope-selections")
-	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
+	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "leave binding output unchanged; materialize selected pins, then exit 1 if the output is stale")
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsNamingScope, "naming-scope", "", "`scope` addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it")
 	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsCallEndpoint, "call-endpoint", "", "declared HTTP-based endpoint, as `module/service/endpoint`, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)")
 }
@@ -255,6 +260,30 @@ type preparedRunnableBindings struct {
 	content  []byte
 	count    int
 	declined []string
+	values   map[string]string
+}
+
+// CheckRunnableBindings checks the values a consumer would receive against
+// the same preparation used by generate. It reads only; the caller supplies
+// the effective configuration, including profile and composed-module selection.
+// Comments and ordering are immaterial here; --check also checks file layout.
+func CheckRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, info *basev0.ConfigurationInformation) error {
+	prepared, err := prepareRunnableBindings(ctx, workspace, env, env.RunnableCallEndpoint)
+	if err != nil {
+		return err
+	}
+	current := len(info.GetConfigurationValues()) == len(prepared.values)
+	for _, value := range info.GetConfigurationValues() {
+		expected, exists := prepared.values[value.GetKey()]
+		if !exists || value.GetValue() != expected {
+			current = false
+		}
+		delete(prepared.values, value.GetKey())
+	}
+	if !current {
+		return fmt.Errorf("runnable-bindings is out of date: run `%s`", runnableBindingsRegenerate(env, env.RunnableCallEndpoint))
+	}
+	return nil
 }
 
 // prepareRunnableBindings walks every module of the workspace and prepares a
@@ -340,7 +369,7 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	for _, key := range keys {
 		out.WriteString(key + "=" + lines[key] + "\n")
 	}
-	return &preparedRunnableBindings{content: []byte(out.String()), count: len(lines), declined: declined}, nil
+	return &preparedRunnableBindings{content: []byte(out.String()), count: len(lines), declined: declined, values: lines}, nil
 }
 
 // declinedBindingComment is the line the file carries for a declined key. It

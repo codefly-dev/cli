@@ -254,6 +254,7 @@ func TestScanDevServerOrphansMarksUnauthenticatedExternal(t *testing.T) {
 }
 
 func TestReapDevServerOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := tempWorkspace(t)
 	external := startDevServerHelper(t, workspace, "", 0)              // no auth => not codefly's
 	supervised := startDevServerHelper(t, workspace, testGroupAuth, 0) // owned, but leader has a live parent
@@ -262,7 +263,7 @@ func TestReapDevServerOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapDevServerOrphans(ctx, true, AllWorkspaces())
+	reaped, err := ReapDevServerOrphans(ctx, true, InWorkspace(workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +277,8 @@ func TestReapDevServerOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
 	}
 }
 
-func TestReapDevServerOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
+func TestReapDevServerOrphansDryRunRefusesUnregisteredStaleGroup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := tempWorkspace(t)
 	leader := startDevServerHelper(t, workspace, testGroupAuth, 0)
 	leaderPID := leader.Process.Pid
@@ -298,9 +300,9 @@ func TestReapDevServerOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapDevServerOrphans(ctx, true, AllWorkspaces())
-	if err != nil {
-		t.Fatal(err)
+	reaped, err := ReapDevServerOrphans(ctx, true, InWorkspace(workspace))
+	if err == nil {
+		t.Fatal("unregistered group was accepted")
 	}
 	selected := false
 	for _, orphan := range reaped {
@@ -308,12 +310,13 @@ func TestReapDevServerOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
 			selected = true
 		}
 	}
-	if !selected {
-		t.Fatalf("owned stale group %d was not selected for reaping", leaderPID)
+	if selected {
+		t.Fatalf("owned stale group %d was incorrectly selected for reaping", leaderPID)
 	}
 }
 
-func TestKillAuthenticatedProcessGroupReapsOwnedGroup(t *testing.T) {
+func TestOrphanReaperRefusesMarkerWithoutRegistration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := tempWorkspace(t)
 	command := startDevServerHelper(t, workspace, testGroupAuth, 0)
 	pid := command.Process.Pid
@@ -322,15 +325,16 @@ func TestKillAuthenticatedProcessGroupReapsOwnedGroup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := killAuthenticatedProcessGroup(ctx, pid); err != nil {
-		t.Fatalf("killAuthenticatedProcessGroup(%d) = %v", pid, err)
+	if selected, err := reapOrphanGroup(ctx, pid, AllWorkspaces(), false); err == nil || selected {
+		t.Fatalf("unregistered marker accepted: selected=%v error=%v", selected, err)
 	}
-	if isAlive(pid) {
-		t.Fatalf("owned dev-server group %d survived reaping", pid)
+	if !isAlive(pid) {
+		t.Fatalf("unregistered process %d was killed", pid)
 	}
 }
 
 func TestKillAuthenticatedProcessGroupSparesUnownedGroup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	workspace := tempWorkspace(t)
 	command := startDevServerHelper(t, workspace, "", 0) // no auth => not codefly's
 	pid := command.Process.Pid
@@ -338,8 +342,8 @@ func TestKillAuthenticatedProcessGroupSparesUnownedGroup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := killAuthenticatedProcessGroup(ctx, pid); err != nil {
-		t.Fatalf("killAuthenticatedProcessGroup(%d) = %v, want nil (unowned group left untouched)", pid, err)
+	if selected, err := reapOrphanGroup(ctx, pid, AllWorkspaces(), false); err == nil || selected {
+		t.Fatalf("unregistered process accepted: selected=%v error=%v", selected, err)
 	}
 	if !isAlive(pid) {
 		t.Fatalf("unowned dev server %d was killed despite lacking codefly authentication", pid)
@@ -426,6 +430,9 @@ func TestScanNativeServiceOrphansMarksUnauthenticatedExternal(t *testing.T) {
 }
 
 func TestReapNativeServiceOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workspace := tempWorkspace(t)
+	t.Setenv(LaunchWorkspaceEnv, workspace)
 	external := startNativeServiceHelper(t, "postgres", "", 0)                        // no auth => not codefly's
 	supervised := startNativeServiceHelper(t, nativeCacheBinary(t), testGroupAuth, 0) // owned, but leader has a live parent
 	waitForScannedNativeOrphan(t, external.Process.Pid)
@@ -433,7 +440,7 @@ func TestReapNativeServiceOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapNativeServiceOrphans(ctx, true, AllWorkspaces())
+	reaped, err := ReapNativeServiceOrphans(ctx, true, InWorkspace(workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +454,10 @@ func TestReapNativeServiceOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
 	}
 }
 
-func TestReapNativeServiceOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
+func TestReapNativeServiceOrphansDryRunRefusesUnregisteredStaleGroup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workspace := tempWorkspace(t)
+	t.Setenv(LaunchWorkspaceEnv, workspace)
 	leader := startNativeServiceHelper(t, nativeCacheBinary(t), testGroupAuth, 0)
 	leaderPID := leader.Process.Pid
 	waitForGroupLeader(t, leaderPID)
@@ -468,9 +478,9 @@ func TestReapNativeServiceOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapNativeServiceOrphans(ctx, true, AllWorkspaces())
-	if err != nil {
-		t.Fatal(err)
+	reaped, err := ReapNativeServiceOrphans(ctx, true, InWorkspace(workspace))
+	if err == nil {
+		t.Fatal("unregistered group was accepted")
 	}
 	selected := false
 	for _, orphan := range reaped {
@@ -478,7 +488,7 @@ func TestReapNativeServiceOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
 			selected = true
 		}
 	}
-	if !selected {
-		t.Fatalf("owned stale native-service group %d was not selected for reaping", leaderPID)
+	if selected {
+		t.Fatalf("owned stale native-service group %d was incorrectly selected for reaping", leaderPID)
 	}
 }

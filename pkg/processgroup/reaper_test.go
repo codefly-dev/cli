@@ -22,15 +22,16 @@ import (
 )
 
 const (
-	helperRoleEnv     = "CODEFLY_TEST_PROCESS_GROUP_ROLE"
-	helperPortEnv     = "CODEFLY_TEST_PROCESS_GROUP_PORT"
-	helperPIDEnv      = "CODEFLY_TEST_PROCESS_GROUP_PID_FILE"
-	helperChildPIDEnv = "CODEFLY_TEST_PROCESS_GROUP_CHILD_PID_FILE"
-	helperReadyEnv    = "CODEFLY_TEST_PROCESS_GROUP_READY_FILE"
-	helperReleaseEnv  = "CODEFLY_TEST_PROCESS_GROUP_RELEASE_FILE"
-	helperTermEnv     = "CODEFLY_TEST_PROCESS_GROUP_TERM_FILE"
-	helperPortsEnv    = "CODEFLY_TEST_PROCESS_GROUP_PORTS"
-	helperStateDirEnv = "CODEFLY_TEST_PROCESS_GROUP_STATE_DIR"
+	authenticatedDirName = "authenticated-v1" // Explicit old-producer compatibility fixture.
+	helperRoleEnv        = "CODEFLY_TEST_PROCESS_GROUP_ROLE"
+	helperPortEnv        = "CODEFLY_TEST_PROCESS_GROUP_PORT"
+	helperPIDEnv         = "CODEFLY_TEST_PROCESS_GROUP_PID_FILE"
+	helperChildPIDEnv    = "CODEFLY_TEST_PROCESS_GROUP_CHILD_PID_FILE"
+	helperReadyEnv       = "CODEFLY_TEST_PROCESS_GROUP_READY_FILE"
+	helperReleaseEnv     = "CODEFLY_TEST_PROCESS_GROUP_RELEASE_FILE"
+	helperTermEnv        = "CODEFLY_TEST_PROCESS_GROUP_TERM_FILE"
+	helperPortsEnv       = "CODEFLY_TEST_PROCESS_GROUP_PORTS"
+	helperStateDirEnv    = "CODEFLY_TEST_PROCESS_GROUP_STATE_DIR"
 )
 
 func TestProcessGroupHelper(t *testing.T) {
@@ -46,6 +47,32 @@ func TestProcessGroupHelper(t *testing.T) {
 		command.Stderr = io.Discard
 		if _, err := runnersbase.StartTrackedProcessGroup(command); err != nil {
 			t.Fatal(err)
+		}
+		if os.Getenv("CODEFLY_TEST_MIXED_REGISTRIES") == "1" {
+			current := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "authenticated-v2", fmt.Sprintf("%d.pgid", command.Process.Pid))
+			data, err := os.ReadFile(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var historical authenticatedRecord
+			if err := json.Unmarshal(data, &historical); err != nil {
+				t.Fatal(err)
+			}
+			data, err = json.Marshal(historical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "authenticated-v1")
+			if err := os.MkdirAll(previous, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(previous, fmt.Sprintf("%d.pgid", command.Process.Pid)), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(current); err != nil {
+				t.Fatal(err)
+			}
+
 		}
 		if err := os.WriteFile(os.Getenv(helperPIDEnv), []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
 			t.Fatal(err)
@@ -77,14 +104,19 @@ func TestProcessGroupHelper(t *testing.T) {
 		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		command.Stdout = io.Discard
 		command.Stderr = io.Discard
-		if err := command.Start(); err != nil {
-			t.Fatal(err)
+		if os.Getenv("CODEFLY_TEST_MIXED_REGISTRIES") == "1" {
+			if _, err := runnersbase.StartTrackedProcessGroup(command); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeLegacyPgidFile(command.Process.Pid, os.TempDir(), []string{os.Args[0]}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		pid := command.Process.Pid
-		if err := writeLegacyPgidFile(pid, os.TempDir(), []string{os.Args[0]}); err != nil {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(os.Getenv(helperChildPIDEnv), []byte(strconv.Itoa(pid)), 0o600); err != nil {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 			t.Fatal(err)
@@ -279,6 +311,13 @@ func TestProcessGroupHelper(t *testing.T) {
 }
 
 func TestReaperCleansLegacyAgentProcessesAfterCurrentOwnerIsKilled(t *testing.T) {
+	testReaperOwnerChain(t)
+}
+func TestReaperConvergesAcrossProducerNamespaces(t *testing.T) {
+	t.Setenv("CODEFLY_TEST_MIXED_REGISTRIES", "1")
+	testReaperOwnerChain(t)
+}
+func testReaperOwnerChain(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	port := availablePort(t)
@@ -350,9 +389,26 @@ func TestReaperCleansAuthenticatedRootRecordAfterOwnerIsKilled(t *testing.T) {
 	waitForFile(t, pidPath)
 	waitForFile(t, readyPath)
 	pid := readPID(t, pidPath)
-	currentRecord := filepath.Join(home, ".codefly", stateDirName, "authenticated-v1", fmt.Sprintf("%d.pgid", pid))
+	currentRecord := filepath.Join(home, ".codefly", stateDirName, "authenticated-v2", fmt.Sprintf("%d.pgid", pid))
 	rootRecord := registryPath(t, pid)
-	if err := os.Rename(currentRecord, rootRecord); err != nil {
+	// Historical root JSON predates persisted workspace attribution. Preserve
+	// that old wire fixture rather than move a new namespace envelope to root.
+	data, err := os.ReadFile(currentRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var historical authenticatedRecord
+	if err := json.Unmarshal(data, &historical); err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootRecord, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(currentRecord); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -465,7 +521,7 @@ func TestStopManagedProcessGroupsReapsGraphAndPreservesStateForRestart(t *testin
 	}
 }
 
-func TestReaperTreatsEmptyAuthenticatedRecordAsClean(t *testing.T) {
+func TestReaperUsesOwnerInspectionForSupportedRecords(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	port := availablePort(t)
@@ -508,20 +564,15 @@ func TestReaperTreatsEmptyAuthenticatedRecordAsClean(t *testing.T) {
 	if err := os.WriteFile(recordPath, recordData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	originalInspector := inspectAuthenticatedProcessGroup
-	inspectAuthenticatedProcessGroup = func(context.Context, int) ([]processIdentity, error) { return nil, nil }
-	t.Cleanup(func() { inspectAuthenticatedProcessGroup = originalInspector })
-
 	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background(), AllWorkspaces())
-	inspectAuthenticatedProcessGroup = originalInspector
 	if err != nil {
 		t.Fatal(err)
 	}
 	if evidence.Outcome != CleanupClean {
 		t.Fatalf("cleanup outcome = %q, want %q", evidence.Outcome, CleanupClean)
 	}
-	if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("empty authenticated record still exists: %v", err)
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("live v1 registration was not preserved: %v", err)
 	}
 	assertPortHeld(t, port)
 	if err := syscall.Kill(-pid, 0); err != nil {
@@ -893,6 +944,9 @@ func TestReaperContinuesConvergenceAfterRecordFailure(t *testing.T) {
 	}
 	lockPath := filepath.Join(registryDir, registryLockName)
 	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runnersbase.ListProcessGroups(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(registryDir, 0o555); err != nil {

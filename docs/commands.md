@@ -2199,8 +2199,11 @@ workspace composed by identity works for each of them with no prior run:
   checkout, so it materializes exactly as `run` does;
 - every `ci` verb (`plan`, `build`, `test`, `run`, `validate`, `push`,
   `deploy`);
-- `generate client`, `sync solution-sdk` and the fixture listing, which read a
-  composed module's tree.
+- `generate client`, `generate runnable-bindings` (its `--check` included: the
+  one drift check that group has writes no binding output, but it materializes
+  a pinned module first — dependency cache, overlay, receipt and `.gitignore`
+  entries — so it runs on a fresh checkout), `sync solution-sdk` and the
+  fixture listing, which read a composed module's tree.
 
 All of them share the fast path: once a receipt answers the request the
 workspace makes, a later command compares and pulls nothing, takes no lock and
@@ -2969,6 +2972,17 @@ the checksums that workflow published. Release-grade agent CI still runs on the
 publishing host, so on a linux/amd64 runner that qualification is the
 linux/amd64 build only. An agent with `release.owner: cli` uploads the archives
 itself and still requires a host that builds every platform.
+
+Both publication owners verify the published archive bytes before reporting
+success. CLI-owned uploads also stage deterministic checksums and refuse changed
+existing assets before uploading anything. The final reachability check uses
+installer credentials, independently of the publishing login. See
+[publication verification](publish-verification.md).
+
+Module releases also carry their tracked generated client versions through the
+existing release transaction; stale clients must be regenerated first. See
+[generated client versions](publish-client-versions.md) for single-source and
+aggregate behavior.
 
 ### `codefly publish all [patch|minor|major]`
 
@@ -3941,7 +3955,7 @@ absent or empty exactly when the environment selects no binding.
 | Flag | Description |
 |------|-------------|
 | `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
-| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes; write nothing |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes. Leaves binding output unchanged; first materializes selected pins through the common loader, which may update the cache, local overlay and resolution receipts. |
 
 ## Infrastructure
 
@@ -4249,7 +4263,11 @@ What it checks, in order:
    operations that cannot be read at all fail as
    `runnable_operations_unreadable`. Like the checks below, it needs every
    composed module materialized.
-6. Every workspace configuration group services declare under
+6. Services withdrawn by the selected environment's `exclude-services` impose
+   no configuration requirements, including in a module-scoped check. The same
+   exclusion validation used by run still refuses undeclared consumer withdrawals;
+   explicitly selecting an excluded service fails.
+   Every workspace configuration group remaining services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
    `configurations/<profile>/*` composed with the groups each composed module
@@ -4264,7 +4282,13 @@ What it checks, in order:
    (nothing derived, or every binding declined) the group absent or holding no
    value is ok; a selected binding the group does not hold fails as
    `configuration_missing` with `codefly generate runnable-bindings --env
-   <env>` as its remedy.
+   <env>` as its remedy. Existing binding values are also compared with the
+   generator's current preparation: changed addresses, contracts or policies,
+   obsolete extra bindings and output left after the last operation disappears
+   fail as `configuration_invalid`. This comparison checks effective values;
+   the generator's `--check` additionally checks exact file bytes. The delivery
+   readiness gate uses this check before build or push for modules consuming
+   the group; the explicit `--skip-workspace-readiness` override still applies.
 7. Per-service `configurations/<env>` files parse; duplicates are flagged.
 8. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
@@ -4371,33 +4395,27 @@ Replay recorded operations.
 
 ### `codefly clear`
 
-Clear cached state and temporary files. Also reaps leaked frontend dev servers
-(`next dev` / `npm run dev` / `vite`) that codefly spawned — proven by their
-process-group authentication — and that lost their supervisor: the leaks
-`codefly ps` reports as `orphaned`. Dev servers the user launched by hand (shown
-as `external`) are never touched.
+Clear cached state and temporary files. Frontend/native signature scans identify
+additional cleanup candidates. Recovery requires Core's authenticated process-group
+registration and owner-death evidence; a name or environment marker alone never
+permits signaling. Missing or ambiguous proof leaves the process running and
+returns an error. Registry failures prevent fallback cleanup from bypassing refusal.
 
 ### `codefly ps`
 
-List the processes this workspace's run is still holding: frontend dev servers
-(`next dev` / `npm run dev` / `vite`) and native-mode services — the compiled
-service binaries and the stateful stores a run started. STATUS is `orphaned`
-(codefly's, escaped its supervisor — reaped by `codefly clear`), `tracked`
-(codefly's, still supervised), or `external` (not codefly's — shown for
-visibility, never reaped). Add `--json` for machine-readable output.
+List signature-matched frontend dev servers (`next dev` / `npm run dev` / `vite`)
+and native service binaries or PostgreSQL. Add `--json` for machine-readable
+output. STATUS is diagnostic: `orphaned` means a marked process lost its
+supervisor, `tracked` means it remains supervised, and `external` means no marker
+was observed. These labels do not establish permission to signal a process.
 
-A process belongs to the run that launched it, not to the directory it runs in.
-That is the difference that makes a composed run listable at all: a composed
-module is checked out outside the workspace that composes it, so its services
-run from that checkout, and a store runs from a data directory under
-`~/.codefly/data` that is in no workspace at all. The run is recorded in the
-environment of everything a `codefly` invocation starts, so `ps` lists a
-composed run whole — which matters because it is the set `codefly stop` acts on.
+The view uses launch environment and working directory for workspace attribution.
+It can omit registered children that rewrite their command/environment, including
+Redis. `codefly stop` independently enumerates Core registrations and selects
+persisted authenticated launch provenance; its coverage is broader than this view.
 
-Scoped to the current workspace. `--all` lists every workspace's processes on
-this machine, which is how to find a leak belonging to a checkout you are not
-standing in; outside a workspace the listing is machine-wide, since there is
-nothing to scope to.
+Scoped to the current workspace; `--all` widens the diagnostic listing. Outside a
+workspace the listing is machine-wide.
 
 ---
 
