@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/distribution/reference"
@@ -37,6 +38,29 @@ func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	if advertised, supported := ValidationOperationSupport(runner.instance.Info, ValidationArtifactBuild); advertised && !supported {
+		return "", nil
+	}
+	// Whether this run relies on the handoff is decided by the agent
+	// advertising the optional capability — not by whether its builder happens
+	// to emit exactly one recipe.
+	//
+	// A single recipe does not make a runtime image. A database agent emits one
+	// for its migration or bootstrap image, and reading the runtime role off
+	// that sole recipe both built the wrong image and then failed the run for a
+	// capability the agent never claimed. An agent that does not advertise
+	// keeps its own image selection, exactly as a stock-image one does, and its
+	// build stays out of this path entirely.
+	//
+	// The test is deliberately the capability list and not contract.Check:
+	// Check reports a protocol-version mismatch with the same ErrIncompatible
+	// as a missing capability, so treating any error as "not advertised" would
+	// silently accept an agent this host cannot speak to. Absence of an
+	// optional capability is the only thing waived here; the strict guard in
+	// buildLocalRuntimeImage still runs the full Check once the handoff is
+	// selected, so an advertising agent with an incompatible protocol is
+	// refused rather than skipped. The disposable image policy above runs
+	// before this skip and is never waived by it.
+	if !slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitImage) {
 		return "", nil
 	}
 	if runner.instance.Builder == nil {
@@ -118,6 +142,10 @@ func (b *Builder) buildLocalRuntimeImage(ctx context.Context) (string, error) {
 	if len(plan.GetRecipes()) != 1 {
 		return "", fmt.Errorf("local runtime for %s requires exactly one image recipe, got %d", b.instance.Unique(), len(plan.GetRecipes()))
 	}
+	// The strict guard, retained: localRuntimeImage only waives the ABSENCE of
+	// the optional capability, so the full contract check still runs here for
+	// an agent that did advertise it — a protocol-version mismatch, or any
+	// other incompatibility, refuses the handoff rather than being skipped.
 	if err := b.instance.RequireAgentCapabilities(contract.RuntimeInitImage); err != nil {
 		return "", fmt.Errorf("cannot supply a local runtime image to %s: %w", b.instance.Unique(), err)
 	}

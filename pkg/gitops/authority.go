@@ -12,6 +12,7 @@ import (
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
@@ -88,7 +89,7 @@ func moduleAuthority(
 	if request.contract.Principal != module.Name {
 		return nil, fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, request.contract.Principal, module.Name)
 	}
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
 	}

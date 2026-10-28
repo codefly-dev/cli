@@ -21,6 +21,10 @@ func NewEnvironmentRemoteManager(ctx context.Context, workspace *resources.Works
 	if err != nil {
 		return nil, err
 	}
+	// The same acquisition every other delivery and check load supplies: a
+	// bound module artifact reaching this manager must be resolved from the
+	// selected module, not refused as unresolvable (module_artifact.go).
+	localReader.WithModuleArtifactResolver(ModuleArtifactResolverFor(workspace))
 	manager.WithLoader(localReader)
 	return remotenetwork.NewRemoteManager(ctx, manager)
 }

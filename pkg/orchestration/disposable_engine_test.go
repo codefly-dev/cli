@@ -377,10 +377,18 @@ func disposableBuiltRef(call disposableEngineCall) string {
 func disposableOrdinaryRuntimeRef(t *testing.T, b *Builder) string {
 	t.Helper()
 	ordinary := *b
-	world := *b.world
-	world.disposableImageScope = ""
-	world.RebuildImages = true // identity/name only; do not query a cache for reuse
-	ordinary.world = &world
+	// By pointer, never a copy: World carries a sync.Once (the memoized
+	// workspace producer lookup), so `world := *b.world` duplicates a lock —
+	// vet's copylocks, and a real bug rather than noise, because the copy's
+	// Once inherits the original's fired state. The two fields the derivation
+	// needs are overridden on the scoped builder's own world and restored
+	// before returning, which is sound here because this helper is called from
+	// a sequential test and executes no Build and no cache write.
+	scope, rebuild := b.world.disposableImageScope, b.world.RebuildImages
+	b.world.disposableImageScope = ""
+	b.world.RebuildImages = true // identity/name only; do not query a cache for reuse
+	defer func() { b.world.disposableImageScope, b.world.RebuildImages = scope, rebuild }()
+	ordinary.world = b.world
 	ordinary.localRuntime = true
 	plan := b.planned.response.GetResult().GetDockerBuildPlan()
 	recipe, err := ordinary.recipeAsBuilt(plan.Recipes[0], false)

@@ -1380,7 +1380,10 @@ func checkServiceConfigurationSources(ctx context.Context, env *environments.Env
 // module's, is reported and returns nil. Duplicate keys within one
 // configuration are flagged as for a service directory.
 func loadWorkspaceConfigurations(ctx context.Context, ws *resources.Workspace, env *resources.Environment, relCfgDir string, report *workspaceReadinessReport) *configurations.WorkspaceConfigurations {
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, ws, env)
+	// The same acquisition a run supplies, so the doctor reports what a run
+	// would deliver for a bound module artifact rather than core's
+	// "requires a resolver" refusal.
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, ws, env, orchestration.ModuleArtifactResolverFor(ws))
 	if err != nil {
 		code := codeConfigurationInvalid
 		if errors.Is(err, configurations.ErrConfigurationConflict) {

@@ -73,19 +73,6 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("name the run environment for the excluded root's output environment: %w", err)
 	}
-	if err := AppendServiceProcessConfigurationsToFile(
-		ctx,
-		flow.outputEnvPath,
-		environment,
-		runtimeContext,
-		serviceConfiguration,
-		workspaceConfigurations,
-		dependencyConfigurations,
-		nil,
-	); err != nil {
-		return fmt.Errorf("write excluded root configurations: %w", err)
-	}
-
 	protoIdentity := &basev0.ServiceIdentity{
 		Workspace:           identity.Workspace,
 		Module:              identity.Module,
@@ -102,16 +89,30 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 	if flow.world.Env != nil && flow.world.Env.NamingScope != "" {
 		overrides[resources.NamingScopePrefix] = flow.world.Env.NamingScope
 	}
-	if err := AppendRuntimeEnvironmentToFile(
-		ctx,
-		flow.outputEnvPath,
-		protoIdentity,
-		runtimeContext,
-		flow.fixture,
-		overrides,
-		endpointMappings,
-	); err != nil {
-		return fmt.Errorf("write excluded root runtime environment: %w", err)
+	// The selected payload is checked against itself and against this export's
+	// override map — duplicates inside it are still collisions — and the
+	// complete record batch is converted, before the first append. No agent
+	// Init runs for an excluded root, so there is no returned contribution and
+	// no retained delivery to pretend there is one.
+	selected := deliveryBaseline(serviceConfiguration, workspaceConfigurations, dependencyConfigurations)
+	if deliveryErr := resources.ValidateModuleArtifactDelivery(selected, nil, overrides); deliveryErr != nil {
+		return fmt.Errorf("export excluded root environment: %w", deliveryErr)
+	}
+	configurationVariables, err := serviceProcessConfigurationVariables(ctx, environment, runtimeContext,
+		serviceConfiguration, workspaceConfigurations, dependencyConfigurations, nil)
+	if err != nil {
+		return fmt.Errorf("convert excluded root configurations: %w", err)
+	}
+	runtimeVariables, err := runtimeEnvironmentVariables(ctx, protoIdentity, runtimeContext, flow.fixture, overrides, endpointMappings)
+	if err != nil {
+		return fmt.Errorf("convert excluded root runtime environment: %w", err)
+	}
+	records, err := outputRecords(append(configurationVariables, runtimeVariables...))
+	if err != nil {
+		return fmt.Errorf("export excluded root environment: %w", err)
+	}
+	if err := writeOutputRecords(ctx, flow.outputEnvPath, records); err != nil {
+		return fmt.Errorf("write excluded root environment: %w", err)
 	}
 	return nil
 }

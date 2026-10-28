@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
@@ -79,7 +80,7 @@ func workspaceConfigurationDigests(ctx context.Context, workspace *resources.Wor
 // them now; a group the environment does not provide is absent from the
 // result.
 func digestProvidedGroups(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, consumed map[string]struct{}) (map[string]string, error) {
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations this render bakes in: %w", err)
 	}

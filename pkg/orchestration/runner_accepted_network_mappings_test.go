@@ -50,7 +50,12 @@ const (
 	realAgentUnknown   = "unknown"   // invents an endpoint that was never proposed
 	realAgentDuplicate = "duplicate" // returns two native views for one endpoint
 	realAgentInputs    = "inputs"    // echoes back the invocation inputs Init carried
+	realAgentRefuses   = "refuses"   // answers Init with ERROR and its own diagnostic
 )
+
+// realAgentRefusalMessage is the agent's own Init diagnostic, which the run
+// must surface unchanged rather than replacing with a host-side explanation.
+const realAgentRefusalMessage = "postmaster refused the data directory"
 
 // exposedConfigurationName marks the runtime configuration the agent exports on
 // every Init. A rejected Init must not publish it.
@@ -131,6 +136,11 @@ func proposedPorts(proposed []*basev0.NetworkMapping) map[uint16]bool {
 }
 
 func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+	if agent.mode == realAgentRefuses {
+		return &runtimev0.InitResponse{Status: &runtimev0.InitStatus{
+			State: runtimev0.InitStatus_ERROR, Message: realAgentRefusalMessage,
+		}}, nil
+	}
 	if image := req.GetRuntimeImage(); image != "" {
 		parsed, err := reference.ParseNamed(image)
 		if err != nil {

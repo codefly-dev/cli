@@ -64,7 +64,12 @@ func (policy *ProductSecretPolicy) Validate() error {
 // secret, and keys that group declares; a may-be-empty entry names a secret key
 // some declared group produces. Anything else is refused by name: it would
 // generate, or excuse, a value no rendered service reads.
-func ValidateSecretPolicy(ctx context.Context, workspace *resources.Workspace, env *Environment, policy *ProductSecretPolicy) error {
+// The resolver is a parameter rather than something this package builds: a
+// module artifact's bytes are acquired from a composed module under the
+// composition's own provenance rules, which live above pkg/environments. A
+// caller that omits it reads a composition with a bound artifact as a refusal
+// from Core — never as an absent value.
+func ValidateSecretPolicy(ctx context.Context, workspace *resources.Workspace, env *Environment, policy *ProductSecretPolicy, resolvers ...configurations.ModuleArtifactResolver) error {
 	if policy.Empty() {
 		return nil
 	}
@@ -81,6 +86,9 @@ func ValidateSecretPolicy(ctx context.Context, workspace *resources.Workspace, e
 		composed[identity.Unique()] = true
 	}
 	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	for _, resolve := range resolvers {
+		reader = reader.WithModuleArtifactResolver(resolve)
+	}
 	if err != nil {
 		return err
 	}
