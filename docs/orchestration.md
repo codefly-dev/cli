@@ -1155,6 +1155,15 @@ and update its agent before restarting. A successful stop must not hide a
 process it could not authenticate. If registry cleanup fails, stop also skips
 the signature-based orphan fallback so it cannot bypass that refusal.
 
+An operator can separately select a retained orphan generation using
+`codefly recover process-group PGID --preview`, review its Core-produced receipt,
+then supply it with `--expect FILE`. This adds no admission to scoped stop or
+startup reaping and infers no workspace membership. Core owns legacy boot-format
+authentication, unchanged-generation checks, current identity-bound delivery and
+conditional removal. The CLI reports completion only when Core returns no error,
+the group is dead and the exact record was removed; partial failures remain
+errors. See [the command workflow](commands.md#codefly-recover-process-group).
+
 `Stop()` and `Shutdown()` do not fan every manager out at once. Launch order is
 not completion order, so stopping a database concurrently with the API draining
 into it can cut off that API's last write. Both walk **reverse topological

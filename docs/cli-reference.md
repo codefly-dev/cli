@@ -73,6 +73,7 @@ Subcommands:
 - [`codefly provider`](#codefly-provider)
 - [`codefly ps`](#codefly-ps)
 - [`codefly publish`](#codefly-publish)
+- [`codefly recover`](#codefly-recover)
 - [`codefly replay`](#codefly-replay)
 - [`codefly run`](#codefly-run)
 - [`codefly sbom`](#codefly-sbom)
@@ -4199,6 +4200,44 @@ Flags:
       --ci           run as a CI job: bot git identity, no signing (default: on when CI=true)
       --dir string   manifest directory (default: cwd)
       --dry-run      show what would happen without modifying anything
+```
+
+## `codefly recover`
+
+Recover an explicitly selected retained Codefly resource
+
+```
+codefly recover <subcommand>
+```
+
+Subcommands:
+
+- [`codefly recover process-group`](#codefly-recover-process-group)
+
+## `codefly recover process-group`
+
+Preview or recover one authenticated orphan process-group generation
+
+```
+Select one retained process group explicitly, independently of workspace-scoped stop.
+Use --preview to authenticate it without signaling and print Core's JSON receipt.
+Review and save the complete receipt, then use --expect FILE with the same PGID.
+Core revalidates the registration, absent original owner and process births before
+effects. Changed, missing or ambiguous evidence refuses recovery. Workspace
+membership is not inferred. Containers, caches and other groups are not selected.
+Recovery succeeds only when the group is dead and its exact record was removed.
+An error can report partial termination; inspect the result before any retry.
+```
+
+```
+codefly recover process-group PGID
+```
+
+Flags:
+
+```
+      --expect string   Recover only the generation in this reviewed Core JSON receipt
+      --preview         Authenticate one generation and print its receipt without signaling
 ```
 
 ## `codefly replay`

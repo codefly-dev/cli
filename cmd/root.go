@@ -261,6 +261,7 @@ func init() {
 
 	// Stop a running stack (reap processes + orphaned groups, keep containers).
 	RootCmd.AddCommand(StopCmd)
+	RootCmd.AddCommand(RecoverCmd)
 
 	// Generate client code
 	RootCmd.AddCommand(GenerateCmd)

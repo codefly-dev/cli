@@ -4401,6 +4401,43 @@ registration and owner-death evidence; a name or environment marker alone never
 permits signaling. Missing or ambiguous proof leaves the process running and
 returns an error. Registry failures prevent fallback cleanup from bypassing refusal.
 
+### `codefly recover process-group`
+
+Recover one explicitly selected orphan generation when ordinary workspace-scoped
+stop cannot admit it, including a retained legacy Darwin boot representation.
+This is an operator operation, separate from `stop`, `clear` and startup reaping;
+it does not establish missing workspace attribution or widen their selection.
+
+```bash
+codefly recover process-group 12345 --preview > recovery.json
+# Review the complete Core receipt before executing it.
+codefly recover process-group 12345 --expect recovery.json
+```
+
+Use the same user home for both commands: Core owns the process registry under
+the user's home independently of the CLI plugin directory. `--preview`
+authenticates without signaling and prints the owner's JSON receipt:
+namespace, registration SHA256, PGID, recorded leader/owner identities and observed
+member identities. Save it unchanged. The CLI requires one PGID and exactly one
+mode; execution uses Core's strict receipt parser and rejects a different PGID.
+There is no name/port selection, `--all`, inferred workspace or automatic retry.
+
+Core owns format compatibility and revalidates unchanged registration evidence,
+original-owner absence, supported boot identity and initial member births before
+effects. Ambiguous namespaces or changed/missing evidence refuse. Later escalation
+can reach authenticated descendants of that registered generation; the receipt
+does not authorize a replacement generation. Core uses its current identity-bound
+delivery and removes only the unchanged registration after proven group death.
+It never rewrites the retained boot identity.
+
+Execution prints Core's `group_dead` and `record_removed` observations, including
+partial results on error. Exit status is successful only when Core returns no
+error **and both are true**. Failure can follow partial termination; preserve the
+receipt and output and inspect the cause before a new preview or retry. Neither a
+nil removal error nor an absent PID alone is reported as complete recovery.
+Containers, caches and other registrations are not selected. This explicit
+operator workflow is not exposed as an MCP tool.
+
 ### `codefly ps`
 
 List signature-matched frontend dev servers (`next dev` / `npm run dev` / `vite`)
