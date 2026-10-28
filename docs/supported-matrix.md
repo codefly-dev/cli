@@ -27,11 +27,12 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin targets Core's `v0.19.8` release line. The exact source
+The current pin targets Core's published `v0.19.9` release line. The exact source
 revision is declared in `go.mod`; the CLI consumes Core's container parent
-attribution and release acquisition APIs. These source gates qualify the CLI
+attribution, release acquisition and explicit process-group/container recovery
+APIs. These source gates qualify the CLI
 against that selected revision. They do not qualify separately compiled agents
-or imply that the target Core release has been published. Agents creating
+or update the Core code embedded in their binaries. Agents creating
 sidecar containers must adopt the attribution API in their own source and
 qualify their lifecycle before consumers select the resulting release.
 
