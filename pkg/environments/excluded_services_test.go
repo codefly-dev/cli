@@ -371,11 +371,14 @@ func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
 // change, so the prose describing it cannot drift past the code.
 //
 // Selecting an environment narrows the GRAPH-consistency check and only that.
-// Loading a workspace decodes and validates every environment, so a
-// MALFORMED exclusion — an unqualified name, here, in an environment nobody
-// selected — still refuses. That is deliberate: a declaration that cannot be
-// parsed is not a disagreement between an environment and the graph, it is a
-// workspace that does not say what it means.
+// ValidateWorkspace decodes and validates every environment's declarations
+// before it compares the selected one against the graph, so a MALFORMED
+// exclusion — an unqualified name, here, in an environment nobody selected —
+// still refuses. Note what the assertions below show about where that
+// happens: the workspace LOADS and the clean environment SELECTS; it is the
+// validation that refuses, not the load. That is deliberate — a declaration
+// that cannot be parsed is not a disagreement between an environment and the
+// graph, it is a workspace that does not say what it means.
 func TestSelectionNarrowsTheGraphCheckAndNothingElse(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeExclusionWorkspace(t, `    exclude-services:

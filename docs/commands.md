@@ -130,10 +130,13 @@ environment in the message itself rather than only under `--debug`.
 
 This is scoped to the graph-consistency check, which is where the
 cross-environment refusal came from. It is not a general rule that other
-environments are ignored. Every environment is still decoded and validated
-whenever a workspace is loaded, so a **malformed** `exclude-services` anywhere
-— an unqualified name, a duplicate, a service withdrawn from itself — still
-refuses any operation, selection or not. Module namespaces, host composition,
+environments are ignored. The check itself decodes and validates EVERY
+environment's declarations before it compares the selected one against the
+graph, so a **malformed** `exclude-services` anywhere — an unqualified name, a
+duplicate, a service withdrawn from itself — still refuses, whatever was
+selected. (Loading the workspace does not: a workspace with such a declaration
+still loads, and a clean environment still selects. It is the validation that
+refuses, not the load.) Module namespaces, host composition,
 service-scoped names (`service-config`, `service-identity`, `service-mesh`)
 and `managed-services` keys are likewise still held across every environment,
 so a bad declaration in one of those blocks in an unselected environment can

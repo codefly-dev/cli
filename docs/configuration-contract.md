@@ -247,8 +247,11 @@ and a configuration reference to one of its endpoints. **Those refusals are
 judged for the environment the operation selected, and the message names that
 environment**: an operation is not refused because a different environment's
 `exclude-services` is inconsistent with the workspace graph. A **malformed**
-exclusion is a separate matter — every environment is validated for shape when
-the workspace loads, so one of those refuses any operation. That distinction is load-bearing, because the graph a
+exclusion is a separate matter — the check validates every environment's
+declarations for shape before comparing the selected one against the graph, so
+one of those refuses whatever was selected. It is the validation that refuses,
+not the load: such a workspace still loads, and a clean environment still
+selects. That distinction is load-bearing, because the graph a
 declaration is held to is the workspace's current composition — an environment
 imported before a module overlay added a service carries no `withdrawn-from`
 for it, and holding every environment to that graph refuses operations on
