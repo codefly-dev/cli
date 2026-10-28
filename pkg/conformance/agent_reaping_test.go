@@ -1,6 +1,10 @@
 package conformance
 
 import (
+	"bytes"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
@@ -8,18 +12,41 @@ import (
 	"testing"
 )
 
+// codeOf returns the file's source with every comment removed, by parsing it
+// and printing the syntax tree back out. The checks below are textual, and a
+// comment is text: the first version of this guard matched the word
+// "ClearAgents" anywhere in the file, so the explanatory comment that sits
+// above the real `defer services.ClearAgents()` was itself enough to satisfy
+// it — deleting the defer and keeping the comment passed. Stripping comments
+// first is what makes a reap have to be a reap.
+func codeOf(t *testing.T, path, body string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, body, 0)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	var code bytes.Buffer
+	if err := printer.Fprint(&code, fset, file); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return code.String()
+}
+
 // TestNoCommandFileOmitsAgentReaping is a TEXTUAL omission detector, and
-// nothing more: it reads source as text and asks whether a reaping call
-// appears. It catches the omission that actually happened — a command that
-// loads agents with no reap anywhere in its file — and it is defeated by
-// anything that merely mentions the call, a `// TODO: ClearAgents` comment
-// included. It is a cheap backstop against the same slip recurring, not proof
-// that any command reaps correctly, and it is deliberately not a call-graph
-// analysis.
+// nothing more: it reads source as text — comments stripped — and asks whether
+// a reaping call appears. It catches the omission that actually happened: a
+// command that loads agents with no reap anywhere in its file. It is a cheap
+// backstop against the same slip recurring, not proof that any command reaps
+// correctly, and it is deliberately not a call-graph analysis: a reap written
+// behind a condition that never runs would still satisfy it.
 //
 // Loading a service starts an agent process. ClearAgents closes the cached
-// connections and Core's close is graceful in itself (services/agent.go:
-// SIGTERM, wait, SIGKILL fallback), so a command that loads agents and never
+// connections, and Core's close is cooperative in itself — it asks the agent
+// to stop, waits for the agent to reap its own children, and forces the
+// process group down only if that wait times out. (The signal is Core's
+// choice; the comments around it in Core do not match the code it runs, so
+// this does not restate a mechanism.) A command that loads agents and never
 // reaps leaks one process per service, every invocation. It retires the
 // processes that command started; agents owned by another command are not
 // affected.
@@ -59,7 +86,7 @@ func TestNoCommandFileOmitsAgentReaping(t *testing.T) {
 		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err
 		}
-		body := readFile(t, path)
+		body := codeOf(t, path, readFile(t, path))
 		if !strings.Contains(body, "RunE:") {
 			return nil
 		}

@@ -3036,18 +3036,27 @@ release commit also:
 
 **Agents the command starts, and what ends them.** Reading each service's
 exported endpoints loads that service, which starts its agent as a child
-process. The command retires them on return: the cached connections are
-closed, and the close is cooperative — Core signals the agent, waits for it to
-reap its own children (user binaries, containers) and only then forces exit, so
-a shutdown that completes is a clean one. Cancelling the command (Ctrl-C) takes
-the same path, because the reap is deferred rather than conditional on success.
+process. The command retires them on return by closing the cached connections.
+That close is Core's, and it is cooperative: Core asks the agent to stop, waits
+for the agent to reap its own children (user binaries, containers), and forces
+the process group down only if that wait times out. The signal it uses is
+Core's own choice and is not restated here. Cancelling the command (Ctrl-C)
+takes the same path, because the reap is deferred rather than conditional on
+success.
 
 It retires the agents **that run of the command started**. An agent left
 running by an earlier command — a version of the CLI before this retirement
 existed, for instance — is not adopted or reaped here: it is a separate process
-that outlived its own command, and `codefly recover process <PID> --preview`
-then `--expect FILE --graceful` is how one is retired explicitly, by identity
-and one at a time, with no group or registry effect.
+that outlived its own command. Retiring one is `codefly recover process <PID>
+--preview` to read its identity, then `--expect FILE` with an explicit mode to
+act on exactly that birth, one process at a time, with no group or registry
+effect.
+
+The only mode this version offers is `--force`, an irreversible SIGKILL. That
+is **not** a substitute for a cooperative shutdown: it gives the agent no
+chance to reap its own children, so a leftover agent's user binaries and
+containers can survive it. A graceful mode, and what should happen when a
+target refuses to exit or is signalled twice, are not covered at this version.
 
 
 The services and modules are found through `workspace.codefly.yaml` and each

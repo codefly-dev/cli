@@ -80,9 +80,12 @@ against what's on disk, without writing anything.
 		// This command loads service builders to read their endpoints
 		// (generators.LoadServiceEndpoints -> services.Load, which spawns the
 		// agent, then instance.LoadBuilder), so an agent subprocess exists per
-		// service. ClearAgents closes the cached connections, and the close is
-		// itself graceful in Core (services/agent.go: SIGTERM, wait, SIGKILL
-		// fallback) so the agent reaps its own children first. Without this,
+		// service. ClearAgents closes the cached connections, and Core's close
+		// is cooperative on its own account: it asks the agent to stop, waits
+		// for the agent to reap its own children, and forces the process group
+		// down only if that wait expires. Which signal it sends is Core's to
+		// decide and is not restated here — the comments around it in Core name
+		// SIGTERM while the code sends os.Interrupt. Without this,
 		// every `generate contracts` pass left its agents running — eight live
 		// private go-grpc records accumulated across two regenerations of one
 		// workspace. `generate client` already reaps the same way.
