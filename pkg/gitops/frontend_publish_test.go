@@ -24,7 +24,7 @@ func stubFrontendPublication(t *testing.T) (*int, *string) {
 	builds, published := 0, ""
 	previousBuild, previousPublish := buildFrontendBundle, publishRuntimeArtifact
 	t.Cleanup(func() { buildFrontendBundle, publishRuntimeArtifact = previousBuild, previousPublish })
-	buildFrontendBundle = func(_ context.Context, _ *resources.Module, destination string) error {
+	buildFrontendBundle = func(_ context.Context, _ *resources.Module, _ *environments.Environment, destination string) error {
 		builds++
 		require.NoError(t, os.MkdirAll(destination, 0o755))
 		return os.WriteFile(filepath.Join(destination, solutionrun.FrontendBundleManifest), []byte("{}"), 0o600)

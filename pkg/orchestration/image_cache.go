@@ -726,17 +726,15 @@ func hashContextEntry(hasher hash.Hash, relative, path string, entry fs.DirEntry
 		writeImageCacheRecord(hasher, "symlink", relative, filepath.ToSlash(target))
 		return nil
 	case info.IsDir():
-		writeImageCacheRecord(hasher, "directory", relative)
+		writeImageCacheRecord(hasher, "directory", relative, strconv.FormatUint(uint64(info.Mode().Perm()), 8))
 		return nil
 	case !info.Mode().IsRegular():
 		writeImageCacheRecord(hasher, "special", relative, info.Mode().String())
 		return nil
 	}
-	executable := "0"
-	if info.Mode().Perm()&0o111 != 0 {
-		executable = "1"
-	}
-	writeImageCacheRecord(hasher, "file", relative, executable, strconv.FormatInt(info.Size(), 10))
+	// COPY preserves read and traversal permissions too: identical bytes can
+	// still be unreadable to the image's non-root user.
+	writeImageCacheRecord(hasher, "file", relative, strconv.FormatUint(uint64(info.Mode().Perm()), 8), strconv.FormatInt(info.Size(), 10))
 	file, err := os.Open(path)
 	if err != nil {
 		return err

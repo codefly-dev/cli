@@ -92,7 +92,10 @@ digest and media type, verbatim. A deployed render of a release declaring
 none builds the bundle from the release's own source, as it builds the
 release's images: `npm ci && npm run build` in the remote's npm project
 (`services/fe-remote`, else the component root), inside a digest-pinned Node
-image, on the committed tree (HEAD) of the repository the component is
+image, using the same environment-selected, host-networked BuildKit builder and
+registry mirrors as service images. This reuses the existing builder provisioner;
+the default Docker bridge can otherwise lose the operator's DNS path during npm
+installation. The build runs on the committed tree (HEAD) of the repository the component is
 released from: nothing untracked or ignored reaches the builder (nor do
 uncommitted edits), and the module cache is never written. A component in no
 repository builds from its own directory alone. It archives `services/fe-remote/dist` in core's
@@ -529,6 +532,35 @@ loopback. A response without its CRC32C checksum is refused as a failed one. Exa
 KMS is selected when `CODEFLY_RELEASE_KMS_KEY` is set and no Transit variable
 is, and a publish that sets both is refused naming each, never one silently
 winning.
+
+Azure Key Vault uses that same release-signing interface. Set
+`CODEFLY_RELEASE_AZURE_KEY` to an exact version URL
+(`https://<vault>.vault.azure.net/keys/<name>/<32-digit-version>` or
+`https://<hsm>.managedhsm.azure.net/keys/<name>/<32-digit-version>`) and
+`CODEFLY_RELEASE_AZURE_TENANT` to the tenant UUID. The operator's Azure CLI
+credential is restricted to that tenant; no fallback credential chain is used.
+An authorized release publisher can instead explicitly select
+`CODEFLY_AZURE_CREDENTIAL=workload`, with the projected `AZURE_FEDERATED_TOKEN_FILE`,
+`AZURE_CLIENT_ID` and matching `AZURE_TENANT_ID`. This selects the publisher's own
+workload identity; it neither grants signing access nor approves a host trust entry.
+This adapter supports public-cloud Key Vault and Managed HSM endpoints and enabled, currently
+valid EC or EC-HSM P-256 keys permitting `sign`. The operator needs public-key
+read and signing permissions. Private key material remains in the selected custody.
+The existing Azure SDK handles each endpoint's authentication challenge and resource audience.
+
+For Azure, `host.release.key_id` defaults to the **entire version URL**, so different
+vaults cannot share a key ID accidentally. Core still owns the envelope and
+public-key pin. A platform that declares logical release generations may set
+`CODEFLY_RELEASE_AZURE_KEY_ID=delivery-release-v1`; this must exactly match the
+physical key name in the version URL and have the `<name>-v<number>` shape.
+The complete Azure version URL remains mandatory and pins every read/sign
+operation. The host's reviewed public-key pin still determines which key is trusted;
+the logical ID is not a substitute for that pin. The adapter verifies each returned ES256 signature before
+converting Azure's fixed-width result to Core's ASN.1 format. Requests have a
+30-second timeout, no automatic retries, and no redirects; errors withhold
+backend response bodies. Configuring Azure together with Cloud KMS or Vault
+Transit is refused. This is release signing only: runtime Host encryption,
+HMAC and Ed25519 key operations require their own supported backend.
 
 Developer custody is one Ed25519 key per machine, created or loaded by
 `codefly delivery key` (ID `dev-` plus 16 lowercase hex characters of the

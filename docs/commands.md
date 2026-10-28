@@ -2758,6 +2758,19 @@ outputs, preserving the environment's separately generated runnable bindings.
 Run `codefly generate runnable-bindings --env blue` after import so addresses are
 resolved for blue rather than copied from a sibling.
 
+For a placement-only coordinate, the product may select its own source at import:
+
+```bash
+codefly environment import azure --coordinate-contract coordinate.json \
+  --configuration-source hosted-azure --configuration-profiles azure,local
+```
+
+These options use the same importer and profile inheritance. A source conflicting
+with the coordinate is refused; an explicit profile chain cannot replace a chain
+or single profile declared by the coordinate. Without a profile chain, the target
+defaults to the environment name. Later placement-only imports preserve the
+product selection and regenerate its inherited profile.
+
 The cell inventory also carries `source.path` when publication uses a root other
 than `deployments`. Consumers must use that root to discover the published module
 trees. The local render directory remains a qualification tree; `publish` writes

@@ -320,13 +320,11 @@ func TestPlanRefusesToPropagateAConflictingValue(t *testing.T) {
 }
 
 // With nothing stored at all, a generated shared value is minted once and is
-// one value everywhere it is read; a key that exists with no enabled version is
-// written like a missing one.
+// one value everywhere it is read.
 func TestPlanOnAnEmptyStoreGeneratesOnceAndAgrees(t *testing.T) {
 	ctx := context.Background()
 	rendered := fixture()
 	store := newFakeStore(map[string]map[string]string{})
-	store.empty["host-accounts"] = true
 	plan, err := Build(ctx, &Inputs{Rendered: rendered, Generators: generators(),
 		Services: []string{"tasks/store"}, Store: store, ReadPayloads: true})
 	if err != nil {
@@ -343,7 +341,7 @@ func TestPlanOnAnEmptyStoreGeneratesOnceAndAgrees(t *testing.T) {
 		t.Error("a generated shared value differs between the keys reading it")
 	}
 	if !slices.Contains(store.writes, "host-accounts") {
-		t.Error("a key with no enabled version was not written")
+		t.Error("the missing key was not written")
 	}
 }
 
@@ -704,7 +702,7 @@ func TestAnEd25519SigningKeyIsMintedOnceForItsOneReader(t *testing.T) {
 		Configuration: "postgres", Services: []string{"tasks/store"}, Keys: []string{"POSTGRES_PASSWORD"},
 		Format: environments.SecretGeneratorFormatEd25519PKCS8}}
 	plan, err := Build(ctx, &Inputs{Rendered: rendered, Generators: keyGenerator,
-		Services: []string{"tasks/store"}, Store: store, ReadPayloads: true})
+		Services: []string{"tasks/store"}, Store: store, ReadPayloads: true, MintKeys: []string{storePassword}})
 	if err != nil {
 		t.Fatal(err)
 	}

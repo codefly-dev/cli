@@ -44,6 +44,7 @@ const kmsScope = "https://www.googleapis.com/auth/cloudkms"
 const kmsVersionShape = "projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<name>/cryptoKeyVersions/<n>"
 
 var kmsEnumName = regexp.MustCompile(`^[A-Z0-9_]{1,64}$`)
+var googleCredentialStatus = regexp.MustCompile(`^oauth2/google(?:/externalaccount)?: status code ([1-5][0-9]{2}):`)
 
 // CloudKMS is the optional adapter the handbook decision admits behind the
 // same custody interface as Vault Transit: public metadata and an
@@ -209,7 +210,14 @@ func (s *CloudKMS) request(method, operation string, body []byte, result any) er
 	if err != nil {
 		var exchange *oauth2.RetrieveError
 		if errors.As(err, &exchange) && exchange.Response != nil {
-			return fmt.Errorf("the Google credential was not exchanged for a Cloud KMS token (HTTP %d)", exchange.Response.StatusCode)
+			return kmsCredentialRefusal(strconv.Itoa(exchange.Response.StatusCode), string(exchange.Body))
+		}
+		// Google's impersonation/STS token sources return an untyped error
+		// containing the response body. Retain only its known status prefix.
+		for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+			if status := googleCredentialStatus.FindStringSubmatch(cause.Error()); status != nil {
+				return kmsCredentialRefusal(status[1], strings.TrimPrefix(cause.Error(), status[0]))
+			}
 		}
 		return fmt.Errorf("the Cloud KMS %s request failed", stage)
 	}
@@ -221,6 +229,28 @@ func (s *CloudKMS) request(method, operation string, body []byte, result any) er
 		return fmt.Errorf("the Cloud KMS %s returned unreadable JSON", stage)
 	}
 	return nil
+}
+
+// Only named Google error reasons may leave a credential response; messages and
+// metadata can echo credentials or request bodies.
+func kmsCredentialRefusal(status, body string) error {
+	message := fmt.Sprintf("the Google credential was not exchanged for a Cloud KMS token (HTTP %s)", status)
+	var response struct {
+		Error struct {
+			Details []struct {
+				Reason string `json:"reason"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if len(body) <= 65536 && json.Unmarshal([]byte(body), &response) == nil {
+		for _, detail := range response.Error.Details {
+			switch detail.Reason {
+			case "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "IAM_PERMISSION_DENIED", "SERVICE_DISABLED", "SECURITY_POLICY_VIOLATED":
+				return fmt.Errorf("%s: %s", message, detail.Reason)
+			}
+		}
+	}
+	return errors.New(message)
 }
 
 // kmsHost admits only Google's API hosts, where the ambient credential's

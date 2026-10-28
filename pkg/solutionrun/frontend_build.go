@@ -111,7 +111,16 @@ func BuildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 	return buildFrontendBundle(ctx, module, destination, frontendBuildContext)
 }
 
-func buildFrontendBundle(ctx context.Context, module *resources.Module, destination string, stage func(context.Context, *resources.Module, string) (string, string, error)) error {
+// BuildFrontendBundleWithBuilder uses the deployment environment's builder.
+func BuildFrontendBundleWithBuilder(ctx context.Context, module *resources.Module, destination, builder string) error {
+	return buildFrontendBundle(ctx, module, destination, frontendBuildContext, builder)
+}
+
+func buildFrontendBundle(ctx context.Context, module *resources.Module, destination string, stage func(context.Context, *resources.Module, string) (string, string, error), builders ...string) error {
+	builder := ""
+	if len(builders) > 0 {
+		builder = builders[0]
+	}
 	project, err := FrontendProject(module)
 	if err != nil {
 		return err
@@ -140,7 +149,13 @@ func buildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 	dockerfile := fmt.Sprintf("FROM %s AS build\nWORKDIR /source\nCOPY [\".\", \".\"]\nWORKDIR %s\nRUN [\"sh\", \"-c\", \"npm ci && npm run build\"]\nFROM scratch\nCOPY --from=build [\"%s/\", \"/\"]\n",
 		FrontendBuilderImage, workdir, bundle)
 	//nolint:gosec // G204: fixed docker executable, separate arguments, no shell; the Dockerfile arrives on stdin.
-	command := exec.CommandContext(ctx, "docker", "build", "--progress=plain", "--file", "-", "--output", "type=local,dest="+destination, root)
+	args := []string{"build"}
+	if builder != "" {
+		args = []string{"buildx", "build", "--builder", builder}
+	}
+	args = append(args, "--progress=plain", "--file", "-", "--output", "type=local,dest="+destination, root)
+	//nolint:gosec // G204: fixed docker executable, separate arguments, no shell.
+	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdin = strings.NewReader(dockerfile)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output

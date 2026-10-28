@@ -11,6 +11,7 @@ import (
 
 	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -109,7 +110,13 @@ func artifactCacheInjection(service *resources.Service, env *environments.Enviro
 // buildFrontendBundle and publishRuntimeArtifact are the build and the push a
 // test stands in for, the way stubBuild stands in for an image build.
 var (
-	buildFrontendBundle    = solutionrun.BuildFrontendBundle
+	buildFrontendBundle = func(ctx context.Context, module *resources.Module, env *environments.Environment, destination string) error {
+		builder, err := orchestration.EnsureEnvironmentBuilder(ctx, env)
+		if err != nil {
+			return err
+		}
+		return solutionrun.BuildFrontendBundleWithBuilder(ctx, module, destination, builder)
+	}
 	publishRuntimeArtifact = clicomposition.PublishRuntimeArtifact
 )
 
@@ -141,7 +148,7 @@ func publishFrontendBundle(ctx context.Context, workspace *resources.Workspace, 
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
 	bundle := filepath.Join(scratch, "bundle")
-	if err = buildFrontendBundle(ctx, module, bundle); err != nil {
+	if err = buildFrontendBundle(ctx, module, env, bundle); err != nil {
 		return nil, err
 	}
 	archive, _, err := composition.CanonicalArchive(bundle)

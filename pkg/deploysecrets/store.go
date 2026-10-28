@@ -38,10 +38,11 @@ type Store interface {
 // Description is what can be known about a remote key without reading it.
 type Description struct {
 	Exists bool
-	// HasVersion is false for a key created with no enabled version: reading it
-	// fails, so it is planned as an empty document.
+	// HasVersion is false when no version can be read. Existing material must
+	// not be treated as absent in that case.
 	HasVersion bool
-	// Version identifies the newest enabled version. Apply compares it before
+	// Version identifies the observed remote revision (a version ID or metadata
+	// fingerprint for backends without a metadata-only latest-version read). Apply compares it before
 	// each write, so a key someone changed after the plan read it is refused
 	// rather than overwritten with a document built from what it used to hold.
 	Version string
@@ -151,6 +152,12 @@ func ResolveStore(ctx context.Context, run Runner, target ClusterTarget, ref env
 	if err := json.Unmarshal(output, &store); err != nil {
 		return nil, fmt.Errorf("decode %s %s: invalid store document (backend output withheld)", ref.Kind, ref.Name)
 	}
+	if len(store.Spec.Provider) != 1 {
+		return nil, fmt.Errorf("%s %s must declare exactly one secret provider", ref.Kind, ref.Name)
+	}
+	if raw, ok := store.Spec.Provider["azurekv"]; ok {
+		return resolveAzureStore(ctx, run, target, ref, namespace, raw)
+	}
 	if raw, ok := store.Spec.Provider["gcpsm"]; ok {
 		var gcp struct {
 			ProjectID string `json:"projectID"`
@@ -167,7 +174,7 @@ func ResolveStore(ctx context.Context, run Runner, target ClusterTarget, ref env
 	for provider := range store.Spec.Provider {
 		providers = append(providers, provider)
 	}
-	return nil, fmt.Errorf("%s %s resolves through provider %v, which `codefly deploy secrets` cannot write yet (supported: gcpsm)", ref.Kind, ref.Name, providers)
+	return nil, fmt.Errorf("%s %s resolves through provider %v, which `codefly deploy secrets` cannot write yet (supported: gcpsm, azurekv)", ref.Kind, ref.Name, providers)
 }
 
 // GoogleSecretManager is a gcpsm-backed store, driven through the operator's own

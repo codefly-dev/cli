@@ -370,6 +370,12 @@ func TestEveryContextChangeMovesTheImageIdentity(t *testing.T) {
 		"mode changed": func(t *testing.T, harness *imageCacheHarness) {
 			require.NoError(t, os.Chmod(filepath.Join(harness.serviceDir, "code", "main.go"), 0o755))
 		},
+		"file readability changed": func(t *testing.T, harness *imageCacheHarness) {
+			require.NoError(t, os.Chmod(filepath.Join(harness.serviceDir, "code", "main.go"), 0o600))
+		},
+		"directory traversal changed": func(t *testing.T, harness *imageCacheHarness) {
+			require.NoError(t, os.Chmod(filepath.Join(harness.serviceDir, "code"), 0o700))
+		},
 		"file replaced by a symlink": func(t *testing.T, harness *imageCacheHarness) {
 			path := filepath.Join(harness.serviceDir, "code", "main.go")
 			require.NoError(t, os.Remove(path))

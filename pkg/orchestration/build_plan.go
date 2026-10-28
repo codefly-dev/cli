@@ -564,12 +564,10 @@ func (b *Builder) buildRecipe(
 // CLI's builder, provisioned by dockerBuildContext before the agent's Build
 // RPC, so it is named rather than provisioned again here.
 //
-// Beyond a multi-platform build, which the default "docker" driver cannot
-// produce at all, a declared registry mirror also requires the CLI's own
-// builder whatever the platforms: the default builder takes no buildkitd
-// configuration, so a single-platform build left on it would read its base from
-// the registry the recipe names and the mirror would reach the resolution
-// alone.
+// Hosted image builds use the same host-networked builder as mirrored builds:
+// even a single-platform image without mirrors must resolve package repositories
+// through the operator's network. Local builds without a registry keep Docker's
+// default builder.
 func (b *Builder) selectImageBuilder(ctx context.Context, multiArch bool, mirrors map[string]string) (string, error) {
 	if name := b.world.BuildxBuilder; name != "" {
 		if len(mirrors) > 0 {
@@ -590,7 +588,8 @@ func (b *Builder) selectImageBuilder(ctx context.Context, multiArch bool, mirror
 		}
 		return buildxBuilderFor(mirrors), nil
 	}
-	if !multiArch && len(mirrors) == 0 {
+	hostedRegistry := b.world.Env != nil && b.world.Env.Registry != nil
+	if !multiArch && len(mirrors) == 0 && !hostedRegistry {
 		return "", nil
 	}
 	return ensureBuildxBuilder(ctx, mirrors)
