@@ -2386,6 +2386,134 @@ contract and handler before building. See [Runnables](runnable.md).
 |------|-------------|
 | `--agent` | Agent type (required). Examples: `go-grpc`, `python-grpc`, `nextjs`, `krakend` |
 
+**`add solution`:**
+
+```sh
+codefly add solution wiki --package-id obin/wiki \
+    --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
+```
+
+Scaffolds a solution — a module a host installs and runs as a product surface —
+in the one shape a solution has. There is no shape flag: a second shape beside
+it is what produced nine solutions that do not look alike.
+
+It composes verbs that already exist (`add module`, then `add service` for each
+of the two services) and writes the documents Core already specifies, by
+marshalling Core's own types and reading each file back through Core's own
+reader. It adds no executor protocol and no new agent.
+
+What it creates:
+
+| | |
+|------|-------------|
+| `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
+| `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell |
+| `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
+| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true` |
+| `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
+| `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+
+`services/fe-remote` — the `./Page` remote itself — is an npm package, not a
+Codefly service, and is yours to author.
+
+**The rule the backend lives under.** A module call the authority holds to a
+*person* — one its artifact interface admits only in person, with no
+intervening actor — is made by the **page**, with that person's own Work
+Context. It is never relayed through the backend: a backend reaches a module on
+a context minted for the solution's own audience, so relaying such a call puts
+the solution between the person and the module and admission refuses it. Reads
+and work that are the solution's own go through the backend as usual. This is
+why the entry service declares the authority interface and the authority's hop
+and **no module edge at all** — every consumed module is reached through that
+hop, which lets through only a call the authority checked.
+
+| Flag | Description |
+|------|-------------|
+| `--package-id` | The `<owner>/<name>` identity the solution is published under. Required — nothing can derive who publishes it |
+| `--agent` | Service agent for the backend (default `go`). The backend's language is this flag, not a different shape |
+| `--consumes` | A module this solution calls, as `[<id>=]<protocol>:<module>/<service>/<endpoint>`. Repeatable. Route names only — authority is declared once, in the module contract |
+| `--executor` | A `codefly:solution` executor to name in the solution manifest. Omitted by default: Core specifies no executor protocol and none is published |
+| `--title` / `--order` | The page's title and position in the host's shell |
+| `--authority-interface` | The authority interface the backend requires |
+| `--minimum-codefly-version` | The Codefly range the package declares. Required when scaffolding with a build from source, which reports no release version |
+
+The **composition** is not scaffolded: which workspace composes the solution,
+which modules it pins and at what commits, and the configuration groups those
+modules need, are the composition's to say. The command prints each of them,
+with the failure each one causes when it is skipped.
+
+### `codefly doctor solution [module]`
+
+Judge a solution against the shape `add solution` generates, without changing
+anything. With no argument every module in the workspace is judged; a module
+that ships no solution manifest is reported as "not a solution" rather than as
+broken.
+
+```bash
+codefly doctor solution
+codefly doctor solution wiki --json
+```
+
+It exists because the shape was previously checkable only against somebody's
+survey of the solutions that happened to exist — which is how one fleet reached
+nine solutions in four different states, two of them unable to receive a person
+capability at all with nothing failing to say so. A shape nothing can check is a
+convention, and a convention drifts.
+
+Every rule is one that silently broke something. The two worth knowing:
+
+| | |
+|---|---|
+| `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
+| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
+| `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
+
+Exit codes: `0` every judged solution conforms (warnings allowed), `1` at least
+one check failed. `--json` prints a versioned report per module
+(`{schema_version, module, dir, is_solution, status, checks[]}`), so a
+consumer repository can gate on it instead of hand-rolling the equivalent.
+
+**Permissions.** The contract is read through Core's own loader, which refuses
+a role granting a scope no binding backs and no ceiling covers — *"role
+`installer` grants `documents:read`, which is neither within the module's own
+scope ceilings nor a scope one of its bindings spells out"*. That is the
+missing-permission class, caught before install rather than at the first
+refused call. What a composition's values resolve each binding to is not
+judged: that needs the composition, not the directory.
+
+`page_shell_has_no_app` is worth knowing about: conforming the fleet to one
+shape added the `web` shell's *manifest* to solutions whose page had never been
+written, because writing one would have been inventing product in a conforming
+change. Those solutions are correctly shaped and `codefly run service web` has
+nothing to start on them. A declared service with no source is otherwise
+invisible — every manifest reads fine, and the first sign is a run that does
+nothing.
+
+A warning is not a failure: it names something worth seeing that does not make
+the solution wrong — publishing the page's shell, a headless solution with no
+page declaration, a solution with no shell at all.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Print a versioned report per module to stdout |
+| `--dir` | Judge this module directory on its own, without resolving a workspace |
+| `--require-solution` | With `--dir`, fail when the directory ships no solution manifest |
+
+`--dir` exists because a consumer repository gating a tree of solutions has
+module directories, not necessarily a workspace at each one — `excel-extract`
+is a real solution with no `workspace.codefly.yaml`, and requiring one made it
+the single solution that could not be judged at all.
+
+`--require-solution` closes the gap `--dir` leaves: a directory with no
+solution manifest reads as "not a solution" and passes, which is right for a
+library sitting in the tree and wrong for a solution whose manifest is
+missing. A gate that walks `solutions/*/` means "every one of these is a
+solution", and says so with the flag.
+
+```bash
+for s in solutions/*/; do codefly doctor solution --dir "$s" --require-solution || exit 1; done
+```
+
 ### `codefly override service <module>/<service>`
 
 Run one service of a composed module from somewhere else on this machine,

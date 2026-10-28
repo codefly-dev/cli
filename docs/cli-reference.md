@@ -109,6 +109,7 @@ Subcommands:
 - [`codefly add module`](#codefly-add-module)
 - [`codefly add runnable`](#codefly-add-runnable)
 - [`codefly add service`](#codefly-add-service)
+- [`codefly add solution`](#codefly-add-solution)
 
 ## `codefly add application`
 
@@ -308,6 +309,63 @@ Flags:
       --agent string   Instance agent to get started
       --default        Use default options
       --override       Override existing service
+```
+
+## `codefly add solution`
+
+Scaffold a solution: its backend, its page's shell, and the documents a host installs it from
+
+```
+Scaffold a solution in the one shape a solution has.
+
+A solution is two Codefly services and a page:
+
+  backend   The entry service. It presents the solution's identity, serves the
+            API the page calls, and is the workload a host installs. It is
+            what the solution is published as.
+  web       The shell that serves the page where no host shell mounts it — the
+            same ./Page a saas host federates, in a shell of its own, which an
+            authority's edge serves as the browser's one origin. The package
+            does not publish it: a host that federates the remote needs no
+            shell.
+  fe-remote The ./Page remote itself. It is an npm package, not a Codefly
+            service, so this command does not scaffold it.
+
+THE RULE THE BACKEND LIVES UNDER. A module call the authority holds to a
+PERSON — one its artifact interface admits only in person, with no intervening
+actor — is made by the PAGE, with that person's own Work Context. It is never
+relayed through the backend: a backend reaches a module on a context minted
+for the solution's own audience, so relaying such a call puts the solution
+between the person and the module, and admission refuses it. Reads and work
+that are the solution's own go through the backend as usual.
+
+The backend's language is --agent (go by default, python for the same shape).
+
+What this writes, and what stays yours: the module, both services, the
+solution manifest, the module contract, the package identity and the page
+declaration are written and each is read back through core's own validator.
+The COMPOSITION is not: which workspace composes this solution, which modules
+it pins and at what commits, and the configuration groups those modules need,
+are the composition's to say and are never guessed here.
+```
+
+```
+codefly add solution [flags]
+```
+
+Flags:
+
+```
+      --agent string                     Service agent for the backend (default: go). The backend's language is this flag, not a different shape
+      --authority-interface string       The authority interface the backend requires, as <publisher>/<name>@<range> (default "codefly.dev/authority@>=0.2.0 <0.4.0")
+      --consumes stringArray             A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract
+      --description string               Short description written to module.codefly.yaml
+      --executor string                  A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)
+      --minimum-codefly-version string   The Codefly range the package declares (default: the running release, open to the end of its major). Required when scaffolding with a build from source, which reports no release version
+      --order int                        The page's order in the host's shell (default 50)
+      --package-id string                The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it
+      --title string                     The page's title in the host's shell (default: the module name, capitalised)
+      --yes                              Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly agent`
@@ -2418,7 +2476,74 @@ codefly doctor [flags]
 
 Subcommands:
 
+- [`codefly doctor solution`](#codefly-doctor-solution)
 - [`codefly doctor workspace`](#codefly-doctor-workspace)
+
+## `codefly doctor solution`
+
+Check a solution against the one shape a solution has, without changing anything
+
+```
+Judge a solution module against the shape `codefly add solution` generates.
+
+With no argument, every module in the workspace is judged and the ones that
+ship no solution manifest are reported as "not a solution" rather than as
+broken. Name a module to judge only that one.
+
+It is strictly read-only: it opens files and writes none.
+
+Every rule is one that silently broke something. The two worth knowing:
+
+  owner_aware    The authority issues a person a capability at a solution ONLY
+                 when its module contract declares owner_aware: true, and
+                 refuses by name otherwise. Without it the solution receives no
+                 owner-selected scope and can act for nobody — and nothing
+                 fails at build time to tell you.
+
+  module edges   A solution reaches every module through the host's door,
+                 which checks the call. A service-dependency naming a module
+                 renders into a mesh allow rule straight to that module's
+                 service, past the check.
+
+Permissions are judged by reading the contract through Core's own loader,
+which refuses a role granting a scope no binding backs and no ceiling covers
+("role X grants documents:read, which is neither within the module's own scope
+ceilings nor a scope one of its bindings spells out"). That is the
+missing-permission class, caught before install rather than at the first
+refused call. What a composition's values resolve each binding to is NOT
+judged here: that needs the composition, not the directory.
+
+Exit codes:
+  0  every judged solution conforms (warnings allowed)
+  1  at least one check failed, or the command itself failed
+
+With --json, a versioned report per module is printed to stdout:
+  {schema_version, module, dir, is_solution, status: ok|fail,
+   checks: [{code, status, message, remediation?}]}
+
+Stable diagnostic codes: not_a_solution, solution_manifest_unreadable,
+consumed_api_unnamed, service_entry_missing, service_entry_not_the_entry,
+entry_service_missing, entry_service_unreadable, module_identity_missing,
+module_edge_declared, entry_endpoint_missing, module_contract_missing,
+module_contract_unreadable, owner_aware_missing, module_package_missing,
+module_package_unreadable, module_package_publishes_shell,
+frontend_declaration_missing, frontend_declaration_unreadable,
+page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
+page_shell_exported_too_widely, consumed_module_without_binding,
+page_shell_has_no_app.
+```
+
+```
+codefly doctor solution [module]
+```
+
+Flags:
+
+```
+      --dir string         Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace
+      --json               Print a versioned report per module to stdout
+      --require-solution   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
+```
 
 ## `codefly doctor workspace`
 
