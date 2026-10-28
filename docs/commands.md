@@ -2481,6 +2481,14 @@ missing-permission class, caught before install rather than at the first
 refused call. What a composition's values resolve each binding to is not
 judged: that needs the composition, not the directory.
 
+`page_shell_has_no_app` is worth knowing about: conforming the fleet to one
+shape added the `web` shell's *manifest* to solutions whose page had never been
+written, because writing one would have been inventing product in a conforming
+change. Those solutions are correctly shaped and `codefly run service web` has
+nothing to start on them. A declared service with no source is otherwise
+invisible — every manifest reads fine, and the first sign is a run that does
+nothing.
+
 A warning is not a failure: it names something worth seeing that does not make
 the solution wrong — publishing the page's shell, a headless solution with no
 page declaration, a solution with no shell at all.
