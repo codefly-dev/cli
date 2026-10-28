@@ -138,6 +138,20 @@ writer follows the gateway's current address. The `--output-env` file is a map
 of the run's current environment, rewritten whole: a key written again
 replaces its line, so a reader never meets two values for one key.
 
+**What `--output-env` writes, and for which environment.** The file is the
+service's process environment as the agent receives it, owner-only (`0600`):
+its own configuration and runtime configurations, the workspace groups it is
+handed, and — written once at Start, after the dependency barrier — its
+dependencies' configurations; secret values are in it, which is why it is
+owner-only and never committed. A workspace group that is one YAML or JSON
+**structured document** rather than key/value pairs (the composition root's
+merged `fixture-composition`, for example) is carried under a key that hashes
+the group's origin, its name and the **selected run environment** — the same
+key the SDK derives to read it back — so every write names the environment the
+run selected (`--env`), the excluded root's file included. A writer handed no
+environment refuses by name rather than writing a document no reader could
+find.
+
 **The delivery host's federation surface.** In a host environment the native
 run hands the service `host.delivery` names, when it declares the `federation`
 workspace configuration, the three keys that turn its delivery surface on,
@@ -2654,43 +2668,7 @@ codefly list module       # List modules (alias: application)
 codefly list libraries    # List workspace libraries (--remote for published versions, --json for machine output)
 codefly list jobs         # List jobs
 codefly list runnables    # List runnables (--module to scope, --json for machine output)
-codefly list runnables --tools --env=staging   # Only the tools, with each one's grant
 ```
-
-Every Runnable a module derives from its published contracts is listed beside
-the ones it declares. With `--tools` or `--env`, each row also carries the tool
-its owner exposed it as — the model-facing name and the explicit effect
-(`codefly.runnable.v0.ToolExposure`). An operation with no exposure is listed
-without one: absent means not exposed, and an unstated effect is not read-only.
-`--tools` keeps only the exposed ones, which is what a composition can grant as
-a tool. The default table is unchanged, so anything already parsing it keeps
-working.
-
-`--env <name>` adds the configuration key each derived operation's authority is
-answered under — the `runnable-scope-selections` key in
-`workspace.codefly.yaml`, see [Generate runnable-bindings](#generate-runnable-bindings)
-— and what that environment has answered, judged by the rules
-`generate runnable-bindings` judges it by rather than by whether an answer is
-present:
-
-| grant | meaning |
-| --- | --- |
-| `selected` | its answer resolves every scope slot the owner declared, or it declares none |
-| `declined` | answered `[]`: installed for no resource, granted no authority, offered as no tool |
-| `needs-scopes` | its owner asks for scope slots nobody has answered |
-| `invalid` | generation refuses this answer, and the row carries core's reason: a slot left unselected, a slot named that the operation does not declare, a selection with no invoke scope, or an `[]` against an operation that has nothing to decline |
-
-An answer naming no operation at all is reported beside the rows — as
-`unanswered_keys` in `--json` — rather than dropped: a mistyped key answers no
-question and leaves the operation it meant to answer reading as unanswered,
-which is the one thing a listing must not hide. With `--env`, `--json` emits an
-object (`runnables`, `unanswered_keys`); without it, the array it has always
-emitted.
-
-`needs-scopes` is how a module version that offers a new tool becomes visible:
-the operation appears in the listing, nothing answers it, and the answer is
-written under the key the listing names. An environment the workspace does not
-declare is an error, not a listing whose grant column is quietly absent.
 
 See [Runnables](runnable.md) for what a runnable is and which parts of its
 lifecycle the CLI implements today.
