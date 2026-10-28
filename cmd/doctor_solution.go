@@ -79,7 +79,8 @@ module_contract_unreadable, owner_aware_missing, module_package_missing,
 module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
-page_shell_exported_too_widely, consumed_module_without_binding.`,
+page_shell_exported_too_widely, consumed_module_without_binding,
+page_shell_has_no_app.`,
 	Example: `  # Judge every solution in the workspace.
   codefly doctor solution
 

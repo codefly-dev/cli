@@ -374,3 +374,25 @@ bindings: []
 		t.Fatalf("the failure does not name the unbacked grant: %q", check.Message)
 	}
 }
+
+// A shell declared with no app behind it is the state conforming the fleet
+// created: the manifest was added, the page was never written. It warns rather
+// than fails — the solution is correctly shaped and nothing breaks until
+// someone runs the shell — but it is reported, because a declared service with
+// no source is invisible to every other reading.
+func TestAPageShellWithNoAppWarns(t *testing.T) {
+	dir := conformingSolution(t)
+	report := Inspect("wiki", dir)
+	if checkFor(t, report, CodePageShellHasNoApp).Status != StatusWarn {
+		t.Fatal("a shell with no app behind it was not reported")
+	}
+	if !report.Conforms() {
+		t.Fatal("a warning was treated as a failure")
+	}
+
+	// With an app beside it, the finding goes away.
+	write(t, filepath.Join(dir, "services", PageService, "package.json"), `{"name":"web","private":true}`)
+	if checkFor(t, Inspect("wiki", dir), CodePageShellHasNoApp).Status != StatusOK {
+		t.Fatal("a shell with a real app was still reported")
+	}
+}

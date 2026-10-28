@@ -77,6 +77,7 @@ const (
 	CodeInterfaceMissing        = "module_interface_missing"
 	CodeEntryNotExported        = "entry_endpoint_not_exported"
 	CodeConsumedWithoutBinding  = "consumed_module_without_binding"
+	CodePageShellHasNoApp       = "page_shell_has_no_app"
 	CodePageExportedTooWidely   = "page_shell_exported_too_widely"
 )
 
@@ -199,6 +200,7 @@ func (r *Report) checkModule(dir string) *resources.Module {
 
 	if hasService(module, PageService) {
 		r.ok(CodePageServiceMissing, "the page's shell is declared")
+		r.checkPageShellHasAnApp(dir)
 	} else {
 		r.warn(CodePageServiceMissing,
 			fmt.Sprintf("the module declares no %q service", PageService),
@@ -517,4 +519,36 @@ func (r *Report) checkConsumedModulesHaveAuthority(consumes []string, contract *
 	r.warn(CodeConsumedWithoutBinding,
 		fmt.Sprintf("consumed with no binding in the contract: %s", strings.Join(unbound, ", ")),
 		"correct when the module is reached with the VIEWER'S own credential or on nobody's behalf; a bug when the solution calls it on a person's behalf, and then the call is refused at runtime with nothing failing earlier. Confirm each one")
+}
+
+// checkPageShellHasAnApp reports a shell that is declared and has no app
+// behind it — a service.codefly.yaml naming a Next.js service with no
+// package.json beside it.
+//
+// It is a real state and not a hypothetical: conforming the fleet to one shape
+// added the shell's MANIFEST to several solutions whose page had never been
+// written, because writing one would have been inventing product in a
+// conforming change. The declaration is right and the gap is real, so
+// `codefly run service web` has nothing to start on those.
+//
+// A warning, not a failure: the solution is correctly shaped, and nothing is
+// broken until someone runs the shell. It is reported because a declared
+// service with no source is otherwise invisible — every manifest reads fine,
+// and the first sign is a run that does nothing.
+func (r *Report) checkPageShellHasAnApp(dir string) {
+	shell := filepath.Join(dir, "services", PageService)
+	if _, err := os.Stat(filepath.Join(shell, "service.codefly.yaml")); err != nil {
+		// No manifest at all is the module declaring a service it does not
+		// have, which the entry-service rules already speak to.
+		return
+	}
+	for _, marker := range []string{"package.json", "next.config.ts", "next.config.js"} {
+		if _, err := os.Stat(filepath.Join(shell, marker)); err == nil {
+			r.ok(CodePageShellHasNoApp, "the page's shell has an app behind it")
+			return
+		}
+	}
+	r.warn(CodePageShellHasNoApp,
+		fmt.Sprintf("the %q shell is declared with no app behind it", PageService),
+		"`codefly run service "+PageService+"` has nothing to start. Write the shell, or drop the service from module.codefly.yaml — a declaration with no source is the one state neither reading the manifests nor running the gates reveals")
 }
