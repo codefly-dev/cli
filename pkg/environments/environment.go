@@ -1932,3 +1932,23 @@ func (s *EnvironmentServiceSecrets) validateGenerators() error {
 	}
 	return nil
 }
+
+// SelectedFixture resolves the fixture a workspace-bound flow runs with. An
+// environment declares the fixture its runtime should use, so an ordinary
+// `codefly run service` / `codefly test service` needs no --fixture at all.
+// An explicit override always wins, and an environment that deliberately
+// omits a fixture — because it loads a real provider — resolves to none.
+//
+// It lives here, beside the declaration, rather than in the orchestration
+// package that is its main caller, because the composition package resolves a
+// fixture selection too — and orchestration now reads composed module trees
+// (module_artifact.go), so the two cannot both depend on each other.
+func SelectedFixture(environment *Environment, override string) string {
+	if override != "" {
+		return override
+	}
+	if environment == nil {
+		return ""
+	}
+	return environment.Fixture
+}

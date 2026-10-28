@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -159,6 +160,9 @@ type derivation struct {
 	files          map[string][]byte
 	publication    *modulecontract.Contract
 	publicationErr error
+	// publicationAbsent means the module publishes no contract AT ALL, as
+	// distinct from publishing one that could not be read.
+	publicationAbsent bool
 	// release is the module's own release version, empty for a module that
 	// declares no package manifest.
 	release string
@@ -271,6 +275,13 @@ func deriveRunnablesIn(ctx context.Context, workspaceName, workspaceDir string, 
 	// Load the selected owner's declaration once. A module with no operations
 	// still produces an empty index; an operation cannot publish without it.
 	derived.publication, derived.publicationErr = modulecontract.Load(module.Dir())
+	// Whether the module HAS a declaration is a different question from
+	// whether it could be read, and only an existence observation answers it.
+	// Core's loader reads through os.Root, which reports a dangling in-root
+	// symlink as fs.ErrNotExist — so the error alone cannot tell "this module
+	// publishes no contract" from "its contract is a broken link". Core keeps
+	// owning the content; this is only the entry.
+	derived.publicationAbsent = derived.publicationErr != nil && !publicationEntryExists(module.Dir())
 
 	var endpoints []composition.APIContractEndpoint
 	if catalog != nil {
@@ -546,16 +557,60 @@ func (d *derivation) audience() string {
 // publication principal is independent of the producer checkout's module name;
 // an explicitly declared operation must agree, never be silently rewritten.
 func (d *derivation) record(endpoint *composition.APIContractEndpoint, name string, pkg *basev0.RunnablePackage, spec *corerunnable.OperationSpec, origin derivedOperation) error {
-	if d.publicationErr != nil {
-		return fmt.Errorf("runnable %s/%s/%s needs its owner's module contract: %w", endpoint.Service, endpoint.Endpoint, name, d.publicationErr)
+	// An unreadable or malformed contract is never absence. A module that
+	// authored one and got it wrong must be told so, whatever the operation —
+	// turning a schema skew, a bad field or a dangling link into "no module
+	// publication applies" would admit exactly the declarations the strict
+	// reader exists to refuse.
+	if d.publicationErr != nil && !d.publicationAbsent {
+		return fmt.Errorf("runnable %s/%s/%s cannot read its owner's module contract: %w", endpoint.Service, endpoint.Endpoint, name, d.publicationErr)
 	}
-	if d.publication == nil || !slices.ContainsFunc(d.publication.Destinations, func(destination modulecontract.Destination) bool {
-		return destination.Service == endpoint.Service && destination.Endpoint == endpoint.Endpoint
-	}) {
-		return fmt.Errorf("module contract does not publish runnable destination %s/%s", endpoint.Service, endpoint.Endpoint)
-	}
-	if spec.Audience != d.publication.Principal {
-		return fmt.Errorf("runnable %s/%s/%s audience %q differs from module contract principal %q", endpoint.Service, endpoint.Endpoint, name, spec.Audience, d.publication.Principal)
+	switch {
+	case d.publicationErr == nil:
+		// A real contract exists, so the module's publication applies to every
+		// operation it serves — including an explicit one. Its destinations are
+		// the endpoints it exposes, and its principal is the one audience its
+		// credentials are issued to: an explicit audience that differs from it
+		// is a conflict in the module's own declarations, not host permission,
+		// and is refused rather than reinterpreted.
+		if !slices.ContainsFunc(d.publication.Destinations, func(destination modulecontract.Destination) bool {
+			return destination.Service == endpoint.Service && destination.Endpoint == endpoint.Endpoint
+		}) {
+			return fmt.Errorf("module contract does not publish runnable destination %s/%s", endpoint.Service, endpoint.Endpoint)
+		}
+		if spec.Audience != d.publication.Principal {
+			return fmt.Errorf("runnable %s/%s/%s audience %q differs from module contract principal %q", endpoint.Service, endpoint.Endpoint, name, spec.Audience, d.publication.Principal)
+		}
+	case !origin.explicit:
+		// Absent, and this operation's audience was DERIVED.
+		// No contract at all, and this operation's audience was DERIVED — core
+		// defaults it from ServiceOwner.Audience, which this generation fills
+		// from the module publication. With no publication there is no
+		// principal to derive from, so the audience would be empty: refuse,
+		// naming what is missing.
+		return fmt.Errorf("runnable %s/%s/%s derives its audience by default and so needs its owner's module contract: %w", endpoint.Service, endpoint.Endpoint, name, d.publicationErr)
+	default:
+		// No contract, and the method carries the operation option — which is
+		// what core's OperationSpec.Declared marks: the OPTION's presence, not
+		// the presence of an audience in it. So the audience is the author's
+		// own, read from that option rather than derived from any module
+		// principal: a host surface a module reaches without being installed as
+		// one. Core does not require it to equal a principal, and requiring a
+		// contract here demanded a module identity the module does not have.
+		//
+		// Core's OperationFromMethod validates the audience before it sets
+		// Declared, so an annotated method with an empty audience does not
+		// reach here; the check is kept anyway, because this branch is the one
+		// place an audience is accepted without a principal to compare it
+		// against, and it must not be the one that lets an empty one through.
+		//
+		// The served-target, scope and lookup checks upstream are unchanged, so
+		// an unserved method or a missing paired Lookup still refuses, and the
+		// explicit audience and scopes are carried through exactly as core
+		// derived them.
+		if spec.Audience == "" {
+			return fmt.Errorf("runnable %s/%s/%s carries the operation option but declares no audience, and its owner publishes no module contract", endpoint.Service, endpoint.Endpoint, name)
+		}
 	}
 	operation := pkg.GetServiceOperations()[0]
 	packageBytes, err := runnablespkg.CanonicalJSON(pkg)
@@ -707,4 +762,25 @@ func kebab(name string) string {
 
 func methodName(fullMethod string) string {
 	return fullMethod[strings.LastIndex(fullMethod, "/")+1:]
+}
+
+// publicationEntryExists reports whether the module directory holds a
+// module-contract entry, whatever the state of what it points at.
+//
+// Lstat, not Stat: a dangling symlink IS a declaration the module authored,
+// and following it would report the same "not found" that Core's loader
+// already reports — which is exactly the conflation this exists to break.
+// Confined through os.Root like every other read of a composed module's tree,
+// and any failure to observe is read as "present", so an unobservable entry
+// refuses rather than passing as absence.
+func publicationEntryExists(moduleDir string) bool {
+	root, err := os.OpenRoot(moduleDir)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = root.Close() }()
+	if _, err := root.Lstat(modulecontract.FileName); err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	return true
 }

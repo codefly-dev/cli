@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
@@ -239,7 +240,7 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 	if len(installers) == 0 {
 		return principals, nil
 	}
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
 	if err != nil {
 		return nil, fmt.Errorf("read the prepared bindings the envelope lists: %w", err)
 	}

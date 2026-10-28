@@ -115,6 +115,71 @@ identity on a managed service uses
 service's own identity uses `["service-identity"]`.
 Proxy containers, image choices and loopback routing are not part of this contract.
 
+## Public module artifacts
+
+A workspace configuration value may be **bound to a file in a composed
+module** instead of being written out as a literal, so a public artifact a
+module already ships — an installation document, for example — reaches services
+as configuration without being copied into the composition and kept in step by
+hand.
+
+The binding is declared in the selected profile, in
+`configurations/<profile>/module-artifacts.codefly.json`, and names only a
+destination and a source:
+
+```json
+{
+  "schemaVersion": 1,
+  "bindings": [
+    {"configuration": "docs", "key": "README",
+     "source": {"module": "wiki", "path": "docs/install.md"}}
+  ]
+}
+```
+
+**Acquired once per ordinary load, and nothing is frozen across loads.** Every
+ordinary configuration load — a run's delivery, a `codefly doctor` check —
+acquires the declared file afresh and carries its exact bytes, with the SHA256
+and byte count core computes *from those bytes*, on the value that load
+delivers. A standalone check therefore describes what *it* observed and proves
+nothing about a later delivery; an already running service keeps the
+configuration it was delivered until its ordinary lifecycle replaces it. A run
+whose planning read saw one version and whose delivery load saw another
+delivers the second, and never presents the first as its evidence.
+
+**What the CLI refuses.** The declared path is opened under the selected
+module's directory with confined, non-blocking, regular-file access, so an
+absolute path, a `..` element, a symlink leaving the module, a FIFO, a
+directory and a missing file all refuse; so does a file that changed while it
+was being read. A composed module this machine has not materialized refuses
+rather than being fetched behind the read, and a path the CLI materialized
+needs a resolution receipt that answers the request the workspace makes now. An
+explicit `path:`, an overlay path or a worktree legitimately has no receipt:
+its bytes are local development evidence, not release authenticity. Core then
+bounds the bytes at the inline carrier threshold (32 KiB, inclusive), requires
+valid UTF-8 with no NUL, and refuses text that would need interpolation.
+
+**No value can quietly take a bound destination.** A literal, secret, template
+or structured document offered for the same destination is a conflict rather
+than a silent winner, so moving an existing literal onto a binding is an
+explicit source edit: remove the literal and add the binding. At delivery the
+same rule holds against *additional* offers — a configuration the agent returns
+from Init, a dependency's configuration at Start, a `--set` or derived runtime
+override — including one that offers the identical bytes. Equality buys no
+replacement right, and an empty override map does not skip the check. Removing
+a binding restores ordinary ownership on the next load; there is no generated
+state to clean up.
+
+**An explicit binding is the author's assertion that these bytes are public.**
+Confinement and a digest do not establish publicness, and no scanner or
+filename rule can: a binding declaring private or mixed-secret content as
+public exposes both the content and a testable digest. That judgement belongs
+to whoever reviews the composition.
+
+Such a value is delivered inline to the process. It cannot be exported through
+`--output-env` when its bytes contain a line break, which that raw format
+cannot represent (see `docs/commands.md`).
+
 ## Module-owned keys
 
 A few keys on an environment belong to a **module agent**, not to the CLI. The

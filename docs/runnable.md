@@ -43,13 +43,39 @@ owns the option, the descriptor-to-bounded-schema projection and
 published contracts, the layout on disk and the drift gate. Nothing about the
 contract is authored twice — it is the projection of the method's own messages.
 
-The selected owner's `module.contract.codefly.yaml` supplies the audience through
-Core's strict module-contract reader. Its principal is independent of the
-producer checkout's module name; generation keeps the package's module identity
-unchanged. Every generated destination must be published by that contract, and
-an explicit operation audience must match its principal. Missing, unreadable or
-contradictory publication refuses generation before output changes. A module
-with no operations still writes an empty index.
+Where an operation's audience comes from decides what the module must publish.
+
+A method that **annotates its audience explicitly** (Core sets
+`OperationSpec.Declared` from the method option) carries the author's own
+audience. That may be a host surface the module reaches without being installed
+as one — a source-operation audience, say — so Core does not require it to equal
+any module principal, and neither does generation: such an operation needs no
+`module.contract.codefly.yaml` at all. Its served target, scopes and lookup are
+still checked as always, so an unserved method or a missing paired Lookup
+refuses.
+
+A method that **carries no operation option** takes Core's default from
+`ServiceOwner.Audience`, which generation fills from the selected owner's
+`module.contract.codefly.yaml` through Core's strict module-contract reader.
+There the contract is required: with no publication there is no principal to
+derive from, and generation refuses rather than emit an empty audience.
+
+The distinction is the option's presence, not an audience's: `Declared` marks
+that the method carries the option. Core validates the audience inside it
+before setting `Declared`, and generation refuses an annotated method whose
+audience is empty rather than treating it as either case — it has no principal
+to check against and nothing of its own to carry.
+
+When that contract **does exist**, the module's publication applies to every
+operation it serves, explicit ones included: each generated destination must be
+published by it, and an audience differing from its principal is a conflict in
+the module's own declarations rather than host permission. Its principal is
+independent of the producer checkout's module name; generation keeps the
+package's module identity unchanged.
+
+An unreadable, malformed or escaped contract is never read as absence — a module
+that authored one and got it wrong is refused by name. Every refusal happens
+before output changes. A module with no operations still writes an empty index.
 
 Derivation is endpoint-specific: `catalog.codefly.json`'s
 `endpoints[].services[].procedures` declares the served surface; descriptor bytes

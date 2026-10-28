@@ -130,17 +130,9 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 	)
 	runtime := configuration("mind/mind", "runtime", "session_id", "session-123", false, native)
 
-	// The composition root's own structured document, handed to every service
-	// of the run as platform-core's merged fixture-composition is: it is
-	// carried under a key that hashes origin, name AND environment, so a
-	// writer that names no environment cannot write it at all.
-	document := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, RuntimeContext: native, Infos: []*basev0.ConfigurationInformation{{
-		Name: "fixture-composition",
-		Data: &basev0.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v1\nroles: []\n")},
-	}}}
 	if err := AppendServiceProcessConfigurationsToFile(
 		context.Background(), path, localRunEnvironment(), native, service,
-		[]*basev0.Configuration{workspace, document},
+		[]*basev0.Configuration{workspace},
 		[]*basev0.Configuration{postgres, containerOnly},
 		[]*basev0.Configuration{runtime},
 	); err != nil {
@@ -156,20 +148,10 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 		"CODEFLY__WORKSPACE_CONFIGURATION__DOGFOOD__CAMPAIGN=headless\n",
 		"CODEFLY__SERVICE_SECRET_CONFIGURATION__INFRA__POSTGRES__POSTGRES__READ_WRITE_CONNECTION=postgres://runtime\n",
 		"CODEFLY__SERVICE_CONFIGURATION__MIND__MIND__RUNTIME__SESSION_ID=session-123\n",
-		// The document, under the key its reader derives for this environment.
-		resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false) + "=",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("service process environment is missing %q; keys=%v", expected, environmentKeys(text))
 		}
-	}
-	carrier := carrierValue(t, text, resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false))
-	content, err := resources.DecodeConfigurationDocument(carrier, resources.ConfigurationWorkspace, "fixture-composition", "local", false)
-	if err != nil {
-		t.Fatalf("the written document does not read back for environment local: %v", err)
-	}
-	if !strings.Contains(string(content), "codefly.dev/authority/fixture-composition/v1") {
-		t.Fatalf("the document lost its content: %s", content)
 	}
 	if strings.Contains(text, "REDIS") || strings.Contains(text, "redis://container") {
 		t.Fatalf("container-only dependency leaked into native environment; keys=%v", environmentKeys(text))

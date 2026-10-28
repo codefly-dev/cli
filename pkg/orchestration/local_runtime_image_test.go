@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,17 +48,40 @@ type runtimeImageBuilderPeer struct {
 	imageCachePeer
 	stock     bool
 	malformed bool
+	// recipeName renames the emitted recipe. core's docker.proto makes name
+	// the recipe's logical identity ("such as app or migration"), so a sole
+	// recipe named "bootstrap" is a migration runner, not a runtime image.
+	recipeName string
+	// loads/inits/builds count the builder RPCs the CLI actually made. An
+	// agent that does not advertise the handoff must reach NONE of them: a
+	// zero docker-build count alone would still pass while the CLI loaded,
+	// initialized and planned a builder whose result it will never use.
+	loads  atomic.Int32
+	inits  atomic.Int32
+	builds atomic.Int32
 }
 
-func (*runtimeImageBuilderPeer) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+func (peer *runtimeImageBuilderPeer) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+	peer.loads.Add(1)
 	return &builderv0.LoadResponse{State: &builderv0.LoadStatus{State: builderv0.LoadStatus_READY}}, nil
 }
 
-func (*runtimeImageBuilderPeer) Init(context.Context, *builderv0.InitRequest) (*builderv0.InitResponse, error) {
+func (peer *runtimeImageBuilderPeer) Init(context.Context, *builderv0.InitRequest) (*builderv0.InitResponse, error) {
+	peer.inits.Add(1)
 	return &builderv0.InitResponse{State: &builderv0.InitStatus{State: builderv0.InitStatus_SUCCESS}}, nil
 }
 
+// requireNoBuilderTraffic is the zero-call assertion: no Load, no Init, no
+// Build (the plan request) reached the agent's builder at all.
+func (peer *runtimeImageBuilderPeer) requireNoBuilderTraffic(t *testing.T) {
+	t.Helper()
+	require.Zero(t, peer.loads.Load(), "the builder must not be loaded for an agent that will not use the handoff")
+	require.Zero(t, peer.inits.Load(), "nor initialized")
+	require.Zero(t, peer.builds.Load(), "nor asked for a build plan")
+}
+
 func (peer *runtimeImageBuilderPeer) Build(ctx context.Context, req *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+	peer.builds.Add(1)
 	if peer.stock {
 		return &builderv0.BuildResponse{
 			State:         &builderv0.BuildStatus{State: builderv0.BuildStatus_SUCCESS},
@@ -65,6 +89,11 @@ func (peer *runtimeImageBuilderPeer) Build(ctx context.Context, req *builderv0.B
 		}, nil
 	}
 	resp, err := peer.imageCachePeer.Build(ctx, req)
+	if err == nil && peer.recipeName != "" {
+		for _, recipe := range resp.GetResult().GetDockerBuildPlan().GetRecipes() {
+			recipe.Name = peer.recipeName
+		}
+	}
 	if err == nil && peer.malformed {
 		err = os.WriteFile(filepath.Join(req.GetOutputDirectory(), "Dockerfile"), []byte("FROM tampered\n"), 0o644)
 	}
@@ -73,8 +102,13 @@ func (peer *runtimeImageBuilderPeer) Build(ctx context.Context, req *builderv0.B
 
 func runtimeImageRunner(t *testing.T, peer *runtimeImageBuilderPeer) (*Runner, *dockerStub) {
 	t.Helper()
+	return runtimeImageRunnerWithAgent(t, peer, realAgentInputs)
+}
+
+func runtimeImageRunnerWithAgent(t *testing.T, peer *runtimeImageBuilderPeer, mode string) (*Runner, *dockerStub) {
+	t.Helper()
 	stub := installDockerStub(t, true)
-	runner, world := gatewayRunner(t, startRealAgent(t, realAgentInputs))
+	runner, world := gatewayRunner(t, startRealAgent(t, mode))
 	root := t.TempDir()
 	world.Workspace.WithDir(root)
 	serviceDir := filepath.Join(root, "modules/web/services/gateway")
@@ -145,11 +179,80 @@ esac
 	}
 }
 
-func TestRunnerRefusesImageHandoffWithoutLiveCapability(t *testing.T) {
-	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{})
+// TestRunnerLeavesTheImageToANonAdvertisingAgent is the Postgres shape, and
+// the behaviour that replaces an earlier refusal.
+//
+// The agent has a builder and its builder emits a recipe — but that recipe is
+// not its runtime image (a database's is its migration or bootstrap image), and
+// it never advertised runtime-init-image/v1. So the run must leave the image to
+// the agent: no build, no handoff, no refusal. Reading the runtime role off the
+// sole recipe instead built the wrong image and then failed the run for a
+// capability the agent never claimed, which is what blocked local startup.
+func TestRunnerLeavesTheImageToANonAdvertisingAgent(t *testing.T) {
+	peer := &runtimeImageBuilderPeer{}
+	runner, stub := runtimeImageRunner(t, peer)
 	runner.instance.Info.Contract = contract.Current()
+	require.NotContains(t, runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitImage)
+
+	output, err := runner.Init(t.Context())
+	require.NoError(t, err, "a non-advertising agent owns its image; the run must not refuse")
+	require.NotNil(t, output, "and Init must complete normally, not short-circuit")
+	require.Zero(t, stub.calls(t, "build"), "its recipe must not be built as a runtime image")
+	require.NotContains(t, exposedValues(t.Context(), t, runner.world), "runtime-image")
+	// The decision is taken before the builder is touched at all.
+	peer.requireNoBuilderTraffic(t)
+}
+
+// TestRunnerPropagatesTheAgentsOwnInitFailure keeps the early return from
+// becoming a swallow-all. Skipping the handoff must not also skip — or absorb —
+// the runtime agent's own Init outcome: a non-advertising agent whose Init
+// fails still fails the run, with its own diagnostic.
+func TestRunnerPropagatesTheAgentsOwnInitFailure(t *testing.T) {
+	peer := &runtimeImageBuilderPeer{}
+	runner, _ := runtimeImageRunnerWithAgent(t, peer, realAgentRefuses)
+	runner.instance.Info.Contract = contract.Current()
+
 	_, err := runner.Init(t.Context())
-	require.ErrorContains(t, err, contract.RuntimeInitImage)
+	require.Error(t, err, "the agent's own Init failure must reach the caller")
+	require.ErrorContains(t, err, realAgentRefusalMessage)
+	require.NotContains(t, err.Error(), contract.RuntimeInitImage,
+		"and it must not be reported as a handoff-capability problem")
+	peer.requireNoBuilderTraffic(t)
+}
+
+// TestRunnerLeavesTheImageToAnAgentPinningItsOwnRuntime is the third class the
+// earlier model had no case for, and the one service-postgres is: a stock or
+// pinned runtime image PLUS a build recipe for a DIFFERENT image (its
+// migration/bootstrap runner). core's docker.proto says a recipe's name is its
+// logical identity and that a service may emit several, so cardinality cannot
+// say which recipe — if any — is the runtime image. Here the sole recipe is
+// named "bootstrap", and it must not be built or handed to Runtime.Init.
+func TestRunnerLeavesTheImageToAnAgentPinningItsOwnRuntime(t *testing.T) {
+	peer := &runtimeImageBuilderPeer{recipeName: "bootstrap"}
+	runner, stub := runtimeImageRunner(t, peer)
+	runner.instance.Info.Contract = contract.Current()
+
+	_, err := runner.Init(t.Context())
+	require.NoError(t, err, "a migration recipe is not a declaration of the runtime image")
+	require.Zero(t, stub.calls(t, "build"))
+	require.NotContains(t, exposedValues(t.Context(), t, runner.world), "runtime-image")
+	peer.requireNoBuilderTraffic(t)
+}
+
+// TestRunnerRefusesAnIncompatibleAdvertisingAgent keeps the waiver specific.
+// contract.Check reports a protocol-version mismatch with the same
+// ErrIncompatible as a missing capability, so an agent that DID advertise the
+// handoff and cannot speak this host's protocol must still be refused — not
+// quietly treated as one that owns its own image.
+func TestRunnerRefusesAnIncompatibleAdvertisingAgent(t *testing.T) {
+	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{})
+	runner.instance.Info.GetContract().ProtocolVersion = contract.Current().GetProtocolVersion() + 1
+	require.Contains(t, runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitImage)
+
+	_, err := runner.Init(t.Context())
+	require.ErrorIs(t, err, contract.ErrIncompatible,
+		"an incompatible protocol must refuse, not be waived as a missing optional capability")
+	require.ErrorContains(t, err, "CLI-agent protocol version")
 	require.Zero(t, stub.calls(t, "build"))
 }
 
@@ -160,9 +263,15 @@ func TestRunnerRefusesMalformedRuntimeRecipe(t *testing.T) {
 	require.Zero(t, stub.calls(t, "build"))
 }
 
-func TestRunnerStockImageNeedsNoHandoffCapability(t *testing.T) {
+// TestRunnerAdvertisingAgentWithNoRecipeKeepsItsOwnImage is the other half:
+// the agent advertises the handoff, so the capability gate lets it through,
+// and its builder emits no recipe at all (a stock-image service). That is not
+// a refusal either — the agent keeps its own selection. It deliberately
+// advertises, so the assertion exercises the no-recipe path rather than
+// returning early at the capability gate.
+func TestRunnerAdvertisingAgentWithNoRecipeKeepsItsOwnImage(t *testing.T) {
 	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{stock: true})
-	runner.instance.Info.Contract = contract.Current()
+	require.Contains(t, runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitImage)
 	_, err := runner.Init(t.Context())
 	require.NoError(t, err)
 	require.NotContains(t, exposedValues(t.Context(), t, runner.world), "runtime-image")
