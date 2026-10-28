@@ -243,7 +243,14 @@ environments:
 Nothing may still reach what is withdrawn: a service that declares a
 dependency on it is refused unless `withdrawn-from` names it, and so are a
 solution consuming one of its endpoints, an environment declaration naming it
-and a configuration reference to one of its endpoints. A service the module's
+and a configuration reference to one of its endpoints. **Those refusals are
+judged for the environment the operation selected, and the message names that
+environment**: an operation is never refused over a different environment's
+`exclude-services`. That distinction is load-bearing, because the graph a
+declaration is held to is the workspace's current composition — an environment
+imported before a module overlay added a service carries no `withdrawn-from`
+for it, and holding every environment to that graph refuses operations on
+environments whose own declarations are complete. A service the module's
 `interface:` exports, or names its `service-entry`, is withdrawn only with the
 whole module: an environment that names every service of a module leaves the
 module out, and its exports leave with it. Withdrawing some of its services is

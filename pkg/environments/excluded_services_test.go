@@ -313,3 +313,53 @@ func TestCoordinateContractCarriesExcludedServices(t *testing.T) {
 	env.ExcludeServices[0].WithdrawnFrom[0] = "changed/consumer"
 	require.Equal(t, "saas/accounts", contract.Environment.ExcludeServices[0].WithdrawnFrom[0])
 }
+
+// TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment exercises the changed
+// path directly: environments.ValidateWorkspace, which the gitops render
+// callers reach. An earlier regression for this went through NewFlow, which
+// already used ValidateEnvironmentExclusions at flow.go:484 — so it passed
+// against unfixed main and proved nothing about ValidateWorkspace.
+//
+// The fixture gives `staging` an exclusion the graph refuses (shop/api still
+// consumes shop/vault) and leaves `local` clean. A render of `local` must not
+// inherit staging's refusal; a render of `staging` must still get it; and a
+// caller that selects nothing must still hold the whole workspace, which is
+// what `doctor workspace` and the other whole-workspace checks rely on.
+func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeExclusionWorkspace(t, `    exclude-services:
+      - service: shop/vault
+`)
+	declared, err := environments.FromWorkspace(workspace)
+	require.NoError(t, err)
+	byName := map[string]*environments.Environment{}
+	for _, env := range declared {
+		if env != nil {
+			byName[env.Name] = env
+		}
+	}
+	require.Contains(t, byName, "staging")
+	require.Contains(t, byName, "local")
+	require.Empty(t, byName["local"].ExcludeServices, "local is the clean environment")
+
+	// The selected environment is the inconsistent one: still refused, so this
+	// test cannot pass by the check having been disabled.
+	err = environments.ValidateWorkspace(ctx, workspace, byName["staging"])
+	require.Error(t, err)
+	require.ErrorContains(t, err, `environment "staging" withdraws "shop/vault"`)
+
+	// The selected environment is clean: must NOT be refused over staging's
+	// declaration. This is the assertion that fails before the fix.
+	require.NoError(t, environments.ValidateWorkspace(ctx, workspace, byName["local"]),
+		"a selected environment must not be refused over another environment's exclusion")
+
+	// Nothing selected: the whole workspace is still held, so the default is
+	// preserved for doctor and the other whole-workspace callers.
+	err = environments.ValidateWorkspace(ctx, workspace)
+	require.Error(t, err, "with no selection every environment is still held")
+	require.ErrorContains(t, err, `environment "staging" withdraws "shop/vault"`)
+
+	// A nil selection is the same as none, not a silent skip.
+	err = environments.ValidateWorkspace(ctx, workspace, nil)
+	require.Error(t, err, "a nil selection must not skip the check")
+}

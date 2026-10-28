@@ -121,6 +121,24 @@ never `--stand-alone` or `--exclude-root`; `--exclude-dependency` and
 out. The selected environment's `exclude-services` also removes services from
 the composition roots; a module withdrawn whole contributes no root, including
 its service-entry. CLI and run-profile exclusions still apply on top.
+
+**An operation is held to the environment it selected, never to another's
+`exclude-services`.** Run, build, deploy and `deploy gitops render` each
+validate the exclusions of the one environment they were given, and a refusal
+names that environment in the message itself rather than only under `--debug`.
+This matters because the exclusion graph is the workspace's **current**
+composition: an environment imported before a module overlay added a service
+carries no `withdrawn-from` for it, so holding every environment to that graph
+refused a correct render of a different environment — and the operator could
+not satisfy it, since re-importing the offending environment requires the
+product intent to declare it.
+
+Every CLI path that validates exclusions selects an environment: run, build,
+test and deploy through the flow, `deploy gitops render` and the solution and
+dev renders through the workspace validation, and `codefly doctor workspace`
+through its own scope check. The whole-workspace form, which holds every
+environment at once, remains the behaviour for a caller that has selected
+none.
 The deterministic port hash folds every endpoint into a few thousand
 buckets, so a `--naming-scope` can hash two endpoints to one port and abort
 the run; `--temporary-ports` sidesteps the hash, under the ordering its
