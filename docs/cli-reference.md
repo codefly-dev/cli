@@ -5281,6 +5281,10 @@ For each Go module under --dir (default: current directory), update deps:
   - go mod tidy
   - re-audit with govulncheck (unless --audit=false)
 
+With --dependency module@version (repeatable), pin only those existing external
+requirements, including indirect dependencies, and leave other selections alone.
+All selections are validated before changing any module.
+
 With --companions, also rebuilds every companion image with 'docker build
 --pull' so floating base tags (golang:1.26-alpine, …) pick up upstream
 patch releases — clearing base-image CVEs like the Go stdlib advisories.
@@ -5288,6 +5292,7 @@ patch releases — clearing base-image CVEs like the Go stdlib advisories.
 Examples:
   codefly update deps                 # update Go deps under cwd + audit
   codefly update deps --dir .         # same, explicit
+  codefly update deps --dependency golang.org/x/net@v0.62.0
   codefly update deps --companions    # also rebuild companion images (--pull)
   codefly update deps --audit=false   # skip the post-update audit
 ```
@@ -5299,11 +5304,12 @@ codefly update deps [flags]
 Flags:
 
 ```
-      --audit            Run the govulncheck audit after updating (default true)
-      --companions       Also rebuild companion Docker images with fresh base layers (docker build --pull)
-      --dir string       Root to update (default: current directory; recurses into every go.mod)
-      --go string        Pin the Go toolchain to this version across every go.mod + go.work (e.g. 1.26.4) — clears stdlib CVEs in standalone/CI builds
-      --stale-days int   Audit: fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
+      --audit                    Run the govulncheck audit after updating (default true)
+      --companions               Also rebuild companion Docker images with fresh base layers (docker build --pull)
+      --dependency stringArray   Pin only selected existing external module@version requirements, including indirect dependencies (repeatable)
+      --dir string               Root to update (default: current directory; recurses into every go.mod)
+      --go string                Pin the Go toolchain to this version across every go.mod + go.work (e.g. 1.26.4) — clears stdlib CVEs in standalone/CI builds
+      --stale-days int           Audit: fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
 ```
 
 ## `codefly update service`

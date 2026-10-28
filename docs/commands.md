@@ -2431,6 +2431,7 @@ codefly update workspace --agent-override codefly.dev/go-grpc=0.1.47-dev.abc123d
 codefly update service api                                            # one service to its latest compatible release
 codefly update service api --agent-version 0.1.47-dev.abc123def456    # pin one service exactly
 codefly update deps                                                   # Go dependencies under the current directory
+codefly update deps --dependency golang.org/x/net@v0.62.0              # only this existing external requirement, including indirect pins
 ```
 
 Without flags, `update workspace` and `update service` move to the agent's
