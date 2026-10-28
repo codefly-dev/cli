@@ -22,17 +22,9 @@ func SelectEnvironment(workspace *resources.Workspace, name string) (*environmen
 	return environments.Select(workspace, name)
 }
 
-// SelectedFixture resolves the fixture a workspace-bound flow runs with. An
-// environment declares the fixture its runtime should use, so an ordinary
-// `codefly run service` / `codefly test service` needs no --fixture at all.
-// An explicit override always wins, and an environment that deliberately
-// omits a fixture — because it loads a real provider — resolves to none.
+// SelectedFixture resolves the fixture a workspace-bound flow runs with,
+// where the environment declares it (environments.SelectedFixture, which the
+// composition package shares).
 func SelectedFixture(environment *environments.Environment, override string) string {
-	if override != "" {
-		return override
-	}
-	if environment == nil {
-		return ""
-	}
-	return environment.Fixture
+	return environments.SelectedFixture(environment, override)
 }

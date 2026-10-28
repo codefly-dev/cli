@@ -152,6 +152,41 @@ run selected (`--env`), the excluded root's file included. A writer handed no
 environment refuses by name rather than writing a document no reader could
 find.
 
+**What `--output-env` can represent, and what it refuses.** The file is raw
+`KEY=value` lines, and the SDK reader that imports it
+(`LoadRuntimeEnvironmentFile`) scans lines, strips one trailing CR, cuts at the
+first `=`, and refuses the **whole** artifact if any name is not `CODEFLY__`
+plus at least one character of `A`–`Z`, `0`–`9` or `_`. So before its first
+write the run holds the complete output batch — own, workspace, dependency and
+runtime configuration, `--set` and derived overrides, identity, fixture and
+endpoint records alike — to exactly that grammar, and refuses any record it
+cannot represent:
+
+- a name outside the reader's grammar (no `CODEFLY__` prefix, no suffix,
+  lowercase, hyphen, whitespace, non-ASCII, or carrying `=`, CR, LF or NUL);
+- a **value** containing LF, CR or NUL, whichever record it belongs to. A value
+  carrying a line break is the reason the rule covers every record and not just
+  the interesting ones: the reader would read its tail as a further `KEY=value`
+  line, so an unrelated note could substitute a value the run never offered.
+
+Empty values, and values holding one or many `=`, remain representable — the
+reader splits on the first separator only. A refused batch leaves an absent
+file absent and an existing one byte-identical; a malformed record already in
+an existing file is refused rather than rewritten under this run's name.
+Direct process delivery is unaffected and still carries a value's exact bytes,
+line breaks included: this is a limit of the raw file format, not of
+configuration.
+
+Two consequences worth stating plainly. An override whose key is not a
+`CODEFLY__` carrier (`--set FOO=bar`) now refuses the export rather than
+writing a file the reader would reject wholesale. And a **structured
+configuration document** cannot be exported this way at all: its carrier is a
+prefix plus a lowercase hex SHA256, which that grammar does not admit, so the
+reader has never been able to load such a file. The CLI now says so before
+writing instead of reporting success. Making it exportable needs an uppercase
+document carrier in core, or a reader in the SDK that accepts this one; neither
+is the CLI's to decide.
+
 **The delivery host's federation surface.** In a host environment the native
 run hands the service `host.delivery` names, when it declares the `federation`
 workspace configuration, the three keys that turn its delivery surface on,

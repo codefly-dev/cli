@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -17,7 +18,7 @@ import (
 // Read through Core so composed modules, imports and profile selection follow
 // the same rules as every other workspace configuration.
 func refuseAuthoredRenderConfigurations(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) error {
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env)
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env, orchestration.ModuleArtifactResolverFor(workspace))
 	if err != nil {
 		return err
 	}

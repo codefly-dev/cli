@@ -73,11 +73,14 @@ func TestTheOutputEnvironmentFileKeepsOneValuePerKey(t *testing.T) {
 		}
 		require.NoError(t, appendEnvironmentVariablesToFile(ctx, path, environments))
 	}
-	write("CODEFLY__ENDPOINT__APP__API__REST__REST", "http://127.0.0.1:55634", "KEEP", "one")
-	write("CODEFLY__ENDPOINT__APP__API__REST__REST", "http://127.0.0.1:50695", "ADDED", "two")
+	// Every key is a real carrier spelling: the writer now holds the whole
+	// batch to the grammar the supported reader parses, so a placeholder like
+	// "KEEP" is refused rather than written (output_records.go).
+	write("CODEFLY__ENDPOINT__APP__API__REST__REST", "http://127.0.0.1:55634", "CODEFLY__KEPT", "one")
+	write("CODEFLY__ENDPOINT__APP__API__REST__REST", "http://127.0.0.1:50695", "CODEFLY__ADDED", "two")
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
-	require.Equal(t, "CODEFLY__ENDPOINT__APP__API__REST__REST=http://127.0.0.1:50695\nKEEP=one\nADDED=two\n", string(content), "one line per key, in first-seen order, with the latest value")
+	require.Equal(t, "CODEFLY__ENDPOINT__APP__API__REST__REST=http://127.0.0.1:50695\nCODEFLY__KEPT=one\nCODEFLY__ADDED=two\n", string(content), "one line per key, in first-seen order, with the latest value")
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())

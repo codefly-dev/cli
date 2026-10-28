@@ -43,6 +43,12 @@ func NewWorkspaceConfigurationReader(ctx context.Context, workspace *resources.W
 	if err != nil {
 		return nil, err
 	}
+	// Bound here, so run delivery and every check that asks what this
+	// invocation resolves acquire module artifacts the same way: a bound
+	// destination core cannot resolve refuses rather than falling back to a
+	// literal, and a standalone check observes its own acquisition rather than
+	// inheriting one (module_artifact.go).
+	reader.WithModuleArtifactResolver(ModuleArtifactResolverFor(workspace))
 	return &WorkspaceConfigurationReader{ConfigurationInformationLocalReader: reader, workspace: workspace}, nil
 }
 
@@ -77,14 +83,34 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	if fixture != nil {
 		// Replace any module default with the complete merge. Core may have
 		// resolved a single fragment (or identical fragments) without ambiguity.
+		//
+		// What is replaced must not be something Core was asked to deliver. A
+		// module artifact bound to this group has already been acquired, had
+		// its bytes copied and its identity computed, and is carried on the
+		// value Core resolved — deleting that info here would substitute this
+		// generated document for the artifact the composition declared, with
+		// nothing said. The whole-group replacement is exactly the lossy
+		// precedence the delivery contract requires to be checked BEFORE the
+		// offer is discarded, so it refuses instead.
 		for i, config := range r.combined {
 			if config.GetOrigin() != resources.ConfigurationWorkspace {
 				continue
 			}
 			replacement := proto.CloneOf(config)
+			var bound bool
 			replacement.Infos = slices.DeleteFunc(replacement.Infos, func(info *basev0.ConfigurationInformation) bool {
-				return info.GetName() == fixturefragments.Group
+				if info.GetName() != fixturefragments.Group {
+					return false
+				}
+				bound = bound || slices.ContainsFunc(info.GetConfigurationValues(), func(value *basev0.ConfigurationValue) bool {
+					return value.GetResolvedModuleArtifact() != nil || value.GetModuleArtifact() != nil
+				})
+				return true
 			})
+			if bound {
+				return fmt.Errorf("%s is bound to a module artifact and is also the merged fixture composition: the generated document would replace the declared artifact, so remove the binding or the fragments (%w)",
+					fixturefragments.Group, configurations.ErrConfigurationConflict)
+			}
 			r.combined[i] = replacement
 		}
 		r.combined = append(r.combined, fixture)

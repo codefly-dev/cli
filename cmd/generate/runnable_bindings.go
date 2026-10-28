@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
@@ -655,6 +656,10 @@ func newEndpointResolver(ctx context.Context, workspace *resources.Workspace, en
 	if err != nil {
 		return nil, err
 	}
+	// The same acquisition every other delivery and check load supplies: a
+	// bound module artifact reaching this manager must be resolved from the
+	// selected module, not refused as unresolvable (module_artifact.go).
+	reader.WithModuleArtifactResolver(orchestration.ModuleArtifactResolverFor(workspace))
 	manager.WithLoader(reader)
 	if resolver.remote, err = remotenetwork.NewRemoteManager(ctx, manager); err != nil {
 		return nil, err

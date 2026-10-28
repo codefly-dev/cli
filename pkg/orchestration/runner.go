@@ -71,6 +71,16 @@ type Runner struct {
 	// state says it does (addressesMoved).
 	startedMappings string
 
+	// delivered is the configuration payload this service's last SUCCESSFUL
+	// Init actually received, detached from the slices it was gathered from.
+	// Start compares its own offers against it (module_artifact.go): a
+	// destination a module artifact was bound to at Init cannot be taken over
+	// later by a dependency's or an override's value for the same carrier.
+	// Nil until an Init succeeds — a failed one leaves no baseline rather than
+	// an empty one that would protect nothing — and replaced whole by the next
+	// successful Init, which is the ordinary way a reload adopts new bytes.
+	delivered []*basev0.Configuration
+
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
 	restartInFlight bool
@@ -294,13 +304,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err = runner.checkInitialPortAvailability(ctx, inputs.networkMappings); err != nil {
 		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
 	}
-	// A container-only service with a build recipe gets the image this machine
-	// just built, as a canonical digest reference; everything else keeps the
-	// agent's own image selection and hands Init an empty field.
-	runtimeImage, err := runner.localRuntimeImage(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot prepare local runtime image for %s", runner.instance.Unique())
-	}
 	dependenciesEndpoints := inputs.dependenciesEndpoints
 	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
 	conf := inputs.conf
@@ -308,6 +311,47 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	workspaceConfigurations := inputs.workspaceConfigurations
 	dependenciesConfigurations := inputs.dependenciesConfigurations
 	networkMappings := inputs.networkMappings
+
+	// The admitted payload, unmerged, and the process override map, computed
+	// ONCE: the same map rides the request and is what core compares against,
+	// so a late callback cannot make the request and the check disagree. Core
+	// owns the comparison (carriers, aliases, origin/group/key); it refuses an
+	// override, or a second offer inside this payload, that would take over a
+	// destination a module artifact is bound to.
+	overrides := runner.runtimeOverridesFor(networkMappings)
+	baseline := deliveryBaseline(conf, workspaceConfigurations, dependenciesConfigurations)
+	if err = resources.ValidateModuleArtifactDelivery(baseline, nil, overrides); err != nil {
+		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
+	}
+	// Known-invalid output is refused before the agent is called at all, where
+	// the inputs already exist. This is early refusal, not a substitute for
+	// checking the response: what the agent returns is unknown until it
+	// answers, and a refusal then cannot pretend Init had no effects.
+	if runner.outputEnv != "" {
+		environment, envErr := runner.world.Env.Proto()
+		if envErr != nil {
+			return nil, w.Wrapf(envErr, "cannot name the run environment for the output environment")
+		}
+		known, knownErr := serviceProcessConfigurationVariables(ctx, environment, runtimeContext, conf, workspaceConfigurations, nil, nil)
+		if knownErr != nil {
+			return nil, knownErr
+		}
+		if _, knownErr = outputRecords(known); knownErr != nil {
+			return nil, w.Wrapf(knownErr, "cannot export the output environment for %s", runner.instance.Unique())
+		}
+	}
+
+	// Only now the image work, which builds and loads: the delivery check above
+	// has no side effects and must settle first, so a payload this run is going
+	// to refuse does not leave a built image behind as its only trace.
+	//
+	// A container-only service with a build recipe gets the image this machine
+	// just built, as a canonical digest reference; everything else keeps the
+	// agent's own image selection and hands Init an empty field.
+	runtimeImage, err := runner.localRuntimeImage(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot prepare local runtime image for %s", runner.instance.Unique())
+	}
 
 	// Init is the only lifecycle call guaranteed to reach a service under test:
 	// a test policy replaces the origin's Start with a barrier or skips it
@@ -324,7 +368,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		WorkspaceConfigurations:     workspaceConfigurations,
 		DependenciesConfigurations:  dependenciesConfigurations,
 		Fixture:                     runner.fixture,
-		Overrides:                   runner.runtimeOverridesFor(networkMappings),
+		Overrides:                   overrides,
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -368,6 +412,21 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	runner.networkMappings = accepted
 	runner.pinAcceptedPorts(accepted)
 
+	// Only a successful Init establishes a delivered payload, and the retained
+	// copy is detached: the configurations this service actually received stay
+	// what they were whatever later loads, filters or clones do to the slices
+	// they came from. A failed or missing Init leaves no baseline rather than
+	// an empty one.
+	runner.delivered = detachConfigurations(baseline)
+	// The returned configurations are an additional offer, checked BEFORE they
+	// are exposed or written: an agent that answers with its own value for a
+	// destination a module artifact is bound to does not get to replace it by
+	// returning the same bytes, and an empty override map does not skip the
+	// configuration-to-configuration comparison.
+	if err = resources.ValidateModuleArtifactDelivery(runner.delivered, resp.RuntimeConfigurations, overrides); err != nil {
+		return nil, w.Wrapf(err, "cannot accept the configurations %s returned from its initialization", runner.instance.Unique())
+	}
+
 	err = runner.world.ConfigurationManager.ExposeConfiguration(ctx, runner.instance.Identity, resp.RuntimeConfigurations...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration infos")
@@ -384,17 +443,20 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		if envErr != nil {
 			return nil, w.Wrapf(envErr, "cannot name the run environment for the output environment")
 		}
-		err = AppendServiceProcessConfigurationsToFile(
-			ctx,
-			runner.outputEnv,
-			environment,
-			runtimeContext,
-			conf,
-			workspaceConfigurations,
-			nil,
-			resp.RuntimeConfigurations,
-		)
-		if err != nil {
+		// One chunk, so the exported slice and the validated batch are the same
+		// projection: the admitted own/workspace values this run already
+		// checked, plus what the agent returned. The full admitted payload
+		// remains the collision baseline above — including bound inputs this
+		// export omits — rather than being re-offered here as a contribution.
+		variables, variablesErr := serviceProcessConfigurationVariables(ctx, environment, runtimeContext, conf, workspaceConfigurations, nil, resp.RuntimeConfigurations)
+		if variablesErr != nil {
+			return nil, variablesErr
+		}
+		records, recordsErr := outputRecords(variables)
+		if recordsErr != nil {
+			return nil, w.Wrapf(recordsErr, "cannot export the output environment for %s", runner.instance.Unique())
+		}
+		if err = writeOutputRecords(ctx, runner.outputEnv, records); err != nil {
 			return nil, w.Wrapf(err, "cannot write environment variables to file")
 		}
 	}
@@ -917,6 +979,88 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	return runner.outputPropertyForInit.Process(ctx)
 }
 
+// pendingStartOutput converts everything this Start would export, in the
+// order the file has always carried it, and returns it together with the
+// configuration offers that are new at this phase — without writing anything.
+// Gathering it up front is what lets a refusal leave the output untouched: an
+// invalid record in the second chunk must not be found after the first has
+// reached disk. It answers (nil, nil, nil) when no output was requested.
+func (runner *Runner) pendingStartOutput(
+	ctx context.Context,
+	dependenciesNetworkMappings []*basev0.NetworkMapping,
+	overrides map[string]string,
+) ([]outputRecord, []*basev0.Configuration, error) {
+	if runner.outputEnv == "" {
+		return nil, nil, nil
+	}
+	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
+	runtimeContext, runtimeErr := resources.NewRuntimeContext(runner.runtimeContext)
+	if runtimeErr != nil {
+		return nil, nil, w.Wrapf(runtimeErr, "cannot create output environment runtime context")
+	}
+	// Environment export needs the same identity fields the agent receives,
+	// but it must also work for infrastructure agents whose optional path
+	// fields are empty. ServiceIdentity.Proto validates those deployment
+	// fields and is therefore intentionally not the conversion boundary.
+	identity := &basev0.ServiceIdentity{
+		Workspace:           runner.instance.Identity.Workspace,
+		Module:              runner.instance.Identity.Module,
+		Name:                runner.instance.Identity.Name,
+		Version:             runner.instance.Identity.Version,
+		WorkspacePath:       runner.instance.Identity.WorkspacePath,
+		RelativeToWorkspace: runner.instance.Identity.RelativeToWorkspace,
+	}
+	// Core guards this same dereference before making the identical call
+	// (services.RuntimeInstance.Start) and simply forwards the request
+	// unnarrowed when the module is absent. This carrier cannot do that:
+	// unnarrowed here means writing dependency addresses whose visibility
+	// nothing can check. Without a consumer module there is no permitted
+	// set to compute, so refuse to write rather than write unchecked.
+	if runner.instance.Module == nil {
+		return nil, nil, w.NewError("cannot resolve dependency network mappings for output environment: %s has no module", runner.instance.Unique())
+	}
+	endpointMappings, mappingErr := outputEnvNetworkMappings(
+		runner.world.Workspace,
+		runner.instance.Module.Name,
+		runner.instance.Service.ServiceDependencies,
+		runner.networkMappings,
+		dependenciesNetworkMappings,
+	)
+	if mappingErr != nil {
+		return nil, nil, w.Wrapf(mappingErr, "cannot resolve dependency network mappings for output environment")
+	}
+	// Dependency agents publish connection configurations during their Init.
+	// Start is the single point that writes them to the output environment,
+	// after the dependency barrier: the target's own Init may have observed
+	// the shared configuration state before a concurrently initialized
+	// dependency exposed its runtime values, so only here are they complete.
+	dependencyConfigurations, dependencyErr := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Identity)
+	if dependencyErr != nil {
+		return nil, nil, w.Wrapf(dependencyErr, "cannot load dependency configurations for output environment")
+	}
+	environment, envErr := runner.world.Env.Proto()
+	if envErr != nil {
+		return nil, nil, w.Wrapf(envErr, "cannot name the run environment for the output environment")
+	}
+	// Both chunks are converted before either is written, in the order the
+	// file has always carried them: the dependency configurations, then the
+	// runtime identity, overrides and endpoints. An invalid record in the
+	// second one must not be discovered after the first has reached disk.
+	configurationVariables, variablesErr := serviceProcessConfigurationVariables(ctx, environment, runtimeContext, nil, nil, dependencyConfigurations, nil)
+	if variablesErr != nil {
+		return nil, nil, variablesErr
+	}
+	runtimeVariables, runtimeVariablesErr := runtimeEnvironmentVariables(ctx, identity, runtimeContext, runner.fixture, overrides, endpointMappings)
+	if runtimeVariablesErr != nil {
+		return nil, nil, runtimeVariablesErr
+	}
+	batch, recordsErr := outputRecords(append(configurationVariables, runtimeVariables...))
+	if recordsErr != nil {
+		return nil, nil, w.Wrapf(recordsErr, "cannot export the output environment for %s", runner.instance.Unique())
+	}
+	return batch, dependencyConfigurations, nil
+}
+
 func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.NewRunner", wool.ThisField(runner.instance))
 	w.Debug("start")
@@ -938,95 +1082,60 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 
-	err := runner.StopIfNeeded(ctx)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
+	// A nil baseline is not "nothing to protect": Core reads it as an empty
+	// set of bound destinations and passes, so a Start that never had a
+	// successful Init would check this phase's offers against nothing. The
+	// missing evidence is an orchestration error, caught here rather than
+	// converted into an empty comparison — and after BeginRuntimeStart, so the
+	// attempt still completes as not-started.
+	if runner.delivered == nil {
+		return nil, w.NewError("cannot start %s: no successful initialization retained its configuration delivery, so this phase's configuration offers and overrides cannot be checked against what the service was admitted with", runner.instance.Unique())
 	}
 
-	// Build the request
+	// Build the request. Everything this phase will deliver is gathered and
+	// checked BEFORE the running instance is stopped and before either output
+	// append: a refusal then leaves an absent output absent and an existing
+	// one byte-identical, where a refusal discovered between the two appends
+	// could not. These reads are of shared dependency state, which stopping
+	// this service does not change.
 	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
-	if runner.outputEnv != "" {
-		runtimeContext, runtimeErr := resources.NewRuntimeContext(runner.runtimeContext)
-		if runtimeErr != nil {
-			return nil, w.Wrapf(runtimeErr, "cannot create output environment runtime context")
-		}
-		// Environment export needs the same identity fields the agent receives,
-		// but it must also work for infrastructure agents whose optional path
-		// fields are empty. ServiceIdentity.Proto validates those deployment
-		// fields and is therefore intentionally not the conversion boundary.
-		identity := &basev0.ServiceIdentity{
-			Workspace:           runner.instance.Identity.Workspace,
-			Module:              runner.instance.Identity.Module,
-			Name:                runner.instance.Identity.Name,
-			Version:             runner.instance.Identity.Version,
-			WorkspacePath:       runner.instance.Identity.WorkspacePath,
-			RelativeToWorkspace: runner.instance.Identity.RelativeToWorkspace,
-		}
-		// Core guards this same dereference before making the identical call
-		// (services.RuntimeInstance.Start) and simply forwards the request
-		// unnarrowed when the module is absent. This carrier cannot do that:
-		// unnarrowed here means writing dependency addresses whose visibility
-		// nothing can check. Without a consumer module there is no permitted
-		// set to compute, so refuse to write rather than write unchecked.
-		if runner.instance.Module == nil {
-			return nil, w.NewError("cannot resolve dependency network mappings for output environment: %s has no module", runner.instance.Unique())
-		}
-		endpointMappings, mappingErr := outputEnvNetworkMappings(
-			runner.world.Workspace,
-			runner.instance.Module.Name,
-			runner.instance.Service.ServiceDependencies,
-			runner.networkMappings,
-			dependenciesNetworkMappings,
-		)
-		if mappingErr != nil {
-			return nil, w.Wrapf(mappingErr, "cannot resolve dependency network mappings for output environment")
-		}
-		// Dependency agents publish connection configurations during their Init.
-		// Start is the single point that writes them to the output environment,
-		// after the dependency barrier: the target's own Init may have observed
-		// the shared configuration state before a concurrently initialized
-		// dependency exposed its runtime values, so only here are they complete.
-		dependencyConfigurations, dependencyErr := runner.world.SharedState.GetDependentConfigurationsFor(ctx, runner.instance.Identity)
-		if dependencyErr != nil {
-			return nil, w.Wrapf(dependencyErr, "cannot load dependency configurations for output environment")
-		}
-		environment, envErr := runner.world.Env.Proto()
-		if envErr != nil {
-			return nil, w.Wrapf(envErr, "cannot name the run environment for the output environment")
-		}
-		err = AppendServiceProcessConfigurationsToFile(
-			ctx,
-			runner.outputEnv,
-			environment,
-			runtimeContext,
-			nil,
-			nil,
-			dependencyConfigurations,
-			nil,
-		)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot write dependency configurations to output environment")
-		}
-		if appendErr := AppendRuntimeEnvironmentToFile(
-			ctx,
-			runner.outputEnv,
-			identity,
-			runtimeContext,
-			runner.fixture,
-			runner.runtimeOverrides(),
-			endpointMappings,
-		); appendErr != nil {
-			return nil, w.Wrapf(appendErr, "cannot write runtime environment variables to file")
+	// Computed once and reused for the delivery check, both appends and the
+	// StartRequest: the override callbacks derive addresses from shared state
+	// as it stands now, so asking twice can legitimately give two maps.
+	overrides := runner.runtimeOverrides()
+	pending, contributions, err := runner.pendingStartOutput(ctx, dependenciesNetworkMappings, overrides)
+	if err != nil {
+		return nil, err
+	}
+
+	// The retained Init payload is the comparison baseline, not a re-emission:
+	// Start sends no fresh configuration in its request and exports only the
+	// dependency batch, so a dependency offer that aliases a destination a
+	// module artifact was bound to at Init refuses here — byte-equal or not.
+	if err = resources.ValidateModuleArtifactDelivery(runner.delivered, contributions, overrides); err != nil {
+		return nil, w.Wrapf(err, "cannot start %s", runner.instance.Unique())
+	}
+
+	err = runner.StopIfNeeded(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot stopAfter service instance if needed")
+	}
+
+	if len(pending) > 0 {
+		// The same strings that were checked, written through the one writer
+		// in a single pass rather than rebuilt as two appends.
+		if err = writeOutputRecords(ctx, runner.outputEnv, pending); err != nil {
+			return nil, w.Wrapf(err, "cannot write the output environment for %s", runner.instance.Unique())
 		}
 	}
 
 	req := &runtimev0.StartRequest{
 		DependenciesNetworkMappings: dependenciesNetworkMappings,
 		Fixture:                     runner.fixture,
-		Overrides:                   runner.runtimeOverrides(),
+		Overrides:                   overrides,
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -1849,6 +1958,14 @@ func (runner *Runner) WithRemote(environment *environments.Environment) {
 
 func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, environment *basev0.Environment, confs []*basev0.Configuration) error {
 	w := wool.Get(ctx).In("resources.AppendToFile", wool.Field("filePath", filePath))
+	// On the UNFILTERED payload, before the filter and before the manager's
+	// lossy merge: filtering drops offers, and a dropped offer is one the
+	// collision check can no longer see — while the merge lets an ordinary
+	// value for a bound destination overwrite it. Same floor as
+	// serviceProcessConfigurationVariables, for the other exported entrypoint.
+	if err := resources.ValidateModuleArtifactDelivery(confs, nil, nil); err != nil {
+		return w.Wrap(err)
+	}
 	// filter out for native
 	filtered := resources.FilterConfigurations(confs, resources.NewRuntimeContextNative())
 	m := resources.NewEnvironmentVariableManager()
@@ -1893,29 +2010,69 @@ func AppendServiceProcessConfigurationsToFile(
 	dependencyConfigurations []*basev0.Configuration,
 	runtimeConfigurations []*basev0.Configuration,
 ) error {
-	w := wool.Get(ctx).In("resources.AppendServiceProcessConfigurationsToFile", wool.Field("filePath", filePath))
+	environments, err := serviceProcessConfigurationVariables(ctx, environment, runtimeContext, serviceConfiguration, workspaceConfigurations, dependencyConfigurations, runtimeConfigurations)
+	if err != nil {
+		return err
+	}
+	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
+}
+
+// serviceProcessConfigurationVariables is that export's conversion, without
+// its write: a phase that appends more than one chunk must hold the complete
+// batch before the first of them reaches the file, so the conversion and the
+// write are separable (output_records.go says why the batch is the unit).
+func serviceProcessConfigurationVariables(
+	ctx context.Context,
+	environment *basev0.Environment,
+	runtimeContext *basev0.RuntimeContext,
+	serviceConfiguration *basev0.Configuration,
+	workspaceConfigurations []*basev0.Configuration,
+	dependencyConfigurations []*basev0.Configuration,
+	runtimeConfigurations []*basev0.Configuration,
+) ([]*resources.EnvironmentVariable, error) {
+	w := wool.Get(ctx).In("resources.AppendServiceProcessConfigurationsToFile")
 	if environment == nil || environment.GetName() == "" {
-		return w.NewError("the service process environment names no run environment, so a configuration document could not be carried under the key its reader derives")
+		return nil, w.NewError("the service process environment names no run environment, so a configuration document could not be carried under the key its reader derives")
+	}
+	// Before anything is filtered, merged or converted: this is the exported
+	// entrypoint, so a direct caller reaches it without the phase checks in
+	// Init and Start, and the manager below is a lossy merge — it appends
+	// configurations and emits one record per carrier, so an ordinary value
+	// for a destination a module artifact is bound to simply overwrites it and
+	// the file ends up with the wrong bytes under the right key.
+	//
+	// The complete payload is passed as the comparison baseline with no
+	// contributions: that checks every offer against every other, which is the
+	// collision this seam can actually see, without inventing a second offer by
+	// passing the same values twice. The phases still make their own
+	// baseline/contribution call with the retained delivery and the phase
+	// override map; this one is the floor under them, and the record grammar
+	// check in the writer stays where it is.
+	if err := resources.ValidateModuleArtifactDelivery(
+		deliveryBaseline(serviceConfiguration, workspaceConfigurations, append(slices.Clone(dependencyConfigurations), runtimeConfigurations...)),
+		nil, nil,
+	); err != nil {
+		return nil, w.Wrap(err)
 	}
 	manager := resources.NewEnvironmentVariableManager()
 	manager.SetEnvironment(environment)
 	if err := manager.AddConfigurations(ctx, serviceConfiguration); err != nil {
-		return w.Wrapf(err, "cannot add service configuration")
+		return nil, w.Wrapf(err, "cannot add service configuration")
 	}
 	if err := manager.AddConfigurations(ctx, workspaceConfigurations...); err != nil {
-		return w.Wrapf(err, "cannot add workspace configurations")
+		return nil, w.Wrapf(err, "cannot add workspace configurations")
 	}
 	if err := manager.AddConfigurations(ctx, resources.FilterConfigurations(dependencyConfigurations, runtimeContext)...); err != nil {
-		return w.Wrapf(err, "cannot add dependency configurations")
+		return nil, w.Wrapf(err, "cannot add dependency configurations")
 	}
 	if err := manager.AddConfigurations(ctx, resources.FilterConfigurations(runtimeConfigurations, runtimeContext)...); err != nil {
-		return w.Wrapf(err, "cannot add runtime configurations")
+		return nil, w.Wrapf(err, "cannot add runtime configurations")
 	}
 	environments, err := manager.All()
 	if err != nil {
-		return w.Wrapf(err, "cannot get service process environment variables")
+		return nil, w.Wrapf(err, "cannot get service process environment variables")
 	}
-	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
+	return environments, nil
 }
 
 // outputEnvNetworkMappings is the endpoint set the output environment carries:
@@ -2002,9 +2159,28 @@ func AppendRuntimeEnvironmentToFile(
 	overrides map[string]string,
 	endpointMappings []*basev0.NetworkMapping,
 ) error {
-	w := wool.Get(ctx).In("resources.AppendRuntimeEnvironmentToFile", wool.Field("filePath", filePath))
+	environments, err := runtimeEnvironmentVariables(ctx, identity, runtimeContext, fixture, overrides, endpointMappings)
+	if err != nil {
+		return err
+	}
+	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
+}
+
+// runtimeEnvironmentVariables is that export's conversion, without its write,
+// for the same reason as serviceProcessConfigurationVariables: Start writes
+// both chunks, and an invalid record in this one must not be discovered after
+// the other has already reached the file.
+func runtimeEnvironmentVariables(
+	ctx context.Context,
+	identity *basev0.ServiceIdentity,
+	runtimeContext *basev0.RuntimeContext,
+	fixture string,
+	overrides map[string]string,
+	endpointMappings []*basev0.NetworkMapping,
+) ([]*resources.EnvironmentVariable, error) {
+	w := wool.Get(ctx).In("resources.AppendRuntimeEnvironmentToFile")
 	if identity == nil {
-		return w.NewError("service identity is required")
+		return nil, w.NewError("service identity is required")
 	}
 	manager := resources.NewEnvironmentVariableManager()
 	manager.SetIdentity(identity)
@@ -2016,13 +2192,13 @@ func AppendRuntimeEnvironmentToFile(
 		endpointMappings,
 		resources.NetworkAccessFromRuntimeContext(runtimeContext),
 	); err != nil {
-		return w.Wrapf(err, "cannot add runtime endpoints")
+		return nil, w.Wrapf(err, "cannot add runtime endpoints")
 	}
 	environments, err := manager.All()
 	if err != nil {
-		return w.Wrapf(err, "cannot get runtime environment variables")
+		return nil, w.Wrapf(err, "cannot get runtime environment variables")
 	}
-	return appendEnvironmentVariablesToFile(ctx, filePath, environments)
+	return environments, nil
 }
 
 func appendEnvironmentVariablesToFile(
@@ -2030,7 +2206,35 @@ func appendEnvironmentVariablesToFile(
 	filePath string,
 	environments []*resources.EnvironmentVariable,
 ) error {
+	records, err := outputRecords(environments)
+	if err != nil {
+		return err
+	}
+	return writeOutputRecords(ctx, filePath, records)
+}
+
+// writeOutputRecords is the one seam every `--output-env` write passes
+// through, and therefore the one that enforces record integrity: a phase that
+// preflights its complete batch and a caller that appends a single chunk reach
+// the same check, so a direct internal caller cannot write a record the
+// supported reader would refuse. It is a backstop, not the whole-batch
+// guarantee — a caller that has already written a preceding chunk cannot be
+// given no-write refusal by a check that runs this late, which is why the
+// multi-chunk phases gather and validate everything first.
+func writeOutputRecords(
+	ctx context.Context,
+	filePath string,
+	records []outputRecord,
+) error {
 	w := wool.Get(ctx).In("resources.AppendToFile", wool.Field("filePath", filePath))
+	for index, record := range records {
+		if err := validOutputKey(record.key); err != nil {
+			return w.Wrapf(err, "cannot write output environment record %d", index)
+		}
+		if err := validOutputValue(record.line[len(record.key)+1:]); err != nil {
+			return w.Wrapf(err, "cannot write output environment carrier %s", record.key)
+		}
+	}
 	filePath = strings.TrimSpace(filePath)
 	if filePath == "" {
 		return w.NewError("output environment file path is required")
@@ -2052,6 +2256,9 @@ func appendEnvironmentVariablesToFile(
 	if err != nil && !os.IsNotExist(err) {
 		return w.Wrapf(err, "cannot read environment variables file")
 	}
+	if err = validRetainedOutputRecords(string(existing)); err != nil {
+		return w.Wrap(err)
+	}
 	var order []string
 	values := map[string]string{}
 	for _, line := range strings.Split(string(existing), "\n") {
@@ -2064,11 +2271,13 @@ func appendEnvironmentVariablesToFile(
 		}
 		values[key] = line
 	}
-	for _, env := range environments {
-		if _, seen := values[env.Key]; !seen {
-			order = append(order, env.Key)
+	for _, record := range records {
+		if _, seen := values[record.key]; !seen {
+			order = append(order, record.key)
 		}
-		values[env.Key] = fmt.Sprintf("%s=%v", env.Key, env.Value)
+		// The line serialized when the batch was checked, never converted a
+		// second time here.
+		values[record.key] = record.line
 	}
 	var content strings.Builder
 	for _, key := range order {

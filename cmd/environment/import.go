@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/pmezard/go-difflib/difflib"
@@ -281,7 +282,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		if err := environments.ValidateEnvironmentExclusions(ctx, workspace, selected); err != nil {
 			return fmt.Errorf("product intent: %w", err)
 		}
-		if err := environments.ValidateSecretPolicy(ctx, workspace, selected, intent.ServiceSecrets); err != nil {
+		if err := environments.ValidateSecretPolicy(ctx, workspace, selected, intent.ServiceSecrets, orchestration.ModuleArtifactResolverFor(workspace)); err != nil {
 			return fmt.Errorf("product intent: %w", err)
 		}
 	}
