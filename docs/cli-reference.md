@@ -109,6 +109,7 @@ Subcommands:
 - [`codefly add module`](#codefly-add-module)
 - [`codefly add runnable`](#codefly-add-runnable)
 - [`codefly add service`](#codefly-add-service)
+- [`codefly add solution`](#codefly-add-solution)
 
 ## `codefly add application`
 
@@ -308,6 +309,63 @@ Flags:
       --agent string   Instance agent to get started
       --default        Use default options
       --override       Override existing service
+```
+
+## `codefly add solution`
+
+Scaffold a solution: its backend, its page's shell, and the documents a host installs it from
+
+```
+Scaffold a solution in the one shape a solution has.
+
+A solution is two Codefly services and a page:
+
+  backend   The entry service. It presents the solution's identity, serves the
+            API the page calls, and is the workload a host installs. It is
+            what the solution is published as.
+  web       The shell that serves the page where no host shell mounts it — the
+            same ./Page a saas host federates, in a shell of its own, which an
+            authority's edge serves as the browser's one origin. The package
+            does not publish it: a host that federates the remote needs no
+            shell.
+  fe-remote The ./Page remote itself. It is an npm package, not a Codefly
+            service, so this command does not scaffold it.
+
+THE RULE THE BACKEND LIVES UNDER. A module call the authority holds to a
+PERSON — one its artifact interface admits only in person, with no intervening
+actor — is made by the PAGE, with that person's own Work Context. It is never
+relayed through the backend: a backend reaches a module on a context minted
+for the solution's own audience, so relaying such a call puts the solution
+between the person and the module, and admission refuses it. Reads and work
+that are the solution's own go through the backend as usual.
+
+The backend's language is --agent (go by default, python for the same shape).
+
+What this writes, and what stays yours: the module, both services, the
+solution manifest, the module contract, the package identity and the page
+declaration are written and each is read back through core's own validator.
+The COMPOSITION is not: which workspace composes this solution, which modules
+it pins and at what commits, and the configuration groups those modules need,
+are the composition's to say and are never guessed here.
+```
+
+```
+codefly add solution [flags]
+```
+
+Flags:
+
+```
+      --agent string                     Service agent for the backend (default: go). The backend's language is this flag, not a different shape
+      --authority-interface string       The authority interface the backend requires, as <publisher>/<name>@<range> (default "codefly.dev/authority@>=0.2.0 <0.4.0")
+      --consumes stringArray             A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract
+      --description string               Short description written to module.codefly.yaml
+      --executor string                  A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)
+      --minimum-codefly-version string   The Codefly range the package declares (default: the running release, open to the end of its major). Required when scaffolding with a build from source, which reports no release version
+      --order int                        The page's order in the host's shell (default 50)
+      --package-id string                The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it
+      --title string                     The page's title in the host's shell (default: the module name, capitalised)
+      --yes                              Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly agent`

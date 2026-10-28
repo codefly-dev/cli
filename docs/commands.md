@@ -2386,6 +2386,62 @@ contract and handler before building. See [Runnables](runnable.md).
 |------|-------------|
 | `--agent` | Agent type (required). Examples: `go-grpc`, `python-grpc`, `nextjs`, `krakend` |
 
+**`add solution`:**
+
+```sh
+codefly add solution wiki --package-id obin/wiki \
+    --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
+```
+
+Scaffolds a solution — a module a host installs and runs as a product surface —
+in the one shape a solution has. There is no shape flag: a second shape beside
+it is what produced nine solutions that do not look alike.
+
+It composes verbs that already exist (`add module`, then `add service` for each
+of the two services) and writes the documents Core already specifies, by
+marshalling Core's own types and reading each file back through Core's own
+reader. It adds no executor protocol and no new agent.
+
+What it creates:
+
+| | |
+|------|-------------|
+| `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
+| `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell |
+| `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
+| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true` |
+| `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
+| `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+
+`services/fe-remote` — the `./Page` remote itself — is an npm package, not a
+Codefly service, and is yours to author.
+
+**The rule the backend lives under.** A module call the authority holds to a
+*person* — one its artifact interface admits only in person, with no
+intervening actor — is made by the **page**, with that person's own Work
+Context. It is never relayed through the backend: a backend reaches a module on
+a context minted for the solution's own audience, so relaying such a call puts
+the solution between the person and the module and admission refuses it. Reads
+and work that are the solution's own go through the backend as usual. This is
+why the entry service declares the authority interface and the authority's hop
+and **no module edge at all** — every consumed module is reached through that
+hop, which lets through only a call the authority checked.
+
+| Flag | Description |
+|------|-------------|
+| `--package-id` | The `<owner>/<name>` identity the solution is published under. Required — nothing can derive who publishes it |
+| `--agent` | Service agent for the backend (default `go`). The backend's language is this flag, not a different shape |
+| `--consumes` | A module this solution calls, as `[<id>=]<protocol>:<module>/<service>/<endpoint>`. Repeatable. Route names only — authority is declared once, in the module contract |
+| `--executor` | A `codefly:solution` executor to name in the solution manifest. Omitted by default: Core specifies no executor protocol and none is published |
+| `--title` / `--order` | The page's title and position in the host's shell |
+| `--authority-interface` | The authority interface the backend requires |
+| `--minimum-codefly-version` | The Codefly range the package declares. Required when scaffolding with a build from source, which reports no release version |
+
+The **composition** is not scaffolded: which workspace composes the solution,
+which modules it pins and at what commits, and the configuration groups those
+modules need, are the composition's to say. The command prints each of them,
+with the failure each one causes when it is skipped.
+
 ### `codefly override service <module>/<service>`
 
 Run one service of a composed module from somewhere else on this machine,
