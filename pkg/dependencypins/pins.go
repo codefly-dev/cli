@@ -3,11 +3,12 @@ package dependencypins
 
 import (
 	"fmt"
-	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/module"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 // Plan validates selections across every module before returning each module's pins.
