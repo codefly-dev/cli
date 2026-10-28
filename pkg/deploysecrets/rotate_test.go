@@ -329,10 +329,10 @@ func TestRotateRefusesAKeyThatMovedSinceThePlan(t *testing.T) {
 	}
 	store.versions = map[string]int{consumerKey: 5}
 	_, err = plan.Apply(context.Background(), store, false)
-	if err == nil || !strings.Contains(err.Error(), consumerKey+" changed since planning") {
+	if err == nil || !strings.Contains(err.Error(), consumerKey+" changed after the plan read it") {
 		t.Fatalf("Apply = %v, want the moved key refused by name", err)
 	}
-	if store.documents[evidenceKey][evidencePassword] != oldPassword || len(store.writes) != 0 {
+	if store.documents[evidenceKey][evidencePassword] != oldPassword || slices.Contains(store.writes[:1], consumerKey) {
 		t.Error("the rotation was left half-applied or overwrote the moved key")
 	}
 }

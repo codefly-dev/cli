@@ -27,10 +27,6 @@ var (
 	secretsAllowMissing bool
 	secretsYes          bool
 	secretsModules      []string
-	secretsMintKeys     []string
-	secretsExportInput  string
-	secretsInput        string
-	secretsSupplied     string
 	secretsRotate       []string
 )
 
@@ -60,11 +56,6 @@ not. Both are reported.
 
 Values are never printed: the plan names keys and sources only.
 
---supplied names a JSON object of secret key to value for the required ones: a
-supplied value is written where nothing holds the key, never over a stored value
-and never in place of a declared generator. An empty value is accepted only for
-a key service-secrets.may-be-empty declares.
-
 --dry-run prints the plan and writes nothing. --metadata-only additionally never
 reads a stored value: it knows which remote keys exist, not what they hold.
 
@@ -87,12 +78,6 @@ restart its consumers. An identifier or signing key is never rotated.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		if secretsInput != "" {
-			return runSecretsInput(ctx, cmd)
-		}
-		if secretsExportInput != "" && (len(secretsModules) != 0 || len(secretsMintKeys) != 0 || secretsAllowMissing || secretsMetadataOnly || secretsSupplied != "") {
-			return fmt.Errorf("--export-input exports the full render without module, mint, allow-missing, metadata-only or supplied options")
-		}
 		if secretsMetadataOnly && !secretsDryRun {
 			return fmt.Errorf("--metadata-only plans without reading the store, so it cannot be applied: pass --dry-run")
 		}
@@ -119,13 +104,6 @@ restart its consumers. An identifier or signing key is never rotated.`,
 			if !slices.Contains(rendered.Modules, module) {
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
-		}
-		if secretsExportInput != "" {
-			return exportSecretsInput(secretsExportInput, env, rendered, workspaceServiceUniques(ctx, workspace, env))
-		}
-		supplied, err := readSuppliedValues(secretsSupplied, rendered, env.ServiceSecrets.MayBeEmpty)
-		if err != nil {
-			return err
 		}
 		groups := renderedByStore(rendered)
 		rotate, err := rotationKeys(rendered, groups, secretsRotate)
@@ -156,8 +134,6 @@ restart its consumers. An identifier or signing key is never rotated.`,
 				ReadPayloads: !secretsMetadataOnly,
 				Modules:      secretsModules,
 				MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
-				MintKeys:     secretsMintKeys,
-				Supplied:     supplied,
 				Configured:   configured,
 				Rotate:       readBy(group, rotate),
 			})
@@ -350,10 +326,5 @@ func init() {
 	SecretsCmd.Flags().BoolVar(&secretsAllowMissing, "allow-missing", false, "Write what can be resolved even when some properties must still be supplied")
 	SecretsCmd.Flags().BoolVarP(&secretsYes, "yes", "y", false, "Write without an interactive confirmation")
 	SecretsCmd.Flags().StringSliceVar(&secretsModules, "module", nil, "Plan only these modules' remote keys (comma-separated or repeated)")
-	SecretsCmd.Flags().StringSliceVar(&secretsMintKeys, "mint", nil, "Acknowledge first creation of these signing secret keys (comma-separated or repeated); never rotate existing keys")
-	SecretsCmd.Flags().StringVar(&secretsExportInput, "export-input", "", "Export declarative planner inputs for execution by an infrastructure-owned publisher; reads no stored values")
-	SecretsCmd.Flags().StringVar(&secretsInput, "input", "", "Run exported planner inputs under an infrastructure-bound Azure workload identity")
-	SecretsCmd.Flags().StringVar(&secretsSupplied, "supplied", "", "JSON object of operator values by secret key, for keys nothing stores or generates; never printed")
-	SecretsCmd.MarkFlagsMutuallyExclusive("export-input", "input")
 	SecretsCmd.Flags().StringSliceVar(&secretsRotate, "rotate", nil, "Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)")
 }

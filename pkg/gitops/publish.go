@@ -2201,7 +2201,6 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 		Head:  github.Ptr(prepared.plan.PromotionBranch),
 		Base:  github.Ptr(prepared.plan.BaseBranch),
 		Body:  github.Ptr(body),
-		Draft: github.Ptr(true),
 	})
 	if err != nil {
 		return "", 0, fmt.Errorf("open promotion pull request: %w", err)

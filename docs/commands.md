@@ -2761,8 +2761,8 @@ resolved for blue rather than copied from a sibling.
 For a placement-only coordinate, the product may select its own source at import:
 
 ```bash
-codefly environment import azure --coordinate-contract coordinate.json \
-  --configuration-source hosted-azure --configuration-profiles azure,local
+codefly environment import staging --coordinate-contract coordinate.json \
+  --configuration-source hosted --configuration-profiles staging,local
 ```
 
 These options use the same importer and profile inheritance. A source conflicting

@@ -2125,7 +2125,6 @@ codefly deploy gitops <subcommand>
 
 Subcommands:
 
-- [`codefly deploy gitops cell`](#codefly-deploy-gitops-cell)
 - [`codefly deploy gitops observe`](#codefly-deploy-gitops-observe)
 - [`codefly deploy gitops plan`](#codefly-deploy-gitops-plan)
 - [`codefly deploy gitops publish`](#codefly-deploy-gitops-publish)
@@ -2133,20 +2132,6 @@ Subcommands:
 - [`codefly deploy gitops render`](#codefly-deploy-gitops-render)
 - [`codefly deploy gitops rollback`](#codefly-deploy-gitops-rollback)
 - [`codefly deploy gitops snapshot`](#codefly-deploy-gitops-snapshot)
-
-## `codefly deploy gitops cell`
-
-Derive the cell file from published module trees without rebuilding images
-
-```
-codefly deploy gitops cell [flags]
-```
-
-Flags:
-
-```
-      --env string   Environment to promote (default "local")
-```
 
 ## `codefly deploy gitops observe`
 
@@ -2397,11 +2382,6 @@ not. Both are reported.
 
 Values are never printed: the plan names keys and sources only.
 
---supplied names a JSON object of secret key to value for the required ones: a
-supplied value is written where nothing holds the key, never over a stored value
-and never in place of a declared generator. An empty value is accepted only for
-a key service-secrets.may-be-empty declares.
-
 --dry-run prints the plan and writes nothing. --metadata-only additionally never
 reads a stored value: it knows which remote keys exist, not what they hold.
 
@@ -2429,17 +2409,13 @@ codefly deploy secrets [flags]
 Flags:
 
 ```
-      --allow-missing         Write what can be resolved even when some properties must still be supplied
-      --dry-run               Print the plan and write nothing
-      --env string            Environment whose rendered ExternalSecrets to seed (default "local")
-      --export-input string   Export declarative planner inputs for execution by an infrastructure-owned publisher; reads no stored values
-      --input string          Run exported planner inputs under an infrastructure-bound Azure workload identity
-      --metadata-only         With --dry-run: never read a stored value, only which remote keys exist
-      --mint strings          Acknowledge first creation of these signing secret keys (comma-separated or repeated); never rotate existing keys
-      --module strings        Plan only these modules' remote keys (comma-separated or repeated)
-      --rotate strings        Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
-      --supplied string       JSON object of operator values by secret key, for keys nothing stores or generates; never printed
-  -y, --yes                   Write without an interactive confirmation
+      --allow-missing    Write what can be resolved even when some properties must still be supplied
+      --dry-run          Print the plan and write nothing
+      --env string       Environment whose rendered ExternalSecrets to seed (default "local")
+      --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
+      --module strings   Plan only these modules' remote keys (comma-separated or repeated)
+      --rotate strings   Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
+  -y, --yes              Write without an interactive confirmation
 ```
 
 ## `codefly deploy service`

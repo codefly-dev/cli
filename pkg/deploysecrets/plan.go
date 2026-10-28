@@ -11,8 +11,6 @@
 //     unless the operator names its generated key with --rotate (rotate.go);
 //  2. propagate — a configuration value is one value however many services read
 //     it, so a key another remote secret already holds is copied from there;
-//  3. supply — a key the operator handed this run, by secret key, because no
-//     key holds it and nothing can derive it;
 //  3. configured — the environment's own configuration holds the value, in the
 //     `configurations/<profile>/<group>.secret.env` that `codefly config set`
 //     writes (see configured.go), so the operator's existing file seeds the
@@ -63,9 +61,6 @@ const (
 	// ActionGenerate: the property is absent and generated at random, as the
 	// environment declares.
 	ActionGenerate Action = "generate"
-	// ActionSupply: the property is absent and written from the value the
-	// operator supplied for its secret key.
-	ActionSupply Action = "supply"
 	// ActionRequire: the property is absent and nothing can produce it; the
 	// operator supplies it.
 	ActionRequire Action = "require"
@@ -117,7 +112,6 @@ type Plan struct {
 	Secrets []SecretPlan
 
 	writes []pendingWrite
-	states []*remoteState
 	// rotating makes Apply all-or-nothing: a rotation half-written is a source
 	// and its derived values disagreeing, so a failed write restores the rest.
 	rotating bool
@@ -203,13 +197,6 @@ type Inputs struct {
 	// empty, from service-secrets.may-be-empty. A present-but-empty property is
 	// otherwise refused.
 	MayBeEmpty []string
-	// MintKeys explicitly acknowledges first creation of lifelong signing keys.
-	MintKeys []string
-	// Supplied are operator values for keys no remote key holds and no generator
-	// declares, by secret key. A supplied value never replaces a stored one and
-	// never stands in for a declared generator. ValidateSupplied checks them
-	// against the whole render first.
-	Supplied map[string]string
 	// Configured are the values the environment's own configuration files hold,
 	// by the secret key a render reads each one under — ReadConfigured. A
 	// property no remote key holds is resolved from here before a generator is
@@ -260,7 +247,6 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan.states = states
 
 	generators, err := generatorIndex(in.Generators, in.Services)
 	if err != nil {
@@ -291,7 +277,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		for _, property := range state.secret.Properties {
 			location := propertyLocation{state.secret.RemoteKey, property.Property}
 			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, in.Configured,
-				aliases[location], rotating, in.MayBeEmpty, in.MintKeys, in.Supplied)
+				aliases[location], rotating, in.MayBeEmpty)
 			if err != nil {
 				return nil, err
 			}
@@ -300,7 +286,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 					Source: "derived: the stored URL's password follows rotated " + strings.Join(rewrite.from, ", ")}
 				value = rewrite.value
 			}
-			if value != "" || propertyPlan.Action == ActionEmpty || propertyPlan.Action == ActionSupply {
+			if value != "" || propertyPlan.Action == ActionEmpty {
 				changes[property.Property] = value
 			}
 			secretPlan.Properties = append(secretPlan.Properties, propertyPlan)
@@ -369,12 +355,8 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 				return
 			}
 			state := &remoteState{secret: secret, description: description}
-			if description.Exists && !description.HasVersion {
-				fail(fmt.Errorf("remote key %s exists without a readable version; refusing to regenerate retained material", secret.RemoteKey))
-				return
-			}
 			switch {
-			case !description.Exists:
+			case !description.Exists || !description.HasVersion:
 				state.document = map[string]string{}
 			case in.ReadPayloads:
 				document, err := in.Store.Read(ctx, secret.RemoteKey)
@@ -382,14 +364,6 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 					return
 				}
 				state.document = document
-				current, err := in.Store.Describe(ctx, secret.RemoteKey)
-				if fail(wrapKeyError("describe after read", secret.RemoteKey, err)) {
-					return
-				}
-				if current != description {
-					fail(fmt.Errorf("remote key %s changed while reading; rebuild the plan", secret.RemoteKey))
-					return
-				}
 			}
 			// An empty stored value is refused, because an empty credential is
 			// almost always a half-finished seed. Two things narrow that:
@@ -561,14 +535,10 @@ func refuseSharedSigningKey(state *remoteState, property gitops.RenderedSecretPr
 // only consulted for a property nothing holds.
 func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
 	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string,
-	configured map[string]ConfiguredValue, keys []string, rotating map[string]bool, mayBeEmpty, mintKeys []string, supplied map[string]string) (PropertyPlan, string, error) {
+	configured map[string]ConfiguredValue, keys []string, rotating map[string]bool, mayBeEmpty []string) (PropertyPlan, string, error) {
 	lookup := property
 	lookup.Keys = keys
 	declaredKey, generator, err := declaredGenerator(lookup, generators)
-	if err != nil {
-		return PropertyPlan{}, "", err
-	}
-	suppliedValue, isSupplied, err := suppliedFor(lookup, supplied, declaredKey)
 	if err != nil {
 		return PropertyPlan{}, "", err
 	}
@@ -581,13 +551,27 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 			return PropertyPlan{}, "", err
 		}
 	}
-	holders, unread, holderValue, err := configurationHolders(state, property, lookup, states)
-	if err != nil {
-		return PropertyPlan{}, "", err
-	}
-	if len(holders) > 0 {
-		if err = refuseSuppliedConflict(property, isSupplied, suppliedValue, holders[0], holderValue); err != nil {
-			return PropertyPlan{}, "", err
+	var holders, unread []string
+	var holderValue string
+	for _, other := range states {
+		for _, candidate := range other.secret.Properties {
+			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
+				continue
+			}
+			location := other.secret.RemoteKey + "#" + candidate.Property
+			if !other.known() {
+				unread = append(unread, location)
+				continue
+			}
+			value, present := other.document[candidate.Property]
+			if !present {
+				continue
+			}
+			if len(holders) > 0 && value != holderValue {
+				return PropertyPlan{}, "", fmt.Errorf("one configuration value cannot be two: different values in %s and %s; resolve it before planning", holders[0], location)
+			}
+			holders = append(holders, location)
+			holderValue = value
 		}
 	}
 	// A configured value disagreeing with what the store holds is refused, on
@@ -608,17 +592,12 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 		return rotatedProperty(state, property, declaredKey, generated[declaredKey])
 	}
 	if state.known() {
-		if _, present := state.document[property.Property]; present {
+		if stored, present := state.document[property.Property]; present {
+			if len(holders) > 0 && stored != holderValue {
+				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
+					strings.Join(property.Keys, ", "), state.secret.RemoteKey, holders[0])
+			}
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
-		}
-	}
-	if generator.Format == environments.SecretGeneratorFormatEd25519PKCS8 && len(holders) == 0 && len(unread) == 0 {
-		if state.description.Exists {
-			return PropertyPlan{}, "", fmt.Errorf("remote key %s exists but lacks signing key %s; restore its original material, never re-mint it", state.secret.RemoteKey, declaredKey)
-		}
-		if !slices.Contains(mintKeys, declaredKey) {
-			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
-				Source: "first signing-key creation requires --mint " + declaredKey}, "", nil
 		}
 	}
 	fallback, value, err := fallbackSource(lookup, generators, generated, configuredValue, hasConfigured, mayBeEmpty)
@@ -638,104 +617,9 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 	case len(unread) > 0:
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified,
 			Source: fmt.Sprintf("may propagate from %s (not read); else %s", strings.Join(unread, ", "), fallback.Source)}, "", nil
-	case isSupplied:
-		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionSupply, Source: "supplied by the operator"}, suppliedValue, nil
 	default:
 		return fallback, value, nil
 	}
-}
-
-// configurationHolders lists every location holding this property's
-// configuration value — this key's own property and any other property read
-// under one of its keys — and the one value they agree on. Unread keys are
-// listed apart; two read holders that disagree are refused.
-func configurationHolders(state *remoteState, property, lookup gitops.RenderedSecretProperty, states []*remoteState) (holders, unread []string, holderValue string, err error) {
-	for _, other := range states {
-		for _, candidate := range other.secret.Properties {
-			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
-				continue
-			}
-			location := other.secret.RemoteKey + "#" + candidate.Property
-			if !other.known() {
-				unread = append(unread, location)
-				continue
-			}
-			value, present := other.document[candidate.Property]
-			if !present {
-				continue
-			}
-			if len(holders) > 0 && value != holderValue {
-				return nil, nil, "", fmt.Errorf("one configuration value cannot be two: different values in %s and %s; resolve it before planning", holders[0], location)
-			}
-			holders = append(holders, location)
-			holderValue = value
-		}
-	}
-	return holders, unread, holderValue, nil
-}
-
-// suppliedFor is the operator's value for a property, looked up by every secret
-// key it is read under. Two keys of one configuration value supplied twice must
-// agree, as two stored copies must, and a declared generator is never overridden.
-func suppliedFor(property gitops.RenderedSecretProperty, supplied map[string]string, declaredKey string) (string, bool, error) {
-	var value, from string
-	for _, key := range property.Keys {
-		candidate, ok := supplied[key]
-		if !ok {
-			continue
-		}
-		if from != "" && candidate != value {
-			return "", false, fmt.Errorf("one configuration value cannot be two: %s and %s are supplied differently", from, key)
-		}
-		value, from = candidate, key
-	}
-	if from != "" && declaredKey != "" {
-		return "", false, fmt.Errorf("%s is both supplied and declared by service-secrets.generate; drop the supplied value", declaredKey)
-	}
-	return value, from != "", nil
-}
-
-// refuseSuppliedConflict refuses a supplied value that differs from one already
-// held at location: a supplied value never replaces a stored one.
-func refuseSuppliedConflict(property gitops.RenderedSecretProperty, isSupplied bool, supplied, location, held string) error {
-	if !isSupplied || supplied == held {
-		return nil
-	}
-	return fmt.Errorf("the value supplied for %s differs from the one %s holds; a supplied value never replaces a stored one",
-		strings.Join(property.Keys, ", "), location)
-}
-
-// ValidateSupplied refuses supplied values the render cannot use: a key no
-// rendered property reads (a typo would otherwise be dropped silently), a key
-// that is not a configuration key, and an empty value for a key the environment
-// does not declare may-be-empty.
-func ValidateSupplied(rendered gitops.RenderedEnvironment, supplied map[string]string, mayBeEmpty []string) error {
-	read := map[string]bool{}
-	for _, secret := range rendered.Secrets {
-		for _, property := range secret.Properties {
-			for _, key := range property.Keys {
-				read[key] = true
-			}
-		}
-	}
-	var unknown, empty []string
-	for key, value := range supplied {
-		switch {
-		case !configurationKey(key) || !read[key]:
-			unknown = append(unknown, key)
-		case value == "" && !slices.Contains(mayBeEmpty, key):
-			empty = append(empty, key)
-		}
-	}
-	slices.Sort(unknown)
-	slices.Sort(empty)
-	if len(unknown) > 0 {
-		return fmt.Errorf("supplied keys no rendered property reads: %s", strings.Join(unknown, ", "))
-	}
-	if len(empty) > 0 {
-		return fmt.Errorf("supplied empty values for keys not declared in service-secrets.may-be-empty: %s", strings.Join(empty, ", "))
-	}
-	return nil
 }
 
 // fallbackSource is what produces a property no remote key holds: the
@@ -820,15 +704,6 @@ func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]
 	if err := plan.ValidateApply(allowMissing); err != nil {
 		return nil, err
 	}
-	if store.Name() != plan.Store {
-		return nil, fmt.Errorf("plan belongs to a different secret store")
-	}
-	// Check propagation sources as well as destinations before the first write.
-	for _, state := range plan.states {
-		if err := unchangedState(ctx, store, state); err != nil {
-			return nil, err
-		}
-	}
 	var written []Written
 	for i, write := range plan.writes {
 		if err := unchanged(ctx, store, &write); err != nil {
@@ -849,29 +724,6 @@ func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]
 		written = append(written, Written{Key: write.key, Properties: write.changed, Version: version})
 	}
 	return written, nil
-}
-
-// This is an optimistic check, not an atomic compare-and-set. Neither backend's
-// version creation API offers that guarantee; operators must serialize writers.
-func unchangedState(ctx context.Context, store Store, state *remoteState) error {
-	key := state.secret.RemoteKey
-	description, err := store.Describe(ctx, key)
-	if err != nil {
-		return wrapKeyError("recheck", key, err)
-	}
-	if description != state.description {
-		return fmt.Errorf("remote key %s changed since planning; rebuild the plan", key)
-	}
-	if description.HasVersion {
-		document, err := store.Read(ctx, key)
-		if err != nil {
-			return wrapKeyError("recheck", key, err)
-		}
-		if !maps.Equal(document, state.document) {
-			return fmt.Errorf("remote key %s changed since planning; rebuild the plan", key)
-		}
-	}
-	return nil
 }
 
 // unchanged refuses a write to a key that is no longer as the plan read it: a

@@ -48,8 +48,10 @@ func FromEnvironment(lookup func(string) (string, bool)) Signer {
 	return signer
 }
 
-// newReleaseSigner selects exactly one configured release custody: Azure Key
-// Vault, Google Cloud KMS, or Vault Transit. Conflicting selections are refused.
+// newReleaseSigner selects the one custody the environment configures: Cloud
+// KMS when CODEFLY_RELEASE_KMS_KEY is set and no Transit variable is, Vault
+// Transit otherwise. Both configured is refused, naming each, rather than
+// one silently winning.
 func newReleaseSigner(lookup func(string) (string, bool)) (Signer, error) {
 	if lookup == nil {
 		lookup = os.LookupEnv
@@ -59,13 +61,6 @@ func newReleaseSigner(lookup func(string) (string, bool)) (Signer, error) {
 		if value, _ := lookup(name); value != "" {
 			transit = append(transit, name)
 		}
-	}
-	if azureCustodyConfigured(lookup) {
-		kms, _ := lookup("CODEFLY_RELEASE_KMS_KEY")
-		if kms != "" || len(transit) > 0 {
-			return nil, errors.New("two release custodies are configured: Azure Key Vault and Cloud KMS or Vault Transit; unset one")
-		}
-		return NewAzureKeyVault(lookup)
 	}
 	if kms, _ := lookup("CODEFLY_RELEASE_KMS_KEY"); kms != "" {
 		if len(transit) > 0 {

@@ -15,7 +15,7 @@ import (
 // Signer is core's custody boundary. Core owns envelope construction and verification.
 type Signer = solutionhost.Signer
 
-var ErrNoIdentity = errors.New("no delivery signing key: release publishing requires VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY (Vault Transit custody), CODEFLY_RELEASE_KMS_KEY (Cloud KMS custody), or CODEFLY_RELEASE_AZURE_KEY and CODEFLY_RELEASE_AZURE_TENANT (Azure Key Vault custody)")
+var ErrNoIdentity = errors.New("no delivery signing key: release publishing requires VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY (Vault Transit custody) or CODEFLY_RELEASE_KMS_KEY (Cloud KMS custody)")
 var ErrSignature = errors.New("delivery document signature verification failed")
 
 // Unavailable records why this process cannot sign.
