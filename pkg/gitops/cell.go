@@ -164,6 +164,22 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if err = refuseUnrenderedModules(ctx, workspace, env, result.Modules); err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
+	// Undelivered modules have no workload identity the cell can admit.
+	delivered := map[string]bool{}
+	for _, namespace := range file.Namespaces {
+		for _, workload := range namespace.Workloads {
+			delivered[workload.Service] = true
+		}
+	}
+	for ni := range file.Namespaces {
+		for wi := range file.Namespaces[ni].Workloads {
+			workload := &file.Namespaces[ni].Workloads[wi]
+			for ei := range workload.Endpoints {
+				endpoint := &workload.Endpoints[ei]
+				endpoint.Consumers = slices.DeleteFunc(endpoint.Consumers, func(service string) bool { return !delivered[service] })
+			}
+		}
+	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
@@ -203,6 +219,34 @@ func refuseUnrenderedModules(ctx context.Context, workspace *resources.Workspace
 	}
 	if len(missing) == 0 {
 		return nil
+	}
+	previousPath, err := CellPath(workspace, env)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(previousPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read previous cell before checking missing renders: %w", err)
+	}
+	if err == nil {
+		previous, parseErr := cellfile.Parse(data)
+		if parseErr != nil {
+			return fmt.Errorf("read previous cell before checking missing renders: %w", parseErr)
+		}
+		if previous.Environment != env.Name || previous.Coordinate != env.Host.Coordinate || previous.Component != env.Host.Component || previous.TrustDomain != env.Host.TrustDomain || previous.Domain != env.Host.Domain {
+			return errors.New("previous cell identity differs from this environment; cannot establish which modules were delivered")
+		}
+		delivered := make(map[string]bool, len(previous.Namespaces))
+		for _, namespace := range previous.Namespaces {
+			if namespace.Module == "" {
+				return errors.New("previous cell namespace names no module; cannot establish which modules were delivered")
+			}
+			delivered[namespace.Module] = true
+		}
+		missing = slices.DeleteFunc(missing, func(module string) bool { return !delivered[module] })
+		if len(missing) == 0 {
+			return nil
+		}
 	}
 	sort.Strings(missing)
 	commands := make([]string, 0, len(missing))
