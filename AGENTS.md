@@ -84,6 +84,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 ### Extending the CLI
 - **Add a new command** (Cobra wiring, help, MCP exposure) → [docs/runbooks/add-a-command.md](docs/runbooks/add-a-command.md)
 - **Scaffold a solution** (`codefly add solution`: the one shape, its two services, and what the composition still owes it) → [docs/commands.md#add-solution](docs/commands.md)
+- **Check a solution conforms** (`codefly doctor solution`: stable diagnostic codes, `--json`; the shape is checkable, not a survey) → [docs/commands.md](docs/commands.md)
 - **Rebuild the CLI and agents from local source** → [docs/runbooks/update-agents.md](docs/runbooks/update-agents.md)
 - **Point a workspace at a coordinate** (import explicit `codefly/coordinate/v1` environment declarations) → [docs/commands.md#codefly-environment](docs/commands.md)
 - **Export a module's API contracts** → [docs/commands.md#generate-contracts](docs/commands.md#generate-contracts)
