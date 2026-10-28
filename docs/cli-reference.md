@@ -1028,7 +1028,7 @@ Flags:
       --cache-scope string                Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
       --cache-to stringArray              Registry cache repository to publish (repeatable; omit for read-only builds)
       --changed-file strings              Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --disposable                        Give each validation/test flow a fresh resource scope and destroy its owned runtime resources afterward (for disposable fixtures only)
+      --disposable                        Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
       --fail-fast                         Stop native tests and service scheduling after the first failure (default true)
       --fail-on-vuln                      Fail audit on HIGH or CRITICAL vulnerabilities (default true)
       --format string                     Final CI report format: text or json (default "text")
@@ -1069,7 +1069,7 @@ Flags:
       --all                      Select every service explicitly
       --base string              Base Git revision for affected-service discovery
       --changed-file strings     Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --disposable               Give each validation/test flow a fresh resource scope and destroy its owned runtime resources afterward (for disposable fixtures only)
+      --disposable               Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
       --fail-fast                Stop native tests and service scheduling after the first failure (default true)
       --format string            Final CI report format: text or json (default "text")
       --head string              Head Git revision (defaults to HEAD when --base is set)

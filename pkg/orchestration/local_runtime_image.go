@@ -20,6 +20,9 @@ import (
 // Stock-image agents may have a builder but emit no recipe. They keep their
 // own image selection; no agent-name or release-version table is involved.
 func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
+	if err := runner.world.checkDisposableImagePolicy(); err != nil {
+		return "", err
+	}
 	if runner.remoteEnvironment != nil || runner.runtimeContext != resources.RuntimeContextContainer {
 		return "", nil
 	}

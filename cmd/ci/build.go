@@ -94,6 +94,9 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 	flow.WithBuildCache(cache)
 	flow.WithRebuild(buildCacheFlags.Rebuild())
 	flow.WithImageSBOM(ciImageSBOM)
+	if disposableRuntime {
+		flow.WithDisposableImages()
+	}
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)
 	flow.WithInitOnly(initOnly)

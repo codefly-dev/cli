@@ -77,6 +77,32 @@ running development container; disposable tests explicitly authorize Destroy
 for their own fresh scope. Neither a prior run nor a retained fixture scope is
 a cleanup target. Both teardown errors remain part of the gate result.
 
+Disposable flows also isolate **host-executed image recipe outputs**. Artifact
+builds and runtime initialization during lint, compile and test use a fresh
+flow-owned image namespace, including their runtime dependencies. The actual
+destination participates in input identity and cache admission. Runtime images
+retain platform selection, input-mutation checks and canonical digest handoff;
+image SBOM subjects name the actual output and loaded image ID. Built images
+are retained: this policy does not authorize image deletion or restoration.
+
+This mode currently supports independent single-recipe services with pure
+runtime dependencies. Selected build-stage prerequisites (including schema and
+legacy dependencies), multiple recipes in one plan, unavailable input identity,
+push and registry cache exports are **errors**, not successful skips. Admission
+checks the selected roots and their runtime closure before scheduling or loading
+managers; a runtime dependency's build prerequisite also refuses. Verified plan
+counts are checked before prefetch or host builder provisioning and again before
+execution. Read-only cache imports remain supported. Ordinary unscoped CI keeps
+its existing prerequisite ordering and image names.
+
+There is no producer-image input rebinding contract: renaming a producer output
+must not let a dependent recipe silently consume an old shared image. Do not
+relabel dependencies or alter fixtures to evade this restriction. A successful
+input fingerprint does not prove independence: undeclared image inputs, mutable
+network downloads, pulled bases and legacy agent-owned effects remain outside
+this host-output guarantee. This is not engine-wide isolation or general
+qualification of every copied conformance fixture.
+
 Audit and SBOM phases also close their own service-scoped builder connection
 after use, including load failures. A later build or runtime flow must start an
 agent under its own recovery scope, not reuse a static builder that inherited

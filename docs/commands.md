@@ -4085,6 +4085,20 @@ default gate is `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
 `sbom`, and `build`; reports retain typed integrity, drift, audit, and artifact
 evidence.
 
+`ci run --disposable` additionally scopes host-built image outputs in artifact
+builds and lint/compile/test runtime initialization, including runtime
+dependencies. It currently requires independent single-recipe services:
+selected build-stage prerequisites (including schema and legacy edges),
+multi-recipe plans and unknown image input identity fail explicitly. The
+selected runtime closure is checked too, so a build prerequisite of a runtime
+dependency cannot bypass admission. This limitation does not change ordinary
+unscoped prerequisite ordering described above. `ci test --disposable` uses the
+same runtime image policy. Push and registry cache exports (`--cache-to`) are
+refused; read-only cache imports are allowed. Scoped images remain retained;
+runtime teardown does not grant image-cleanup authority. Hidden/undeclared
+image inputs and legacy agent-owned effects are not qualified by this policy.
+See [disposable invocation limits](agent-ci-port-isolation.md#disposable-invocations).
+
 `codefly ci build` and the build phase of `codefly ci run` accept
 `--image-sbom`, which requires a digest-bound CycloneDX inventory for every
 image the build produces. Each document is written under `sbom/image/` and named

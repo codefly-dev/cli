@@ -179,6 +179,7 @@ type ScheduleOptions struct {
 	Jobs                  int
 	FailFast              bool
 	LockDependencyClosure bool
+	DisposableImages      bool
 	Phase                 string
 	Suite                 string
 	RuntimeContext        string
@@ -469,6 +470,11 @@ func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, 
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
+	}
+	if options.DisposableImages {
+		if err = checkDisposablePlan(ctx, workspace, plan); err != nil {
+			return nil, err
+		}
 	}
 	stage := scheduleStage(options)
 	runtimeDependencies := dependencies
