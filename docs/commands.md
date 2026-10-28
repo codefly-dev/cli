@@ -3034,6 +3034,22 @@ release commit also:
   in full. A catalog that no longer matches its contract files is refused —
   run `codefly generate contracts` and commit it first.
 
+**Agents the command starts, and what ends them.** Reading each service's
+exported endpoints loads that service, which starts its agent as a child
+process. The command retires them on return: the cached connections are
+closed, and the close is cooperative — Core signals the agent, waits for it to
+reap its own children (user binaries, containers) and only then forces exit, so
+a shutdown that completes is a clean one. Cancelling the command (Ctrl-C) takes
+the same path, because the reap is deferred rather than conditional on success.
+
+It retires the agents **that run of the command started**. An agent left
+running by an earlier command — a version of the CLI before this retirement
+existed, for instance — is not adopted or reaped here: it is a separate process
+that outlived its own command, and `codefly recover process <PID> --preview`
+then `--expect FILE --graceful` is how one is retired explicitly, by identity
+and one at a time, with no group or registry effect.
+
+
 The services and modules are found through `workspace.codefly.yaml` and each
 `module.codefly.yaml` — never by searching the tree, so a fixture workspace
 elsewhere in the repository is not touched, and never through the machine-local

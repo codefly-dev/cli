@@ -78,13 +78,17 @@ against what's on disk, without writing anything.
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 		// This command loads service builders to read their endpoints
-		// (generators.LoadServiceEndpoints -> instance.LoadBuilder), which
-		// spawns an agent subprocess per service. Closing the cached
-		// connections is what ends them: the agent's own Serve installs a
-		// SIGTERM handler and shuts down inside the parent's window. Without
-		// this, every `generate contracts` pass left its agents running — eight
-		// live private go-grpc records accumulated across two regenerations of
-		// one workspace. `generate client` already reaps the same way.
+		// (generators.LoadServiceEndpoints -> services.Load, which spawns the
+		// agent, then instance.LoadBuilder), so an agent subprocess exists per
+		// service. ClearAgents closes the cached connections, and the close is
+		// itself graceful in Core (services/agent.go: SIGTERM, wait, SIGKILL
+		// fallback) so the agent reaps its own children first. Without this,
+		// every `generate contracts` pass left its agents running — eight live
+		// private go-grpc records accumulated across two regenerations of one
+		// workspace. `generate client` already reaps the same way.
+		//
+		// It ends the processes THIS command started, which is all it claims:
+		// an agent already running from another command is not its business.
 		defer services.ClearAgents()
 
 		if contractsFormat != "text" && contractsFormat != "json" {

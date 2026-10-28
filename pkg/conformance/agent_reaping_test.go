@@ -8,14 +8,21 @@ import (
 	"testing"
 )
 
-// TestEveryCommandThatLoadsAgentsReapsThem stops a command from spawning agent
-// subprocesses and leaving them running.
+// TestNoCommandFileOmitsAgentReaping is a TEXTUAL omission detector, and
+// nothing more: it reads source as text and asks whether a reaping call
+// appears. It catches the omission that actually happened — a command that
+// loads agents with no reap anywhere in its file — and it is defeated by
+// anything that merely mentions the call, a `// TODO: ClearAgents` comment
+// included. It is a cheap backstop against the same slip recurring, not proof
+// that any command reaps correctly, and it is deliberately not a call-graph
+// analysis.
 //
-// Loading a builder or runtime starts an agent process per service. Closing the
-// cached connections is what ends them — the agent's own Serve installs a
-// SIGTERM handler and shuts down inside the parent's window — so a command that
-// loads agents and never calls services.ClearAgents leaks one process per
-// service, every invocation.
+// Loading a service starts an agent process. ClearAgents closes the cached
+// connections and Core's close is graceful in itself (services/agent.go:
+// SIGTERM, wait, SIGKILL fallback), so a command that loads agents and never
+// reaps leaks one process per service, every invocation. It retires the
+// processes that command started; agents owned by another command are not
+// affected.
 //
 // This is not hypothetical: `generate contracts` loaded builders through
 // generators.LoadServiceEndpoints and reaped nothing, while its sibling
@@ -26,10 +33,13 @@ import (
 // A command that deliberately hands its agents to something longer-lived
 // (a server, the MCP host) still has to say so by name below, so the exemption
 // is a decision on the record rather than an absence.
-func TestEveryCommandThatLoadsAgentsReapsThem(t *testing.T) {
+func TestNoCommandFileOmitsAgentReaping(t *testing.T) {
 	root := repositoryRoot(t)
 	// Calls that start an agent subprocess for a service.
-	spawns := []string{"LoadBuilder(", "LoadRuntime(", "LoadServiceEndpoints("}
+	// services.Load is where the agent process is actually started;
+	// LoadBuilder/LoadRuntime then attach to it. All of them are listed because
+	// a command reaching any of them has an agent to answer for.
+	spawns := []string{"services.Load(", "LoadBuilder(", "LoadRuntime(", "LoadServiceEndpoints("}
 	// Reaping, however the command spells it.
 	reaps := []string{"ClearAgents", "ClearAgent(", "RegisterCleanup(services.ClearAgents"}
 
