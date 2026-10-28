@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -231,10 +232,11 @@ func TestDisposableImagesEngineQualification(t *testing.T) {
 	for _, phase := range []string{"lint", "compile", "test", "build"} {
 		before := len(disposableBuildCalls(t, evidence))
 		root := disposableCommandWorkspace(t)
-		output, err := disposableCommand(t, cli, root, phase).CombinedOutput()
+		command := disposableCommand(t, cli, root, phase)
+		output, err := command.CombinedOutput()
+		require.NoError(t, saveDisposableCommandEvidence(evidence, phase, command, output, err))
 		require.NoError(t, err, "%s: %s", phase, output)
 		assertDisposableCommandDelivery(t, root, phase, true)
-		require.NoError(t, os.WriteFile(filepath.Join(evidence, phase+".log"), output, 0600))
 		for _, call := range disposableBuildCalls(t, evidence)[before:] {
 			ref := disposableBuiltRef(call)
 			require.False(t, seen[ref], "sequential flows must not reuse destinations")
@@ -246,23 +248,29 @@ func TestDisposableImagesEngineQualification(t *testing.T) {
 	barrier := t.TempDir()
 	beforeConcurrent := disposableBuildCalls(t, evidence)
 	var commands []*exec.Cmd
+	var waits []error
 	var outputs [2]bytes.Buffer
 	for i := 0; i < 2; i++ {
 		root := disposableCommandWorkspace(t)
 		command := disposableCommand(t, cli, root, "build", "CODEFLY_TEST_IMAGE_BARRIER="+barrier, fmt.Sprintf("CODEFLY_TEST_IMAGE_PARTICIPANT=%d", i))
 		command.Stdout, command.Stderr = &outputs[i], &outputs[i]
-		if err := command.Start(); err != nil {
-			for _, started := range commands {
-				_ = started.Wait()
-			}
-			require.NoError(t, err)
-		}
 		commands = append(commands, command)
+		startErr := command.Start()
+		waits = append(waits, startErr)
+		if startErr != nil {
+			break
+		}
 	}
-	var waits []error
-	for _, command := range commands {
-		waits = append(waits, command.Wait())
+	for i, command := range commands {
+		if waits[i] == nil {
+			waits[i] = command.Wait()
+		}
 	}
+	var captureErrors []error
+	for i, command := range commands {
+		captureErrors = append(captureErrors, saveDisposableCommandEvidence(evidence, fmt.Sprintf("concurrent-%d", i), command, outputs[i].Bytes(), waits[i]))
+	}
+	require.NoError(t, errors.Join(captureErrors...))
 	for i, err := range waits {
 		require.NoError(t, err, "%s", outputs[i].Bytes())
 	}
@@ -275,7 +283,9 @@ func TestDisposableImagesEngineQualification(t *testing.T) {
 	for _, fault := range []string{"CODEFLY_TEST_IMAGE_AFTER_BUILD_ERROR=1", "CODEFLY_TEST_PEER_SBOM_ERROR=1"} {
 		root := disposableCommandWorkspace(t)
 		before := len(disposableBuildCalls(t, evidence))
-		output, err := disposableCommand(t, cli, root, "build", fault).CombinedOutput()
+		command := disposableCommand(t, cli, root, "build", fault)
+		output, err := command.CombinedOutput()
+		require.NoError(t, saveDisposableCommandEvidence(evidence, "fault-"+strings.Split(fault, "=")[0], command, output, err))
 		require.Error(t, err, "fault must fail: %s", output)
 		require.Contains(t, string(output), "intentional")
 		created := disposableBuildCalls(t, evidence)[before:]
@@ -389,4 +399,108 @@ func disposableOptionalObservation(t *testing.T, ref string) []byte {
 		return []byte("absent")
 	}
 	return output
+}
+
+// Save before interpreting the outcome. A failed command may have created an
+// owned image, and temporary workspaces are removed even when assertions fail.
+func saveDisposableCommandEvidence(evidence, label string, command *exec.Cmd, output []byte, runErr error) error {
+	destination := filepath.Join(evidence, "commands", label)
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+	failures := []error{os.WriteFile(filepath.Join(destination, "output.log"), output, 0600)}
+	result := struct {
+		Args      []string          `json:"args"`
+		Directory string            `json:"directory"`
+		ExitCode  *int              `json:"exit_code"`
+		Error     string            `json:"error,omitempty"`
+		Files     map[string]string `json:"files"`
+	}{Args: command.Args, Directory: command.Dir, Files: map[string]string{}}
+	if command.ProcessState != nil {
+		code := command.ProcessState.ExitCode()
+		result.ExitCode = &code
+	}
+	if runErr != nil {
+		result.Error = runErr.Error()
+	}
+	files := []string{"workspace.codefly.yaml", "modules/app/module.codefly.yaml"}
+	for _, service := range []string{"subject", "dependency"} {
+		for _, name := range []string{"service.codefly.yaml", "code/payload", ".protocol-test/calls.jsonl"} {
+			files = append(files, filepath.Join("modules/app/services", service, name))
+		}
+	}
+	for _, name := range files {
+		data, err := os.ReadFile(filepath.Join(command.Dir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			result.Files[name] = "absent"
+			continue
+		}
+		if err == nil {
+			target := filepath.Join(destination, "fixture", name)
+			err = os.MkdirAll(filepath.Dir(target), 0700)
+			if err == nil {
+				err = os.WriteFile(target, data, 0600)
+			}
+		}
+		if err != nil {
+			failures = append(failures, err)
+			result.Files[name] = err.Error()
+		} else {
+			result.Files[name] = "saved"
+		}
+	}
+	reports := filepath.Join(command.Dir, ".reports")
+	if _, err := os.Stat(reports); errors.Is(err, os.ErrNotExist) {
+		result.Files[".reports"] = "absent"
+	} else if err != nil {
+		failures = append(failures, err)
+		result.Files[".reports"] = err.Error()
+	} else if err := os.CopyFS(filepath.Join(destination, "fixture/.reports"), os.DirFS(reports)); err != nil {
+		failures = append(failures, err)
+		result.Files[".reports"] = err.Error()
+	} else {
+		result.Files[".reports"] = "saved"
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err == nil {
+		err = os.WriteFile(filepath.Join(destination, "result.json"), data, 0600)
+	}
+	return errors.Join(append(failures, err)...)
+}
+
+func TestDisposableCommandEvidenceRetainsFailedRequests(t *testing.T) {
+	root, evidence := t.TempDir(), t.TempDir()
+	protocol := "modules/app/services/subject/.protocol-test/calls.jsonl"
+	for name, data := range map[string]string{protocol: "{\"method\":\"Builder.SBOM\"}\n", ".reports/report.json": "{\"status\":\"failed\"}"} {
+		path := filepath.Join(root, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+		require.NoError(t, os.WriteFile(path, []byte(data), 0600))
+	}
+	command := exec.CommandContext(t.Context(), "sh", "-c", "printf 'intentional failure output'; exit 7")
+	command.Dir = root
+	output, runErr := command.CombinedOutput()
+	require.Error(t, runErr)
+	require.NoError(t, saveDisposableCommandEvidence(evidence, "failed", command, output, runErr))
+	// Remove only this test's temporary source to prove retained bytes survive.
+	require.NoError(t, os.RemoveAll(root))
+	base := filepath.Join(evidence, "commands/failed")
+	saved, err := os.ReadFile(filepath.Join(base, "output.log"))
+	require.NoError(t, err)
+	require.Equal(t, output, saved)
+	saved, err = os.ReadFile(filepath.Join(base, "fixture", protocol))
+	require.NoError(t, err)
+	require.Equal(t, "{\"method\":\"Builder.SBOM\"}\n", string(saved))
+	require.FileExists(t, filepath.Join(base, "fixture/.reports/report.json"))
+	saved, err = os.ReadFile(filepath.Join(base, "result.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(saved), `"exit_code": 7`)
+	require.Contains(t, string(saved), `"modules/app/services/dependency/.protocol-test/calls.jsonl": "absent"`)
+	missing := exec.CommandContext(t.Context(), filepath.Join(t.TempDir(), "missing-command"))
+	missing.Dir = t.TempDir()
+	output, runErr = missing.CombinedOutput()
+	require.Error(t, runErr)
+	require.NoError(t, saveDisposableCommandEvidence(evidence, "start-failed", missing, output, runErr))
+	saved, err = os.ReadFile(filepath.Join(evidence, "commands/start-failed/result.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(saved), `"exit_code": null`)
 }
