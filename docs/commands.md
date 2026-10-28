@@ -3646,7 +3646,8 @@ policy rows the authority applies, `"<VERB> <basePath><path>"`, are derived from
 it exactly as from a REST module's contract, so the document describes the
 routes as the backend serves them: no `basePath` when its paths already carry
 the prefix the authority's edge forwards them on (`/v1/<id>/…`). A solution
-built on solution-runtime-go renders it with `solution.InterfaceDocument`.
+built on solution-runtime-go renders it with `Server.InterfaceArtifact`, which
+also emits the operation markers consumed by `generate runnables`.
 
 An exported endpoint that carries no machine-readable contract is skipped with a
 notice, never a failure: `tcp` and `mcp` endpoints, an `http` endpoint whose
