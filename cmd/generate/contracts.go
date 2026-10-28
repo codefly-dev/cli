@@ -21,6 +21,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	resources "github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
@@ -76,6 +77,15 @@ against what's on disk, without writing anything.
 		defer done()
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
+		// This command loads service builders to read their endpoints
+		// (generators.LoadServiceEndpoints -> instance.LoadBuilder), which
+		// spawns an agent subprocess per service. Closing the cached
+		// connections is what ends them: the agent's own Serve installs a
+		// SIGTERM handler and shuts down inside the parent's window. Without
+		// this, every `generate contracts` pass left its agents running — eight
+		// live private go-grpc records accumulated across two regenerations of
+		// one workspace. `generate client` already reaps the same way.
+		defer services.ClearAgents()
 
 		if contractsFormat != "text" && contractsFormat != "json" {
 			return fmt.Errorf("--format must be text or json, got %q", contractsFormat)
