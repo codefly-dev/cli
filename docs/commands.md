@@ -4473,6 +4473,13 @@ a signal attempt. A replacement is reported as `changed_birth` with a nonzero
 exit and is never selected; its presence proves neither PID availability nor
 that this command caused the original exit. Same-birth exec/group changes do
 not prove exit. Ordinary owner inspection errors remain `unknown`, not absence.
+One inspection failure is treated as "not yet" rather than as a failure, and
+only while waiting out an exit already requested: a process that has exited but
+has not yet been waited for keeps its process entry and loses its executable
+link, which the owner reports as neither presence nor absence. Polling keeps
+waiting for a verdict; if none arrives the exit is reported unconfirmed, naming
+what it kept seeing. Before the signal the same reading refuses to act, and
+every other inspection failure stays an error in both places.
 Delivery errors remain errors even if subsequent observation finds absence.
 The five-second polling budget does not interrupt synchronous inspection or
 output. Cancellation prevents a new owner call once observed; it cannot revoke
