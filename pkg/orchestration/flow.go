@@ -473,12 +473,14 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := refuseInvocationOverridesInARender(mode); err != nil {
 		return nil, w.Wrap(err)
 	}
-	// Against the whole composition, not the run's closure: whether a bare
-	// managed-services key names one service is a property of the declaration, and
-	// a flow resolves managed services through env.ManagedService — the remote
-	// network manager asks it whether a service is replaced — without ever
-	// reaching the workspace-wide gitops pass.
-	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
+	// Against the whole composition's service graph, but only for THIS
+	// environment's keys: whether a bare managed-services key names one service
+	// is a property of the declaration, and a flow resolves managed services
+	// through env.ManagedService — the remote network manager asks it whether a
+	// service is replaced — without ever reaching the workspace-wide gitops
+	// pass. It asks the SELECTED environment, so another environment's stale
+	// bare key is not this flow's to answer for.
+	if err := environments.ValidateManagedServices(ctx, workspace, env); err != nil {
 		return nil, w.Wrap(err)
 	}
 	if err := environments.ValidateEnvironmentExclusions(ctx, workspace, env); err != nil {

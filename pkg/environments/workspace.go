@@ -315,14 +315,20 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 //
 // It loads the graph only when an environment declares a managed service, so a
 // workspace without any pays one in-memory projection and no disk read.
-func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace) error {
+func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace, selected ...*Environment) error {
 	declared, err := FromWorkspace(workspace)
 	if err != nil {
 		return err
 	}
 	w := wool.Get(ctx).In("Workspace::ValidateManagedServices", wool.NameField(workspace.Name))
+	// A caller that selected an environment is held to that environment's keys,
+	// the same way ValidateWorkspace is: a flow resolves managed services
+	// through the SELECTED env.ManagedService and never asks another
+	// environment's, so another's stale bare key must not refuse it. A caller
+	// with no selection still holds every environment.
+	scoped := selectedOrAll(declared, selected)
 	needsGraph := false
-	for _, env := range declared {
+	for _, env := range scoped {
 		if env != nil && len(env.ManagedServices) > 0 {
 			needsGraph = true
 			break
@@ -335,7 +341,7 @@ func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace
 	if err != nil {
 		return w.Wrap(err)
 	}
-	for _, env := range declared {
+	for _, env := range scoped {
 		if env == nil {
 			continue
 		}

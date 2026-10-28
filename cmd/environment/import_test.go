@@ -395,6 +395,113 @@ func TestImportCarriesResolvedServiceValues(t *testing.T) {
 	}
 }
 
+// TestImportRetiresAKeyTheContractRenamed is the Blue defect: a producer
+// re-keys a service-scoped entry from the bare name to the module-qualified
+// one, and import ADDS the new key while KEEPING the old. The bare key then
+// resolves against a workspace composing two services of that name and is
+// refused as ambiguous — and re-importing cannot clear it, because import is
+// what preserved it.
+func TestImportRetiresAKeyTheContractRenamed(t *testing.T) {
+	dir := writeWorkspace(t, strings.Replace(existingAzureWorkspace,
+		"      service-secrets:",
+		"      service-config:\n          services:\n              object-storage:\n                  values:\n                      BUCKET: shared\n      service-secrets:", 1))
+	contract := `{"schema":"codefly/coordinate/v1","coordinate":"hosted-eastus2","environment":{
+	  "name":"azure","namespace":"acme",
+	  "service-config":{"services":{"documents/object-storage":{"values":{"BUCKET":"shared"}}}}
+	}}`
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if _, stale := env.ServiceConfig.Services["object-storage"]; stale {
+		t.Error("the bare key the contract renamed was kept, so the ambiguity survives a re-import")
+	}
+	if _, ok := env.ServiceConfig.Services["documents/object-storage"]; !ok {
+		t.Error("the qualified replacement is missing")
+	}
+}
+
+// A bare key the contract never replaced is the operator's, and import leaves
+// it alone: withdrawal is scoped to a rename the contract itself made, not to
+// every key the contract does not mention.
+func TestImportKeepsABareKeyTheContractDidNotRename(t *testing.T) {
+	dir := writeWorkspace(t, strings.Replace(existingAzureWorkspace,
+		"      service-secrets:",
+		"      service-config:\n          services:\n              ledger:\n                  values:\n                      MODE: local\n      service-secrets:", 1))
+	contract := `{"schema":"codefly/coordinate/v1","coordinate":"hosted-eastus2","environment":{
+	  "name":"azure","namespace":"acme",
+	  "service-config":{"services":{"documents/object-storage":{"values":{"BUCKET":"shared"}}}}
+	}}`
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if got, ok := env.ServiceConfig.Services["ledger"]; !ok || got.Values["MODE"] != "local" {
+		t.Errorf("operator-owned bare key was withdrawn: %+v", env.ServiceConfig.Services)
+	}
+}
+
+// When the retired key and its replacement hold DIFFERENT values, import
+// refuses and names both rather than choosing. Dropping the bare one silently
+// would discard whichever the operator meant to keep, and the workspace is
+// left untouched so nothing is half-applied.
+func TestImportRefusesARenameThatWouldChooseBetweenValues(t *testing.T) {
+	original := strings.Replace(existingAzureWorkspace,
+		"      service-secrets:",
+		"      service-config:\n          services:\n              object-storage:\n                  values:\n                      BUCKET: operator-edited\n      service-secrets:", 1)
+	dir := writeWorkspace(t, original)
+	contract := `{"schema":"codefly/coordinate/v1","coordinate":"hosted-eastus2","environment":{
+	  "name":"azure","namespace":"acme",
+	  "service-config":{"services":{"documents/object-storage":{"values":{"BUCKET":"from-contract"}}}}
+	}}`
+	err := runImport(context.Background(), &importOptions{
+		dir: dir, envName: "azure", contractData: []byte(contract), stdout: io.Discard,
+		now: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("import chose between conflicting values instead of refusing")
+	}
+	for _, want := range []string{"object-storage", "documents/object-storage", "different values"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q: %v", want, err)
+		}
+	}
+	if got := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)); got != original {
+		t.Error("the workspace was modified by a refused import")
+	}
+}
+
+// When the contract declares SEVERAL qualified keys sharing the bare name,
+// nothing records which one the bare key meant. Import refuses and names them
+// all rather than picking one, and leaves the workspace untouched: choosing
+// the first or last found would be arbitrary, and the contract declaring a
+// qualified key does not prove the bare key was ever the contract's.
+func TestImportRefusesARenameWithSeveralDestinations(t *testing.T) {
+	original := strings.Replace(existingAzureWorkspace,
+		"      service-secrets:",
+		"      service-config:\n          services:\n              object-storage:\n                  values:\n                      BUCKET: shared\n      service-secrets:", 1)
+	dir := writeWorkspace(t, original)
+	contract := `{"schema":"codefly/coordinate/v1","coordinate":"hosted-eastus2","environment":{
+	  "name":"azure","namespace":"acme",
+	  "service-config":{"services":{
+	    "documents/object-storage":{"values":{"BUCKET":"shared"}},
+	    "saas/object-storage":{"values":{"BUCKET":"shared"}}}}
+	}}`
+	err := runImport(context.Background(), &importOptions{
+		dir: dir, envName: "azure", contractData: []byte(contract), stdout: io.Discard,
+		now: time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("import chose a destination instead of refusing")
+	}
+	for _, want := range []string{"documents/object-storage", "saas/object-storage", "not recorded anywhere"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q: %v", want, err)
+		}
+	}
+	if got := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)); got != original {
+		t.Error("the workspace was modified by a refused import")
+	}
+}
+
 // The coordinate is an optional provenance label, so an omitted one must not
 // leave a dangling subject in the comment this persists to workspace.codefly.yaml.
 func TestImportOmitsAnAbsentCoordinateFromProvenance(t *testing.T) {
