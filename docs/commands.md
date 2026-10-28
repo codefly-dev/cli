@@ -2442,6 +2442,44 @@ which modules it pins and at what commits, and the configuration groups those
 modules need, are the composition's to say. The command prints each of them,
 with the failure each one causes when it is skipped.
 
+### `codefly doctor solution [module]`
+
+Judge a solution against the shape `add solution` generates, without changing
+anything. With no argument every module in the workspace is judged; a module
+that ships no solution manifest is reported as "not a solution" rather than as
+broken.
+
+```bash
+codefly doctor solution
+codefly doctor solution wiki --json
+```
+
+It exists because the shape was previously checkable only against somebody's
+survey of the solutions that happened to exist — which is how one fleet reached
+nine solutions in four different states, two of them unable to receive a person
+capability at all with nothing failing to say so. A shape nothing can check is a
+convention, and a convention drifts.
+
+Every rule is one that silently broke something. The two worth knowing:
+
+| | |
+|---|---|
+| `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
+| `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
+
+Exit codes: `0` every judged solution conforms (warnings allowed), `1` at least
+one check failed. `--json` prints a versioned report per module
+(`{schema_version, module, dir, is_solution, status, checks[]}`), so a
+consumer repository can gate on it instead of hand-rolling the equivalent.
+
+A warning is not a failure: it names something worth seeing that does not make
+the solution wrong — publishing the page's shell, a headless solution with no
+page declaration, a solution with no shell at all.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Print a versioned report per module to stdout |
+
 ### `codefly override service <module>/<service>`
 
 Run one service of a composed module from somewhere else on this machine,

@@ -2476,7 +2476,63 @@ codefly doctor [flags]
 
 Subcommands:
 
+- [`codefly doctor solution`](#codefly-doctor-solution)
 - [`codefly doctor workspace`](#codefly-doctor-workspace)
+
+## `codefly doctor solution`
+
+Check a solution against the one shape a solution has, without changing anything
+
+```
+Judge a solution module against the shape `codefly add solution` generates.
+
+With no argument, every module in the workspace is judged and the ones that
+ship no solution manifest are reported as "not a solution" rather than as
+broken. Name a module to judge only that one.
+
+It is strictly read-only: it opens files and writes none.
+
+Every rule is one that silently broke something. The two worth knowing:
+
+  owner_aware    The authority issues a person a capability at a solution ONLY
+                 when its module contract declares owner_aware: true, and
+                 refuses by name otherwise. Without it the solution receives no
+                 owner-selected scope and can act for nobody — and nothing
+                 fails at build time to tell you.
+
+  module edges   A solution reaches every module through the host's door,
+                 which checks the call. A service-dependency naming a module
+                 renders into a mesh allow rule straight to that module's
+                 service, past the check.
+
+Exit codes:
+  0  every judged solution conforms (warnings allowed)
+  1  at least one check failed, or the command itself failed
+
+With --json, a versioned report per module is printed to stdout:
+  {schema_version, module, dir, is_solution, status: ok|fail,
+   checks: [{code, status, message, remediation?}]}
+
+Stable diagnostic codes: not_a_solution, solution_manifest_unreadable,
+consumed_api_unnamed, service_entry_missing, service_entry_not_the_entry,
+entry_service_missing, entry_service_unreadable, module_identity_missing,
+module_edge_declared, entry_endpoint_missing, module_contract_missing,
+module_contract_unreadable, owner_aware_missing, module_package_missing,
+module_package_unreadable, module_package_publishes_shell,
+frontend_declaration_missing, frontend_declaration_unreadable,
+page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
+page_shell_exported_too_widely.
+```
+
+```
+codefly doctor solution [module]
+```
+
+Flags:
+
+```
+      --json   Print a versioned report per module to stdout
+```
 
 ## `codefly doctor workspace`
 
