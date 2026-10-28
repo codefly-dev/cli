@@ -1082,16 +1082,6 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 
-	// A nil baseline is not "nothing to protect": Core reads it as an empty
-	// set of bound destinations and passes, so a Start that never had a
-	// successful Init would check this phase's offers against nothing. The
-	// missing evidence is an orchestration error, caught here rather than
-	// converted into an empty comparison — and after BeginRuntimeStart, so the
-	// attempt still completes as not-started.
-	if runner.delivered == nil {
-		return nil, w.NewError("cannot start %s: no successful initialization retained its configuration delivery, so this phase's configuration offers and overrides cannot be checked against what the service was admitted with", runner.instance.Unique())
-	}
-
 	// Build the request. Everything this phase will deliver is gathered and
 	// checked BEFORE the running instance is stopped and before either output
 	// append: a refusal then leaves an absent output absent and an existing
@@ -1109,6 +1099,20 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	pending, contributions, err := runner.pendingStartOutput(ctx, dependenciesNetworkMappings, overrides)
 	if err != nil {
 		return nil, err
+	}
+
+	// A nil baseline is not "nothing to protect": Core reads it as an empty set
+	// of bound destinations and passes, so a Start that never had a successful
+	// Init would check this phase's offers against nothing. The missing
+	// evidence is an orchestration error.
+	//
+	// It sits immediately before the validation it protects, not ahead of the
+	// gathering above: the gathering only reads and converts, writing nothing,
+	// and its own preconditions — a consumer module to narrow dependency
+	// visibility against, most of all — must keep reporting themselves rather
+	// than being masked by this one.
+	if runner.delivered == nil {
+		return nil, w.NewError("cannot start %s: no successful initialization retained its configuration delivery, so this phase's configuration offers and overrides cannot be checked against what the service was admitted with", runner.instance.Unique())
 	}
 
 	// The retained Init payload is the comparison baseline, not a re-emission:
