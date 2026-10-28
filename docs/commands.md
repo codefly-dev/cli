@@ -3037,12 +3037,21 @@ release commit also:
 **Agents the command starts, and what ends them.** Reading each service's
 exported endpoints loads that service, which starts its agent as a child
 process. The command retires them on return by closing the cached connections.
-That close is Core's, and it is cooperative: Core asks the agent to stop, waits
-for the agent to reap its own children (user binaries, containers), and forces
-the process group down only if that wait times out. The signal it uses is
-Core's own choice and is not restated here. Cancelling the command (Ctrl-C)
-takes the same path, because the reap is deferred rather than conditional on
-success.
+That close is Core's, and what it attempts is cooperative: Core asks the agent
+to stop, gives it time to retire its own children (user binaries, containers),
+and forces the process group down if that wait expires. The signal it sends is
+Core's own choice and is not restated here.
+
+What that does **not** establish is that every child was retired. The close
+reports no error, the agent ignores the error from stopping its children, and
+the agent has a hard-deadline exit of its own, so an agent process that has
+gone away is evidence the agent exited — not proof that nothing it started
+survived it. Treat this as best-effort cleanup with a forced fallback.
+
+Cancelling the command once (Ctrl-C) takes the same path: the reap is deferred
+rather than conditional on success, so it still runs. A **second** Ctrl-C does
+not — it exits the process immediately and no deferred cleanup runs at all,
+which leaves exactly the agents this retirement exists to prevent.
 
 It retires the agents **that run of the command started**. An agent left
 running by an earlier command — a version of the CLI before this retirement
