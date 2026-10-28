@@ -2386,134 +2386,6 @@ contract and handler before building. See [Runnables](runnable.md).
 |------|-------------|
 | `--agent` | Agent type (required). Examples: `go-grpc`, `python-grpc`, `nextjs`, `krakend` |
 
-**`add solution`:**
-
-```sh
-codefly add solution wiki --package-id obin/wiki \
-    --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
-```
-
-Scaffolds a solution — a module a host installs and runs as a product surface —
-in the one shape a solution has. There is no shape flag: a second shape beside
-it is what produced nine solutions that do not look alike.
-
-It composes verbs that already exist (`add module`, then `add service` for each
-of the two services) and writes the documents Core already specifies, by
-marshalling Core's own types and reading each file back through Core's own
-reader. It adds no executor protocol and no new agent.
-
-What it creates:
-
-| | |
-|------|-------------|
-| `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
-| `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell |
-| `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
-| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true` |
-| `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
-| `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
-
-`services/fe-remote` — the `./Page` remote itself — is an npm package, not a
-Codefly service, and is yours to author.
-
-**The rule the backend lives under.** A module call the authority holds to a
-*person* — one its artifact interface admits only in person, with no
-intervening actor — is made by the **page**, with that person's own Work
-Context. It is never relayed through the backend: a backend reaches a module on
-a context minted for the solution's own audience, so relaying such a call puts
-the solution between the person and the module and admission refuses it. Reads
-and work that are the solution's own go through the backend as usual. This is
-why the entry service declares the authority interface and the authority's hop
-and **no module edge at all** — every consumed module is reached through that
-hop, which lets through only a call the authority checked.
-
-| Flag | Description |
-|------|-------------|
-| `--package-id` | The `<owner>/<name>` identity the solution is published under. Required — nothing can derive who publishes it |
-| `--agent` | Service agent for the backend (default `go`). The backend's language is this flag, not a different shape |
-| `--consumes` | A module this solution calls, as `[<id>=]<protocol>:<module>/<service>/<endpoint>`. Repeatable. Route names only — authority is declared once, in the module contract |
-| `--executor` | A `codefly:solution` executor to name in the solution manifest. Omitted by default: Core specifies no executor protocol and none is published |
-| `--title` / `--order` | The page's title and position in the host's shell |
-| `--authority-interface` | The authority interface the backend requires |
-| `--minimum-codefly-version` | The Codefly range the package declares. Required when scaffolding with a build from source, which reports no release version |
-
-The **composition** is not scaffolded: which workspace composes the solution,
-which modules it pins and at what commits, and the configuration groups those
-modules need, are the composition's to say. The command prints each of them,
-with the failure each one causes when it is skipped.
-
-### `codefly doctor solution [module]`
-
-Judge a solution against the shape `add solution` generates, without changing
-anything. With no argument every module in the workspace is judged; a module
-that ships no solution manifest is reported as "not a solution" rather than as
-broken.
-
-```bash
-codefly doctor solution
-codefly doctor solution wiki --json
-```
-
-It exists because the shape was previously checkable only against somebody's
-survey of the solutions that happened to exist — which is how one fleet reached
-nine solutions in four different states, two of them unable to receive a person
-capability at all with nothing failing to say so. A shape nothing can check is a
-convention, and a convention drifts.
-
-Every rule is one that silently broke something. The two worth knowing:
-
-| | |
-|---|---|
-| `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
-| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
-| `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
-
-Exit codes: `0` every judged solution conforms (warnings allowed), `1` at least
-one check failed. `--json` prints a versioned report per module
-(`{schema_version, module, dir, is_solution, status, checks[]}`), so a
-consumer repository can gate on it instead of hand-rolling the equivalent.
-
-**Permissions.** The contract is read through Core's own loader, which refuses
-a role granting a scope no binding backs and no ceiling covers — *"role
-`installer` grants `documents:read`, which is neither within the module's own
-scope ceilings nor a scope one of its bindings spells out"*. That is the
-missing-permission class, caught before install rather than at the first
-refused call. What a composition's values resolve each binding to is not
-judged: that needs the composition, not the directory.
-
-`page_shell_has_no_app` is worth knowing about: conforming the fleet to one
-shape added the `web` shell's *manifest* to solutions whose page had never been
-written, because writing one would have been inventing product in a conforming
-change. Those solutions are correctly shaped and `codefly run service web` has
-nothing to start on them. A declared service with no source is otherwise
-invisible — every manifest reads fine, and the first sign is a run that does
-nothing.
-
-A warning is not a failure: it names something worth seeing that does not make
-the solution wrong — publishing the page's shell, a headless solution with no
-page declaration, a solution with no shell at all.
-
-| Flag | Description |
-|------|-------------|
-| `--json` | Print a versioned report per module to stdout |
-| `--dir` | Judge this module directory on its own, without resolving a workspace |
-| `--require-solution` | With `--dir`, fail when the directory ships no solution manifest |
-
-`--dir` exists because a consumer repository gating a tree of solutions has
-module directories, not necessarily a workspace at each one — `excel-extract`
-is a real solution with no `workspace.codefly.yaml`, and requiring one made it
-the single solution that could not be judged at all.
-
-`--require-solution` closes the gap `--dir` leaves: a directory with no
-solution manifest reads as "not a solution" and passes, which is right for a
-library sitting in the tree and wrong for a solution whose manifest is
-missing. A gate that walks `solutions/*/` means "every one of these is a
-solution", and says so with the flag.
-
-```bash
-for s in solutions/*/; do codefly doctor solution --dir "$s" --require-solution || exit 1; done
-```
-
 ### `codefly override service <module>/<service>`
 
 Run one service of a composed module from somewhere else on this machine,
@@ -2559,7 +2431,6 @@ codefly update workspace --agent-override codefly.dev/go-grpc=0.1.47-dev.abc123d
 codefly update service api                                            # one service to its latest compatible release
 codefly update service api --agent-version 0.1.47-dev.abc123def456    # pin one service exactly
 codefly update deps                                                   # Go dependencies under the current directory
-codefly update deps --dependency golang.org/x/net@v0.62.0              # only this existing external requirement, including indirect pins
 ```
 
 Without flags, `update workspace` and `update service` move to the agent's
@@ -4567,24 +4438,48 @@ process group, descendants, containers or registrations.
 ```bash
 codefly recover process 12345 --preview > process-exit.json
 # Review the complete identity and independently establish the target.
+codefly recover process 12345 --expect process-exit.json --graceful
+# …or, when losing unwritten state is acceptable:
 codefly recover process 12345 --expect process-exit.json --force
 ```
 
 Execution requires the same PID and full current identity as the preview,
 including process group and executable at admission. PID1 and this CLI's PID
-refuse. The only signal is explicit, irreversible SIGKILL through Core's
-`SignalProcess`: there is no graceful default, escalation or automatic retry.
+refuse. **Exactly one of `--graceful` or `--force` is required with
+`--expect`**, and they are mutually exclusive: `--graceful` requests one
+`SIGTERM`, `--force` requests one irreversible `SIGKILL`, both through Core's
+`SignalProcess`. There is no default mode, no escalation and no automatic
+retry — a `--graceful` request is **never** followed by `SIGKILL`, and an exit
+that stays unconfirmed is reported as unconfirmed rather than falling back to
+force.
+
+Which mode to use is a data question, not a speed one. `--graceful` lets the
+process run its own shutdown, so a store that owns authoritative state — a
+Redis holding revocation records and nonces, say — gets to finish writing
+before it exits. `--force` discards whatever the process had not yet written;
+for such a store that can reopen revoked tokens, and process exit alone is not
+durability evidence (an RDB/AOF save and readback is). A target that ignores
+`SIGTERM` stays alive when the polling budget expires, untouched.
 Core binds delivery to process birth and group, not an immutable executable;
 a same-birth exec after admission can still receive the signal. One CLI owner
 call may involve Core's internal kernel-token retries.
 
-The result reports `signal_attempted`, `signal_accepted`, `observation` and
-`expected_birth_gone`. Success requires observed absence and no delivery,
+The result is `schema_version` 2 and reports the requested `mode` and `signal`
+alongside `signal_attempted`, `signal_accepted`, `observation` and
+`expected_birth_gone`, so a reader never has to infer which irreversibility
+contract applied. The `--preview` receipt is unchanged at `schema_version` 1. Success requires observed absence and no delivery,
 inspection, cancellation or output error. Already-absent is successful without
 a signal attempt. A replacement is reported as `changed_birth` with a nonzero
 exit and is never selected; its presence proves neither PID availability nor
 that this command caused the original exit. Same-birth exec/group changes do
 not prove exit. Ordinary owner inspection errors remain `unknown`, not absence.
+One inspection failure is treated as "not yet" rather than as a failure, and
+only while waiting out an exit already requested: a process that has exited but
+has not yet been waited for keeps its process entry and loses its executable
+link, which the owner reports as neither presence nor absence. Polling keeps
+waiting for a verdict; if none arrives the exit is reported unconfirmed, naming
+what it kept seeing. Before the signal the same reading refuses to act, and
+every other inspection failure stays an error in both places.
 Delivery errors remain errors even if subsequent observation finds absence.
 The five-second polling budget does not interrupt synchronous inspection or
 output. Cancellation prevents a new owner call once observed; it cannot revoke
@@ -4598,9 +4493,13 @@ Orphan recovery and registry removal remain separate explicit operations.
 
 **Fixed local receipt exception:** Core's owner explicitly approved this
 separate native-identity exception under its architecture contract policy.
-Version1 embeds `base.ProcessIdentity` unchanged in a `schema_version`/`process`
-envelope and uses a fixed local result shape. Both ends must use the same
-reviewed implementation on the same host/boot; any change requires fresh preview.
+The fixed version-1 preview receipt embeds `base.ProcessIdentity` unchanged in
+a `schema_version`/`process` envelope. The independently versioned result is
+fixed at version 2, adding requested `mode` and `signal` under the
+[explicit Core owner acceptance](design/process-result-v2-exception.md). These
+fields describe the request, not proof of exit or persistence. Both ends must
+use the same reviewed implementation on the same host/boot; any implementation
+change requires fresh preview even when the receipt schema is unchanged.
 The command does not detect the binary that produced a receipt. It is untrusted
 comparison evidence, not a credential, ownership grant, registry or remote API.
 The complete default JSON encoding plus its single newline must be saved

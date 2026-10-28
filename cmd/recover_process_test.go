@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,9 +45,10 @@ func TestProcessExitReceiptNativeShape(t *testing.T) {
 	}
 	_, raw := processExitTestReceipt(t, processExitTestIdentity())
 	require.Equal(t, "{\"schema_version\":1,\"process\":{\"PID\":1234567,\"PGID\":1234567,\"BootID\":\"boot\",\"StartID\":42,\"Executable\":\"fixture\"}}\n", string(raw))
-	result, err := json.Marshal(processExitResult{SchemaVersion: 1, PID: 1234567, Observation: "unknown"})
+	// The result is v2 (mode/signal added); the receipt above stays v1.
+	result, err := json.Marshal(processExitResult{SchemaVersion: 2, PID: 1234567, Mode: "force", Signal: "killed", Observation: "unknown"})
 	require.NoError(t, err)
-	require.JSONEq(t, `{"schema_version":1,"pid":1234567,"signal_attempted":false,"signal_accepted":false,"observation":"unknown","expected_birth_gone":false}`, string(result))
+	require.JSONEq(t, `{"schema_version":2,"pid":1234567,"mode":"force","signal":"killed","signal_attempted":false,"signal_accepted":false,"observation":"unknown","expected_birth_gone":false}`, string(result))
 }
 
 func TestProcessExitReceiptRejectsAlteredEvidence(t *testing.T) {
@@ -108,6 +110,12 @@ func TestProcessExitCommandRefusesBeforeEffects(t *testing.T) {
 		{pid, "--expect", path}, {pid, "--force"}, {pid, "--preview", "--force"}, {pid, "--preview", "--expect", path},
 		{pid, "--expect=", "--force"}, {pid, "--expect", path + "-missing", "--force"},
 		{"1234568", "--expect", path, "--force"}, {pid, "another", "--preview"},
+		// --graceful is a mode, not a modifier: it needs its receipt, it cannot
+		// be combined with --force or --preview, and a stale receipt or a
+		// missing one refuses before anything is signaled.
+		{pid, "--graceful"}, {pid, "--graceful", "--force"}, {pid, "--graceful", "--force", "--expect", path},
+		{pid, "--preview", "--graceful"}, {pid, "--graceful", "--expect="},
+		{pid, "--graceful", "--expect", path + "-missing"}, {"1234568", "--expect", path, "--graceful"},
 	}
 	for _, args := range cases {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -166,7 +174,7 @@ func TestProcessExitOwnerOutcomes(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			reads, calls := 0, 0
-			result, err := forceProcessExit(ctx, expected, func(pid int) (base.ProcessIdentity, error) {
+			result, err := requestProcessExit(ctx, expected, syscall.SIGKILL, "force", func(pid int) (base.ProcessIdentity, error) {
 				require.Equal(t, expected.PID, pid)
 				require.Less(t, reads, len(tc.reads))
 				r := tc.reads[reads]
@@ -186,7 +194,8 @@ func TestProcessExitOwnerOutcomes(t *testing.T) {
 			if tc.delivery != nil {
 				require.ErrorIs(t, err, tc.delivery)
 			}
-			tc.want.SchemaVersion, tc.want.PID = 1, expected.PID
+			tc.want.SchemaVersion, tc.want.PID = 2, expected.PID
+			tc.want.Mode, tc.want.Signal = "force", syscall.SIGKILL.String()
 			require.Equal(t, tc.want, result)
 			require.Equal(t, len(tc.reads), reads)
 			if result.SignalAttempted {
@@ -202,19 +211,84 @@ func TestProcessExitCancellationAndPollingBudget(t *testing.T) {
 	expected := processExitTestIdentity()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	result, err := forceProcessExit(ctx, expected, func(int) (base.ProcessIdentity, error) { t.Fatal("canceled inspection"); return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error {
+	result, err := requestProcessExit(ctx, expected, syscall.SIGKILL, "force", func(int) (base.ProcessIdentity, error) { t.Fatal("canceled inspection"); return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error {
 		t.Fatal("canceled signal")
 		return nil
 	})
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, result.SignalAttempted)
 	reads := 0
-	result, err = forceProcessExit(t.Context(), expected, func(int) (base.ProcessIdentity, error) { reads++; return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
+	result, err = requestProcessExit(t.Context(), expected, syscall.SIGKILL, "force", func(int) (base.ProcessIdentity, error) { reads++; return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
 	require.ErrorContains(t, err, "polling budget")
 	require.Greater(t, reads, 1)
 	require.Equal(t, "same_birth", result.Observation)
 	require.False(t, result.ExpectedBirthGone)
 	require.True(t, result.SignalAccepted)
+}
+
+// TestProcessExitSettlesThroughAnIncompleteInspection is the zombie window: on
+// Linux a process that has exited but has not yet been waited for keeps its
+// /proc stat and loses its executable link, and core reports that as an
+// inspection it could not complete rather than as absence — deliberately, since
+// the same reading appears when a thread-group leader exits with threads still
+// running.
+//
+// Polling must treat that as "not yet" and keep waiting. Reporting it as a
+// failure made `recover process --graceful` fail against a target that had in
+// fact shut down cleanly, which is how it failed under the race detector in CI.
+func TestProcessExitSettlesThroughAnIncompleteInspection(t *testing.T) {
+	expected := processExitTestIdentity()
+	// Exactly what core hands back in that window: os.Readlink's own
+	// *fs.PathError over ENOENT. A missing /proc/<pid>/stat is mapped to
+	// ErrProcessNotFound by core, so this is the only ENOENT it can produce.
+	zombie := &fs.PathError{Op: "readlink", Path: "/proc/3874/exe", Err: syscall.ENOENT}
+	reads := 0
+	result, err := requestProcessExit(t.Context(), expected, syscall.SIGTERM, "graceful", func(int) (base.ProcessIdentity, error) {
+		reads++
+		switch {
+		case reads == 1:
+			return expected, nil // the pre-signal observation
+		case reads < 4:
+			return base.ProcessIdentity{}, zombie
+		}
+		return base.ProcessIdentity{}, base.ErrProcessNotFound
+	}, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
+	require.NoError(t, err, "an inspection that reached no verdict is not a failed exit")
+	require.Equal(t, processObservationAbsent, result.Observation)
+	require.True(t, result.ExpectedBirthGone)
+	require.Equal(t, "graceful", result.Mode)
+	require.Equal(t, syscall.SIGTERM.String(), result.Signal)
+
+	// A target whose inspection never resolves still reports the exit
+	// unconfirmed when the budget expires, and says what it kept seeing rather
+	// than only that it ran out of time.
+	stuck := 0
+	_, err = requestProcessExit(t.Context(), expected, syscall.SIGTERM, "graceful", func(int) (base.ProcessIdentity, error) {
+		if stuck++; stuck == 1 {
+			return expected, nil
+		}
+		return base.ProcessIdentity{}, zombie
+	}, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
+	require.ErrorContains(t, err, "polling budget")
+	require.ErrorContains(t, err, "no such file or directory", "an expired budget must say what it kept seeing")
+
+	// And an inspection that cannot complete BEFORE the signal is still a
+	// refusal to act: the retry is only for an exit already requested.
+	var sent int
+	_, err = requestProcessExit(t.Context(), expected, syscall.SIGTERM, "graceful", func(int) (base.ProcessIdentity, error) {
+		return base.ProcessIdentity{}, zombie
+	}, func(context.Context, base.ProcessIdentity, syscall.Signal) error { sent++; return nil })
+	require.ErrorIs(t, err, errExitInProgress)
+	require.Zero(t, sent, "nothing may be signalled on a reading that reached no verdict")
+
+	// An inspection that reaches a verdict of a DIFFERENT birth is still fatal:
+	// this must not become a blanket retry.
+	replaced := expected
+	replaced.StartID++
+	_, err = requestProcessExit(t.Context(), expected, syscall.SIGTERM, "graceful", func(int) (base.ProcessIdentity, error) {
+		return replaced, nil
+	}, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
+	require.ErrorContains(t, err, "different birth")
 }
 
 type processExitFailWriter struct{ err error }
