@@ -4,14 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/solutionshape"
+	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
-var doctorSolutionJSON bool
+var (
+	doctorSolutionJSON    bool
+	doctorSolutionDir     string
+	doctorSolutionRequire bool
+)
+
+// solutionManifestName is the file whose presence makes a module a solution.
+const solutionManifestName = "solution.codefly.yaml"
 
 // DoctorSolutionCmd judges a solution against the one shape a solution has.
 //
@@ -67,11 +76,56 @@ page_shell_exported_too_widely.`,
   codefly doctor solution
 
   # Judge one, and script against the result.
-  codefly doctor solution wiki --json`,
+  codefly doctor solution wiki --json
+
+  # Gate a consumer repository's tree, where a solution need not be a workspace.
+  for s in solutions/*/; do codefly doctor solution --dir "$s" || exit 1; done
+
+  # The same gate, where every directory walked must BE a solution: this
+  # catches a solution whose manifest is missing, which otherwise reads as
+  # "not a solution" and passes.
+  codefly doctor solution --dir solutions/robin-builder --require-solution`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+
+		// --dir judges a module directory on its own, with no workspace
+		// resolution. A consumer repository gating `solutions/*/` has a tree
+		// of module directories and not necessarily a workspace at each one:
+		// obin-ai/core-solutions' excel-extract is a real solution with no
+		// workspace.codefly.yaml, and requiring one made it the single
+		// solution that could not be judged at all.
+		if doctorSolutionDir != "" {
+			if len(args) > 0 {
+				return fmt.Errorf("--dir judges the directory itself, so it takes no module name")
+			}
+			absolute, err := filepath.Abs(doctorSolutionDir)
+			if err != nil {
+				return fmt.Errorf("cannot resolve %s: %w", doctorSolutionDir, err)
+			}
+			name := filepath.Base(absolute)
+			if module, loadErr := resources.LoadModuleFromDir(ctx, absolute); loadErr == nil && module.Name != "" {
+				name = module.Name
+			}
+			report := solutionshape.Inspect(name, absolute)
+			reports := []*solutionshape.Report{report}
+			if doctorSolutionJSON {
+				return printSolutionReportsJSON(reports)
+			}
+			// The caller named this directory, so "it is not a solution" is an
+			// answer and not a vacuous pass. A tree gate looping solutions/*/
+			// meets directories that are not solutions — core-solutions'
+			// client-engagement is one — and must not fail on them.
+			if !report.IsSolution {
+				if doctorSolutionRequire {
+					return fmt.Errorf("%s ships no %s, so it is not a solution — and --require-solution says it must be", report.Module, solutionManifestName)
+				}
+				fmt.Printf("OK    %s: not a solution (no %s)\n", report.Module, solutionManifestName)
+				return nil
+			}
+			return printSolutionReports(reports)
+		}
 
 		workspace, err := common.LoadWorkspace(ctx)
 		if err != nil {
@@ -177,5 +231,7 @@ func statusGlyph(status solutionshape.Status) string {
 
 func init() {
 	DoctorSolutionCmd.Flags().BoolVar(&doctorSolutionJSON, "json", false, "Print a versioned report per module to stdout")
+	DoctorSolutionCmd.Flags().BoolVar(&doctorSolutionRequire, "require-solution", false, "With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution")
+	DoctorSolutionCmd.Flags().StringVar(&doctorSolutionDir, "dir", "", "Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace")
 	DoctorCmd.AddCommand(DoctorSolutionCmd)
 }

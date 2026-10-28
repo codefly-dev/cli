@@ -30,8 +30,10 @@ func TestDoctorSolutionIsRegisteredAndHelpStandsAlone(t *testing.T) {
 	if !DoctorSolutionCmd.SilenceUsage {
 		t.Error("a non-conforming solution is an outcome, not a usage mistake")
 	}
-	if DoctorSolutionCmd.Flags().Lookup("json") == nil {
-		t.Error("--json is not registered")
+	for _, flag := range []string{"json", "dir", "require-solution"} {
+		if DoctorSolutionCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("--%s is not registered", flag)
+		}
 	}
 }
 

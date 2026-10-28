@@ -2479,6 +2479,23 @@ page declaration, a solution with no shell at all.
 | Flag | Description |
 |------|-------------|
 | `--json` | Print a versioned report per module to stdout |
+| `--dir` | Judge this module directory on its own, without resolving a workspace |
+| `--require-solution` | With `--dir`, fail when the directory ships no solution manifest |
+
+`--dir` exists because a consumer repository gating a tree of solutions has
+module directories, not necessarily a workspace at each one — `excel-extract`
+is a real solution with no `workspace.codefly.yaml`, and requiring one made it
+the single solution that could not be judged at all.
+
+`--require-solution` closes the gap `--dir` leaves: a directory with no
+solution manifest reads as "not a solution" and passes, which is right for a
+library sitting in the tree and wrong for a solution whose manifest is
+missing. A gate that walks `solutions/*/` means "every one of these is a
+solution", and says so with the flag.
+
+```bash
+for s in solutions/*/; do codefly doctor solution --dir "$s" --require-solution || exit 1; done
+```
 
 ### `codefly override service <module>/<service>`
 

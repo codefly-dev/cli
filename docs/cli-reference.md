@@ -2531,7 +2531,9 @@ codefly doctor solution [module]
 Flags:
 
 ```
-      --json   Print a versioned report per module to stdout
+      --dir string         Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace
+      --json               Print a versioned report per module to stdout
+      --require-solution   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
 ```
 
 ## `codefly doctor workspace`
