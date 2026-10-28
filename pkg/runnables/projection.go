@@ -73,3 +73,14 @@ func NewExecution(execution *resources.RunnableExecution) Execution {
 		MaxOutputBytes: execution.MaxOutputBytes(),
 	}
 }
+
+// Tool is how one operation is offered to a model, as the owner declared it
+// (codefly.runnable.v0.ToolExposure). It is what a composition picks from: a
+// name, a bounded description and an explicit effect, because an operation
+// with no exposure is not a tool and an unstated effect is not read-only.
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Effect is EFFECT_READ_ONLY or EFFECT_MUTATION, spelled as the enum is.
+	Effect string `json:"effect"`
+}

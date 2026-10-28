@@ -182,3 +182,63 @@ func TestCheckPackageVersionStampable(t *testing.T) {
 		t.Fatalf("go: %v", err)
 	}
 }
+
+// Source offsets belong to project.version, independent of where another
+// table's version or a quoted/multiline TOML value appears in the file.
+func TestPythonVersionStampOnlyChangesProjectVersion(t *testing.T) {
+	for _, test := range []struct {
+		name, before, oldValue string
+	}{
+		{"tool first", "[tool.example]\nversion = \"7.0.0\"\n\n[project]\nversion = \"0.1.0\"\n", `"0.1.0"`},
+		{"quoted table and literal key", "[ 'project' ] # metadata\n\t'version'\t=\t'0.1.0' # release\n[tool.example]\nversion='7.0.0'\n", `'0.1.0'`},
+		{"escaped key and table", "[\"pro\\u006Aect\"]\r\n\"ver\\u0073ion\" = \"0.1.0\" # release\r\n", `"0.1.0"`},
+		{"multiline decoy", "[tool.example]\ndescription = '''\n[project]\nversion = \"7.0.0\"\n'''\n[project]\nversion = \"0.1.0\"\n", `"0.1.0"`},
+		{"nested project table", "[project.urls]\nversion = \"7.0.0\"\n[project]\nversion = \"0.1.0\"\n", `"0.1.0"`},
+		{"dotted root key", "project.version = '0.1.0' # release\n[tool.example]\nversion='7.0.0'\n", `'0.1.0'`},
+		{"inline root table", "project = { name='client', version = '0.1.0' } # release\n", `'0.1.0'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "pyproject.toml")
+			if err := os.WriteFile(path, []byte(test.before), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := stampPackageVersion(languages.PYTHON, dir, "0.2.0"); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Replace(test.before, test.oldValue, `"0.2.0"`, 1)
+			if string(after) != want {
+				t.Fatalf("got:\n%s\nwant:\n%s", after, want)
+			}
+		})
+	}
+}
+
+func TestPythonVersionStampRefusesMissingOrInvalidProjectVersion(t *testing.T) {
+	for _, before := range []string{
+		"[tool.example]\nversion = \"7.0.0\"\n[project]\ndynamic=['version']\n",
+		"[project]\nversion = 17\n",
+		"[project]\nversion = \"0.1.0\"\nversion = \"0.2.0\"\n",
+		"[project]\nversion = \"0.1.0\"\n[broken\n",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "pyproject.toml")
+		if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := stampPackageVersion(languages.PYTHON, dir, "0.2.0"); err == nil {
+			t.Fatalf("accepted invalid/missing project version:\n%s", before)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != before {
+			t.Fatalf("refused stamp changed file:\n%s", after)
+		}
+	}
+}

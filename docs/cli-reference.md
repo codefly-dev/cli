@@ -3036,7 +3036,7 @@ Flags:
 
 ```
       --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)
-      --check                                   do not write; exit 1 if the on-disk file differs from what would be generated
+      --check                                   leave binding output unchanged; materialize selected pins, then exit 1 if the output is stale
       --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
       --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
 ```
@@ -3370,9 +3370,30 @@ List the runnables (typed finite operations) declared in the workspace.
 A runnable is identified by module/name @ version: a version is an immutable
 release and several versions of one name coexist.
 
+Every Runnable a module derives from its published contracts is listed beside
+the ones it declares. With --tools or --env, each row also carries the tool its
+owner exposed it as — the model-facing name and the explicit effect. An
+operation with no exposure is not a tool and is shown without one: absent means
+not exposed. --tools keeps only the exposed ones.
+
+With --env, each derived operation also carries the configuration key its
+authority is answered under (`runnable-scope-selections` in
+workspace.codefly.yaml) and what that environment has answered, judged by the
+rules `generate runnable-bindings` judges it by:
+
+  selected      its answer resolves every slot the owner declared, or it declares none
+  declined      answered [] — installed for no resource, granted no authority
+  needs-scopes  its owner asks for scope slots nobody has answered
+  invalid       generation refuses this answer, and the row says why
+
+An answer naming no operation at all is reported beside the rows rather than
+dropped, because a mistyped key answers no question and leaves its operation
+reading as unanswered.
+
 Examples:
   codefly list runnables
   codefly list runnables --module=backend
+  codefly list runnables --tools --env=staging
   codefly list runnables --json
 ```
 
@@ -3383,8 +3404,10 @@ codefly list runnables [flags]
 Flags:
 
 ```
+      --env string      Environment whose runnable-scope-selections to report as each operation's grant
       --json            Emit machine-readable JSON
       --module string   Module to list runnables from
+      --tools           List only the operations their owner exposes as a tool
 ```
 
 ## `codefly login`
@@ -3832,16 +3855,17 @@ List the processes this workspace's run is still holding
 ```
 List the processes a codefly run is keeping alive: frontend dev servers
 (next dev / npm run dev / vite) and native-mode services (compiled service
-binaries and the stateful stores a run started), including those belonging to
-composed modules checked out outside the workspace.
+binaries and PostgreSQL), including composed modules when their launch
+environment or working directory identifies the workspace. This signature scan
+can omit registered processes whose command or environment has changed; stop
+uses authenticated registry discovery independently.
 
-Scoped to the current workspace — the same set 'codefly stop' acts on. Use
---all for every workspace on this machine. Outside a workspace the listing is
-machine-wide, since there is nothing to scope to.
+Scoped to the current workspace. Use --all for every workspace on this machine.
+Outside a workspace the listing is machine-wide.
 
-STATUS is one of: orphaned (codefly's, escaped its supervisor — reaped by
-'codefly clear'), tracked (codefly's, still supervised), or external (not
-codefly's — shown for visibility, never reaped).
+STATUS is diagnostic: orphaned (marked process without its supervisor), tracked
+(marked process still supervised), or external (no marker). A marker or status
+never authorizes cleanup: clear must authenticate a registered identity.
 ```
 
 ```

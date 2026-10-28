@@ -2,6 +2,10 @@ package cmd
 
 import (
 	"context"
+	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -198,6 +202,17 @@ func TestDoctorWorkspaceJudgesTheRunnableBindingsGroupByWhatTheEnvironmentSelect
 			t.Fatalf("want one failure, for the empty auth0 group: %+v", diagnostics)
 		}
 	})
+	t.Run("obsolete binding after last operation disappears", func(t *testing.T) {
+		dir := singleServiceWorkspace(t, testWorkspaceYAML, deps, map[string]string{
+			bindings:                         header + "OBSOLETE__OPERATION={}\n",
+			"configurations/local/auth0.env": "CLIENT_ID=public-id\n",
+		})
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		diagnostic := requireCode(t, report, codeConfigurationInvalid, checkStatusFail)
+		if !strings.Contains(diagnostic.Message, "out of date") {
+			t.Fatalf("want stale output refusal: %+v", diagnostic)
+		}
+	})
 }
 
 // The render's readiness gate is the doctor scoped to the module: a module
@@ -213,4 +228,22 @@ func TestRenderReadinessAcceptsAnAbsentRunnableBindingsGroupWhenNoneIsSelected(t
 	if err != nil && strings.Contains(err.Error(), "workspace is not ready") {
 		t.Fatalf("render was refused by readiness: %v\noutput: %s", err, out)
 	}
+}
+
+func TestRunnableReadinessChecksInvocationValuesOverAuthoredGroup(t *testing.T) {
+	dir := singleServiceWorkspace(t, testWorkspaceYAML, []string{generate.RunnableBindingsGroup}, map[string]string{
+		"configurations/local/runnable-bindings.env": "# no derived operations\n",
+	})
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{
+		{Name: generate.RunnableBindingsGroup, Key: "OBSOLETE__OPERATION", Value: "{}"},
+	})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir, module: "backend"})
+	requireCode(t, report, codeConfigurationInvalid, checkStatusFail)
+	t.Chdir(dir)
+	require.ErrorContains(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend"), "out of date")
+	raw, err := os.ReadFile(filepath.Join(dir, "configurations/local/runnable-bindings.env"))
+	require.NoError(t, err)
+	require.Equal(t, "# no derived operations\n", string(raw))
 }

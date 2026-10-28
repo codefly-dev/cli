@@ -145,7 +145,9 @@ declaring neither fixed scopes nor slots is still refused as declaring no
 authority. Wildcards (including omitted IDs), collisions with a fixed scope's
 kind or another slot's kind, duplicate/undeclared slots, unknown fields and
 selection keys naming no derived operation are refused. A failed preparation
-writes nothing and preserves the previous output.
+writes no binding output and preserves the existing binding; a pinned module it
+materialized first stays materialized (dependency cache, overlay, receipt and
+`.gitignore` entries), as after any command that reads composed modules.
 
 The generated `configurations/<profile>/runnable-bindings.env` carries Core's
 `codefly.runnable-prepared/v3` bindings: owner coordinates, the resolved JSON
