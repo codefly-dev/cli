@@ -22,6 +22,8 @@ const (
 	processExitReceiptLimit   = 16 << 10
 	processObservationUnknown = "unknown"
 	processObservationAbsent  = "absent"
+	processExitModeGraceful   = "graceful"
+	processExitModeForce      = "force"
 )
 
 // Version 1 is a fixed local native-identity exception, not a registry format.
@@ -31,9 +33,16 @@ type processExitReceipt struct {
 	Process       base.ProcessIdentity `json:"process"`
 }
 
+// processExitResult is version 2: version 1 named no mode, because SIGKILL was
+// the only one. The --preview receipt stays version 1 — its shape did not
+// change, and bumping it would invalidate receipts already saved for review.
 type processExitResult struct {
-	SchemaVersion     int    `json:"schema_version"`
-	PID               int    `json:"pid"`
+	SchemaVersion int `json:"schema_version"`
+	PID           int `json:"pid"`
+	// Mode and Signal name what was REQUESTED, so a reader of the result never
+	// has to infer which of the two irreversibility contracts applied.
+	Mode              string `json:"mode"`
+	Signal            string `json:"signal"`
 	SignalAttempted   bool   `json:"signal_attempted"`
 	SignalAccepted    bool   `json:"signal_accepted"`
 	Observation       string `json:"observation"`
@@ -45,14 +54,19 @@ func init() {
 }
 
 func newRecoverProcessCommand(inspect func(int) (base.ProcessIdentity, error), signal func(context.Context, base.ProcessIdentity, syscall.Signal) error) *cobra.Command {
-	var preview, force bool
+	var preview, graceful, force bool
 	var path string
 	command := &cobra.Command{
 		Use: "process PID", Short: "Preview or explicitly force one independently selected process to exit",
 		Long: `Select one process by PID, independently of workspace or group ownership.
-Save --preview verbatim, review its full identity, then use --expect FILE --force.
-Execution compares the full current identity and requests SIGKILL through Core
-for that process birth only. SIGKILL is irreversible. No graceful signal,
+Save --preview verbatim, review its full identity, then use --expect FILE with
+exactly one of --graceful or --force. Execution compares the full current
+identity and requests ONE signal through Core for that process birth only:
+--graceful requests SIGTERM, --force requests SIGKILL. SIGKILL is irreversible
+and discards whatever the process had not yet written; --graceful lets the
+process run its own shutdown, which is what a store holding authoritative state
+needs. Neither escalates: a --graceful request is never followed by SIGKILL, and
+an unconfirmed exit stays unconfirmed rather than falling back to force. No
 escalation, group operation, registry removal or orphan recovery is performed.
 Executable equality is checked at admission only: a same-birth exec can still
 receive the signal. Children may react to lost connections or parent death;
@@ -62,15 +76,22 @@ Cancellation cannot revoke in-flight delivery. The five-second polling budget
 does not interrupt synchronous inspection or output. An error may follow an
 effect: inspect the disposition before any retry. Use the same reviewed binary
 on the same host/boot; changing implementation requires a fresh preview.`,
-		Example: "  codefly recover process 12345 --preview > process-exit.json\n  codefly recover process 12345 --expect process-exit.json --force",
+		Example: "  codefly recover process 12345 --preview > process-exit.json\n  codefly recover process 12345 --expect process-exit.json --graceful\n  codefly recover process 12345 --expect process-exit.json --force",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pid, parseErr := strconv.Atoi(args[0])
 			if parseErr != nil || pid <= 1 || pid == os.Getpid() || strconv.Itoa(pid) != args[0] {
 				return errors.New("PID must be a canonical decimal integer greater than 1, excluding this CLI")
 			}
-			if preview == (path != "") || (cmd.Flags().Changed("expect") && path == "") || force != !preview {
-				return errors.New("select --preview alone, or --expect FILE with --force")
+			// Exactly one mode, and the receipt belongs to the two that signal.
+			modes := 0
+			for _, selected := range []bool{preview, graceful, force} {
+				if selected {
+					modes++
+				}
+			}
+			if modes != 1 || preview == (path != "") || (cmd.Flags().Changed("expect") && path == "") {
+				return errors.New("select --preview alone, or --expect FILE with exactly one of --graceful or --force")
 			}
 			ctx, done := common.NewContext()
 			defer done()
@@ -103,12 +124,17 @@ on the same host/boot; changing implementation requires a fresh preview.`,
 			if expected.Process.PID != pid {
 				return errors.New("receipt PID does not match the explicitly selected PID")
 			}
-			result, effectErr := forceProcessExit(ctx, expected.Process, inspect, signal)
+			requested, mode := syscall.SIGKILL, processExitModeForce
+			if graceful {
+				requested, mode = syscall.SIGTERM, processExitModeGraceful
+			}
+			result, effectErr := requestProcessExit(ctx, expected.Process, requested, mode, inspect, signal)
 			return errors.Join(effectErr, json.NewEncoder(cmd.OutOrStdout()).Encode(result))
 		},
 	}
 	command.Flags().BoolVar(&preview, "preview", false, "Print the current process identity without signaling")
 	command.Flags().StringVar(&path, "expect", "", "Use the complete verbatim version-1 preview receipt")
+	command.Flags().BoolVar(&graceful, "graceful", false, "Request one SIGTERM for the selected process birth, letting it shut down itself; never escalates to SIGKILL")
 	command.Flags().BoolVar(&force, "force", false, "Explicitly request irreversible SIGKILL for the selected process birth")
 	return command
 }
@@ -162,8 +188,8 @@ func sameProcessBirth(first, second base.ProcessIdentity) bool {
 	return first.PID == second.PID && first.BootID == second.BootID && first.StartID == second.StartID
 }
 
-func forceProcessExit(ctx context.Context, expected base.ProcessIdentity, inspect func(int) (base.ProcessIdentity, error), signal func(context.Context, base.ProcessIdentity, syscall.Signal) error) (processExitResult, error) {
-	result := processExitResult{SchemaVersion: 1, PID: expected.PID, Observation: processObservationUnknown}
+func requestProcessExit(ctx context.Context, expected base.ProcessIdentity, requested syscall.Signal, mode string, inspect func(int) (base.ProcessIdentity, error), signal func(context.Context, base.ProcessIdentity, syscall.Signal) error) (processExitResult, error) {
+	result := processExitResult{SchemaVersion: 2, PID: expected.PID, Mode: mode, Signal: requested.String(), Observation: processObservationUnknown}
 	observe := func() (base.ProcessIdentity, error) {
 		result.Observation, result.ExpectedBirthGone = processObservationUnknown, false
 		if err := ctx.Err(); err != nil {
@@ -196,7 +222,8 @@ func forceProcessExit(ctx context.Context, expected base.ProcessIdentity, inspec
 		return result, err
 	}
 	result.SignalAttempted = true
-	deliveryErr := signal(ctx, expected, syscall.SIGKILL)
+	// Exactly one request, whichever mode: nothing here sends a second signal.
+	deliveryErr := signal(ctx, expected, requested)
 	result.SignalAccepted = deliveryErr == nil
 	// This bounds polling, not synchronous owner inspection or in-flight delivery.
 	deadline := time.NewTimer(5 * time.Second)

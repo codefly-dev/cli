@@ -4352,9 +4352,14 @@ Preview or explicitly force one independently selected process to exit
 
 ```
 Select one process by PID, independently of workspace or group ownership.
-Save --preview verbatim, review its full identity, then use --expect FILE --force.
-Execution compares the full current identity and requests SIGKILL through Core
-for that process birth only. SIGKILL is irreversible. No graceful signal,
+Save --preview verbatim, review its full identity, then use --expect FILE with
+exactly one of --graceful or --force. Execution compares the full current
+identity and requests ONE signal through Core for that process birth only:
+--graceful requests SIGTERM, --force requests SIGKILL. SIGKILL is irreversible
+and discards whatever the process had not yet written; --graceful lets the
+process run its own shutdown, which is what a store holding authoritative state
+needs. Neither escalates: a --graceful request is never followed by SIGKILL, and
+an unconfirmed exit stays unconfirmed rather than falling back to force. No
 escalation, group operation, registry removal or orphan recovery is performed.
 Executable equality is checked at admission only: a same-birth exec can still
 receive the signal. Children may react to lost connections or parent death;
@@ -4375,6 +4380,7 @@ Flags:
 ```
       --expect string   Use the complete verbatim version-1 preview receipt
       --force           Explicitly request irreversible SIGKILL for the selected process birth
+      --graceful        Request one SIGTERM for the selected process birth, letting it shut down itself; never escalates to SIGKILL
       --preview         Print the current process identity without signaling
 ```
 
