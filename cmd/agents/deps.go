@@ -13,10 +13,10 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/dependencypins"
 	"github.com/codefly-dev/core/shared"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/module"
 )
 
 // DepsCmd manages an agent's build dependencies: the local↔published core
@@ -414,44 +414,12 @@ func pinModule(ctx context.Context, dir string, env []string, version, label str
 // Select pins before any mutation so a typo cannot produce a partial update or
 // add a dependency to modules that never used it.
 func dependencyPins(dirs, dependencies []string) (map[string][]string, error) {
-	pins := make(map[string][]string)
-	selected := make(map[string]string)
 	for _, dependency := range dependencies {
-		path, version, found := strings.Cut(dependency, "@")
-		if !found || version == "" || strings.ContainsAny(version, "@ \t\r\n") || module.CheckPath(path) != nil {
-			return nil, fmt.Errorf("dependency %q must be module@version", dependency)
-		}
-		if path == coreModule {
+		if strings.HasPrefix(dependency, coreModule+"@") {
 			return nil, fmt.Errorf("select Core through --pin, not --dependency")
 		}
-		if _, exists := selected[path]; exists {
-			return nil, fmt.Errorf("dependency %q is selected more than once", path)
-		}
-		selected[path] = dependency
 	}
-	matched := make(map[string]bool)
-	for _, dir := range dirs {
-		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
-		if err != nil {
-			return nil, err
-		}
-		file, err := modfile.Parse("go.mod", data, nil)
-		if err != nil {
-			return nil, err
-		}
-		for _, requirement := range file.Require {
-			if dependency, exists := selected[requirement.Mod.Path]; exists {
-				pins[dir] = append(pins[dir], dependency)
-				matched[requirement.Mod.Path] = true
-			}
-		}
-	}
-	for path := range selected {
-		if !matched[path] {
-			return nil, fmt.Errorf("dependency %q is not required by the agent or its base fixtures", path)
-		}
-	}
-	return pins, nil
+	return dependencypins.Plan(dirs, dependencies)
 }
 
 // baseFixtureDirs returns every base-fixture Go module under the agent

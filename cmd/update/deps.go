@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/cmd/companion"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/dependencypins"
 	coreaudit "github.com/codefly-dev/core/agents/services/audit"
 	"github.com/spf13/cobra"
 )
@@ -30,6 +31,7 @@ var (
 	depsAudit      bool
 	depsStaleDays  int
 	depsGo         string
+	depsSelections []string
 )
 
 // DepsCmd implements `codefly update deps` — the "update all packages"
@@ -53,6 +55,10 @@ For each Go module under --dir (default: current directory), update deps:
   - go mod tidy
   - re-audit with govulncheck (unless --audit=false)
 
+With --dependency module@version (repeatable), pin only those existing external
+requirements, including indirect dependencies, and leave other selections alone.
+All selections are validated before changing any module.
+
 With --companions, also rebuilds every companion image with 'docker build
 --pull' so floating base tags (golang:1.26-alpine, …) pick up upstream
 patch releases — clearing base-image CVEs like the Go stdlib advisories.
@@ -60,6 +66,7 @@ patch releases — clearing base-image CVEs like the Go stdlib advisories.
 Examples:
   codefly update deps                 # update Go deps under cwd + audit
   codefly update deps --dir .         # same, explicit
+  codefly update deps --dependency golang.org/x/net@v0.62.0
   codefly update deps --companions    # also rebuild companion images (--pull)
   codefly update deps --audit=false   # skip the post-update audit`,
 	Args: cobra.NoArgs,
@@ -88,6 +95,15 @@ Examples:
 		}
 		if len(modDirs) == 0 {
 			return fmt.Errorf("no go.mod found under %s", root)
+		}
+		for _, selection := range depsSelections {
+			if strings.HasPrefix(selection, internalModulePrefix) {
+				return fmt.Errorf("first-party dependency %q is not managed by update deps", selection)
+			}
+		}
+		pins, err := dependencypins.Plan(modDirs, depsSelections)
+		if err != nil {
+			return err
 		}
 		cli.Header(1, "Updating dependencies across %d module(s)", len(modDirs))
 
@@ -123,7 +139,10 @@ Examples:
 				failures = append(failures, err)
 				break
 			}
-			if err := updateModule(ctx, md); err != nil {
+			if len(depsSelections) > 0 && len(pins[md]) == 0 {
+				continue
+			}
+			if err := updateModule(ctx, md, pins[md]...); err != nil {
 				cli.Error("update %s: %v", rel(root, md), err)
 				failures = append(failures, fmt.Errorf("update %s: %w", rel(root, md), err))
 			}
@@ -172,24 +191,31 @@ Examples:
 // updateModule bumps every outdated external dependency in the module at
 // dir to its latest safe version, then tidies. Internal codefly-dev
 // modules are skipped (see internalModulePrefix).
-func updateModule(ctx context.Context, dir string) error {
-	res, err := coreaudit.Golang(ctx, dir, true)
-	if err != nil {
-		return fmt.Errorf("list outdated: %w", err)
-	}
+func updateModule(ctx context.Context, dir string, selections ...string) error {
 	var bumped int
-	for _, o := range res.Outdated {
-		if strings.HasPrefix(o.Package, internalModulePrefix) {
-			continue
+	if len(selections) > 0 {
+		if err := runGo(ctx, dir, append([]string{"get"}, selections...)...); err != nil {
+			return err
 		}
-		if o.LatestSafe == "" || o.LatestSafe == o.Current {
-			continue
+		bumped = len(selections)
+	} else {
+		res, err := coreaudit.Golang(ctx, dir, true)
+		if err != nil {
+			return fmt.Errorf("list outdated: %w", err)
 		}
-		if err := runGo(ctx, dir, "get", o.Package+"@"+o.LatestSafe); err != nil {
-			return fmt.Errorf("go get %s@%s: %w", o.Package, o.LatestSafe, err)
+		for _, o := range res.Outdated {
+			if strings.HasPrefix(o.Package, internalModulePrefix) {
+				continue
+			}
+			if o.LatestSafe == "" || o.LatestSafe == o.Current {
+				continue
+			}
+			if err := runGo(ctx, dir, "get", o.Package+"@"+o.LatestSafe); err != nil {
+				return fmt.Errorf("go get %s@%s: %w", o.Package, o.LatestSafe, err)
+			}
+			cli.Info("  %s %s → %s", o.Package, o.Current, o.LatestSafe)
+			bumped++
 		}
-		cli.Info("  %s %s → %s", o.Package, o.Current, o.LatestSafe)
-		bumped++
 	}
 	// `go mod tidy` ignores go.work: it resolves every import from the
 	// module graph (cache/network), not from workspace-local sibling
@@ -314,6 +340,7 @@ func rel(root, p string) string {
 }
 
 func init() {
+	DepsCmd.Flags().StringArrayVar(&depsSelections, "dependency", nil, "Pin only selected existing external module@version requirements, including indirect dependencies (repeatable)")
 	DepsCmd.Flags().StringVar(&depsDir, "dir", "", "Root to update (default: current directory; recurses into every go.mod)")
 	DepsCmd.Flags().BoolVar(&depsCompanions, "companions", false, "Also rebuild companion Docker images with fresh base layers (docker build --pull)")
 	DepsCmd.Flags().BoolVar(&depsAudit, "audit", true, "Run the govulncheck audit after updating")
