@@ -3370,30 +3370,9 @@ List the runnables (typed finite operations) declared in the workspace.
 A runnable is identified by module/name @ version: a version is an immutable
 release and several versions of one name coexist.
 
-Every Runnable a module derives from its published contracts is listed beside
-the ones it declares. With --tools or --env, each row also carries the tool its
-owner exposed it as — the model-facing name and the explicit effect. An
-operation with no exposure is not a tool and is shown without one: absent means
-not exposed. --tools keeps only the exposed ones.
-
-With --env, each derived operation also carries the configuration key its
-authority is answered under (`runnable-scope-selections` in
-workspace.codefly.yaml) and what that environment has answered, judged by the
-rules `generate runnable-bindings` judges it by:
-
-  selected      its answer resolves every slot the owner declared, or it declares none
-  declined      answered [] — installed for no resource, granted no authority
-  needs-scopes  its owner asks for scope slots nobody has answered
-  invalid       generation refuses this answer, and the row says why
-
-An answer naming no operation at all is reported beside the rows rather than
-dropped, because a mistyped key answers no question and leaves its operation
-reading as unanswered.
-
 Examples:
   codefly list runnables
   codefly list runnables --module=backend
-  codefly list runnables --tools --env=staging
   codefly list runnables --json
 ```
 
@@ -3404,10 +3383,8 @@ codefly list runnables [flags]
 Flags:
 
 ```
-      --env string      Environment whose runnable-scope-selections to report as each operation's grant
       --json            Emit machine-readable JSON
       --module string   Module to list runnables from
-      --tools           List only the operations their owner exposes as a tool
 ```
 
 ## `codefly login`

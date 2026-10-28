@@ -336,31 +336,6 @@ func (d *Derived) Identity() Identity {
 	}
 }
 
-// ToolExposure is how this operation is offered to a model, or nil when it is
-// no tool. The owner's own declaration is repeated, never completed: an
-// operation with no exposure is not a tool, and one whose effect is unstated
-// is not read-only, so neither is given a default here.
-func (d *Derived) ToolExposure() *Tool {
-	if d.Operation == nil || d.Operation.Tool == nil {
-		return nil
-	}
-	tool := d.Operation.Tool
-	return &Tool{Name: tool.GetName(), Description: tool.GetDescription(), Effect: tool.GetEffect().String()}
-}
-
-// Slots names the scope slots the owner asks a composition to answer. They are
-// the questions a grant resolves, and an operation with none needs no answer.
-func (d *Derived) Slots() []string {
-	if d.Operation == nil {
-		return nil
-	}
-	slots := make([]string, 0, len(d.Operation.RequiredScopeSlots))
-	for _, slot := range d.Operation.RequiredScopeSlots {
-		slots = append(slots, slot.GetName())
-	}
-	return slots
-}
-
 func newPackageExecution(execution *basev0.RunnableExecution) Execution {
 	facilities := make([]string, 0, len(execution.GetFacilities()))
 	for _, facility := range execution.GetFacilities() {
