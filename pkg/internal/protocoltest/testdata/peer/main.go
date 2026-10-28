@@ -71,6 +71,10 @@ func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv0.AgentI
 	}
 	declaration := contract.Current()
 	declaration.Capabilities = nil
+	if os.Getenv("CODEFLY_TEST_PEER_IMAGES") == "1" {
+		declaration = contract.Current()
+		declaration.Capabilities = append(declaration.Capabilities, contract.RuntimeInitImage)
+	}
 	switch os.Getenv("CODEFLY_TEST_PEER_CONTRACT") {
 	case "missing":
 		declaration.ProtocolVersion = 0
@@ -94,6 +98,9 @@ func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv0.AgentI
 			Compile: &agentv0.ValidationOperationCapability{Supported: true},
 			Test:    &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "unit", DefaultSuite: true, DependencyMode: dependencyMode}}},
 		}
+	}
+	if os.Getenv("CODEFLY_TEST_PEER_IMAGES") == "1" && info.Validation != nil {
+		info.Validation.ArtifactBuild = &agentv0.ValidationOperationCapability{Supported: true}
 	}
 	return info, nil
 }

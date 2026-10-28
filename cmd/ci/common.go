@@ -471,11 +471,6 @@ func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, 
 	if err != nil {
 		return nil, fmt.Errorf("load CI scheduler dependency graph: %w", err)
 	}
-	if options.DisposableImages {
-		if err = checkDisposablePlan(ctx, workspace, plan); err != nil {
-			return nil, err
-		}
-	}
 	stage := scheduleStage(options)
 	runtimeDependencies := dependencies
 	dependencies, err = dependencies.ForStage(stage)
@@ -630,6 +625,11 @@ func scheduleStage(options ScheduleOptions) resources.Stage {
 }
 
 func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
+	if options.DisposableImages {
+		if err := checkDisposablePlan(ctx, workspace, plan, options.Phase); err != nil {
+			return nil, err
+		}
+	}
 	if plan.replay == nil {
 		return resolveScheduledTasks(ctx, workspace, plan, options)
 	}

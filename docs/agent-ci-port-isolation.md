@@ -89,7 +89,11 @@ This mode currently supports independent single-recipe services with pure
 runtime dependencies. Selected build-stage prerequisites (including schema and
 legacy dependencies), multiple recipes in one plan, unavailable input identity,
 push and registry cache exports are **errors**, not successful skips. Admission
-checks the selected roots and their runtime closure before scheduling or loading
+checks fresh and validated replay requests before dispatch. Build scheduling
+conservatively refuses prerequisites it would dispatch even if a later Flow
+withdraws an intermediate service; it does not traverse withdrawn runtime-only
+branches that neither scheduler nor Flow dispatches. It also checks the selected
+roots and their runtime closure before scheduling or loading
 managers; a runtime dependency's build prerequisite also refuses. Verified plan
 counts are checked before prefetch or host builder provisioning and again before
 execution. Read-only cache imports remain supported. Ordinary unscoped CI keeps

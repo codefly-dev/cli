@@ -54,29 +54,41 @@ func checkDisposableImageDependencies(ctx context.Context, dependencies *archite
 	if err != nil {
 		return err
 	}
+	var participants []string
+	for _, root := range roots {
+		required, err := run.OrderTo(ctx, root)
+		if err != nil {
+			return err
+		}
+		participants = append(participants, root)
+		for _, service := range required {
+			participants = append(participants, service.Unique)
+		}
+	}
+	return CheckDisposableImageBuildPrerequisites(ctx, dependencies, participants)
+}
+
+// CheckDisposableImageBuildPrerequisites checks only the supplied participants'
+// build closure. CI uses it for the roots whose build prerequisites it schedules;
+// Flow supplies its selected runtime participants. It does not select runtime
+// participants from an unfiltered workspace graph.
+func CheckDisposableImageBuildPrerequisites(ctx context.Context, dependencies *architecture.ServiceDependencies, participants []string) error {
 	build, err := dependencies.ForStage(resources.StageBuild)
 	if err != nil {
 		return err
 	}
 	seen := map[string]bool{}
-	for _, root := range roots {
-		participants, err := run.OrderTo(ctx, root)
+	for _, participant := range participants {
+		if seen[participant] {
+			continue
+		}
+		seen[participant] = true
+		required, err := build.OrderTo(ctx, participant)
 		if err != nil {
 			return err
 		}
-		participants = append(participants, architecture.Service{Unique: root})
-		for _, participant := range participants {
-			if seen[participant.Unique] {
-				continue
-			}
-			seen[participant.Unique] = true
-			required, err := build.OrderTo(ctx, participant.Unique)
-			if err != nil {
-				return err
-			}
-			if len(required) > 0 {
-				return fmt.Errorf("disposable image input rebinding is unsupported: %s has build prerequisite %s", participant.Unique, required[0].Unique)
-			}
+		if len(required) > 0 {
+			return fmt.Errorf("disposable image input rebinding is unsupported: %s has build prerequisite %s", participant, required[0].Unique)
 		}
 	}
 	return nil

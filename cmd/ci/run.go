@@ -66,7 +66,7 @@ var RunCmd = &cobra.Command{
 		}
 		return runWithCIReport(ctx, workspace, plan, "codefly ci run", func(reporter *Reporter) error {
 			if disposableRuntime {
-				if err := checkDisposablePlan(ctx, workspace, plan); err != nil {
+				if err := checkDisposablePlan(ctx, workspace, plan, phases...); err != nil {
 					return err
 				}
 			}
