@@ -2465,12 +2465,21 @@ Every rule is one that silently broke something. The two worth knowing:
 | | |
 |---|---|
 | `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
+| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
 | `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
 
 Exit codes: `0` every judged solution conforms (warnings allowed), `1` at least
 one check failed. `--json` prints a versioned report per module
 (`{schema_version, module, dir, is_solution, status, checks[]}`), so a
 consumer repository can gate on it instead of hand-rolling the equivalent.
+
+**Permissions.** The contract is read through Core's own loader, which refuses
+a role granting a scope no binding backs and no ceiling covers — *"role
+`installer` grants `documents:read`, which is neither within the module's own
+scope ceilings nor a scope one of its bindings spells out"*. That is the
+missing-permission class, caught before install rather than at the first
+refused call. What a composition's values resolve each binding to is not
+judged: that needs the composition, not the directory.
 
 A warning is not a failure: it names something worth seeing that does not make
 the solution wrong — publishing the page's shell, a headless solution with no
