@@ -229,3 +229,45 @@ modules:
 	require.Equal(t, first.Dir, second.Dir,
 		"while the RESOLVED directory is unchanged — which is exactly why a path-only recheck passed")
 }
+
+// TestANearerOverlayChangesTheSelectionWithoutChangingItsPath is the last way
+// a selection can move while every other field of it holds still.
+//
+// A directive path is relative to the overlay file that declares it. A parent
+// overlay saying `path: modules/wiki` and a nearer workspace overlay saying the
+// very same thing select DIFFERENT directories, so comparing the raw path text
+// cannot tell them apart — and the resolved directory cannot either, because
+// ResolveModule answers from the snapshot the workspace was loaded with. The
+// overlay the selection was read from is what distinguishes them.
+func TestANearerOverlayChangesTheSelectionWithoutChangingItsPath(t *testing.T) {
+	ctx := context.Background()
+	parent := t.TempDir()
+	child := filepath.Join(parent, "composition")
+	write := func(name, body string) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Dir(name), 0o755))
+		require.NoError(t, os.WriteFile(name, []byte(body), 0o600))
+	}
+	const overlay = "resolve:\n  wiki:\n    path: modules/wiki\n"
+	write(filepath.Join(parent, "codefly.local.yaml"), overlay)
+	write(filepath.Join(child, "workspace.codefly.yaml"),
+		"name: origin-change\nlayout: modules\nmodules:\n    - name: wiki\n      source: github.com/example/wiki\n      version: 1.0.0\n")
+	write(filepath.Join(parent, "modules/wiki/docs/install.md"), "A\n")
+	write(filepath.Join(child, "modules/wiki/docs/install.md"), "B\n")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, child)
+	require.NoError(t, err)
+	before, err := composition.SelectModule(ctx, workspace, "wiki")
+	require.NoError(t, err)
+	require.Equal(t, parent, before.OverlayDir, "the parent overlay is the nearest one")
+
+	// The same text, declared nearer. Nothing about the directive changes.
+	write(filepath.Join(child, "codefly.local.yaml"), overlay)
+	after, err := composition.SelectModule(ctx, workspace, "wiki")
+	require.NoError(t, err)
+
+	require.Equal(t, before.DirectivePath, after.DirectivePath, "the path text is identical")
+	require.Equal(t, before.Dir, after.Dir, "and so is the resolved directory, from the loaded snapshot")
+	require.NotEqual(t, *before, *after, "yet the selection moved, and the overlay origin says so")
+	require.Equal(t, child, after.OverlayDir)
+}

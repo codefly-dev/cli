@@ -29,6 +29,17 @@ type SelectedModule struct {
 	// Mode is how the module is materialized, as a receipt records it.
 	Mode ResolutionMode
 
+	// OverlayDir is the directory whose overlay and resolution record this
+	// selection was read from — NearestOverlayDir's answer, or the workspace
+	// when nothing is nearer.
+	//
+	// It is part of the selection because a directive path is relative to the
+	// overlay file that declares it. A nearer overlay appearing with the SAME
+	// path text re-points the module without changing one character of the
+	// directive, so the raw path cannot tell the two selections apart and this
+	// is what does.
+	OverlayDir string
+
 	// The machine-local directive, re-read from disk on every ask. This is what
 	// moves when a developer re-points a module between two reads — and it can
 	// move while the RESOLVED path does not, because ResolveModule answers from
@@ -103,6 +114,7 @@ func SelectModule(ctx context.Context, workspace *resources.Workspace, module st
 	selected := &SelectedModule{
 		Dir:        resolution.Dir,
 		Mode:       mode,
+		OverlayDir: state.recordDir,
 		RefSource:  ref.Source,
 		RefModule:  ref.Module,
 		RefVersion: ref.Version,
