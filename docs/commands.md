@@ -3646,7 +3646,8 @@ policy rows the authority applies, `"<VERB> <basePath><path>"`, are derived from
 it exactly as from a REST module's contract, so the document describes the
 routes as the backend serves them: no `basePath` when its paths already carry
 the prefix the authority's edge forwards them on (`/v1/<id>/…`). A solution
-built on solution-runtime-go renders it with `solution.InterfaceDocument`.
+built on solution-runtime-go renders it with `Server.InterfaceArtifact`, which
+also emits the operation markers consumed by `generate runnables`.
 
 An exported endpoint that carries no machine-readable contract is skipped with a
 notice, never a failure: `tcp` and `mcp` endpoints, an `http` endpoint whose
@@ -4084,6 +4085,20 @@ default gate is `verify`, `sync-drift`, `lint`, `compile`, `test`, `audit`,
 `sbom`, and `build`; reports retain typed integrity, drift, audit, and artifact
 evidence.
 
+`ci run --disposable` additionally scopes host-built image outputs in artifact
+builds and lint/compile/test runtime initialization, including runtime
+dependencies. It currently requires independent single-recipe services:
+selected build-stage prerequisites (including schema and legacy edges),
+multi-recipe plans and unknown image input identity fail explicitly. The
+selected runtime closure is checked too, so a build prerequisite of a runtime
+dependency cannot bypass admission. This limitation does not change ordinary
+unscoped prerequisite ordering described above. `ci test --disposable` uses the
+same runtime image policy. Push and registry cache exports (`--cache-to`) are
+refused; read-only cache imports are allowed. Scoped images remain retained;
+runtime teardown does not grant image-cleanup authority. Hidden/undeclared
+image inputs and legacy agent-owned effects are not qualified by this policy.
+See [disposable invocation limits](agent-ci-port-isolation.md#disposable-invocations).
+
 `codefly ci build` and the build phase of `codefly ci run` accept
 `--image-sbom`, which requires a digest-bound CycloneDX inventory for every
 image the build produces. Each document is written under `sbom/image/` and named
@@ -4378,6 +4393,129 @@ additional cleanup candidates. Recovery requires Core's authenticated process-gr
 registration and owner-death evidence; a name or environment marker alone never
 permits signaling. Missing or ambiguous proof leaves the process running and
 returns an error. Registry failures prevent fallback cleanup from bypassing refusal.
+
+### `codefly recover process`
+
+Preview or force one independently selected process to exit. This operation
+establishes no Codefly, service or workspace ownership and does not select a
+process group, descendants, containers or registrations.
+
+```bash
+codefly recover process 12345 --preview > process-exit.json
+# Review the complete identity and independently establish the target.
+codefly recover process 12345 --expect process-exit.json --force
+```
+
+Execution requires the same PID and full current identity as the preview,
+including process group and executable at admission. PID1 and this CLI's PID
+refuse. The only signal is explicit, irreversible SIGKILL through Core's
+`SignalProcess`: there is no graceful default, escalation or automatic retry.
+Core binds delivery to process birth and group, not an immutable executable;
+a same-birth exec after admission can still receive the signal. One CLI owner
+call may involve Core's internal kernel-token retries.
+
+The result reports `signal_attempted`, `signal_accepted`, `observation` and
+`expected_birth_gone`. Success requires observed absence and no delivery,
+inspection, cancellation or output error. Already-absent is successful without
+a signal attempt. A replacement is reported as `changed_birth` with a nonzero
+exit and is never selected; its presence proves neither PID availability nor
+that this command caused the original exit. Same-birth exec/group changes do
+not prove exit. Ordinary owner inspection errors remain `unknown`, not absence.
+Delivery errors remain errors even if subsequent observation finds absence.
+The five-second polling budget does not interrupt synchronous inspection or
+output. Cancellation prevents a new owner call once observed; it cannot revoke
+in-flight delivery or its indirect effects. A nonzero exit can follow an effect.
+
+SIGKILL prevents the selected process's own handlers/deferred cleanup. Surviving
+agents can still react to lost pipes/RPCs or parent death. This command does not
+prove that older agent cleanup, stored data or descendants are untouched; assess
+the actual selected binaries and ordering separately before an operation.
+Orphan recovery and registry removal remain separate explicit operations.
+
+**Fixed local receipt exception:** Core's owner explicitly approved this
+separate native-identity exception under its architecture contract policy.
+Version1 embeds `base.ProcessIdentity` unchanged in a `schema_version`/`process`
+envelope and uses a fixed local result shape. Both ends must use the same
+reviewed implementation on the same host/boot; any change requires fresh preview.
+The command does not detect the binary that produced a receipt. It is untrusted
+comparison evidence, not a credential, ownership grant, registry or remote API.
+The complete default JSON encoding plus its single newline must be saved
+verbatim and fit within16KiB, inclusive. Reformatted, unknown-version, incomplete,
+duplicate, alias, null, trailing or noncanonical input refuses, as do non-regular
+files. The native field shape is frozen by a maintained test. Future shape or
+meaning changes require a separately versioned contract under the protobuf
+default unless another explicit exception is reviewed. This exception does not
+extend the registry or Docker receipt contracts. There is no MCP effect tool.
+
+### `codefly recover container`
+
+Stop one independently selected container by its full lowercase 64-hex Docker ID,
+preserving the container, writable layer and mounts. This explicit operator
+operation establishes no parent-service ownership and does not relax normal
+runtime adoption or workspace-scoped stop.
+
+```bash
+codefly recover container <full-container-id> --preview > container-stop.json
+# Review the complete Core receipt and exact target before executing it.
+codefly recover container <full-container-id> --expect container-stop.json
+```
+
+Preview is read-only. Core records the ID, creation time, exact name, labels and
+mounts; execution uses Core's strict parser and compares the receipt against
+that same immutable ID before stopping it. The CLI rejects a positional ID that
+differs from the receipt. Core owns the 64 KiB inclusive receipt limit, including
+the preview's newline; an empty mount list is explicit `[]`. AutoRemove
+containers refuse before effects because stopping them could delete the object.
+
+Success requires no owner error and all three reported postconditions:
+`stopped`, `retained`, and `mounts_unchanged`. Core also checks unchanged labels
+and identity. An error may follow an actual stop; partial results are printed,
+and uncertain or missing readback never counts as success. No name/prefix
+selection, ledger claim, relabeling, removal, restart or automatic retry occurs.
+This operation verifies retention and mount identity, not stored object contents
+or producer migration. Corrected-producer reuse and data checks remain separate.
+It is an explicit operator command; no separate MCP effect tool is added.
+
+### `codefly recover process-group`
+
+Recover one explicitly selected orphan generation when ordinary workspace-scoped
+stop cannot admit it, including a retained legacy Darwin boot representation.
+This is an operator operation, separate from `stop`, `clear` and startup reaping;
+it does not establish missing workspace attribution or widen their selection.
+
+```bash
+codefly recover process-group 12345 --preview > recovery.json
+# Review the complete Core receipt before executing it.
+codefly recover process-group 12345 --expect recovery.json
+```
+
+Use the same user home for both commands: Core owns the process registry under
+the user's home independently of the CLI plugin directory. `--preview`
+authenticates without signaling and prints the owner's JSON receipt:
+namespace, registration SHA256, PGID, recorded leader/owner identities and observed
+member identities. Save it unchanged. The CLI requires one PGID and exactly one
+mode; execution uses Core's strict receipt parser and rejects a different PGID.
+There is no name/port selection, `--all`, inferred workspace or automatic retry.
+Core bounds the complete receipt to 1 MiB, including the preview's trailing
+newline. Preview refuses a generation whose receipt cannot fit; the CLI uses
+the same owner-defined bound when reading it. This is independent of the
+smaller registry-record storage limit.
+
+Core owns format compatibility and revalidates unchanged registration evidence,
+original-owner absence, supported boot identity and initial member births before
+effects. Ambiguous namespaces or changed/missing evidence refuse. Later escalation
+can reach authenticated descendants of that registered generation; the receipt
+does not authorize a replacement generation. Core uses its current identity-bound
+delivery and removes only the unchanged registration after proven group death.
+It never rewrites the retained boot identity.
+
+Execution prints Core's `group_dead` and `record_removed` observations, including
+partial results on error. Exit status is successful only when Core returns no
+error **and both are true**. Failure can follow partial termination; preserve the
+receipt and output and inspect the cause before a new preview or retry. Neither a
+nil removal error nor an absent PID alone is reported as complete recovery.
+Containers, caches and other registrations are not selected. This explicit
+operator workflow is not exposed as an MCP tool.
 
 ### `codefly ps`
 
@@ -4680,8 +4818,10 @@ module: `<service>/<source-dir>/pkg/gen/permissions`, where `source-dir` is the
 Go agent's setting (`code` unless the service declares another; its first
 segment is where `go.mod` lives) and `pkg/gen` is the tree the go-grpc layout
 generates its bindings into. Each service's table holds the methods its own
-published contracts serve, plus the module contract's `foreign_methods`, which
-name no service and so appear in every Go service's table. What an endpoint
+published contracts serve, plus the module contract's `foreign_methods` selected
+for that `service`. Foreign methods without a service selector retain the legacy
+behavior of appearing in every Go service's table. Their authority requirements
+remain in the module-wide policy union. What an endpoint
 serves is what the contract catalog (`contracts/api/catalog.codefly.json`)
 records for it: the module's declared surface (`contracts.codefly.yaml`, see
 [Generate contracts](#generate-contracts)), or every service of the endpoint's
@@ -4719,3 +4859,9 @@ Published package dependencies do not require local source trees.
 
 Permission generation is available through the CLI; no separate MCP generator
 was added. MCP run/test use the same composition preflight as their CLI paths.
+
+A module with multiple published protobuf services selects the serving service
+on each `foreign_methods` entry with `service:`. The hop routes it only to that
+service's published gRPC/Connect listeners. An absent selector requires exactly
+one such service; unknown or non-protobuf selections are refused. This does not
+change a method's authority policy or authorize shadowing a published method.

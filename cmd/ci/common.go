@@ -179,6 +179,7 @@ type ScheduleOptions struct {
 	Jobs                  int
 	FailFast              bool
 	LockDependencyClosure bool
+	DisposableImages      bool
 	Phase                 string
 	Suite                 string
 	RuntimeContext        string
@@ -624,6 +625,11 @@ func scheduleStage(options ScheduleOptions) resources.Stage {
 }
 
 func buildScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
+	if options.DisposableImages {
+		if err := checkDisposablePlan(ctx, workspace, plan, options.Phase); err != nil {
+			return nil, err
+		}
+	}
 	if plan.replay == nil {
 		return resolveScheduledTasks(ctx, workspace, plan, options)
 	}

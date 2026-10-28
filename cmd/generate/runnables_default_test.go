@@ -104,7 +104,7 @@ func TestGenerateRunnablesDerivesEveryMethodBehindTheHop(t *testing.T) {
 	require.Equal(t, "RECOVERY_RECOMPUTE", count["recovery"])
 	require.Empty(t, count["lookup_scopes"])
 	require.Equal(t, "EFFECT_READ_ONLY", count["tool"].(map[string]any)["effect"])
-	require.Equal(t, "documents", count["audience"])
+	require.Equal(t, "documents.ingestion", count["audience"])
 
 	write := read("WriteText")
 	require.Equal(t, "RECOVERY_RECEIPT", write["recovery"])

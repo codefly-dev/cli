@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/composition"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"gopkg.in/yaml.v3"
 )
 
 // The derivation reads descriptors, so the fixtures are descriptors. Building
@@ -213,6 +215,11 @@ func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, man
 	)
 
 	publishContract(t, moduleDir, contract)
+	destinations := []modulecontract.Destination{{ID: "grpc", Service: "runtime-worker", Endpoint: "grpc", Kind: "module"}}
+	for _, endpoint := range beside {
+		destinations = append(destinations, modulecontract.Destination{ID: endpoint.Name, Service: "runtime-worker", Endpoint: endpoint.Name, Kind: "module"})
+	}
+	saveRunnablePublication(t, moduleDir, "documents.ingestion", destinations...)
 
 	if manifestVersion != "" {
 		writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(
@@ -220,6 +227,19 @@ func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, man
 				"\nminimum-codefly-version: \">=0.1.0\"\ncontracts:\n  composition: \">=2.0 <3.0\"\nartifact-roots:\n  - contracts\nservices:\n  - name: runtime-worker\n    endpoints:\n      - grpc\n"))
 	}
 	return root, moduleDir
+}
+
+func saveRunnablePublication(t *testing.T, moduleDir, principal string, destinations ...modulecontract.Destination) {
+	t.Helper()
+	data, err := yaml.Marshal(&modulecontract.Contract{
+		Schema: modulecontract.SchemaV1, Principal: principal,
+		Namespaces: []string{}, Queues: []string{}, ScopeCeilings: []modulecontract.ScopeCeiling{},
+		Bindings: []modulecontract.Binding{}, Destinations: destinations,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, filepath.Join(moduleDir, modulecontract.FileName), data)
 }
 
 // publishContract writes one endpoint's contract and the catalog that names

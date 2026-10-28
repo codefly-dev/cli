@@ -160,7 +160,8 @@ func (served *ServedMethodPolicies) Table(keep func(service string) bool) ([]*co
 
 // ServedMethodPolicies is a module's method policies by where they are
 // served: each service's published contracts, and the module contract's
-// foreign methods, which name no service.
+// foreign methods. Explicitly selected foreign methods join ByService;
+// unselected entries remain in Foreign for existing consumers.
 type ServedMethodPolicies struct {
 	// Package is the package's ID, which a refusal names.
 	Package string
@@ -198,13 +199,16 @@ type ServedMethodPolicies struct {
 // package's other services and its imports', so the rest is Unserved. A
 // package with no catalog falls back to that same default.
 func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, err error) {
-	foreign, err := foreignMethods(dir)
+	foreign, selected, err := foreignMethods(dir)
 	if err != nil {
 		return served, false, err
 	}
-	served.Foreign = foreign
 	served.ByService = map[string][]*compositionv1.MethodPolicyV1{}
 	if _, statErr := os.Stat(filepath.Join(dir, composition.PackageManifestFileName)); os.IsNotExist(statErr) {
+		if len(selected) > 0 {
+			return served, false, fmt.Errorf("foreign method service selection requires a package manifest")
+		}
+		served.Foreign = foreign
 		return served, len(foreign) > 0, nil
 	}
 	manifest, err := composition.LoadPackageManifest(dir)
@@ -267,6 +271,20 @@ func ServiceMethodPolicies(dir string) (served ServedMethodPolicies, ok bool, er
 			return served, false, fmt.Errorf("module package %s declares foreign method %s, which its published contracts already serve", manifest.ID, m.GetMethod())
 		}
 		servedAnywhere[m.GetMethod()] = true
+		if service := selected[m.GetMethod()]; service != "" {
+			if !publishesProtobuf(manifest, service) {
+				return served, false, fmt.Errorf("foreign method %s selects service %q, which publishes no protobuf contract", m.GetMethod(), service)
+			}
+			served.ByService[service] = append(served.ByService[service], m)
+			if !slices.Contains(served.Services, service) {
+				served.Services = append(served.Services, service)
+			}
+		} else {
+			served.Foreign = append(served.Foreign, m)
+		}
+	}
+	for _, methods := range served.ByService {
+		sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
 	}
 	// A method one endpoint serves and another's descriptor merely carries is
 	// served.
@@ -284,26 +302,48 @@ func declaresNothing(m *compositionv1.MethodPolicyV1) bool {
 	return !m.GetAnyCheckedCaller() && len(m.GetRequires()) == 0
 }
 
+// publishesProtobuf reports whether the manifest's service of that name
+// publishes a protobuf contract, which is what a foreign method's service
+// selector must name: the selector chooses where a method is served, so a
+// service serving no protobuf cannot be the answer.
+func publishesProtobuf(manifest *composition.PackageManifest, service string) bool {
+	for i := range manifest.Services {
+		if manifest.Services[i].Name != service {
+			continue
+		}
+		for _, contract := range manifest.Services[i].APIContracts {
+			if contract.Kind == composition.APIContractKindProtobuf {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // foreignMethods reads the methods the module at dir serves from a protocol
 // it does not own, from its module contract, each with what a call requires.
 // A module that publishes no contract declares none.
-func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, error) {
+func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, map[string]string, error) {
 	contract, err := modulecontract.Load(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []*compositionv1.MethodPolicyV1
+	selected := map[string]string{}
 	for _, method := range contract.ForeignMethods {
 		m := &compositionv1.MethodPolicyV1{Method: method.Method}
+		if method.Service != "" {
+			selected[method.Method] = method.Service
+		}
 		for _, required := range method.Requires {
 			m.Requires = append(m.Requires, &authorityv1.WorkScopeV1{ResourceKind: required.ResourceKind, Actions: required.Actions})
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, selected, nil
 }
 
 // ScopeCeilings reads the module's own resource kinds with the actions declared

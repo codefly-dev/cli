@@ -270,8 +270,8 @@ func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]rou
 // from a protocol the module does not own, so no published contract of its
 // declares them — to the listeners that serve them, so the routes hold the
 // same method set as the policy table the authority receives
-// (gitops.ServiceMethodPolicies delivers them). A foreign method names no
-// service: it is served by the module's one service publishing protobuf over
+// (gitops.ServiceMethodPolicies delivers them). A foreign method may select its service. Without a selection it is served
+// by the module's one service publishing protobuf over
 // gRPC or Connect, on each of those listeners, which the hop treats as one
 // destination. A module where none or several services do is refused by name
 // rather than guessed, as is a foreign method a published contract already
@@ -287,28 +287,39 @@ func routeForeignMethods(endpoints []routing.RouteEndpoint, foreign []modulecont
 			services = append(services, endpoints[i].Service)
 		}
 	}
-	if len(services) != 1 {
-		methods := make([]string, 0, len(foreign))
-		for _, method := range foreign {
-			methods = append(methods, method.Method)
-		}
-		slices.Sort(services)
-		return fmt.Errorf("its module contract declares foreign methods %s, which name no service, and %d services publish gRPC or Connect contracts %v: the hop cannot tell which one serves them",
-			strings.Join(methods, ", "), len(services), services)
-	}
-	for i := range endpoints {
-		endpoint := &endpoints[i]
-		if !rpc(endpoint) {
-			continue
-		}
-		for _, method := range foreign {
-			if slices.Contains(endpoint.Methods, method.Method) {
-				return fmt.Errorf("foreign method %s is also declared by the contract %s/%s publishes", method.Method, endpoint.Service, endpoint.Endpoint)
+
+	for _, method := range foreign {
+		service := method.Service
+		if service == "" {
+			if len(services) != 1 {
+				methods := make([]string, 0, len(foreign))
+				for _, m := range foreign {
+					methods = append(methods, m.Method)
+				}
+				slices.Sort(services)
+				return fmt.Errorf("its module contract declares foreign methods %s, which name no service, and %d services publish gRPC or Connect contracts %v: the hop cannot tell which one serves them",
+					strings.Join(methods, ", "), len(services), services)
 			}
-			endpoint.Methods = append(endpoint.Methods, method.Method)
+			service = services[0]
 		}
-		slices.Sort(endpoint.Methods)
+		if !slices.Contains(services, service) {
+			return fmt.Errorf("foreign method %s selects service %q, which publishes no gRPC or Connect contract", method.Method, service)
+		}
+		// A declared service does not authorize shadowing an owned method anywhere.
+		for i := range endpoints {
+			if slices.Contains(endpoints[i].Methods, method.Method) {
+				return fmt.Errorf("foreign method %s is also declared by the contract %s/%s publishes", method.Method, endpoints[i].Service, endpoints[i].Endpoint)
+			}
+		}
+		for i := range endpoints {
+			endpoint := &endpoints[i]
+			if rpc(endpoint) && endpoint.Service == service {
+				endpoint.Methods = append(endpoint.Methods, method.Method)
+				slices.Sort(endpoint.Methods)
+			}
+		}
 	}
+
 	return nil
 }
 

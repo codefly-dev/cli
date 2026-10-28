@@ -126,6 +126,9 @@ func RunServiceWithOptions(
 	if err != nil {
 		return w.Wrap(err)
 	}
+	if options.Disposable {
+		flow.WithDisposableImages()
+	}
 	flow.WithOutputSink(cli.NewOutputSink())
 	defer func() {
 		if stopErr := flow.Stop(); stopErr != nil {

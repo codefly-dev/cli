@@ -23,7 +23,7 @@ var testSelection SelectionFlags
 // Ordinary CI keeps the normal Stop semantics of stateful service agents.
 var disposableRuntime bool
 
-const disposableRuntimeUsage = "Give each validation/test flow a fresh resource scope and destroy its owned runtime resources afterward (for disposable fixtures only)"
+const disposableRuntimeUsage = "Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)"
 
 type disposableTestFlow struct{ *orchestration.Flow }
 
@@ -121,6 +121,9 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.TestMode)
 	if err != nil {
 		return nil, w.Wrap(err)
+	}
+	if disposableRuntime {
+		flow.WithDisposableImages()
 	}
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)

@@ -73,6 +73,7 @@ Subcommands:
 - [`codefly provider`](#codefly-provider)
 - [`codefly ps`](#codefly-ps)
 - [`codefly publish`](#codefly-publish)
+- [`codefly recover`](#codefly-recover)
 - [`codefly replay`](#codefly-replay)
 - [`codefly run`](#codefly-run)
 - [`codefly sbom`](#codefly-sbom)
@@ -1027,7 +1028,7 @@ Flags:
       --cache-scope string                Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
       --cache-to stringArray              Registry cache repository to publish (repeatable; omit for read-only builds)
       --changed-file strings              Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --disposable                        Give each validation/test flow a fresh resource scope and destroy its owned runtime resources afterward (for disposable fixtures only)
+      --disposable                        Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
       --fail-fast                         Stop native tests and service scheduling after the first failure (default true)
       --fail-on-vuln                      Fail audit on HIGH or CRITICAL vulnerabilities (default true)
       --format string                     Final CI report format: text or json (default "text")
@@ -1068,7 +1069,7 @@ Flags:
       --all                      Select every service explicitly
       --base string              Base Git revision for affected-service discovery
       --changed-file strings     Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --disposable               Give each validation/test flow a fresh resource scope and destroy its owned runtime resources afterward (for disposable fixtures only)
+      --disposable               Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
       --fail-fast                Stop native tests and service scheduling after the first failure (default true)
       --format string            Final CI report format: text or json (default "text")
       --head string              Head Git revision (defaults to HEAD when --base is set)
@@ -2867,8 +2868,9 @@ By default each Go service gets its own table in its own Go module:
 <service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
 generates its bindings into (source-dir is the Go agent's setting, "code"
 unless the service declares another). A service's table holds the methods its
-published contracts serve plus the module contract's foreign methods, which
-name no service. What an endpoint serves is what the contract catalog records
+published contracts serve plus foreign methods selected for that service.
+Unselected foreign methods appear in every Go service's table for compatibility.
+What an endpoint serves is what the contract catalog records
 for it (the declared surface, or every service of its package); a method a
 published descriptor declares that no endpoint serves, such as a protocol other
 modules serve, is left out with a note and needs no policy. The TypeScript file
@@ -4176,6 +4178,105 @@ Flags:
       --ci           run as a CI job: bot git identity, no signing (default: on when CI=true)
       --dir string   manifest directory (default: cwd)
       --dry-run      show what would happen without modifying anything
+```
+
+## `codefly recover`
+
+Recover an explicitly selected resource or process
+
+```
+codefly recover <subcommand>
+```
+
+Subcommands:
+
+- [`codefly recover container`](#codefly-recover-container)
+- [`codefly recover process`](#codefly-recover-process)
+- [`codefly recover process-group`](#codefly-recover-process-group)
+
+## `codefly recover container`
+
+Preview or stop one explicitly selected container, retaining its data
+
+```
+Select one container by its full lowercase 64-hex Docker ID.
+Use --preview to inspect it without effects and print Core's JSON receipt.
+Review and save the complete receipt, then use --expect FILE with the same ID.
+Core compares the identity, creation time, name, labels and mounts before stopping
+that ID only. AutoRemove containers refuse. No name lookup, parent-service claim,
+label rewrite, container removal, volume removal or restart is performed.
+Success requires the same container retained and stopped with unchanged mounts
+and labels. This does not prove stored data contents or qualify producer reuse.
+An error may follow a stop; inspect the reported result before any retry.
+```
+
+```
+codefly recover container ID
+```
+
+Flags:
+
+```
+      --expect string   Stop only the exact container matching this reviewed Core JSON receipt
+      --preview         Inspect one full container ID and print its receipt without stopping it
+```
+
+## `codefly recover process`
+
+Preview or explicitly force one independently selected process to exit
+
+```
+Select one process by PID, independently of workspace or group ownership.
+Save --preview verbatim, review its full identity, then use --expect FILE --force.
+Execution compares the full current identity and requests SIGKILL through Core
+for that process birth only. SIGKILL is irreversible. No graceful signal,
+escalation, group operation, registry removal or orphan recovery is performed.
+Executable equality is checked at admission only: a same-birth exec can still
+receive the signal. Children may react to lost connections or parent death;
+this command does not prove that their cleanup or stored data remain untouched.
+Success requires observed absence without errors; delivery alone is not exit.
+Cancellation cannot revoke in-flight delivery. The five-second polling budget
+does not interrupt synchronous inspection or output. An error may follow an
+effect: inspect the disposition before any retry. Use the same reviewed binary
+on the same host/boot; changing implementation requires a fresh preview.
+```
+
+```
+codefly recover process PID
+```
+
+Flags:
+
+```
+      --expect string   Use the complete verbatim version-1 preview receipt
+      --force           Explicitly request irreversible SIGKILL for the selected process birth
+      --preview         Print the current process identity without signaling
+```
+
+## `codefly recover process-group`
+
+Preview or recover one authenticated orphan process-group generation
+
+```
+Select one retained process group explicitly, independently of workspace-scoped stop.
+Use --preview to authenticate it without signaling and print Core's JSON receipt.
+Review and save the complete receipt, then use --expect FILE with the same PGID.
+Core revalidates the registration, absent original owner and process births before
+effects. Changed, missing or ambiguous evidence refuses recovery. Workspace
+membership is not inferred. Containers, caches and other groups are not selected.
+Recovery succeeds only when the group is dead and its exact record was removed.
+An error can report partial termination; inspect the result before any retry.
+```
+
+```
+codefly recover process-group PGID
+```
+
+Flags:
+
+```
+      --expect string   Recover only the generation in this reviewed Core JSON receipt
+      --preview         Authenticate one generation and print its receipt without signaling
 ```
 
 ## `codefly replay`

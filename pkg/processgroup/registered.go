@@ -22,7 +22,7 @@ func PreviewManagedProcessGroups(ctx context.Context, scope Scope) ([]int, error
 		}
 		ownership, err := group.InspectOwnership(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("inspect registered group %d: %w", group.PGID(), err)
 		}
 		if !ownership.Authenticated {
 			return nil, fmt.Errorf("group %d ownership is unproven", group.PGID())

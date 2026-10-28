@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
@@ -45,6 +46,8 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	root, moduleDir := saveFixtureWorkspace(t, context.Background(), "saas-starter",
 		&resources.ModuleInterface{Endpoints: []*resources.InterfaceEndpoint{{Service: "accounts", Endpoint: "authority", Visibility: resources.VisibilityInternal}, {Service: "accounts", Endpoint: "connect", Visibility: resources.VisibilityInternal}}},
 		service)
+	// The fixture declares the trust boundary carried by its explicit operations.
+	saveRunnablePublication(t, moduleDir, "saas-datasource", modulecontract.Destination{ID: "connect", Service: "accounts", Endpoint: "connect", Kind: "module"})
 	writeFixtureFile(t, filepath.Join(service.Dir(), "generated/surfaces.json"), surfaceBytes)
 	surfacePath := fixtureSurfacePath(t, moduleDir, service.Name, "generated/surfaces.json")
 	surfaces, err := loadContractSurfaces(service, []*basev0.Endpoint{{Name: "authority", Api: "grpc"}, {Name: "connect", Api: "connect"}}, surfacePath)

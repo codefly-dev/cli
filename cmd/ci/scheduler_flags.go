@@ -9,6 +9,7 @@ func bindSchedulingFlags(command *cobra.Command) {
 
 func commandScheduleOptions(lockDependencyClosure bool, phase, suite string, reporter *Reporter) ScheduleOptions {
 	return ScheduleOptions{
+		DisposableImages:      disposableRuntime,
 		Jobs:                  ciJobs,
 		FailFast:              ciFailFast,
 		LockDependencyClosure: lockDependencyClosure,

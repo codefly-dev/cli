@@ -55,8 +55,14 @@ const (
 // builder's host architecture.
 func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return err
+	}
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
+	}
+	if err := b.checkDisposableImagePlan(plan); err != nil {
+		return err
 	}
 	recipes := plan.GetRecipes()
 	if len(recipes) == 0 {
@@ -147,6 +153,9 @@ func (b *Builder) decideImageReuse(
 		return imageReuse{}, err
 	}
 	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, prepared.Dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors)
+	if err = b.checkDisposableImageIdentity(identity, identityErr); err != nil {
+		return imageReuse{}, err
+	}
 	if identityErr != nil {
 		// Not a build failure: an input this cannot account for means the image
 		// is rebuilt, which is the behaviour without a cache at all. It is said
@@ -156,6 +165,11 @@ func (b *Builder) decideImageReuse(
 			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
 	}
 	decision := imageReuse{identity: identity}
+	// Scoped naming precedes identity; ordinary runtime naming derives from it.
+	recipe, decision.image, err = b.imageForExecution(recipe, identity, identityErr)
+	if err != nil {
+		return decision, err
+	}
 	// A build under a workspace agent override is not the build the release
 	// names, so it is pushed under a tag of its own (override_build.go).
 	if shouldPush && releasedVersionTag(recipe.GetImage()) {
@@ -215,6 +229,11 @@ func (b *Builder) decideImageReuse(
 	}
 	entry, found := b.imageBuildCache().lookup(identity.Key, b.instance.Unique(), shouldPush)
 	switch {
+	case found && b.cacheImageReferenceMismatch(entry, recipe):
+		// The local tag is the claim about the inputs; an entry recorded under
+		// another name cannot stand in for it.
+		w.Debug("the recorded image is not named by these inputs; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("recorded", entry.Image), wool.Field("identity", identity.Key))
 	case found && imageStillExists(ctx, entry, probeBuilder):
 		decision.entry = entry
 	case found:
@@ -291,7 +310,29 @@ func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
 // the build will actually run and probes the registry the image is pushed to;
 // the manifests keep the name the cell pulls, with the pushed digest.
 func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush bool) (*builderv0.DockerBuildRecipe, error) {
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return nil, err
+	}
+	if b.world.disposableImageScope != "" {
+		if shouldPush {
+			return nil, fmt.Errorf("disposable images do not support push")
+		}
+		if built := b.executionRecipes[recipe.GetName()]; built != nil {
+			return built, nil
+		}
+		if b.localRuntime {
+			var err error
+			recipe, err = b.localRuntimeRecipe(recipe)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return b.scopedRecipe(recipe), nil
+	}
 	if !shouldPush {
+		if b.localRuntime {
+			return b.localRuntimeRecipe(recipe)
+		}
 		return recipe, nil
 	}
 	targeted, err := b.targetEnvironmentPlatforms(recipe)
@@ -396,9 +437,15 @@ func (b *Builder) buildRecipe(
 		}
 		reuse = &decided
 	}
+	if err = b.checkDisposableImageDecision(recipe, reuse); err != nil {
+		return err
+	}
 	if reuse.image != "" {
 		recipe = proto.CloneOf(recipe)
 		recipe.Image = reuse.image
+	}
+	if b.localRuntime {
+		b.localRuntimeBuilt = recipe
 	}
 	// A pushed build records the immutable manifest digest a snapshot pins and a
 	// targeted single-service build returns to its caller. A non-pushed build
@@ -500,6 +547,9 @@ func (b *Builder) buildRecipe(
 	if err != nil {
 		return err
 	}
+	if err = b.verifyLocalRuntimeBuild(ctx, w, recipe, scope, identity); err != nil {
+		return err
+	}
 	b.recordImageForReuse(ctx, w, recipe, scope, identity, imageCache, shouldPush, pushedDigest, loadedImageID, recordable)
 	return nil
 }
@@ -535,6 +585,9 @@ func (b *Builder) selectImageBuilder(ctx context.Context, multiArch bool, mirror
 		return name, nil
 	}
 	if b.world.BuildCache != nil {
+		if b.world.disposableImageScope != "" {
+			return ensureBuildxBuilder(ctx, mirrors)
+		}
 		return buildxBuilderFor(mirrors), nil
 	}
 	if !multiArch && len(mirrors) == 0 {

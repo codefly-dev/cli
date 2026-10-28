@@ -70,6 +70,10 @@ case "$1 $2" in
   ;;
 "image inspect")
   record inspect
+  if [ "$4" = '{{json .RepoDigests}}' ]; then
+    printf '["codefly-local/runtime@sha256:%064d"]\n' 7
+    exit 0
+  fi
   printf 'sha256:%064d\n' 7
   exit 0
   ;;

@@ -45,6 +45,15 @@ type Builder struct {
 
 	imageDigest string
 
+	// localRuntime builds a recipe for this machine's container engine, keeping
+	// generated files out of authored services and naming the image by its inputs.
+	localRuntime bool
+	// localRuntimeBuilt is the recipe a local runtime build ran, as built: named
+	// by its inputs and narrowed to the engine's platform (recipeAsBuilt).
+	localRuntimeBuilt *builderv0.DockerBuildRecipe
+	// Detached scoped execution projections; producer plans remain unchanged.
+	executionRecipes map[string]*builderv0.DockerBuildRecipe
+
 	imageEvidence  []*builderv0.ImageSBOM
 	resolvedImages []coresbom.ResolvedImage
 
@@ -113,6 +122,9 @@ func (b *Builder) ImageEvidence() []*builderv0.ImageSBOM {
 }
 
 func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return nil, err
+	}
 	w := wool.Get(ctx).In("service.NewBuilder", wool.ThisField(b.instance))
 
 	b.instance.Builder.Workspace = b.world.Workspace
@@ -150,6 +162,9 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 }
 
 func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return nil, err
+	}
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Init")
 
@@ -249,6 +264,9 @@ func (b *Builder) SyncSkipped() bool {
 }
 
 func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuildContext, error) {
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return nil, err
+	}
 	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
 	if err != nil {
 		return nil, err
@@ -259,7 +277,7 @@ func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuil
 	dockerContext.Cache = scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), "")
 	dockerContext.BuildxBuilder = b.world.BuildxBuilder
 	mirrors := registryMirrors(b.world.Env)
-	if dockerContext.BuildxBuilder == "" && (dockerContext.Cache != nil || len(mirrors) > 0) {
+	if b.world.disposableImageScope == "" && dockerContext.BuildxBuilder == "" && (dockerContext.Cache != nil || len(mirrors) > 0) {
 		if dockerContext.BuildxBuilder, err = ensureBuildxBuilder(ctx, mirrors); err != nil {
 			return nil, fmt.Errorf("cannot provision buildx builder for %s: %w", b.instance.Unique(), err)
 		}
@@ -277,6 +295,9 @@ func (b *Builder) buildRecipeRoot() (string, error) {
 	module, service := "", ""
 	if b.instance.Identity != nil {
 		module, service = b.instance.Identity.Module, b.instance.Identity.Name
+	}
+	if b.localRuntime {
+		return localRuntimeRecipeRoot(workspaceDir, module, service)
 	}
 	return buildRecipeRoot(workspaceDir, module, service, b.instance.Service.Dir())
 }
@@ -307,6 +328,9 @@ type plannedBuild struct {
 func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Plan")
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return nil, err
+	}
 	if b.planned != nil {
 		return OnInit(), nil
 	}
@@ -314,6 +338,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot build deployable artifact for %s: agent explicitly advertises artifact build as unsupported", b.instance.Unique())
 	}
 
+	b.resetExecutionProjection()
 	dockerContext, err := b.dockerBuildContext(ctx)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create build context")
@@ -358,6 +383,9 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		// resolved against the context the verified plan selects.
 		if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 			return nil, w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
+		}
+		if err := b.checkDisposableImagePlan(plan); err != nil {
+			return nil, err
 		}
 		contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 		for _, recipe := range plan.GetRecipes() {
@@ -433,6 +461,9 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Build")
+	if err := b.world.checkDisposableImagePolicy(); err != nil {
+		return nil, err
+	}
 	if b.planned == nil {
 		if _, err := b.Plan(ctx); err != nil {
 			return nil, err
@@ -511,7 +542,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	// built, and on a pushed build already published, so failing the evidence
 	// gate must not also leave the recipe that produced it unrecorded.
 	if b.world.CollectImageSBOM {
-		if err = b.collectImageEvidence(ctx, plan, buildResult); err != nil {
+		if err = b.collectImageEvidence(ctx, b.imageEvidencePlan(plan), buildResult); err != nil {
 			return nil, err
 		}
 	}

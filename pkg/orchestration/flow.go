@@ -241,6 +241,9 @@ type RuntimeStartAttempt struct {
 }
 
 type World struct {
+	// Explicit disposable output policy, shared by all origin/dependency builders.
+	disposableImageScope string
+
 	// beforeSourceRestart validates the accepted route inventory before stopping a service.
 	beforeSourceRestart func(context.Context) error
 
@@ -1959,6 +1962,9 @@ func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Servi
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
+	if err := flow.world.checkDisposableImagePolicy(); err != nil {
+		return err
+	}
 	// Project ownership before anything is spawned, and hold it for every spawn
 	// below: New() starts the agent process, which inherits the marker at exec
 	// and can create containers from its Init onwards.
@@ -1973,6 +1979,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 	if err = flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
 		return w.Wrap(err)
+	}
+	if flow.world.disposableImageScope != "" {
+		if err = checkDisposableImageDependencies(ctx, flow.world.Dependencies, flow.rootUniques()); err != nil {
+			return err
+		}
 	}
 	if err = flow.selectDependencyStage(); err != nil {
 		return w.Wrap(err)

@@ -29,6 +29,18 @@ func TestDoctorUsesEffectiveRunnableValueAndPreservesAuthoredFile(t *testing.T) 
           endpoint: http
           visibility: public
 `,
+		"modules/backend/module.contract.codefly.yaml": `schema: codefly/module-contract/v1
+principal: releases
+namespaces: []
+queues: []
+scope_ceilings: []
+bindings: []
+destinations:
+  - id: http
+    service: api
+    endpoint: http
+    kind: module
+`,
 		"modules/backend/services/api/openapi/api.swagger.json": string(artifact),
 	})
 	t.Chdir(dir)
