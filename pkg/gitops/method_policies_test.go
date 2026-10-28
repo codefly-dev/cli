@@ -469,3 +469,71 @@ func TestAGatewayRouteCarriesThePolicyOfTheProtoMethodItRenders(t *testing.T) {
 		t.Fatalf("a document declaring the proto's own policy: %v", err)
 	}
 }
+
+func TestSelectedForeignPolicyOnlyJoinsItsServiceTable(t *testing.T) {
+	dir := policyPackage(t, false)
+	raw := []byte(`schema: codefly/module-contract/v1
+principal: console
+namespaces: []
+queues: []
+scope_ceilings: [{resource_kind: console.spans, actions: [export]}]
+bindings: []
+foreign_methods:
+ - service: api
+   method: /foreign.v1.Service/Export
+   requires: [{resource_kind: console.spans, actions: [export]}]
+`)
+	file := filepath.Join(dir, modulecontract.FileName)
+	if err := os.WriteFile(file, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected, ok, err := ServiceMethodPolicies(dir)
+	if err != nil || !ok {
+		t.Fatalf("selected: %v %v", ok, err)
+	}
+	if len(selected.Foreign) != 0 {
+		t.Fatal("selected method leaked into every service table")
+	}
+	found := false
+	for _, m := range selected.ByService["api"] {
+		if m.GetMethod() == "/foreign.v1.Service/Export" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("selected service lost foreign method")
+	}
+	filtered, err := selected.Table(func(service string) bool { return service != "api" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range filtered {
+		if method.GetMethod() == "/foreign.v1.Service/Export" {
+			t.Fatal("selected foreign method escaped service filtering")
+		}
+	}
+	legacy := strings.Replace(string(raw), " - service: api\n   method:", " - method:", 1)
+	if err := os.WriteFile(file, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous, ok, err := ServiceMethodPolicies(dir)
+	if err != nil || !ok {
+		t.Fatalf("legacy: %v %v", ok, err)
+	}
+	selectedAll, err := selected.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousAll, err := previous.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selectedAll) != len(previousAll) {
+		t.Fatal("selection changed module policy set")
+	}
+	for i, m := range selectedAll {
+		if !proto.Equal(m, previousAll[i]) {
+			t.Fatal("selection changed authority")
+		}
+	}
+}
