@@ -46,7 +46,7 @@ func renderModuleTree(
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
 	}
-	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
+	if err := environments.ValidateWorkspace(ctx, workspace, env); err != nil {
 		return RenderResult{}, err
 	}
 	if env.WithdrawsModule(module) {
@@ -618,7 +618,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 }
 
 func renderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, build renderBuild, sink orchestration.OutputSink) (RenderResult, error) {
-	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
+	if err := environments.ValidateWorkspace(ctx, workspace, env); err != nil {
 		return RenderResult{}, err
 	}
 	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
