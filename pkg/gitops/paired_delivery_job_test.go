@@ -199,3 +199,40 @@ func TestEveryDeliveryJobRunsTheImageTheCellAdmits(t *testing.T) {
 		}
 	}
 }
+
+// A paired document is signed once: the publish that executes an inspected
+// plan delivers the exact pair the plan prepared, because a fresh signature is
+// fresh bytes and would make the plan refuse itself as stale. Executing a plan
+// that prepared no pair for a binding is refused rather than signed.
+func TestAPairedDocumentIsSignedOnceAndCarriedToTheExecutingPublish(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{nonce: true}
+	planned := pairedOptions(signer)
+	_, err := repository.settle(repository.stageRender(t, "crm"), &planned)
+	require.NoError(t, err)
+	first := pairedDocumentsIn(t, repository)
+	key := carrierKey(pairedDeliveryKind, "example.prod.crm", 1)
+	require.NotEmpty(t, planned.Carriers[key], "the plan hands the pair to the publish that executes it")
+	signedByPlan := signer.signed
+
+	executing := pairedOptions(signer)
+	executing.Reuse = planned.Carriers
+	executing.Executing = true
+	_, err = repository.settle(repository.stageRender(t, "crm"), &executing)
+	require.NoError(t, err)
+	second := pairedDocumentsIn(t, repository)
+	require.Equal(t, signedByPlan, signer.signed, "execution signs nothing the plan did not")
+	require.Equal(t, first["example.prod.crm"].GetAuthority().GetEnvelope(), second["example.prod.crm"].GetAuthority().GetEnvelope(),
+		"the executed pair is byte for byte the planned one")
+
+	unplanned := pairedOptions(signer)
+	unplanned.Reuse = map[string][]byte{}
+	for planned, carrier := range planned.Carriers {
+		if planned != key {
+			unplanned.Reuse[planned] = carrier // the Core carrier the plan signed, and not the pair
+		}
+	}
+	unplanned.Executing = true
+	_, err = repository.settle(repository.stageRender(t, "crm"), &unplanned)
+	require.ErrorContains(t, err, "was not prepared by the inspected plan")
+}

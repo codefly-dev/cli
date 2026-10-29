@@ -526,10 +526,26 @@ func writeManifestSet(ctx context.Context, target, overlay string, inventory *In
 				return nil, fmt.Errorf("read the declaration of module %s: %w", entry.manifest.Alias, err)
 			}
 		}
-		pair, pairErr := PreparedPairedDocument(entry.carrier, declaration, resolvedSigner(opts))
-		if pairErr != nil {
-			return nil, pairErr
+		// The pair is signed ONCE per publish and carried from the inspected
+		// plan to the publish that executes it, exactly like the Core carrier:
+		// a signature is fresh bytes each time (ECDSA, KMS), so a pair signed
+		// again on execution would change the overlay the plan was identified
+		// by and the publish would refuse its own plan as stale.
+		key := carrierKey(pairedDeliveryKind, binding, entry.manifest.Generation)
+		pair := opts.Reuse[key]
+		if pair == nil {
+			if opts.Executing {
+				return nil, fmt.Errorf("the paired document of %s was not prepared by the inspected plan, and the publish that executes a plan signs nothing the plan did not compare", binding)
+			}
+			var pairErr error
+			if pair, pairErr = PreparedPairedDocument(entry.carrier, declaration, resolvedSigner(opts)); pairErr != nil {
+				return nil, pairErr
+			}
 		}
+		if opts.Carriers == nil {
+			opts.Carriers = map[string][]byte{}
+		}
+		opts.Carriers[key] = pair
 		if err = writePairedDocumentInTree(tree, directory, inventory.Namespace, binding, pair); err != nil {
 			return nil, err
 		}
