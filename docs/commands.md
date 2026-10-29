@@ -2425,7 +2425,7 @@ What it creates:
 | `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
 | `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell. It **mounts the solution's own `./Page`**, the same module a host federates, and its generic login/signup routes are removed: a solution has no sign-in of its own, the authority's edge signs the person in |
 | `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
-| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the **installer role** — the authority refuses to admit a solution that offers a person no role to hold on it |
+| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the standard roles **installer / editor / viewer** — the same three wiki declares. The authority requires `installer` by name and refuses a solution without it |
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
 | `configurations/local/fixture-composition.yaml` | who, in the development fixture, has this solution **installed**. Without it the authority refuses every capability ("not installed in this organization") and the page can only render its not-installed branch. `teams` is what admits anyone but the owner |
