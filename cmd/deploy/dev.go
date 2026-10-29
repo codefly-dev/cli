@@ -20,6 +20,7 @@ var (
 	devCommit     bool
 	devPush       bool
 	devRebuild    bool
+	devPublished  bool
 )
 
 // DevCmd is the dev escape hatch: ship one service's current code into an
@@ -78,7 +79,7 @@ the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clea
 		cli.Warning("DEV DEPLOYMENT: %s/%s from %s (%s) into %s — this environment will run code no release describes until the next full render", module.Name, target.Name, source.Dir, source.Origin, env.Name)
 		result, err := gitops.DeployDev(ctx, &gitops.DevRequest{
 			Workspace: workspace, Module: module, Service: target.Name, Environment: env,
-			AppProject: devAppProject, Source: source, Rebuild: devRebuild, Sink: cli.NewOutputSink(),
+			AppProject: devAppProject, Source: source, Rebuild: devRebuild, Published: devPublished, Sink: cli.NewOutputSink(),
 		})
 		if err != nil {
 			return err
@@ -108,6 +109,7 @@ the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clea
 
 func init() {
 	DevCmd.Flags().StringVar(&devEnv, "env", "", "Environment whose rendered tree to patch (required)")
+	DevCmd.Flags().BoolVar(&devPublished, "published", false, "Patch the existing publication under the environment's GitOps path instead of the render scratch tree")
 	DevCmd.Flags().StringVar(&devPath, "path", "", "Service source directory to deploy (default: the machine-local service override)")
 	DevCmd.Flags().StringVar(&devAppProject, "app-project", "", "AppProject the environment was rendered for (checked against the render)")
 	DevCmd.Flags().BoolVar(&devCommit, "commit", false, "Commit the change as `dev: <module>/<service> from <path>@<sha>[-dirty]`")

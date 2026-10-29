@@ -27,9 +27,10 @@ import (
 // approves (the workspace's HEAD), or, in a workspace that is not a git
 // checkout, the one on disk.
 type devCell struct {
-	path   string
-	origin string
-	file   *cellfile.File
+	modulesDir string
+	path       string
+	origin     string
+	file       *cellfile.File
 }
 
 // loadDevCell reads the cell file a dev deployment into a hosted environment
@@ -77,7 +78,7 @@ func loadDevCell(ctx context.Context, workspace *resources.Workspace, env *envir
 // may move; before the build, when they are not known yet, any of the
 // service's may.
 func deriveDevCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, start devCell, service string, images []string) (cellfile.File, CellResult, error) {
-	derived, result, err := deriveCell(ctx, workspace, env)
+	derived, result, err := deriveCellFrom(ctx, workspace, env, start.modulesDir)
 	if err != nil {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("environment %s's cell file cannot be re-derived, and its cell admits only the builds that file names: %w", env.Name, err)
 	}

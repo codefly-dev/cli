@@ -103,13 +103,19 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 // deriveCell is RenderCell without the write: the cell file the rendered
 // trees and the composition describe, and the path it belongs at.
 func deriveCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (cellfile.File, CellResult, error) {
+	return deriveCellFrom(ctx, workspace, env, "")
+}
+
+func deriveCellFrom(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, modulesDir string) (cellfile.File, CellResult, error) {
 	if workspace == nil || env == nil {
 		return cellfile.File{}, CellResult{}, errors.New("a cell is rendered for a workspace and an environment")
 	}
 	if env.Host == nil {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("environment %s declares no host, so it has no cell to describe", env.Name)
 	}
-	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
+	if modulesDir == "" {
+		modulesDir = filepath.Dir(moduleRenderDestination(workspace, "module"))
+	}
 	entries, err := os.ReadDir(modulesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module has been rendered under %s", modulesDir)

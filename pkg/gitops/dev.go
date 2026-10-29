@@ -87,6 +87,7 @@ func ResolveDevSource(module, service, path string, override *resources.ServiceR
 
 // DevRequest is one dev deployment of a single service.
 type DevRequest struct {
+	Published   bool
 	Workspace   *resources.Workspace
 	Module      *resources.Module
 	Service     string
@@ -186,6 +187,16 @@ func digestImages(root string) ([]string, error) {
 // already-rendered tree of the requested environment.
 func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	root := moduleRenderDestination(request.Workspace, request.Module.Name)
+	if request.Published {
+		owned, err := moduleOwnedPath(request.Workspace, request.Environment, request.Module.Name)
+		if err != nil {
+			return DevResult{}, err
+		}
+		root, err = confinedJoin(request.Workspace.Dir(), owned)
+		if err != nil {
+			return DevResult{}, err
+		}
+	}
 	inventory, unit, err := loadDevTarget(root, request.Module.Name, request.Service, request.Environment.Name, request.AppProject)
 	if err != nil {
 		return DevResult{}, err
@@ -210,6 +221,9 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if hosted {
 		if startCell, err = loadDevCell(ctx, request.Workspace, request.Environment); err != nil {
 			return DevResult{}, err
+		}
+		if request.Published {
+			startCell.modulesDir = filepath.Dir(root)
 		}
 		if _, _, err = deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, nil); err != nil {
 			return DevResult{}, err
