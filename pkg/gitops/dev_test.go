@@ -608,3 +608,26 @@ func TestDeployDevCarriesThePublishedDeliveryOverlayAsFound(t *testing.T) {
 	require.True(t, listed, "the re-derived inventory lists the delivery overlay as found: %+v", after.Files)
 	require.Equal(t, moduleManifestDir, after.ModuleManifestPath)
 }
+
+func TestDevBuildPreservesPublishedRepositoryPrefix(t *testing.T) {
+	for _, registry := range []string{"registry.example.com", "localhost:5000"} {
+		t.Run(registry, func(t *testing.T) {
+			root := t.TempDir()
+			unit := InventoryUnit{Path: "services/api"}
+			unitRoot := filepath.Join(root, unit.Path)
+			require.NoError(t, os.MkdirAll(unitRoot, 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(unitRoot, "deployment.yaml"), []byte(devDeployment("api", registry+"/product/shop/api:old@"+devOldDigest)), 0644))
+			env := environmentNamed("staging")
+			env.Registry = &environments.EnvironmentRegistry{URL: registry, Auth: "docker-creds"}
+			selected, err := devBuildEnvironment(root, unit, env, "shop/api")
+			require.NoError(t, err)
+			require.Equal(t, registry+"/product", selected.Registry.URL)
+			require.Equal(t, env.Registry.Auth, selected.Registry.Auth)
+			require.Equal(t, registry, env.Registry.URL, "leave other services' environment unchanged")
+			env.Registry.URL = "another.example.com"
+			selected, err = devBuildEnvironment(root, unit, env, "shop/api")
+			require.NoError(t, err)
+			require.Same(t, env, selected, "never redirect to a registry outside the declaration")
+		})
+	}
+}

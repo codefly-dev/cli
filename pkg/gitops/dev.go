@@ -229,7 +229,11 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 			return DevResult{}, err
 		}
 	}
-	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, request.Environment, request.Rebuild, request.Sink)
+	buildEnvironment, err := devBuildEnvironment(root, unit, request.Environment, cellService)
+	if err != nil {
+		return DevResult{}, err
+	}
+	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, buildEnvironment, request.Rebuild, request.Sink)
 	if err != nil {
 		return DevResult{}, err
 	}
@@ -277,6 +281,43 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	}
 	entry = inventory.Dev[devEntryIndex(inventory.Dev, request.Service)]
 	return DevResult{Root: root, Changed: relative, Entry: entry, Cell: cell}, nil
+}
+
+// A coordinate import can shorten a registry URL to its host while an existing
+// publication still uses a product repository prefix. A one-service deployment
+// preserves that prefix inside the configured registry; it does not migrate
+// repositories or reinterpret mirrors.
+func devBuildEnvironment(root string, unit InventoryUnit, env *environments.Environment, service string) (*environments.Environment, error) {
+	if env.Registry == nil || env.Registry.URL == "" || env.Registry.PullRepository() != strings.TrimSuffix(env.Registry.URL, "/") {
+		return env, nil
+	}
+	images, err := digestImages(filepath.Join(root, filepath.FromSlash(unit.Path)))
+	if err != nil {
+		return nil, err
+	}
+	base := strings.TrimSuffix(env.Registry.URL, "/")
+	var selected string
+	for _, image := range images {
+		repository, _, _ := strings.Cut(image, "@")
+		if tag := strings.LastIndex(repository, ":"); tag > strings.LastIndex(repository, "/") {
+			repository = repository[:tag]
+		}
+		prefix, matches := strings.CutSuffix(repository, "/"+service)
+		if !matches || (prefix != base && !strings.HasPrefix(prefix, base+"/")) {
+			continue
+		}
+		if selected != "" && selected != prefix {
+			return nil, fmt.Errorf("rendered service %s names multiple registry prefixes", service)
+		}
+		selected = prefix
+	}
+	if selected == "" || selected == base {
+		return env, nil
+	}
+	copyEnvironment, copyRegistry := *env, *env.Registry
+	copyRegistry.URL = selected
+	copyEnvironment.Registry = &copyRegistry
+	return &copyEnvironment, nil
 }
 
 // moduleRenderDestination is where a full module render writes its owned tree.
