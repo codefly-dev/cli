@@ -478,3 +478,38 @@ func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
 		t.Fatal("a webpack config is refused by the Next this agent scaffolds")
 	}
 }
+
+// TestThePlaygroundNamesTheEdge. The edge is the browser's one origin: it
+// signs the person in and routes /v1/<name> to the backend with their Work
+// Context. It is NOT a dependency of the backend and nothing elects it as
+// ingress, so neither `run solution` nor `run workspace` starts it — the
+// fleet's own Makefiles name it first, and so does this one.
+//
+// Getting it wrong does not look like an error. Open the shell's own port and
+// the page says "This page is not behind its sign-in edge"; open the
+// authority's REST port and every path 404s. Both were hit repeatedly
+// reconstructing this by hand, which is why it is scaffolded.
+func TestThePlaygroundNamesTheEdge(t *testing.T) {
+	makefile := playgroundMakefile("notes")
+	if !strings.Contains(makefile, "PLAYGROUND_SERVICES = authority/edge notes/web notes/backend") {
+		t.Fatalf("the edge must be named first in the services the playground runs:\n%s", makefile)
+	}
+
+	// The edge group is what tells the edge which module to route and where
+	// the page is. Its key is the solution's name, upper-cased.
+	group := playgroundEdgeGroup("my-notes")
+	for _, required := range []string{"MODULES=my-notes", "MY_NOTES_REST=${endpoint:my-notes/backend/http}", "FRONTEND=${endpoint:my-notes/web/http}"} {
+		if !strings.Contains(group, required) {
+			t.Fatalf("the edge group must contain %q, got:\n%s", required, group)
+		}
+	}
+
+	// The authority is pinned by commit, and the pin must be one the DEFAULT
+	// BRANCH holds: a PR head reads identically and dies on squash-merge.
+	workspace := playgroundWorkspace("notes", "88599779642808bce196d612b99b0898be6b78c3")
+	for _, required := range []string{`version: "88599779642808bce196d612b99b0898be6b78c3"`, "source: codefly-dev/authority", "fixture: local", "name: notes-playground"} {
+		if !strings.Contains(workspace, required) {
+			t.Fatalf("the playground workspace must contain %q", required)
+		}
+	}
+}

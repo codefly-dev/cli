@@ -2428,10 +2428,31 @@ What it creates:
 | `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the **installer role** — the authority refuses to admit a solution that offers a person no role to hold on it |
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+| `playground/` + `Makefile` | the composition that runs the solution LOCALLY on the development authority — `make playground`. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
 | `contracts/api` + the package's `api-contracts` | the backend's published http contract, generated as the last step. The authority derives the method policy of **every route** from it, so a solution carrying none admits no call to any route it serves — and says so only as a warning in the authority's log, during a run |
 
 `services/fe-remote` — the `./Page` remote itself — is written by the solution
 agent, not by this command: it is an npm package, not a Codefly service.
+
+**Running it.** `make playground` starts the development authority and this
+solution, and prints the one address a browser opens:
+
+```
+edge listening on :14581, routing 1 module(s)
+```
+
+That edge is the browser's single origin: it signs the person in from the
+authority's fixture, serves the page, and routes `/v1/<name>` to the backend
+with that person's Work Context. Two addresses are *not* it, and neither fails
+in a way that says so — the shell's own port (the page reports "This page is
+not behind its sign-in edge") and the authority's REST port (every browser
+path 404s). In a cell the host's gateway plays the edge's part; the playground
+is local only.
+
+The authority is pinned by commit, resolved from its **default branch** when
+the solution is scaffolded: it publishes no module release, and a PR head
+reads identically in the manifest and dies on squash-merge.
+`--authority-version` overrides it.
 
 **The rule the backend lives under.** A module call the authority holds to a
 *person* — one its artifact interface admits only in person, with no
