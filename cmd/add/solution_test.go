@@ -551,8 +551,8 @@ func TestTheContractDeclaresARoleBesidesInstaller(t *testing.T) {
 	for index := range contract.Roles {
 		names = append(names, contract.Roles[index].Name)
 	}
-	if !slices.Contains(names, "installer") || !slices.Contains(names, "viewer") {
-		t.Fatalf("the contract must declare installer and viewer, got %v", names)
+	if !slices.Equal(names, []string{"installer", "editor", "viewer"}) {
+		t.Fatalf("the contract must declare the standard set installer/editor/viewer, got %v", names)
 	}
 }
 

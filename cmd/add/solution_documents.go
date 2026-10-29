@@ -418,14 +418,23 @@ func solutionContract(name string) *modulecontract.Contract {
 			ResourceKind: name + ".page",
 			Actions:      []string{readAction, writeAction},
 		}},
+		// installer / editor / viewer, the standard set — the same three wiki
+		// declares, and now every solution in the fleet.
+		//
+		// `installer` is required BY NAME: the authority refuses a solution
+		// without it. `viewer` is what the organization is installed as, so
+		// the people of an installation can open the solution at all —
+		// without a second role only the owner holds anything and everyone
+		// else is refused by name. `editor` is the write position between
+		// them, so a solution that grows one does not have to invent a name
+		// for it; proposals calls its middle role `reviewer`, which is the
+		// same position in its own domain's word.
+		//
+		// Every role must grant something: core refuses `role "installer"
+		// grants nothing`.
 		Roles: []modulecontract.Role{
 			{Name: modulecontract.InstallerRole, Scopes: ownScope},
-			// The role the ORGANIZATION is installed as, so the people of an
-			// installation can open the solution at all. Without a role
-			// besides installer only the owner holds anything, and everyone
-			// else is refused by name — "<person> holds no role on <name>" —
-			// which is a correct refusal and a useless scaffold. wiki and
-			// proposals both declare a viewer beside their installer.
+			{Name: "editor", Scopes: ownScope},
 			{Name: "viewer", Scopes: []modulecontract.CeilingScope{{
 				ResourceKind: name + ".page",
 				Actions:      []string{readAction},
