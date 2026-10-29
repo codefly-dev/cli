@@ -2,12 +2,14 @@ package add
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -56,7 +58,11 @@ for the solution's own audience, so relaying such a call puts the solution
 between the person and the module, and admission refuses it. Reads and work
 that are the solution's own go through the backend as usual.
 
-The backend's language is --agent (go by default, python for the same shape).
+--agent names the agent that scaffolds the backend, and it must be a SOLUTION
+agent (default: solution-go). The service agent of the same language is a
+different thing: the go agent scaffolds a service — no declared operation, no
+published policy, no page remote — and delivery refuses the result. Naming
+one is refused here, with the solution agent to use instead.
 
 What this writes, and what stays yours: the module, both services, the
 solution manifest, the module contract, the package identity and the page
@@ -68,8 +74,8 @@ are the composition's to say and are never guessed here.`,
   codefly add solution wiki --package-id obin/wiki \
       --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
 
-  # The same shape with a Python backend — the language is the agent.
-  codefly add solution forecast --package-id obin/forecast --agent python`,
+  # A solution agent other than the default.
+  codefly add solution forecast --package-id obin/forecast --agent solution-python`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		cli.Init()
@@ -89,26 +95,35 @@ are the composition's to say and are never guessed here.`,
 }
 
 var (
-	solutionAgentInput     string
-	solutionConsumes       []string
-	solutionPackageID      string
-	solutionExecutor       string
-	solutionDescription    string
-	solutionTitle          string
-	solutionOrder          int64
-	solutionAuthorityIface string
-	solutionMinimumCodefly string
-	solutionWithDefault    bool
+	solutionAgentInput       string
+	solutionConsumes         []string
+	solutionPackageID        string
+	solutionExecutor         string
+	solutionDescription      string
+	solutionTitle            string
+	solutionOrder            int64
+	solutionAuthorityIface   string
+	solutionMinimumCodefly   string
+	solutionWithDefault      bool
+	solutionAuthorityVersion string
 )
 
 // addSolution scaffolds the solution. Everything that can fail on the author's
 // input — the consumed bindings, a document the schema refuses — is rendered
 // and validated BEFORE the first write, so a mistyped flag leaves no
 // half-built module behind.
-func addSolution(ctx context.Context, name string) error {
+func addSolution(ctx context.Context, name string) (result error) {
 	w := wool.Get(ctx).In("cmd.add.solution")
 
 	documents, err := solutionDocuments(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	// Resolved with the other input, BEFORE the first write: naming the
+	// service agent instead of the solution agent is an ordinary mistake and
+	// must cost nothing, not half a module.
+	entryAgent, err := solutionAgentFor(solutionAgentInput)
 	if err != nil {
 		return err
 	}
@@ -129,16 +144,40 @@ func addSolution(ctx context.Context, name string) error {
 	if moduleErr := addModule(name); moduleErr != nil {
 		return moduleErr
 	}
+	// `add module` rolls back only what fails inside its own call. Everything
+	// below can fail with the module already written — an agent that cannot
+	// scaffold the service is the ordinary case, not a hypothetical: the
+	// generic `python` agent runs a Python service but defines no project
+	// template, so `--agent python` always fails here. Without this the
+	// author is left a module and a half-built service to delete by hand
+	// before they can retry.
+	defer func() {
+		if result == nil {
+			return
+		}
+		// Re-read, for the same reason step 3 does: the handle loaded above
+		// predates the module, so deleting through it reports that the module
+		// <name> does not exist and leaves it on disk.
+		current, loadErr := common.LoadWorkspace(ctx)
+		if loadErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back: cannot re-load the workspace: %w", loadErr))
+			return
+		}
+		moduleDir := current.ModulePath(ctx, &resources.ModuleReference{Name: name})
+		if rollbackErr := current.DeleteModule(ctx, name); rollbackErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back module reference: %w", rollbackErr))
+			return
+		}
+		if rollbackErr := os.RemoveAll(moduleDir); rollbackErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back module directory: %w", rollbackErr))
+		}
+	}()
 
 	// 2. Both services, through the agents' own Create flows — the same call
 	// `add service` makes.
 	previousWithDefault := withDefault
 	withDefault = solutionWithDefault
 	defer func() { withDefault = previousWithDefault }()
-	entryAgent := solutionAgentInput
-	if entryAgent == "" {
-		entryAgent = solutionEntryAgent
-	}
 	for _, scaffolded := range []struct{ service, agent string }{
 		{solutionEntryService, entryAgent},
 		{solutionPageService, solutionPageAgent},
@@ -149,6 +188,14 @@ func addSolution(ctx context.Context, name string) error {
 		}
 	}
 
+	// Re-read the workspace: the handle above was loaded before `add module`
+	// wrote the module into it, so it still lists the modules that existed
+	// when this command started. `add service` re-reads for the same reason,
+	// which is why the two services above resolved and this did not.
+	workspace, err = common.LoadWorkspace(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot re-load the workspace after scaffolding")
+	}
 	mod, err := workspace.LoadModuleFromName(ctx, name)
 	if err != nil {
 		return w.Wrapf(err, "cannot load the scaffolded module")
@@ -173,7 +220,16 @@ func addSolution(ctx context.Context, name string) error {
 		return err
 	}
 
-	// 5. The documents. The three at the module root, and the page
+	// 5. The page shell, over the generic app the nextjs agent scaffolded.
+	// It runs here because it is the only step after BOTH agents: the nextjs
+	// agent would overwrite anything the solution agent wrote into its
+	// service, and what it leaves on its own is a standalone web app with
+	// placeholder login routes and "Your app is running" — not a solution.
+	if err := applySolutionShell(ctx, mod, name+"-fe-remote"); err != nil {
+		return err
+	}
+
+	// 6. The documents. The three at the module root, and the page
 	// declaration beside the entry service.
 	for _, document := range documents {
 		path := filepath.Join(mod.Dir(), filepath.FromSlash(document.name))
@@ -190,6 +246,23 @@ func addSolution(ctx context.Context, name string) error {
 	if _, err := solutionrun.DeclaredFrontend(ctx, mod); err != nil {
 		return fmt.Errorf("the generated %s is not readable by core: %w", solutionrun.FrontendFileName, err)
 	}
+
+	// 7. The backend's published contract, and its entry in the package.
+	//
+	// The authority derives the method policy of every route from it, so a
+	// solution whose package carries none admits no call to any route it
+	// serves — and says so only as a warning in the authority's log, during
+	// a run. Generated here so what this command leaves behind is a solution
+	// that conforms, rather than one whose first `codefly doctor solution`
+	// fails on a step the author had no reason to know about.
+	if err := generate.PublishModuleContracts(ctx, workspace, mod); err != nil {
+		return fmt.Errorf("cannot publish the backend's contract: %w", err)
+	}
+	cli.Info("wrote contracts/api and the package's api-contracts entry")
+
+	// 8. The playground: the composition that runs this solution locally on
+	// the development authority, the way every solution in the fleet is run.
+	applySolutionPlayground(ctx, mod, solutionAuthorityVersion)
 
 	cli.Header(1, "Solution <%s> scaffolded: %s (entry) and %s (the page's shell).", name, solutionEntryService, solutionPageService)
 	reportNextSteps(name)
@@ -403,7 +476,8 @@ func reportNextSteps(name string) {
 
 func init() {
 	SolutionCmd.Flags().StringVar(&solutionPackageID, "package-id", "", "The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it")
-	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Service agent for the backend (default: "+solutionEntryAgent+"). The backend's language is this flag, not a different shape")
+	SolutionCmd.Flags().StringVar(&solutionAuthorityVersion, "authority-version", "", "Commit of codefly-dev/authority the playground pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge")
+	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Agent that scaffolds the backend (default: "+solutionEntryAgent+"). Must be a SOLUTION agent; naming the service agent of a language is refused, with the one to use instead")
 	SolutionCmd.Flags().StringArrayVar(&solutionConsumes, "consumes", nil, "A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract")
 	SolutionCmd.Flags().StringVar(&solutionExecutor, "executor", "", "A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)")
 	SolutionCmd.Flags().StringVar(&solutionDescription, "description", "", "Short description written to module.codefly.yaml")

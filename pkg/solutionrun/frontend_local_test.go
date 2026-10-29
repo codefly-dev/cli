@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -383,4 +384,45 @@ func TestStagedFrontendCopiesAreBoundedAndForgotten(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(state, "built"))
 	require.FileExists(t, filepath.Join(state, "built.json"))
 	require.NoError(t, LocalFrontend{StateDir: filepath.Join(state, "absent")}.ForgetAll(t.Context()))
+}
+
+// TestInstallCommandFallsBackWhereThereIsNoLock. `npm ci` cannot run without a
+// lockfile — "loadVirtual requires existing shrinkwrap file" — and a freshly
+// scaffolded page remote has none. The solution booted and its backend
+// answered, and delivery still reported the frontend unbuildable, for a
+// project whose only fault was that nobody had installed it yet.
+func TestInstallCommandFallsBackWhereThereIsNoLock(t *testing.T) {
+	project := t.TempDir()
+	if got := installCommand(project); !slices.Equal(got, []string{"npm", "install"}) {
+		t.Fatalf("a project with no lockfile must be installed with npm install, got %v", got)
+	}
+	for _, lock := range []string{"package-lock.json", "npm-shrinkwrap.json"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, lock), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := installCommand(dir); !slices.Equal(got, []string{"npm", "ci"}) {
+			t.Fatalf("a project with %s must be installed with npm ci, got %v", lock, got)
+		}
+	}
+}
+
+// TestTheRegistryCredentialReachesTheBuild. A solution's page depends on the
+// @codefly-dev kits from GitHub Packages, and the .npmrc the agent writes
+// beside it reads ${NODE_AUTH_TOKEN}. The build environment is an allow-list,
+// so dropping that name made the file impossible to satisfy: every install
+// failed "401 Unauthorized ... unauthenticated" whatever the operator
+// exported, and nothing said the CLI had removed it.
+func TestTheRegistryCredentialReachesTheBuild(t *testing.T) {
+	kept := nativeBuildEnvironment([]string{
+		"PATH=/usr/bin",
+		"NODE_AUTH_TOKEN=secret",
+		"AWS_SECRET_ACCESS_KEY=must-not-leak",
+	})
+	if !slices.Contains(kept, "NODE_AUTH_TOKEN=secret") {
+		t.Fatalf("the registry credential must reach npm, got %v", kept)
+	}
+	if slices.Contains(kept, "AWS_SECRET_ACCESS_KEY=must-not-leak") {
+		t.Fatal("the allow-list must still drop everything it does not name")
+	}
 }

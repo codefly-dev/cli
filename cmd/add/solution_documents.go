@@ -46,9 +46,58 @@ import (
 const (
 	solutionEntryService = "backend"
 	solutionPageService  = "web"
-	solutionEntryAgent   = "go"
 	solutionPageAgent    = "nextjs"
+	// solutionEntryAgent scaffolds the backend when --agent names no other.
+	// It is a SOLUTION agent, which is a different thing from the service
+	// agent of the same language — see solutionAgentFor.
+	solutionEntryAgent = "solution-go"
 )
+
+// serviceAgentSolutionAgent maps a SERVICE agent to the SOLUTION agent of the
+// same language.
+//
+// The two are not interchangeable and the difference is not a detail. A
+// service agent scaffolds a service: `go` writes a net/http mux serving
+// /health. A solution agent scaffolds a solution: the solution runtime, the
+// viewer's Work Context, a published policy on every route the authority
+// checks against, the passthrough that relays a module call AS THE VIEWER,
+// the interface document, and the ./Page remote a host federates.
+//
+// `codefly add solution` used to take the service agent and scaffold a
+// service into the shape of a solution. What came out served nothing a viewer
+// could reach, published no policy, and failed delivery outright ("declares a
+// frontend and holds no npm project to build it from"). Nothing said so: the
+// documents were all valid.
+//
+// So this is a REFUSAL, not a substitution. Passing `--agent go` is a
+// statement about which agent to run, and quietly running a different one
+// would be the CLI deciding what the author meant. It names the solution
+// agent for that language instead and stops.
+var serviceAgentSolutionAgent = map[string]string{
+	"go":             "solution-go",
+	"python":         "solution-python",
+	"python-fastapi": "solution-python",
+}
+
+// solutionAgentFor checks the agent the author named is one that scaffolds a
+// solution, and says which one they meant when it is not.
+//
+// An agent this table does not know is accepted: a publisher may ship a
+// solution agent this build has never heard of, and refusing by allow-list
+// would make the CLI the gatekeeper of a registry it does not own. What is
+// refused is the specific, silent mistake — naming the service agent of a
+// language whose solution agent exists.
+func solutionAgentFor(agent string) (string, error) {
+	if agent == "" {
+		return solutionEntryAgent, nil
+	}
+	if solutionAgent, isServiceAgent := serviceAgentSolutionAgent[agent]; isServiceAgent {
+		return "", fmt.Errorf(
+			"--agent %s is the SERVICE agent: it scaffolds a service, not a solution — no declared operation, no published policy, no page remote, and delivery refuses the result. Pass --agent %s",
+			agent, solutionAgent)
+	}
+	return agent, nil
+}
 
 // authorityInterfaceRange is the published interface a solution's backend
 // requires: the authority gateway on a laptop, the host in a cell. A
@@ -300,11 +349,20 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 # contract and SCOPED api.consumes — which is why solution.codefly.yaml's
 # api.consumes carries route names only.
 #
-# It asks for nothing yet. Add a binding per module call the solution makes ON
-# A PERSON'S BEHALF, with the audience as a slot into the composition's own
-# group: the audience a module verifies is the composition's to say. A call the
-# authority holds to a person IN PERSON takes no binding here — the page makes
-# it, as the person.
+# It asks for nothing at another module yet. Add a binding per module call the
+# solution makes ON A PERSON'S BEHALF, with the audience as a slot into the
+# composition's own group: the audience a module verifies is the composition's
+# to say. A call the authority holds to a person IN PERSON takes no binding
+# here — the page makes it, as the person.
+#
+# ROLES. A solution is a unit a person installs, and the authority refuses to
+# admit one that offers a person no role to hold on it ("declares 0 role(s)
+# and none is \"installer\""). The installer role below is scoped to this
+# solution's own page, the one resource a scaffold knows it has. Name the
+# solution's real resource kinds in scope_ceilings and widen the role to them,
+# and add a role per other kind of person who uses it (wiki: editor, viewer;
+# proposals: reviewer, viewer). A role may grant a scope only within a
+# ceiling, or through a binding it names, so the two cannot drift apart.
 `
 
 // solutionContract is the module contract the solution ships: the principal
@@ -318,16 +376,63 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 // person capabilities from the authority"), and refuses it by name otherwise.
 // A solution scaffolded without it receives no owner-selected scope and can
 // act for nobody.
+// readAction and writeAction are the two actions a scaffolded solution's own
+// vocabulary carries, spelled once: they appear in the ceiling and in each
+// role that sits within it, and a typo between them is a role the authority
+// silently never issues.
+const (
+	readAction  = "read"
+	writeAction = "write"
+)
+
 func solutionContract(name string) *modulecontract.Contract {
+	// The solution's own permission vocabulary, and the one role the host
+	// requires. A solution is a unit a PERSON installs, so the authority
+	// refuses to admit one that offers a person no role to hold on it:
+	//
+	//	state: forbidden: <name> declares 0 role(s) and none is "installer":
+	//	a solution declares an installer role
+	//
+	// That refusal happens at `runtime-run`, after the whole composition has
+	// booted, and every document reads fine until then — which is how seven
+	// of the nine solutions in one fleet came to declare no role at all. Only
+	// the two that are actually run, wiki and proposals, declare one.
+	//
+	// The kind is derived, not guessed at: every solution this command
+	// scaffolds exposes a page, so `<name>.page` is the one resource it is
+	// known to have. A solution whose domain object is something else renames
+	// it here and in the role together — core's Contract.Validate refuses a
+	// role granting a scope no ceiling covers, so the pair cannot drift
+	// apart silently.
+	ownScope := []modulecontract.CeilingScope{{
+		ResourceKind: name + ".page",
+		Actions:      []string{readAction, writeAction},
+	}}
 	return &modulecontract.Contract{
-		Schema:        modulecontract.SchemaV1,
-		Principal:     name,
-		OwnerAware:    true,
-		Namespaces:    []string{},
-		Queues:        []string{},
-		ScopeCeilings: []modulecontract.ScopeCeiling{},
-		Bindings:      []modulecontract.Binding{},
-		Destinations:  []modulecontract.Destination{},
+		Schema:     modulecontract.SchemaV1,
+		Principal:  name,
+		OwnerAware: true,
+		Namespaces: []string{},
+		Queues:     []string{},
+		ScopeCeilings: []modulecontract.ScopeCeiling{{
+			ResourceKind: name + ".page",
+			Actions:      []string{readAction, writeAction},
+		}},
+		Roles: []modulecontract.Role{
+			{Name: modulecontract.InstallerRole, Scopes: ownScope},
+			// The role the ORGANIZATION is installed as, so the people of an
+			// installation can open the solution at all. Without a role
+			// besides installer only the owner holds anything, and everyone
+			// else is refused by name — "<person> holds no role on <name>" —
+			// which is a correct refusal and a useless scaffold. wiki and
+			// proposals both declare a viewer beside their installer.
+			{Name: "viewer", Scopes: []modulecontract.CeilingScope{{
+				ResourceKind: name + ".page",
+				Actions:      []string{readAction},
+			}}},
+		},
+		Bindings:     []modulecontract.Binding{},
+		Destinations: []modulecontract.Destination{},
 	}
 }
 
@@ -409,7 +514,22 @@ func solutionPackage(id, toolVersion, declaredFloor string) (*composition.Packag
 		ID:                    id,
 		Version:               "0.1.0",
 		MinimumCodeflyVersion: floor,
-		ArtifactRoots:         []string{"services"},
+		// "contracts" alongside "services": `codefly generate contracts`
+		// writes the backend's published http contract to
+		// contracts/api/backend/http/openapi.json, and a package that does
+		// not declare the root cannot carry it — "the package cannot carry
+		// the backend/http contract ... add \"contracts\" under
+		// artifact-roots", which is where the generate stops.
+		//
+		// It is not a packaging detail. The CLI derives the authority's
+		// per-route method policies from the contract this package carries
+		// (ServiceMethodPolicies reads api-contracts), so without it the
+		// authority is delivered the module's ceilings and no method policy
+		// at all — "no delivered method policies; declared ceilings alone do
+		// not admit a call". The backend serves its route, the route declares
+		// its policy, and every call is still refused, with the only sign a
+		// warning in the authority's log.
+		ArtifactRoots: []string{"contracts", "services"},
 		// The backend only. The shell is scaffolded and composed; it is not
 		// published, because a host that federates the remote needs no shell.
 		Services:  []composition.ProvidedService{{Name: solutionEntryService, Endpoints: []string{standards.HTTP}}},

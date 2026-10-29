@@ -121,40 +121,6 @@ never `--stand-alone` or `--exclude-root`; `--exclude-dependency` and
 out. The selected environment's `exclude-services` also removes services from
 the composition roots; a module withdrawn whole contributes no root, including
 its service-entry. CLI and run-profile exclusions still apply on top.
-
-**An operation is held to the environment it selected, never refused because a
-DIFFERENT environment's `exclude-services` is inconsistent with the workspace
-graph.** Run, build, deploy and `deploy gitops render` each check the one
-environment they were given against the graph, and a refusal names that
-environment in the message itself rather than only under `--debug`.
-
-This is scoped to the graph-consistency check, which is where the
-cross-environment refusal came from. It is not a general rule that other
-environments are ignored. The check itself decodes and validates EVERY
-environment's declarations before it compares the selected one against the
-graph, so a **malformed** `exclude-services` anywhere — an unqualified name, a
-duplicate, a service withdrawn from itself — still refuses, whatever was
-selected. (Loading the workspace does not: a workspace with such a declaration
-still loads, and a clean environment still selects. It is the validation that
-refuses, not the load.) Module namespaces, host composition,
-service-scoped names (`service-config`, `service-identity`, `service-mesh`)
-and `managed-services` keys are likewise still held across every environment,
-so a bad declaration in one of those blocks in an unselected environment can
-still refuse a correct operation elsewhere.
-This matters because the exclusion graph is the workspace's **current**
-composition: an environment imported before a module overlay added a service
-carries no `withdrawn-from` for it, so holding every environment to that graph
-refused a correct render of a different environment — and the operator could
-not satisfy it, since re-importing the offending environment requires the
-product intent to declare it.
-
-Every CLI path that checks exclusions against the graph selects an
-environment: run, build, test and deploy through the flow, `deploy gitops
-render` and the solution and dev renders through the workspace validation, and
-`codefly doctor workspace` through its own scope check — doctor selects and
-calls the selected check directly, rather than relying on the fallback. The
-whole-workspace form, which holds every environment's graph at once, remains
-the behaviour for a caller that has selected none.
 The deterministic port hash folds every endpoint into a few thousand
 buckets, so a `--naming-scope` can hash two endpoints to one port and abort
 the run; `--temporary-ports` sidesteps the hash, under the ordering its
@@ -2427,6 +2393,22 @@ codefly add solution wiki --package-id obin/wiki \
     --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
 ```
 
+**The backend is scaffolded by a solution agent, not a service agent.** The two
+are different things and the CLI refuses the wrong one rather than quietly
+substituting it:
+
+```
+$ codefly add solution demo --package-id obin/demo --agent go
+--agent go is the SERVICE agent: it scaffolds a service, not a solution — no
+declared operation, no published policy, no page remote, and delivery refuses
+the result. Pass --agent solution-go
+```
+
+`solution-go` builds on **solution-runtime-go**: the viewer's Work Context, the
+authority's check against each route's published policy, the passthrough that
+relays a module call *as the viewer*, the interface document, and the `./Page`
+remote a host federates. The refusal happens before anything is written.
+
 Scaffolds a solution — a module a host installs and runs as a product surface —
 in the one shape a solution has. There is no shape flag: a second shape beside
 it is what produced nine solutions that do not look alike.
@@ -2441,14 +2423,47 @@ What it creates:
 | | |
 |------|-------------|
 | `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
-| `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell |
+| `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell. It **mounts the solution's own `./Page`**, the same module a host federates, and its generic login/signup routes are removed: a solution has no sign-in of its own, the authority's edge signs the person in |
 | `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
-| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true` |
+| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the **installer role** — the authority refuses to admit a solution that offers a person no role to hold on it |
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+| `configurations/local/fixture-composition.yaml` | who, in the development fixture, has this solution **installed**. Without it the authority refuses every capability ("not installed in this organization") and the page can only render its not-installed branch. `teams` is what admits anyone but the owner |
+| `playground/` + `Makefile` | the composition that runs the solution LOCALLY on the development authority — `make playground`. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
+| `contracts/api` + the package's `api-contracts` | the backend's published http contract, generated as the last step. The authority derives the method policy of **every route** from it, so a solution carrying none admits no call to any route it serves — and says so only as a warning in the authority's log, during a run |
 
-`services/fe-remote` — the `./Page` remote itself — is an npm package, not a
-Codefly service, and is yours to author.
+`services/fe-remote` — the `./Page` remote itself — is written by the solution
+agent, not by this command: it is an npm package, not a Codefly service.
+
+**Running it.** `make playground` starts the development authority and this
+solution, and prints the one address a browser opens:
+
+```
+edge listening on :14581, routing 1 module(s)
+```
+
+That edge is the browser's single origin: it signs the person in from the
+authority's fixture, serves the page, and routes `/v1/<name>` to the backend
+with that person's Work Context. Two addresses are *not* it, and neither fails
+in a way that says so — the shell's own port (the page reports "This page is
+not behind its sign-in edge") and the authority's REST port (every browser
+path 404s). In a cell the host's gateway plays the edge's part; the playground
+is local only.
+
+Sign in as any of the fixture's acme people in a team — `maya`, `remi`,
+`alex`, `dev` — and the solution's route answers:
+
+```
+GET /v1/notes/overview   200   {"solution":"notes","consumes":[]}
+```
+
+`no-roles`, who is in no team, signs in and is refused by name (403, *"holds
+no role on notes"*). That is the fixture doing its job, not a fault.
+
+The authority is pinned by commit, resolved from its **default branch** when
+the solution is scaffolded: it publishes no module release, and a PR head
+reads identically in the manifest and dies on squash-merge.
+`--authority-version` overrides it.
 
 **The rule the backend lives under.** A module call the authority holds to a
 *person* — one its artifact interface admits only in person, with no
@@ -2464,7 +2479,7 @@ hop, which lets through only a call the authority checked.
 | Flag | Description |
 |------|-------------|
 | `--package-id` | The `<owner>/<name>` identity the solution is published under. Required — nothing can derive who publishes it |
-| `--agent` | Service agent for the backend (default `go`). The backend's language is this flag, not a different shape |
+| `--agent` | Agent that scaffolds the backend (default `solution-go`). Must be a **solution** agent; naming the service agent of a language (`go`, `python-fastapi`) is refused, naming the solution agent to use instead |
 | `--consumes` | A module this solution calls, as `[<id>=]<protocol>:<module>/<service>/<endpoint>`. Repeatable. Route names only — authority is declared once, in the module contract |
 | `--executor` | A `codefly:solution` executor to name in the solution manifest. Omitted by default: Core specifies no executor protocol and none is published |
 | `--title` / `--order` | The page's title and position in the host's shell |
@@ -3068,40 +3083,6 @@ release commit also:
   in full. A catalog that no longer matches its contract files is refused —
   run `codefly generate contracts` and commit it first.
 
-**Agents the command starts, and what ends them.** Reading each service's
-exported endpoints loads that service, which starts its agent as a child
-process. The command retires them on return by closing the cached connections.
-That close is Core's, and what it attempts is cooperative: Core asks the agent
-to stop, gives it time to retire its own children (user binaries, containers),
-and forces the process group down if that wait expires. The signal it sends is
-Core's own choice and is not restated here.
-
-What that does **not** establish is that every child was retired. The close
-reports no error, the agent ignores the error from stopping its children, and
-the agent has a hard-deadline exit of its own, so an agent process that has
-gone away is evidence the agent exited — not proof that nothing it started
-survived it. Treat this as best-effort cleanup with a forced fallback.
-
-Cancelling the command once (Ctrl-C) takes the same path: the reap is deferred
-rather than conditional on success, so it still runs. A **second** Ctrl-C does
-not — it exits the process immediately and no deferred cleanup runs at all,
-which leaves exactly the agents this retirement exists to prevent.
-
-It retires the agents **that run of the command started**. An agent left
-running by an earlier command — a version of the CLI before this retirement
-existed, for instance — is not adopted or reaped here: it is a separate process
-that outlived its own command. Retiring one is `codefly recover process <PID>
---preview` to read its identity, then `--expect FILE` with an explicit mode to
-act on exactly that birth, one process at a time, with no group or registry
-effect.
-
-The only mode this version offers is `--force`, an irreversible SIGKILL. That
-is **not** a substitute for a cooperative shutdown: it gives the agent no
-chance to reap its own children, so a leftover agent's user binaries and
-containers can survive it. A graceful mode, and what should happen when a
-target refuses to exit or is signalled twice, are not covered at this version.
-
-
 The services and modules are found through `workspace.codefly.yaml` and each
 `module.codefly.yaml` — never by searching the tree, so a fixture workspace
 elsewhere in the repository is not touched, and never through the machine-local
@@ -3573,13 +3554,7 @@ codefly agent ci --skip-conformance               # Source/build/drift debugging
 
 ### `codefly generate`
 
-Generate client code from service APIs. Codefly owns the proto generation path
-and invokes the pinned proto companion for its compilers and plugins. Core
-0.19.15 selects proto companion 0.0.23, which generates Go, Python, and
-TypeScript without building or shipping Rust tooling. Rust client generation
-is not supported. Companion publication cross-compiles Go tools natively for
-each architecture instead of compiling under ARM emulation. Its runtime caches
-remain writable when Linux runs generation as the host user.
+Generate client code from service APIs.
 
 ```bash
 codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service

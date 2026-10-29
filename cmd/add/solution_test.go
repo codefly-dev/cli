@@ -2,8 +2,10 @@ package add
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -385,5 +387,171 @@ func TestSolutionCommandIsRegisteredAndHelpStandsAlone(t *testing.T) {
 	}
 	if err := SolutionCmd.Args(SolutionCmd, []string{"wiki"}); err != nil {
 		t.Errorf("solution rejected a valid name: %v", err)
+	}
+}
+
+// TestTheServiceAgentOfALanguageIsRefused. `codefly add solution --agent go`
+// used to scaffold a Go SERVICE into the shape of a solution: a net/http mux
+// serving /health, no declared operation, no published policy and no page
+// remote. Every document was valid, nothing said a word, and delivery refused
+// the result for a frontend it had no npm project to build.
+//
+// The refusal names the solution agent rather than substituting it: which
+// agent to run is the author's statement, and quietly running another is the
+// CLI deciding what they meant.
+func TestTheServiceAgentOfALanguageIsRefused(t *testing.T) {
+	for serviceAgent, solutionAgent := range map[string]string{
+		"go":             "solution-go",
+		"python":         "solution-python",
+		"python-fastapi": "solution-python",
+	} {
+		resolved, err := solutionAgentFor(serviceAgent)
+		if err == nil {
+			t.Fatalf("--agent %s was accepted and resolved to %q; the service agent scaffolds a service, not a solution", serviceAgent, resolved)
+		}
+		if !strings.Contains(err.Error(), solutionAgent) {
+			t.Fatalf("refusing --agent %s must name %s to use instead, got: %v", serviceAgent, solutionAgent, err)
+		}
+	}
+}
+
+// TestTheDefaultAndAnUnknownAgentAreBothAccepted. An agent this build has
+// never heard of is accepted: a publisher may ship a solution agent newer
+// than this CLI, and refusing by allow-list would make the CLI the gatekeeper
+// of a registry it does not own.
+func TestTheDefaultAndAnUnknownAgentAreBothAccepted(t *testing.T) {
+	resolved, err := solutionAgentFor("")
+	if err != nil || resolved != solutionEntryAgent {
+		t.Fatalf("no --agent must resolve to %s, got %q (%v)", solutionEntryAgent, resolved, err)
+	}
+	if resolved, err = solutionAgentFor("solution-rust"); err != nil || resolved != "solution-rust" {
+		t.Fatalf("an unknown agent must be accepted as named, got %q (%v)", resolved, err)
+	}
+}
+
+// TestTheShellLinksAndMountsTheRemote. The shell the nextjs agent leaves is a
+// standalone web app: placeholder login, signup and dashboard routes and
+// "Your app is running. Edit src/app/page.tsx to get started." Nothing in it
+// is a solution, and nothing else writes it — the solution agent runs for the
+// BACKEND and the nextjs agent runs after it, so anything the agent wrote
+// there is overwritten. This command is the only step after both.
+func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
+	manifest, err := addJSONDependency([]byte(`{
+  "name": "code",
+  "dependencies": { "next": "16.4.1" }
+}`), "notes-fe-remote", "file:../../fe-remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err = json.Unmarshal(manifest, &document); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, _ := document["dependencies"].(map[string]any)
+	if dependencies["notes-fe-remote"] != "file:../../fe-remote" {
+		t.Fatalf("the remote must be linked into the shell, got %v", dependencies)
+	}
+	if dependencies["next"] != "16.4.1" {
+		t.Fatalf("linking the remote must not drop the shell's own dependencies, got %v", dependencies)
+	}
+
+	// The shell mounts the remote's ./Page with ssr: false — the same module
+	// a host federates, imported rather than reimplemented.
+	app := shellApp("notes", "notes-fe-remote")
+	for _, required := range []string{`import("notes-fe-remote/Page")`, "ssr: false", `const apiBase = "/v1/notes"`} {
+		if !strings.Contains(app, required) {
+			t.Fatalf("the shell must contain %q", required)
+		}
+	}
+
+	// Turbopack refuses to follow the remote's symlink out of the app's own
+	// root, so the build root is the solution's. Without it the shell answers
+	// 500 while the link, the exports map and the file are all correct.
+	config := shellNextConfigSource("notes-fe-remote")
+	for _, required := range []string{`root: resolve("../../..")`, `transpilePackages: ["notes-fe-remote"]`, "externalDir: true"} {
+		if !strings.Contains(config, required) {
+			t.Fatalf("the shell's next.config.ts must contain %q", required)
+		}
+	}
+	// wiki's `webpack` block is a hard error on the Next this agent
+	// scaffolds: Next 16 runs Turbopack and refuses a webpack config.
+	if strings.Contains(config, "webpack(") {
+		t.Fatal("a webpack config is refused by the Next this agent scaffolds")
+	}
+}
+
+// TestThePlaygroundNamesTheEdge. The edge is the browser's one origin: it
+// signs the person in and routes /v1/<name> to the backend with their Work
+// Context. It is NOT a dependency of the backend and nothing elects it as
+// ingress, so neither `run solution` nor `run workspace` starts it — the
+// fleet's own Makefiles name it first, and so does this one.
+//
+// Getting it wrong does not look like an error. Open the shell's own port and
+// the page says "This page is not behind its sign-in edge"; open the
+// authority's REST port and every path 404s. Both were hit repeatedly
+// reconstructing this by hand, which is why it is scaffolded.
+func TestThePlaygroundNamesTheEdge(t *testing.T) {
+	makefile := playgroundMakefile("notes")
+	if !strings.Contains(makefile, "PLAYGROUND_SERVICES = authority/edge notes/web notes/backend") {
+		t.Fatalf("the edge must be named first in the services the playground runs:\n%s", makefile)
+	}
+
+	// The edge group is what tells the edge which module to route and where
+	// the page is. Its key is the solution's name, upper-cased.
+	group := playgroundEdgeGroup("my-notes")
+	for _, required := range []string{"MODULES=my-notes", "MY_NOTES_REST=${endpoint:my-notes/backend/http}", "FRONTEND=${endpoint:my-notes/web/http}"} {
+		if !strings.Contains(group, required) {
+			t.Fatalf("the edge group must contain %q, got:\n%s", required, group)
+		}
+	}
+
+	// The authority is pinned by commit, and the pin must be one the DEFAULT
+	// BRANCH holds: a PR head reads identically and dies on squash-merge.
+	workspace := playgroundWorkspace("notes", "88599779642808bce196d612b99b0898be6b78c3")
+	for _, required := range []string{`version: "88599779642808bce196d612b99b0898be6b78c3"`, "source: codefly-dev/authority", "fixture: local", "name: notes-playground"} {
+		if !strings.Contains(workspace, required) {
+			t.Fatalf("the playground workspace must contain %q", required)
+		}
+	}
+}
+
+// TestTheInstallationAdmitsTheFixturesPeople. A solution the authority has no
+// installation for refuses every capability — "audience %q is not installed
+// in this organization, so there is no installation to seal the capability
+// to" — so the page can only render its not-installed branch. The fixture
+// itself names who exists; which solutions are installed is each composed
+// module's fragment to say.
+//
+// TEAMS ARE WHAT ADMIT ANYONE BUT THE OWNER, and dropping them is the
+// mistake this guards: with `role` and `owner` alone every other person of
+// the fixture signs in and is refused by name, "<person> holds no role on
+// <solution>". Verified against the running authority — maya, rémi, alex and
+// dev all reach the solution's route; no-roles, in no team, gets 403.
+func TestTheInstallationAdmitsTheFixturesPeople(t *testing.T) {
+	fragment := fixtureComposition("notes")
+	for _, required := range []string{
+		"schema: codefly.dev/authority/fixture-composition/v1",
+		"organization: acme",
+		"target: notes",
+		"owner: alex",
+		"teams: [finance, engineering]",
+	} {
+		if !strings.Contains(fragment, required) {
+			t.Fatalf("the fixture composition must contain %q, got:\n%s", required, fragment)
+		}
+	}
+}
+
+// TestTheContractDeclaresARoleBesidesInstaller. The organization is installed
+// as viewer, so the contract has to declare that role: a role the contract
+// does not name is one the authority never issues.
+func TestTheContractDeclaresARoleBesidesInstaller(t *testing.T) {
+	contract := solutionContract("notes")
+	var names []string
+	for index := range contract.Roles {
+		names = append(names, contract.Roles[index].Name)
+	}
+	if !slices.Contains(names, "installer") || !slices.Contains(names, "viewer") {
+		t.Fatalf("the contract must declare installer and viewer, got %v", names)
 	}
 }
