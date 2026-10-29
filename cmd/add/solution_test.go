@@ -555,3 +555,25 @@ func TestTheContractDeclaresARoleBesidesInstaller(t *testing.T) {
 		t.Fatalf("the contract must declare installer and viewer, got %v", names)
 	}
 }
+
+// TestThePlaygroundBuildsTheRemoteFirst. The solution runtime serves /assets/
+// from ASSETS_DIR, which defaults to ../fe-remote/dist relative to the
+// backend. With nothing built there the backend answers 404 for
+// /assets/mf-manifest.json — the manifest it advertises in
+// /.well-known/solution.json — and a host can federate nothing. The fleet's
+// own playground builds the remote before the run for exactly this reason.
+func TestThePlaygroundBuildsTheRemoteFirst(t *testing.T) {
+	makefile := playgroundMakefile("notes")
+	if !strings.Contains(makefile, "playground: remote") {
+		t.Fatalf("the playground must build the remote first:\n%s", makefile)
+	}
+	for _, required := range []string{
+		"cd services/fe-remote && npm install",
+		"npm run build",
+		"test -f services/fe-remote/dist/mf-manifest.json",
+	} {
+		if !strings.Contains(makefile, required) {
+			t.Fatalf("the remote target must contain %q", required)
+		}
+	}
+}

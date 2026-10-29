@@ -2435,8 +2435,9 @@ What it creates:
 `services/fe-remote` — the `./Page` remote itself — is written by the solution
 agent, not by this command: it is an npm package, not a Codefly service.
 
-**Running it.** `make playground` starts the development authority and this
-solution, and prints the one address a browser opens:
+**Running it.** `make playground` builds the page's remote, starts the
+development authority and this solution, and prints the one address a browser
+opens:
 
 ```
 edge listening on :14581, routing 1 module(s)
@@ -2449,6 +2450,12 @@ in a way that says so — the shell's own port (the page reports "This page is
 not behind its sign-in edge") and the authority's REST port (every browser
 path 404s). In a cell the host's gateway plays the edge's part; the playground
 is local only.
+
+The remote is built **before** the run, and that is load-bearing: the solution
+runtime serves `/assets/` from `ASSETS_DIR`, which defaults to
+`../fe-remote/dist` relative to the backend. With nothing built there the
+backend answers 404 for `/assets/mf-manifest.json` — the manifest it
+advertises in `/.well-known/solution.json` — and a host can federate nothing.
 
 Sign in as any of the fixture's acme people in a team — `maya`, `remi`,
 `alex`, `dev` — and the solution's route answers:

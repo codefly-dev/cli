@@ -191,7 +191,7 @@ FRONTEND=${endpoint:%s/web/http}
 // playgroundMakefile writes the run line, whose one non-obvious part is that
 // authority/edge is NAMED. Nothing starts it otherwise.
 func playgroundMakefile(name string) string {
-	return fmt.Sprintf(`.PHONY: playground
+	return fmt.Sprintf(`.PHONY: playground remote
 
 # %s on the development authority, as a solution runs in a cell with no saas
 # host: the authority's edge is the one origin the browser opens and signs a
@@ -204,8 +204,19 @@ func playgroundMakefile(name string) string {
 # origin that can sign anyone in.
 PLAYGROUND_SERVICES = authority/edge %s/web %s/backend
 
-playground:
+# THE REMOTE IS BUILT FIRST, and that is not a convenience. The solution
+# runtime serves /assets/ from ASSETS_DIR, which defaults to
+# ../fe-remote/dist relative to the backend — so with no build there, the
+# backend answers 404 for /assets/mf-manifest.json, the manifest it
+# advertises in /.well-known/solution.json, and a host can federate nothing.
+# The shell also installs the remote as a copy, so it needs it built.
+playground: remote
 	cd %s && codefly run service $(PLAYGROUND_SERVICES) --env local
+
+.PHONY: remote
+remote:
+	cd services/fe-remote && npm install --no-audit --no-fund && npm run build
+	test -f services/fe-remote/dist/mf-manifest.json
 `, titleFromName(name), name, name, playgroundDir)
 }
 
