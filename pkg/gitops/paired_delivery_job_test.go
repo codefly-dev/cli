@@ -236,3 +236,43 @@ func TestAPairedDocumentIsSignedOnceAndCarriedToTheExecutingPublish(t *testing.T
 	_, err = repository.settle(repository.stageRender(t, "crm"), &unplanned)
 	require.ErrorContains(t, err, "was not prepared by the inspected plan")
 }
+
+// A manifest the base branch delivered Core-only enters paired settlement at
+// the next generation even when its content is unchanged: the host holds that
+// generation with no authority document and refuses the same generation
+// offered with one as a history conflict, so the pair is signed at a new one.
+// Once delivered paired, an unchanged manifest keeps its generation.
+func TestAnUnchangedManifestEnteringPairedSettlementAdvancesOnce(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+	coreOnly := publishOptions(signer)
+	_, err := repository.settle(repository.stageRender(t, "crm"), &coreOnly)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), settledGenerationOf(t, repository, "example.prod.crm"))
+	repository.deliver(t)
+
+	paired := pairedOptions(signer)
+	_, err = repository.settle(repository.stageRender(t, "crm"), &paired)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "entering paired settlement advances once")
+	require.NotNil(t, pairedDocumentsIn(t, repository)["example.prod.crm"].GetAuthority())
+	repository.deliver(t)
+
+	again := pairedOptions(signer)
+	_, err = repository.settle(repository.stageRender(t, "crm"), &again)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "delivered paired, unchanged content keeps its generation")
+}
+
+// settledGenerationOf reads the generation the settled overlay carries for a
+// binding.
+func settledGenerationOf(t *testing.T, repository *deliveryRepository, binding string) uint64 {
+	t.Helper()
+	document := settledDocuments(t, repository)[binding]
+	encoded, err := yaml.Marshal(document)
+	require.NoError(t, err)
+	manifest, _, held, err := manifestFromConfigMap(encoded)
+	require.NoError(t, err)
+	require.True(t, held)
+	return manifest.Generation
+}

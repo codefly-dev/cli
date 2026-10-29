@@ -212,6 +212,13 @@ func settleManifests(
 	if err != nil {
 		return nil, nil, err
 	}
+	if opts.Target != nil && opts.Target.Composition {
+		delivered, filesErr := deliveredOverlayFiles(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
+		if filesErr != nil {
+			return nil, nil, filesErr
+		}
+		advanceIntoPairedSettlement(settled, prior, delivered)
+	}
 	names := sortedBindings(settled)
 	// Each manifest at its settled generation is held against what the base
 	// branch delivered for its binding with core's own admission — a
@@ -339,6 +346,34 @@ func settledManifestSet(rendered, prior map[string]deliveredManifest) (map[strin
 		settled[binding] = entry
 	}
 	return settled, nil
+}
+
+// advanceIntoPairedSettlement moves a binding into paired settlement: a
+// manifest the base branch delivered Core-only — no paired document beside
+// its carrier — that this publish delivers paired keeps nothing of that
+// generation, because the host holds the generation with no authority
+// document and refuses the same generation offered with one as a history
+// conflict ("authority document digest stored=… (present=false)"), and the
+// old record cannot establish policy equality either way. It advances once,
+// as the native run's record does on the same transition, and is signed
+// again. A withdrawal keeps its Core-only identity.
+func advanceIntoPairedSettlement(settled, prior map[string]deliveredManifest, deliveredFiles []string) {
+	paired := map[string]bool{}
+	for _, name := range deliveredFiles {
+		paired[name] = true
+	}
+	for binding, entry := range settled {
+		previous, delivered := prior[binding]
+		if !delivered || entry.manifest.Removed || entry.manifest.Generation != previous.manifest.Generation {
+			continue
+		}
+		if paired[pairedDocumentFile(binding)] {
+			continue
+		}
+		entry.manifest.Generation = previous.manifest.Generation + 1
+		entry.carrier = nil
+		settled[binding] = entry
+	}
 }
 
 // settledGeneration is the generation of a candidate against the manifest
