@@ -12,8 +12,15 @@ import (
 	"github.com/codefly-dev/core/shared"
 )
 
-// The playground: the composition that runs this solution LOCALLY, on the
-// development authority, the way every solution in the fleet is run.
+// The local composition: what runs this solution on the development
+// authority, written at the SOLUTION'S OWN ROOT, which is where all nine
+// solutions in the fleet keep theirs.
+//
+// IT IS NOT A PLAYGROUND. A playground is a MODULE's — somewhere to exercise
+// a module on its own — and two solutions happen to carry one as an extra.
+// Scaffolding a solution into a playground/ subdirectory made the solution
+// look like a thing its own local run composes, which is the confusion this
+// avoids: here the solution's directory IS the workspace, with `path: .`.
 //
 // WHY IT IS SCAFFOLDED. A solution's page is served on ONE origin — the
 // authority's edge — which signs the person in and routes /v1/<name> to the
@@ -32,9 +39,8 @@ import (
 // LOCAL ONLY. In a cell the host's gateway is the origin and signs the person
 // in; the development authority stands in for it here. Nothing in this
 // directory describes a deployment.
-const playgroundDir = "playground"
 
-// authorityModule is the development authority the playground composes.
+// authorityModule is the development authority the local composition names.
 //
 // It is pinned by COMMIT, because the repository publishes no module release
 // — its only tags are its Go libraries' — and every solution in the fleet
@@ -43,31 +49,31 @@ const playgroundDir = "playground"
 // stale by the next release; --authority-version overrides it.
 const authorityModule = "codefly-dev/authority"
 
-// applySolutionPlayground writes the playground beside the solution.
+// applySolutionLocalRun writes the local composition at the solution's root.
 //
 // It never fails the scaffold: the solution is the deliverable and is already
-// written and validated, so a playground that cannot be pinned is reported
+// written and validated, so a composition that cannot be pinned is reported
 // and skipped rather than discarding a correct solution.
-func applySolutionPlayground(ctx context.Context, module *resources.Module, authorityVersion string) {
+func applySolutionLocalRun(ctx context.Context, module *resources.Module, authorityVersion string) {
 	pin := authorityVersion
 	if pin == "" {
 		resolved, err := defaultBranchCommit(ctx, authorityModule)
 		if err != nil {
-			cli.Warning("the playground was not written: cannot resolve %s's default branch (%v). Re-run with --authority-version <commit>.", authorityModule, err)
+			cli.Warning("the local composition was not written: cannot resolve %s's default branch (%v). Re-run with --authority-version <commit>.", authorityModule, err)
 			return
 		}
 		pin = resolved
 	}
 
-	root := filepath.Join(module.Dir(), playgroundDir)
+	root := module.Dir()
 	files := map[string]string{
-		"workspace.codefly.yaml":             playgroundWorkspace(module.Name, pin),
-		"configurations/local/authority.env": playgroundAuthorityGroup(),
-		"configurations/local/edge.env":      playgroundEdgeGroup(module.Name),
-		"README.md":                          playgroundReadme(module.Name),
+		"workspace.codefly.yaml":             localWorkspace(module.Name, pin),
+		"configurations/local/authority.env": localAuthorityGroup(),
+		"configurations/local/edge.env":      localEdgeGroup(module.Name),
+		"LOCAL.md":                           localReadme(module.Name),
 	}
 	// The solution's own fragment of the authority's fixture-composition
-	// document. It belongs beside the SOLUTION, not in the playground: the
+	// document. It belongs beside the SOLUTION: the
 	// composing workspace merges every composed module's fragment, and this
 	// is the solution's.
 	if err := shared.WriteFileAtomic(ctx,
@@ -78,15 +84,15 @@ func applySolutionPlayground(ctx context.Context, module *resources.Module, auth
 	}
 	for name, content := range files {
 		if err := shared.WriteFileAtomic(ctx, filepath.Join(root, filepath.FromSlash(name)), []byte(content), 0o644); err != nil {
-			cli.Warning("the playground's %s was not written: %v", name, err)
+			cli.Warning("the local composition's %s was not written: %v", name, err)
 			return
 		}
 	}
-	if err := shared.WriteFileAtomic(ctx, filepath.Join(module.Dir(), "Makefile"), []byte(playgroundMakefile(module.Name)), 0o644); err != nil {
-		cli.Warning("the playground's Makefile was not written: %v", err)
+	if err := shared.WriteFileAtomic(ctx, filepath.Join(module.Dir(), "Makefile"), []byte(localMakefile(module.Name)), 0o644); err != nil {
+		cli.Warning("the Makefile was not written: %v", err)
 		return
 	}
-	cli.Info("wrote playground/ — `make playground` runs this solution on the development authority")
+	cli.Info("wrote the local composition — `make run` runs this solution on the development authority")
 }
 
 // defaultBranchCommit resolves a GitHub repository's default-branch head.
@@ -110,7 +116,7 @@ func defaultBranchCommit(ctx context.Context, repository string) (string, error)
 	return commit, nil
 }
 
-func playgroundWorkspace(name, authorityPin string) string {
+func localWorkspace(name, authorityPin string) string {
 	return fmt.Sprintf(`# This solution, run on the DEVELOPMENT AUTHORITY: the composition a person
 # opens locally, and the only one this directory describes. In a cell the
 # host's gateway is the origin and issues the Work Contexts; here the
@@ -123,15 +129,20 @@ func playgroundWorkspace(name, authorityPin string) string {
 # call, and trimming one gets "module contract slot cannot be resolved",
 # "slot resolves ambiguously", or "it is not a module this workspace
 # composes".
-name: %s-playground
+name: %s-local
 layout: modules
 
 module-resolution:
     authority: git
 
 modules:
+    # THIS DIRECTORY IS THE MODULE. The workspace document sits beside
+    # module.codefly.yaml, as it does in all nine solutions of the fleet, so
+    # the path is "." and not the ".." a separate playground directory would
+    # need. Get it wrong and the run resolves the module one level up and
+    # fails on a module.codefly.yaml that is not there.
     - name: %s
-      path: ..
+      path: .
     # Pinned by COMMIT: the authority publishes no module release, and the
     # commit must be one the DEFAULT BRANCH holds. A PR head reads the same
     # here and dies on squash-merge, when the commit it names is on no branch.
@@ -163,7 +174,7 @@ environments:
 `, name, name, authorityModule, authorityPin, titleFromName(name))
 }
 
-func playgroundAuthorityGroup() string {
+func localAuthorityGroup() string {
 	return `# The authority interface: this solution's backend asks it who the viewer is
 # and is issued every Work Context it sends.
 endpoint=${endpoint:authority/local/grpc}
@@ -174,7 +185,7 @@ rest-endpoint=${endpoint:authority/local/rest}
 `
 }
 
-func playgroundEdgeGroup(name string) string {
+func localEdgeGroup(name string) string {
 	return fmt.Sprintf(`# The edge: the browser's ONE origin. It signs the person in from the
 # authority's fixture, routes /v1/%s to this solution's backend with that
 # person's Work Context, and serves the solution's page on every other path.
@@ -188,21 +199,25 @@ FRONTEND=${endpoint:%s/web/http}
 `, name, name, strings.ToUpper(strings.ReplaceAll(name, "-", "_")), name, name)
 }
 
-// playgroundMakefile writes the run line, whose one non-obvious part is that
+// localMakefile writes the run line, whose one non-obvious part is that
 // authority/edge is NAMED. Nothing starts it otherwise.
-func playgroundMakefile(name string) string {
-	return fmt.Sprintf(`.PHONY: playground remote
+func localMakefile(name string) string {
+	return fmt.Sprintf(`.PHONY: run remote
 
 # %s on the development authority, as a solution runs in a cell with no saas
 # host: the authority's edge is the one origin the browser opens and signs a
 # person in from the authority's fixture, and this solution's backend is
 # issued every Work Context it sends.
 #
+# This directory IS the workspace (workspace.codefly.yaml, path: .), so the
+# run happens here. There is no playground subdirectory: a playground is a
+# MODULE's, somewhere to exercise a module on its own.
+#
 # THE EDGE IS LISTED FIRST AND THAT IS LOAD-BEARING. It is not a dependency of
-# the backend and nothing elects it as ingress, so neither `+"`run solution`"+`
-# nor `+"`run workspace`"+` starts it: name it, or the page is served on no
-# origin that can sign anyone in.
-PLAYGROUND_SERVICES = authority/edge %s/web %s/backend
+# the backend and nothing elects it as ingress, so neither `+"`codefly run solution`"+`
+# nor `+"`codefly run workspace`"+` starts it: name it, or the page is served on
+# no origin that can sign anyone in.
+SERVICES = authority/edge %s/web %s/backend
 
 # THE REMOTE IS BUILT FIRST, and that is not a convenience. The solution
 # runtime serves /assets/ from ASSETS_DIR, which defaults to
@@ -210,10 +225,9 @@ PLAYGROUND_SERVICES = authority/edge %s/web %s/backend
 # backend answers 404 for /assets/mf-manifest.json, the manifest it
 # advertises in /.well-known/solution.json, and a host can federate nothing.
 # The shell also installs the remote as a copy, so it needs it built.
-playground: remote
-	cd %s && codefly run service $(PLAYGROUND_SERVICES) --env local
+run: remote
+	codefly run service $(SERVICES) --env local
 
-.PHONY: remote
 remote:
 	@test -n "$$NODE_AUTH_TOKEN" || { \
 	  echo "NODE_AUTH_TOKEN is not set. The page's kits are published to GitHub"; \
@@ -225,14 +239,14 @@ remote:
 	  exit 1; }
 	cd services/fe-remote && npm install --no-audit --no-fund && npm run build
 	test -f services/fe-remote/dist/mf-manifest.json
-`, titleFromName(name), name, name, playgroundDir)
+`, titleFromName(name), name, name)
 }
 
-func playgroundReadme(name string) string {
-	return fmt.Sprintf(`# %s — the playground
+func localReadme(name string) string {
+	return fmt.Sprintf(`# Running %s locally
 
 	export NODE_AUTH_TOKEN=$(gh auth token)   # read:packages, for the page's kits
-	make playground
+	make run
 
 Then open the address the EDGE prints:
 
@@ -253,7 +267,7 @@ Then open the address the EDGE prints:
 The page's kits (@codefly-dev/*) are published to GitHub Packages, and
 services/fe-remote/.npmrc reads NODE_AUTH_TOKEN for them. Without it npm
 answers "401 Unauthorized - unauthenticated" and names no cause, so
-make playground refuses to start until it is set.
+make run refuses to start until it is set.
 
 ## The two addresses that are not it
 
@@ -306,7 +320,7 @@ installations:
   # shipped fixture; with no teams every other person signs in and is
   # refused by name —
   # "<person> holds no role on %s" — which is a correct refusal and a
-  # useless playground. finance and engineering are the fixture's acme teams,
+  # useless local run. finance and engineering are the fixture's acme teams,
   # so maya, rémi, alex and dev can all open it; no-roles, who is in no team,
   # still cannot, and that is the fixture showing a real refusal.
   - {organization: acme, target: %s, role: viewer, owner: alex, teams: [finance, engineering]}
