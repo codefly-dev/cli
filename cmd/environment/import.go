@@ -251,7 +251,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// EndLine after the edit would under-count and strand the original's
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
-		applyContractFields(envNode, declaredEnvironment)
+		applyEnvironmentContractFields(envNode, declaredEnvironment)
 		withdrawOwnedAbsences(envNode, declaredEnvironment, contractOwnedOptional, false)
 		if intent != nil {
 			withdrawOwnedAbsences(envNode, declaredEnvironment, productOwnedOptional, true)
@@ -461,6 +461,13 @@ func clearFootComments(node *yaml.Node) {
 
 // Merge only explicitly declared fields. Omitted keys retain operator-owned
 // values; sequences and scalars replace their exact named field.
+func applyEnvironmentContractFields(target, declaration *yaml.Node) {
+	if images := yamledit.MapValue(declaration, "build-images"); images != nil {
+		yamledit.SetMapValue(target, "build-images", images)
+	}
+	applyContractFields(target, declaration)
+}
+
 func applyContractFields(target, declaration *yaml.Node) {
 	for i := 0; i+1 < len(declaration.Content); i += 2 {
 		key, value := declaration.Content[i].Value, declaration.Content[i+1]

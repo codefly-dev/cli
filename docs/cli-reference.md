@@ -2660,8 +2660,35 @@ codefly environment <subcommand>
 
 Subcommands:
 
+- [`codefly environment images`](#codefly-environment-images)
 - [`codefly environment import`](#codefly-environment-import)
 - [`codefly environment show`](#codefly-environment-show)
+
+## `codefly environment images`
+
+Set registry relocations and immutable image roles for an environment
+
+```
+Replace an environment's build-images policy using a YAML or JSON file.
+Service types are exact publisher/agent names; services are exact module/service
+names. A service selection wins over the type selection for the same role.
+Registry relocations apply to remaining agent defaults, preserving their digest.
+Every replacement requires a reference pinned by sha256 and an agent-supported
+recipe variant. Unsupported agents or variants refuse before image execution.
+Use an empty object ({}) to clear the policy; --dry-run prints the change.
+This edits workspace declarations only. It does not build or deploy images.
+```
+
+```
+codefly environment images <env> --file <policy.yaml|->
+```
+
+Flags:
+
+```
+      --dry-run       Print the workspace diff without writing
+      --file string   YAML or JSON image policy file, or - for stdin
+```
 
 ## `codefly environment import`
 

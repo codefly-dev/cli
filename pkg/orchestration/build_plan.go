@@ -61,6 +61,9 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
 	}
+	if err := verifyBuildImages(outputDir, plan, b.imageBindings); err != nil {
+		return err
+	}
 	if err := b.checkDisposableImagePlan(plan); err != nil {
 		return err
 	}
@@ -152,7 +155,7 @@ func (b *Builder) decideImageReuse(
 	if err != nil {
 		return imageReuse{}, err
 	}
-	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, prepared.Dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors)
+	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, prepared.Dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors, b.imageBindings...)
 	if err = b.checkDisposableImageIdentity(identity, identityErr); err != nil {
 		return imageReuse{}, err
 	}
@@ -188,6 +191,10 @@ func (b *Builder) decideImageReuse(
 			w.Info("the agent is overridden, so this is not the release's build; tagging it apart",
 				wool.Field("agent", b.instance.Service.Agent.Identifier()), wool.Field("release_pins", pinned), wool.Field("image", decision.image))
 		}
+	}
+	recipe, decision, err = qualifyBoundImage(recipe, decision, identityErr, shouldPush, b.imageBindings)
+	if err != nil {
+		return decision, err
 	}
 	if b.world.RebuildImages {
 		return decision, nil
@@ -519,7 +526,7 @@ func (b *Builder) buildRecipe(
 
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err == nil {
-		args = withBuildAgentLabel(withBuildInputsLabel(args, identity), b.instance.Service.Agent)
+		args = withImageBindingsLabel(withBuildAgentLabel(withBuildInputsLabel(args, identity), b.instance.Service.Agent), b.imageBindings)
 		if shouldPush {
 			args = withSourceLabel(args, b.world.Env, workspaceSourceRepository(ctx, b.world.Workspace.Dir()), multiArch)
 		}
