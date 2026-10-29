@@ -133,6 +133,73 @@ edge_dependencies:
 	}
 }
 
+// TestAnInstallationOnlyChangeAdvancesTheGeneration is the case the existing
+// generation test does not cover: TestNativeGenerationIncludesEachAuthorityPolicyInput
+// enumerates method, ceiling, role and owner-aware, and passes nil for
+// installation.
+//
+// It matters beyond coverage. A host that already holds a manifest at
+// generation 1 with a NULL authority document will not replace it unless a
+// later generation arrives — so if editing only the installation declaration
+// left the generation where it was, a repaired delivery would re-send
+// generation 1 and the host would keep the policy-less record it already has.
+func TestAnInstallationOnlyChangeAdvancesTheGeneration(t *testing.T) {
+	dir := t.TempDir()
+	write := func(declaration string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, modulecontract.FileName),
+			[]byte(declaringContract(declaration)), 0o600))
+	}
+	write("")
+
+	conn, peer := pairedConnection(t)
+	signer := nativeSigner(t)
+	composition := NewCompositionDelivery(conn, signer,
+		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
+		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return nil, nil },
+		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, nil },
+		func(context.Context, string) (bool, error) { return false, nil },
+		func(_ context.Context, _ string) (string, []*compositionv1.EdgeDependencyV1, error) {
+			return InstallationDeclaration(dir)
+		})
+	d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare,
+		Token: func(string) (string, error) { return "credential", nil }}
+
+	// Declaring nothing: delivered, and no authority document at all — which
+	// is how a host ends up holding a record with a NULL document.
+	_, err := d.Deliver(t.Context(), pairedManifest())
+	require.NoError(t, err)
+	require.Nil(t, peer.requests()[0].Authority)
+
+	// Add ONLY the selector. The generation must move, or the host keeps the
+	// policy-less record.
+	write("installation_role: none\n")
+	_, err = d.Deliver(t.Context(), pairedManifest())
+	require.NoError(t, err)
+
+	// Add ONLY an edge. The generation must move again.
+	write(`installation_role: none
+edge_dependencies:
+  - module: robin
+    presence: required
+`)
+	_, err = d.Deliver(t.Context(), pairedManifest())
+	require.NoError(t, err)
+
+	var generations []uint64
+	var documents []bool
+	for _, request := range peer.requests() {
+		manifest, err := solutionhost.ManifestFromVerified(request.Carrier.Document)
+		require.NoError(t, err)
+		generations = append(generations, manifest.Generation)
+		documents = append(documents, request.Authority != nil)
+	}
+	require.Equal(t, []uint64{1, 2, 3}, generations,
+		"an installation-only edit must advance the generation, or a host holding an older record never replaces it")
+	require.Equal(t, []bool{false, true, true}, documents,
+		"a declaration is reason enough for a signed authority document to exist")
+}
+
 // TestTheProducedCarriersAgreeUnderAuthoritysRule runs the CLI's OWN two
 // carriers through Authority's real paired-agreement rule
 // (delivered.Pair/Module at authority-core 21ce6d92), rather than asserting the
