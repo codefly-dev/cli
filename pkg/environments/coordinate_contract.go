@@ -56,7 +56,7 @@ func (c *CoordinateContract) validate() error {
 	}
 	for _, capability := range c.RequiresCapabilities {
 		switch capability {
-		case CapabilityManagedServiceIdentity, CapabilityServiceIdentity:
+		case CapabilityManagedServiceIdentity, CapabilityServiceIdentity, "build-image-bindings":
 		default:
 			return fmt.Errorf("coordinate contract requires unsupported capability %q", capability)
 		}
@@ -83,6 +83,9 @@ func (c *CoordinateContract) validate() error {
 		return fmt.Errorf("declared registry requires a URL")
 	}
 	if err := env.Registry.Validate(); err != nil {
+		return err
+	}
+	if err := env.BuildImages.Validate(); err != nil {
 		return err
 	}
 	if env.Gitops != nil && (strings.TrimSpace(env.Gitops.RepoURL) == "" || strings.TrimSpace(env.Gitops.Path) == "" || strings.TrimSpace(env.Gitops.Branch) == "") {

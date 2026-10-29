@@ -480,7 +480,7 @@ func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
 	}
 }
 
-// TestThePlaygroundNamesTheEdge. The edge is the browser's one origin: it
+// TestTheLocalRunNamesTheEdge. The edge is the browser's one origin: it
 // signs the person in and routes /v1/<name> to the backend with their Work
 // Context. It is NOT a dependency of the backend and nothing elects it as
 // ingress, so neither `run solution` nor `run workspace` starts it — the
@@ -490,15 +490,15 @@ func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
 // the page says "This page is not behind its sign-in edge"; open the
 // authority's REST port and every path 404s. Both were hit repeatedly
 // reconstructing this by hand, which is why it is scaffolded.
-func TestThePlaygroundNamesTheEdge(t *testing.T) {
-	makefile := playgroundMakefile("notes")
-	if !strings.Contains(makefile, "PLAYGROUND_SERVICES = authority/edge notes/web notes/backend") {
+func TestTheLocalRunNamesTheEdge(t *testing.T) {
+	makefile := localMakefile("notes")
+	if !strings.Contains(makefile, "SERVICES = authority/edge notes/web notes/backend") {
 		t.Fatalf("the edge must be named first in the services the playground runs:\n%s", makefile)
 	}
 
 	// The edge group is what tells the edge which module to route and where
 	// the page is. Its key is the solution's name, upper-cased.
-	group := playgroundEdgeGroup("my-notes")
+	group := localEdgeGroup("my-notes")
 	for _, required := range []string{"MODULES=my-notes", "MY_NOTES_REST=${endpoint:my-notes/backend/http}", "FRONTEND=${endpoint:my-notes/web/http}"} {
 		if !strings.Contains(group, required) {
 			t.Fatalf("the edge group must contain %q, got:\n%s", required, group)
@@ -507,8 +507,8 @@ func TestThePlaygroundNamesTheEdge(t *testing.T) {
 
 	// The authority is pinned by commit, and the pin must be one the DEFAULT
 	// BRANCH holds: a PR head reads identically and dies on squash-merge.
-	workspace := playgroundWorkspace("notes", "88599779642808bce196d612b99b0898be6b78c3")
-	for _, required := range []string{`version: "88599779642808bce196d612b99b0898be6b78c3"`, "source: codefly-dev/authority", "fixture: local", "name: notes-playground"} {
+	workspace := localWorkspace("notes", "88599779642808bce196d612b99b0898be6b78c3")
+	for _, required := range []string{`version: "88599779642808bce196d612b99b0898be6b78c3"`, "source: codefly-dev/authority", "fixture: local", "name: notes-local", "path: ."} {
 		if !strings.Contains(workspace, required) {
 			t.Fatalf("the playground workspace must contain %q", required)
 		}
@@ -556,16 +556,16 @@ func TestTheContractDeclaresARoleBesidesInstaller(t *testing.T) {
 	}
 }
 
-// TestThePlaygroundBuildsTheRemoteFirst. The solution runtime serves /assets/
+// TestTheLocalRunBuildsTheRemoteFirst. The solution runtime serves /assets/
 // from ASSETS_DIR, which defaults to ../fe-remote/dist relative to the
 // backend. With nothing built there the backend answers 404 for
 // /assets/mf-manifest.json — the manifest it advertises in
 // /.well-known/solution.json — and a host can federate nothing. The fleet's
 // own playground builds the remote before the run for exactly this reason.
-func TestThePlaygroundBuildsTheRemoteFirst(t *testing.T) {
-	makefile := playgroundMakefile("notes")
-	if !strings.Contains(makefile, "playground: remote") {
-		t.Fatalf("the playground must build the remote first:\n%s", makefile)
+func TestTheLocalRunBuildsTheRemoteFirst(t *testing.T) {
+	makefile := localMakefile("notes")
+	if !strings.Contains(makefile, "run: remote") {
+		t.Fatalf("the local run must build the remote first:\n%s", makefile)
 	}
 	for _, required := range []string{
 		"cd services/fe-remote && npm install",
@@ -578,20 +578,42 @@ func TestThePlaygroundBuildsTheRemoteFirst(t *testing.T) {
 	}
 }
 
-// TestThePlaygroundRefusesWithoutTheRegistryToken. The page's kits are
+// TestTheLocalRunRefusesWithoutTheRegistryToken. The page's kits are
 // published to GitHub Packages and the remote's .npmrc reads
 // NODE_AUTH_TOKEN, so without it npm answers "401 Unauthorized -
 // unauthenticated" and names no cause. The playground says so itself rather
 // than letting a newcomer meet that.
-func TestThePlaygroundRefusesWithoutTheRegistryToken(t *testing.T) {
-	makefile := playgroundMakefile("notes")
+func TestTheLocalRunRefusesWithoutTheRegistryToken(t *testing.T) {
+	makefile := localMakefile("notes")
 	if !strings.Contains(makefile, "NODE_AUTH_TOKEN") {
 		t.Fatalf("the remote target must check for the registry token:\n%s", makefile)
 	}
 	if !strings.Contains(makefile, "gh auth token") {
 		t.Fatal("the refusal must name the command that sets it")
 	}
-	if !strings.Contains(playgroundReadme("notes"), "NODE_AUTH_TOKEN") {
-		t.Fatal("the playground README must state the token as a prerequisite")
+	if !strings.Contains(localReadme("notes"), "NODE_AUTH_TOKEN") {
+		t.Fatal("the local run doc must state the token as a prerequisite")
+	}
+}
+
+// TestTheSolutionDirectoryIsTheWorkspace. The local composition sits at the
+// solution's own root, as it does in all nine solutions of the fleet —
+// core-solutions has no root workspace of its own, so each solution IS one.
+//
+// It is deliberately NOT a playground/ subdirectory: a playground is a
+// MODULE's, somewhere to exercise a module on its own, and two solutions
+// carry one as an extra. Scaffolding into one also made the module path ".."
+// instead of ".", which resolved the module a level up and failed the run on
+// a module.codefly.yaml that was not there.
+func TestTheSolutionDirectoryIsTheWorkspace(t *testing.T) {
+	workspace := localWorkspace("notes", "88599779642808bce196d612b99b0898be6b78c3")
+	if !strings.Contains(workspace, "path: .\n") {
+		t.Fatalf("the module path must be \".\", the workspace sitting beside module.codefly.yaml:\n%s", workspace)
+	}
+	if strings.Contains(workspace, "path: ..") {
+		t.Fatal("\"..\" is the path a separate playground directory needed; the workspace is at the solution root")
+	}
+	if strings.Contains(localMakefile("notes"), "cd playground") {
+		t.Fatal("the run happens at the solution root, not in a playground subdirectory")
 	}
 }

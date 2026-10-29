@@ -362,7 +362,7 @@ Flags:
 ```
       --agent string                     Agent that scaffolds the backend (default: solution-go). Must be a SOLUTION agent; naming the service agent of a language is refused, with the one to use instead
       --authority-interface string       The authority interface the backend requires, as <publisher>/<name>@<range> (default "codefly.dev/authority@>=0.2.0 <0.4.0")
-      --authority-version string         Commit of codefly-dev/authority the playground pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge
+      --authority-version string         Commit of codefly-dev/authority the local composition pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge
       --consumes stringArray             A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract
       --description string               Short description written to module.codefly.yaml
       --executor string                  A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)
@@ -2766,8 +2766,35 @@ codefly environment <subcommand>
 
 Subcommands:
 
+- [`codefly environment images`](#codefly-environment-images)
 - [`codefly environment import`](#codefly-environment-import)
 - [`codefly environment show`](#codefly-environment-show)
+
+## `codefly environment images`
+
+Set registry relocations and immutable image roles for an environment
+
+```
+Replace an environment's build-images policy using a YAML or JSON file.
+Service types are exact publisher/agent names; services are exact module/service
+names. A service selection wins over the type selection for the same role.
+Registry relocations apply to remaining agent defaults, preserving their digest.
+Every replacement requires a reference pinned by sha256 and an agent-supported
+recipe variant. Unsupported agents or variants refuse before image execution.
+Use an empty object ({}) to clear the policy; --dry-run prints the change.
+This edits workspace declarations only. It does not build or deploy images.
+```
+
+```
+codefly environment images <env> --file <policy.yaml|->
+```
+
+Flags:
+
+```
+      --dry-run       Print the workspace diff without writing
+      --file string   YAML or JSON image policy file, or - for stdin
+```
 
 ## `codefly environment import`
 

@@ -2559,7 +2559,7 @@ What it creates:
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
 | `configurations/local/fixture-composition.yaml` | who, in the development fixture, has this solution **installed**. Without it the authority refuses every capability ("not installed in this organization") and the page can only render its not-installed branch. `teams` is what admits anyone but the owner |
-| `playground/` + `Makefile` | the composition that runs the solution LOCALLY on the development authority — `make playground`. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
+| `workspace.codefly.yaml` + `configurations/local/` + `Makefile` + `LOCAL.md` | the composition that runs the solution LOCALLY on the development authority — `make run`, at the solution's own root, where all nine solutions keep theirs. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
 | `contracts/api` + the package's `api-contracts` | the backend's published http contract, generated as the last step. The authority derives the method policy of **every route** from it, so a solution carrying none admits no call to any route it serves — and says so only as a warning in the authority's log, during a run |
 
 `services/fe-remote` — the `./Page` remote itself — is written by the solution
@@ -2569,7 +2569,7 @@ agent, not by this command: it is an npm package, not a Codefly service.
 
 ```sh
 export NODE_AUTH_TOKEN=$(gh auth token)   # read:packages, for the page's kits
-make playground
+make run
 ```
 
 The token is a prerequisite, not a nicety: the page's `@codefly-dev/*` kits are
@@ -2577,7 +2577,7 @@ published to GitHub Packages and the remote's `.npmrc` reads it, so without one
 npm answers `401 Unauthorized - unauthenticated` and names no cause. The
 playground refuses to start and says which command sets it.
 
-`make playground` builds the page's remote, starts the development authority
+`make run` builds the page's remote, starts the development authority
 and this solution, and prints the one address a browser opens:
 
 ```
@@ -2590,7 +2590,8 @@ with that person's Work Context. Two addresses are *not* it, and neither fails
 in a way that says so — the shell's own port (the page reports "This page is
 not behind its sign-in edge") and the authority's REST port (every browser
 path 404s). In a cell the host's gateway plays the edge's part; the playground
-is local only.
+is local only. It lives at the solution's own root — **not** in a
+`playground/`, which is a *module's* thing.
 
 The remote is built **before** the run, and that is load-bearing: the solution
 runtime serves `/assets/` from `ASSETS_DIR`, which defaults to
@@ -5296,3 +5297,54 @@ on each `foreign_methods` entry with `service:`. The hop routes it only to that
 service's published gRPC/Connect listeners. An absent selector requires exactly
 one such service; unknown or non-protobuf selections are refused. This does not
 change a method's authority policy or authorize shadowing a published method.
+
+### Environment build images
+
+`codefly environment images <env> --file images.yaml` replaces the environment's
+image-selection policy; `--dry-run` shows the workspace diff and `{}` clears it.
+The same `build-images` object can arrive through `environment import` from
+infra-base's coordinate contract, with `requires_capabilities: [build-image-bindings]`.
+An imported policy replaces the whole object so removed overrides cannot linger.
+An omitted object preserves an operator-owned policy; an explicit `{}` clears it.
+
+```yaml
+registries:
+  docker.io: registry.example/approved-public
+# Keys name an agent type, not its release version.
+types:
+  codefly.dev/go-grpc:
+    runtime:
+      reference: registry.example/approved/alpine@sha256:<approved-index-digest>
+      variant: alpine3.23-musl
+services:
+  payments/api:
+    runtime:
+      reference: registry.example/payments/alpine@sha256:<qualified-index-digest>
+      variant: alpine3.23-musl
+```
+
+Replace the example digests with actual 64-character SHA256 index digests.
+A service's role wins over the type's role; otherwise registry relocation applies
+to the agent's default, preserving its digest and repository path. Explicit
+replacement references are already destinations and are not relocated again.
+This differs from `registry.mirrors`: relocation renders the destination into
+the recipe and makes no upstream fallback claim. Output images still use
+`registry.url`. Host Docker credentials authenticate selected registries; policy
+contains no credentials.
+
+The running agent must advertise `base-image-bindings/v1` and its loaded service's
+roles and recipe variants. Go services expose a stable `runtime` input, so one
+type-wide binding covers native and static services. Native services use it as
+the final-stage base; static services use it only to assemble files for scratch. Selecting the wrong role or an unsupported variant refuses. The CLI
+checks FROM, external COPY, RUN mount sources and the Dockerfile frontend against
+the selected references before prefetch/build. Agents render recipes; the CLI
+does not rewrite them. Existing agents without this contract continue to work
+when no policy applies, and refuse when one does.
+
+Effective bindings enter the image input digest, base-input label and
+`org.codefly.build.image-bindings` label. Policy builds use input-qualified tags,
+so they neither overwrite an owner release nor reuse its image merely because
+its application source is unchanged. This is image selection, not package-source
+restriction, network isolation, automatic Wolfi adaptation or CVE clearance.
+Qualify replacement contents and every target architecture before adoption;
+a variant declaration alone does not prove an image's ABI or tools.

@@ -260,9 +260,10 @@ func addSolution(ctx context.Context, name string) (result error) {
 	}
 	cli.Info("wrote contracts/api and the package's api-contracts entry")
 
-	// 8. The playground: the composition that runs this solution locally on
-	// the development authority, the way every solution in the fleet is run.
-	applySolutionPlayground(ctx, mod, solutionAuthorityVersion)
+	// 8. The local composition: what runs this solution on the development
+	// authority, at the solution's own root, where all nine solutions in the
+	// fleet keep theirs. Not a playground — that is a module's.
+	applySolutionLocalRun(ctx, mod, solutionAuthorityVersion)
 
 	cli.Header(1, "Solution <%s> scaffolded: %s (entry) and %s (the page's shell).", name, solutionEntryService, solutionPageService)
 	reportNextSteps(name)
@@ -476,7 +477,7 @@ func reportNextSteps(name string) {
 
 func init() {
 	SolutionCmd.Flags().StringVar(&solutionPackageID, "package-id", "", "The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it")
-	SolutionCmd.Flags().StringVar(&solutionAuthorityVersion, "authority-version", "", "Commit of codefly-dev/authority the playground pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge")
+	SolutionCmd.Flags().StringVar(&solutionAuthorityVersion, "authority-version", "", "Commit of codefly-dev/authority the local composition pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge")
 	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Agent that scaffolds the backend (default: "+solutionEntryAgent+"). Must be a SOLUTION agent; naming the service agent of a language is refused, with the one to use instead")
 	SolutionCmd.Flags().StringArrayVar(&solutionConsumes, "consumes", nil, "A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract")
 	SolutionCmd.Flags().StringVar(&solutionExecutor, "executor", "", "A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)")
