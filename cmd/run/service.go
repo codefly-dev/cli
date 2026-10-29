@@ -92,9 +92,15 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// but `kill` sends SIGTERM, which fell through and orphaned every plugin.
 	ctx, stop := common.SignalContext(ctx)
 	defer stop()
+	// signalled tells a run stopped on purpose apart from one that failed.
+	signalled := ctx
+	started := time.Now()
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 
+	// cleanupRun is the run once it exists, for the deferred cleanup below,
+	// which is registered before it.
+	var cleanupRun *serviceRun
 	cli.Init()
 	defer func() {
 		services.ClearAgents()
@@ -107,6 +113,9 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))
 		} else if recovered := evidence.RecoveredPGIDs(); len(recovered) > 0 {
 			cli.Info("reaped %d managed process groups after run: %v", len(recovered), recovered)
+		}
+		if returnErr != nil && signalled.Err() == nil && cleanupRun != nil {
+			returnErr = errors.Join(returnErr, removeFailedRunContainers(context.WithoutCancel(ctx), cleanupRun.flow, started))
 		}
 	}()
 
@@ -195,6 +204,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	derivedOverrides = derived.Overrides
 
 	run := &serviceRun{workspace: workspace, module: module, service: service, serviceName: serviceName}
+	cleanupRun = run
 
 	var serverResult chan error
 	defer func() {
@@ -627,6 +637,26 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 	<-finished
 	cli.RestoreOutput()
 	return runErr
+}
+
+// removeFailedRunContainers takes back the containers a failed run's own
+// agents created, once they are gone: they hold no dev data worth reusing,
+// and they hold the ports the next run needs (#1233). A run stopped on
+// purpose never calls it, so the next run still reuses what that run left.
+func removeFailedRunContainers(ctx context.Context, flow *orchestration.Flow, started time.Time) error {
+	if flow == nil || !slices.ContainsFunc(flow.SelectableRuntimeContexts(), shouldSweepStaleContainers) {
+		return nil
+	}
+	removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	removed, err := flow.RemoveContainersCreatedByThisRun(removeCtx, started)
+	if len(removed) > 0 {
+		cli.Info("removed %d containers the failed run started: %v", len(removed), removed)
+	}
+	if err != nil {
+		return fmt.Errorf("remove the failed run's containers: %w", err)
+	}
+	return nil
 }
 
 // shouldSweepStaleContainers keeps explicit Local/Nix runs independent of the
