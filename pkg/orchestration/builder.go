@@ -382,22 +382,11 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
-	if len(b.imageBindings) > 0 && resp.GetResult().GetDockerBuildPlan() == nil {
-		return nil, fmt.Errorf("image bindings require a Docker build plan")
+	if err := b.verifyImagePlan(outputDir, resp.GetResult().GetDockerBuildPlan()); err != nil {
+		return nil, err
 	}
 	planned := &plannedBuild{recipeRoot: recipeRoot, outputDir: outputDir, response: resp}
-	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
-		// Fetch only for a recipe tree that verifies: a declared module root is
-		// resolved against the context the verified plan selects.
-		if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
-			return nil, w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
-		}
-		if err := verifyBuildImages(outputDir, plan, b.imageBindings); err != nil {
-			return nil, err
-		}
-		if err := b.checkDisposableImagePlan(plan); err != nil {
-			return nil, err
-		}
+	if plan := resp.GetResult().GetDockerBuildPlan(); plan != nil {
 		contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 		for _, recipe := range plan.GetRecipes() {
 			if len(recipe.GetGoModuleDownloads()) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {

@@ -11,9 +11,11 @@ import (
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/services"
+	"google.golang.org/protobuf/proto"
 )
 
 func (b *Builder) selectBuildImages(ctx context.Context) error {
+	b.imageBindings = nil
 	if b.world.Env == nil {
 		return nil
 	}
@@ -160,4 +162,35 @@ func withImageBindingsLabel(args []string, bindings []*builderv0.BuildImageInput
 	}
 	payload, _ := json.Marshal(bindings) // protobuf fields contain only strings
 	return withBuildFlags(args, "--label", "org.codefly.build.image-bindings="+string(payload))
+}
+
+// qualifyBoundImage keeps environment-specific inputs apart from owner releases.
+func qualifyBoundImage(recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr error, shouldPush bool, bindings []*builderv0.BuildImageInput) (*builderv0.DockerBuildRecipe, imageReuse, error) {
+	if len(bindings) == 0 {
+		return recipe, decision, nil
+	}
+	if decision.identity.Key == "" {
+		return recipe, decision, fmt.Errorf("selected image bindings require a complete build identity: %w", identityErr)
+	}
+	if shouldPush && decision.image == "" {
+		recipe = proto.CloneOf(recipe)
+		recipe.Image = overrideBuildImage(recipe.GetImage(), decision.identity.Key)
+		decision.image = recipe.Image
+	}
+	return recipe, decision, nil
+}
+
+func (b *Builder) verifyImagePlan(outputDir string, plan *builderv0.DockerBuildPlan) error {
+	if plan != nil {
+		if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
+			return fmt.Errorf("cannot verify build recipe for %s: %w", b.instance.Unique(), err)
+		}
+	}
+	if err := verifyBuildImages(outputDir, plan, b.imageBindings); err != nil {
+		return err
+	}
+	if plan != nil {
+		return b.checkDisposableImagePlan(plan)
+	}
+	return nil
 }

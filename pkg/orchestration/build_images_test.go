@@ -39,3 +39,29 @@ func TestBuildImagePolicyVerifiesEveryExternalRecipeImage(t *testing.T) {
 	require.Equal(t, first.Classes.Code, second.Classes.Code)
 	require.ErrorContains(t, verifyBuildImages(dir, plan, bindings), "unselected")
 }
+
+// A reused Builder must forget bindings when its environment no longer selects them.
+func TestBuildImagePolicyClearsPriorSelection(t *testing.T) {
+	b := &Builder{world: &World{}, imageBindings: []*builderv0.BuildImageInput{{Role: "runtime"}}}
+	require.NoError(t, b.selectBuildImages(t.Context()))
+	require.Empty(t, b.imageBindings)
+}
+
+// Policy inputs need a complete identity and a distinct publication tag, even
+// when the service source version did not change. Existing qualified names stay.
+func TestBuildImagePolicyQualifiesPublication(t *testing.T) {
+	original := &builderv0.DockerBuildRecipe{Image: "registry.example/app:v1.0.0"}
+	bindings := []*builderv0.BuildImageInput{{Role: "runtime"}}
+	_, _, err := qualifyBoundImage(original, imageReuse{}, nil, true, bindings)
+	require.ErrorContains(t, err, "complete build identity")
+	decision := imageReuse{}
+	decision.identity.Key = strings.Repeat("a", 64)
+	selected, result, err := qualifyBoundImage(original, decision, nil, true, bindings)
+	require.NoError(t, err)
+	require.NotEqual(t, original.Image, selected.Image)
+	require.Equal(t, selected.Image, result.image)
+	require.Equal(t, "registry.example/app:v1.0.0", original.Image)
+	_, repeated, err := qualifyBoundImage(selected, result, nil, true, bindings)
+	require.NoError(t, err)
+	require.Equal(t, result.image, repeated.image)
+}

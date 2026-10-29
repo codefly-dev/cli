@@ -192,15 +192,9 @@ func (b *Builder) decideImageReuse(
 				wool.Field("agent", b.instance.Service.Agent.Identifier()), wool.Field("release_pins", pinned), wool.Field("image", decision.image))
 		}
 	}
-	if len(b.imageBindings) > 0 {
-		if identity.Key == "" {
-			return decision, fmt.Errorf("selected image bindings require a complete build identity: %w", identityErr)
-		}
-		if shouldPush && decision.image == "" {
-			recipe = proto.CloneOf(recipe)
-			recipe.Image = overrideBuildImage(recipe.GetImage(), identity.Key)
-			decision.image = recipe.Image
-		}
+	recipe, decision, err = qualifyBoundImage(recipe, decision, identityErr, shouldPush, b.imageBindings)
+	if err != nil {
+		return decision, err
 	}
 	if b.world.RebuildImages {
 		return decision, nil
