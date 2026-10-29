@@ -2766,6 +2766,66 @@ environment no longer holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
+#### Retiring a key the producer re-keyed
+
+Because maps merge by key, a producer that re-spells a service-scoped entry —
+`object-storage` becoming `documents/object-storage` — leaves **both**. The bare
+key then resolves against a workspace that may compose two services of that
+name and is refused as ambiguous, and no ordinary re-import clears it, because
+merging is what preserved it.
+
+`--retire-service-key <block>:<bare-key>=<module>/<service>` (repeatable) is the
+operator stating that one bare key is the old spelling of one qualified service:
+
+```
+codefly environment import blue --coordinate-contract contract.json \
+  --retire-service-key service-config:object-storage=documents/object-storage \
+  --retire-service-key service-identity:object-storage=documents/object-storage
+```
+
+The CLI never infers this. Equal values are not evidence and are never
+compared: a bare key can name a genuinely different service whose values
+happen to match, so only the directive authorizes a removal.
+
+**It deletes the whole named entry.** Not the part that overlaps the
+replacement — the entry. `service-config` resolution copies a bare entry's
+values and then overlays the qualified entry's, so a bare entry can supply keys
+the destination does not declare; those stop being set. The run prints which
+keys those are before writing, and `--dry-run` shows the same with the diff.
+The replacement is whatever the contract imported, verbatim: nothing is copied,
+renamed or merged across from the entry being retired.
+
+Supported blocks are `service-config`, `service-identity` and `service-mesh`.
+`service-secrets` is **refused by name**: a bare key there is not merely a
+different spelling, because a remote reference changes what is owned and what is
+a credential, and rewriting it produces a workspace validation then rejects.
+Retiring a secrets key needs its own answer. For `service-mesh`, shape
+validation already requires qualified keys, so retirement there repairs an
+invalid or stale declaration rather than migrating a once-valid bare form.
+
+A directive is refused, before anything is written, when it is malformed; when
+it names the same key twice, or twice with different destinations; when the
+block is unsupported; when the bare key is not declared by the selected
+environment; when the incoming contract **still** declares that bare key, which
+means it is current rather than retired; when the contract declares no such
+destination under that block; or when the workspace composes no service for the
+destination. Destination existence is proved against the loaded composition,
+and that inspection is read-only — it refuses a pending legacy-workspace
+migration rather than performing one, so a rejected directive and `--dry-run`
+leave every file untouched.
+
+It changes only the environment being imported. Another environment carrying the
+same bare key keeps it; whether that one is also stale is its owner's call.
+
+**The directive is one-shot.** It requires the bare key to still be there, so
+once a run has written the file the same command refuses. Note that readiness
+validation runs *after* the write: a non-zero exit can still mean the retirement
+committed, and the retry must omit the flag. Provenance records each retirement
+as an operator action with its date, on its own line and deliberately not inside
+the re-run hint, which stays replayable. That record is a note about one import,
+not a durable audit log and not evidence that the key was ever the contract's —
+nothing reads it, and a later ordinary import may replace it.
+
 An import re-serializes only the selected environment item. Surrounding workspace
 bytes remain unchanged; a provenance comment records the coordinate and
 import time. `--dry-run` prints the diff without writing. After a write, workspace

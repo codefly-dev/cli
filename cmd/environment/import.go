@@ -32,8 +32,9 @@ const provenanceMarker = "imported from coordinate contract"
 const legacyProvenanceMarker = "imported from cell contract"
 
 var (
-	importNamespace string
-	importDryRun    bool
+	importNamespace  string
+	importDryRun     bool
+	importRetireKeys []string
 )
 
 var importCmd = &cobra.Command{
@@ -115,6 +116,7 @@ full delivery.intent.yaml is not interpreted.`,
 			namespace:         importNamespace,
 			namespaceSet:      cmd.Flags().Changed("namespace"),
 			dryRun:            importDryRun,
+			retireServiceKeys: importRetireKeys,
 			// UTC so the provenance timestamp does not vary by the operator's
 			// machine timezone and churn the diff on re-import across a team.
 			now:    time.Now().UTC(),
@@ -177,6 +179,7 @@ type importOptions struct {
 	namespace         string
 	namespaceSet      bool
 	dryRun            bool
+	retireServiceKeys []string
 	now               time.Time
 	stdout            io.Writer
 }
@@ -234,6 +237,26 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return fmt.Errorf("environment %q already targets namespace %q, not %q; reconcile its existing identity, secrets and delivery declarations before importing a different target", opts.envName, existing.Value, env.Namespace)
 	}
 
+	retirements, err := parseRetirements(opts.retireServiceKeys)
+	if err != nil {
+		return err
+	}
+	// The graph a destination is resolved against is the workspace as it stands
+	// on disk: retirement names an existing service, not one this import adds.
+	var graphWorkspace *resources.Workspace
+	if len(retirements) > 0 {
+		// LoadWorkspaceFromDir MIGRATES a legacy flat workspace, writing and
+		// deleting files as it goes. Validating a directive must never do that:
+		// a --dry-run or a refused directive has to leave the tree untouched,
+		// so inspection refuses the migration instead of performing it.
+		graphWorkspace, err = resources.LoadWorkspaceFromDir(resources.WithWorkspaceMigrationRefusal(ctx), opts.dir)
+		if err != nil {
+			return err
+		}
+		if envNode == nil {
+			return fmt.Errorf("--retire-service-key needs an existing environment %q to retire a key from", opts.envName)
+		}
+	}
 	var updated []byte
 	if envNode == nil {
 		// New environment: serialize ToEnvironment's result whole, so a field
@@ -255,6 +278,16 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		withdrawOwnedAbsences(envNode, declaredEnvironment, contractOwnedOptional, false)
 		if intent != nil {
 			withdrawOwnedAbsences(envNode, declaredEnvironment, productOwnedOptional, true)
+		}
+		// Explicit operator-stated retirements, checked against the merged
+		// declaration and the workspace graph. Any refusal returns before the
+		// write below, so a rejected import changes nothing on disk.
+		notes, retireErr := applyRetirements(ctx, envNode, declaredEnvironment, graphWorkspace, retirements)
+		if retireErr != nil {
+			return retireErr
+		}
+		for _, note := range notes {
+			fmt.Fprintln(opts.stdout, note)
 		}
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
@@ -594,6 +627,21 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 		line += " --product-intent …"
 	}
 
+	// Retirements are recorded as historical metadata on their own lines, and
+	// deliberately NOT appended to the re-run hint above: the directive is
+	// one-shot — it requires the bare key to still be present — so a hint
+	// carrying it would fail if anyone re-ran it verbatim.
+	//
+	// These lines record that an operator asked for the change on a date. They
+	// are NOT evidence that the key was ever the contract's, and no import
+	// reads them: nothing here grants a later run permission to retire
+	// anything on its own.
+	retired := make([]string, 0, len(opts.retireServiceKeys))
+	for _, directive := range opts.retireServiceKeys {
+		retired = append(retired, fmt.Sprintf("# %soperator retired %s on %s",
+			provenanceMarker, strings.TrimSpace(directive), opts.now.Format(time.RFC3339)))
+	}
+
 	kept := make([]string, 0)
 	for _, existing := range strings.Split(envNode.HeadComment, "\n") {
 		if existing == "" ||
@@ -603,7 +651,7 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 		}
 		kept = append(kept, existing)
 	}
-	envNode.HeadComment = strings.Join(append([]string{line}, kept...), "\n")
+	envNode.HeadComment = strings.Join(append(append([]string{line}, retired...), kept...), "\n")
 }
 
 func init() {
@@ -613,4 +661,7 @@ func init() {
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
+	importCmd.Flags().StringArrayVar(&importRetireKeys, "retire-service-key", nil,
+		"Retire a bare service key the producer re-keyed, as <block>:<bare-key>=<module>/<service> (repeatable). "+
+			"Blocks: service-config, service-identity, service-mesh. The whole named entry is removed")
 }

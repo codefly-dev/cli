@@ -2702,10 +2702,11 @@ codefly environment import <env> --coordinate-contract <file|->
 Flags:
 
 ```
-      --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
-      --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
-      --namespace string             Assert the namespace declared by the producer
-      --product-intent string        Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
+      --coordinate-contract string       Path to a codefly/coordinate/v1 descriptor, or - for stdin
+      --dry-run                          Print the unified diff of workspace.codefly.yaml and write nothing
+      --namespace string                 Assert the namespace declared by the producer
+      --product-intent string            Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
+      --retire-service-key stringArray   Retire a bare service key the producer re-keyed, as <block>:<bare-key>=<module>/<service> (repeatable). Blocks: service-config, service-identity, service-mesh. The whole named entry is removed
 ```
 
 ## `codefly environment show`

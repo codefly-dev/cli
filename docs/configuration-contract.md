@@ -247,7 +247,10 @@ and a configuration reference to one of its endpoints. **Those refusals are
 judged for the environment the operation selected, and the message names that
 environment**: an operation is not refused because a different environment's
 `exclude-services`, service-scoped names or `managed-services` are
-inconsistent with the workspace graph. A **malformed**
+inconsistent with the workspace graph. A bare service-scoped key the producer
+has re-keyed is retired explicitly, by an operator directive on
+`codefly environment import` — never inferred from a matching name or equal
+values; see [the command reference](commands.md#retiring-a-key-the-producer-re-keyed). A **malformed**
 exclusion is a separate matter — the check validates every environment's
 declarations for shape before comparing the selected one against the graph, so
 one of those refuses whatever was selected. It is the validation that refuses,
