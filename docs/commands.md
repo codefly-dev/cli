@@ -2425,12 +2425,13 @@ What it creates:
 | `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
 | `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell |
 | `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
-| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true` |
+| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the **installer role** — the authority refuses to admit a solution that offers a person no role to hold on it |
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+| `contracts/api` + the package's `api-contracts` | the backend's published http contract, generated as the last step. The authority derives the method policy of **every route** from it, so a solution carrying none admits no call to any route it serves — and says so only as a warning in the authority's log, during a run |
 
-`services/fe-remote` — the `./Page` remote itself — is an npm package, not a
-Codefly service, and is yours to author.
+`services/fe-remote` — the `./Page` remote itself — is written by the solution
+agent, not by this command: it is an npm package, not a Codefly service.
 
 **The rule the backend lives under.** A module call the authority holds to a
 *person* — one its artifact interface admits only in person, with no
