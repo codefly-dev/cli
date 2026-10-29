@@ -362,7 +362,7 @@ Flags:
 ```
       --agent string                     Agent that scaffolds the backend (default: solution-go). Must be a SOLUTION agent; naming the service agent of a language is refused, with the one to use instead
       --authority-interface string       The authority interface the backend requires, as <publisher>/<name>@<range> (default "codefly.dev/authority@>=0.2.0 <0.4.0")
-      --authority-version string         Commit of codefly-dev/authority the playground pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge
+      --authority-version string         Commit of codefly-dev/authority the local composition pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge
       --consumes stringArray             A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract
       --description string               Short description written to module.codefly.yaml
       --executor string                  A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)

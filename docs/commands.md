@@ -2429,7 +2429,7 @@ What it creates:
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
 | `configurations/local/fixture-composition.yaml` | who, in the development fixture, has this solution **installed**. Without it the authority refuses every capability ("not installed in this organization") and the page can only render its not-installed branch. `teams` is what admits anyone but the owner |
-| `playground/` + `Makefile` | the composition that runs the solution LOCALLY on the development authority — `make playground`. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
+| `workspace.codefly.yaml` + `configurations/local/` + `Makefile` + `LOCAL.md` | the composition that runs the solution LOCALLY on the development authority — `make run`, at the solution's own root, where all nine solutions keep theirs. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
 | `contracts/api` + the package's `api-contracts` | the backend's published http contract, generated as the last step. The authority derives the method policy of **every route** from it, so a solution carrying none admits no call to any route it serves — and says so only as a warning in the authority's log, during a run |
 
 `services/fe-remote` — the `./Page` remote itself — is written by the solution
@@ -2439,7 +2439,7 @@ agent, not by this command: it is an npm package, not a Codefly service.
 
 ```sh
 export NODE_AUTH_TOKEN=$(gh auth token)   # read:packages, for the page's kits
-make playground
+make run
 ```
 
 The token is a prerequisite, not a nicety: the page's `@codefly-dev/*` kits are
@@ -2447,7 +2447,7 @@ published to GitHub Packages and the remote's `.npmrc` reads it, so without one
 npm answers `401 Unauthorized - unauthenticated` and names no cause. The
 playground refuses to start and says which command sets it.
 
-`make playground` builds the page's remote, starts the development authority
+`make run` builds the page's remote, starts the development authority
 and this solution, and prints the one address a browser opens:
 
 ```
@@ -2460,7 +2460,8 @@ with that person's Work Context. Two addresses are *not* it, and neither fails
 in a way that says so — the shell's own port (the page reports "This page is
 not behind its sign-in edge") and the authority's REST port (every browser
 path 404s). In a cell the host's gateway plays the edge's part; the playground
-is local only.
+is local only. It lives at the solution's own root — **not** in a
+`playground/`, which is a *module's* thing.
 
 The remote is built **before** the run, and that is load-bearing: the solution
 runtime serves `/assets/` from `ASSETS_DIR`, which defaults to
