@@ -244,6 +244,9 @@ type World struct {
 	// Explicit disposable output policy, shared by all origin/dependency builders.
 	disposableImageScope string
 
+	// agents is every agent pid this run spawned (run_containers.go).
+	agents spawnedAgents
+
 	// beforeSourceRestart validates the accepted route inventory before stopping a service.
 	beforeSourceRestart func(context.Context) error
 

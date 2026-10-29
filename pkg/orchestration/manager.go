@@ -225,6 +225,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 	}
 
 	w.Debug("load agent", wool.Field("agent-pid", instance.AgentPID))
+	manager.world.agents.add(instance.AgentPID)
 	if err = manager.validateContainerRecovery(instance); err != nil {
 		return w.Wrap(err)
 	}
