@@ -2,6 +2,7 @@ package add
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -424,5 +425,56 @@ func TestTheDefaultAndAnUnknownAgentAreBothAccepted(t *testing.T) {
 	}
 	if resolved, err = solutionAgentFor("solution-rust"); err != nil || resolved != "solution-rust" {
 		t.Fatalf("an unknown agent must be accepted as named, got %q (%v)", resolved, err)
+	}
+}
+
+// TestTheShellLinksAndMountsTheRemote. The shell the nextjs agent leaves is a
+// standalone web app: placeholder login, signup and dashboard routes and
+// "Your app is running. Edit src/app/page.tsx to get started." Nothing in it
+// is a solution, and nothing else writes it — the solution agent runs for the
+// BACKEND and the nextjs agent runs after it, so anything the agent wrote
+// there is overwritten. This command is the only step after both.
+func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
+	manifest, err := addJSONDependency([]byte(`{
+  "name": "code",
+  "dependencies": { "next": "16.4.1" }
+}`), "notes-fe-remote", "file:../../fe-remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err = json.Unmarshal(manifest, &document); err != nil {
+		t.Fatal(err)
+	}
+	dependencies, _ := document["dependencies"].(map[string]any)
+	if dependencies["notes-fe-remote"] != "file:../../fe-remote" {
+		t.Fatalf("the remote must be linked into the shell, got %v", dependencies)
+	}
+	if dependencies["next"] != "16.4.1" {
+		t.Fatalf("linking the remote must not drop the shell's own dependencies, got %v", dependencies)
+	}
+
+	// The shell mounts the remote's ./Page with ssr: false — the same module
+	// a host federates, imported rather than reimplemented.
+	app := shellApp("notes", "notes-fe-remote")
+	for _, required := range []string{`import("notes-fe-remote/Page")`, "ssr: false", `const apiBase = "/v1/notes"`} {
+		if !strings.Contains(app, required) {
+			t.Fatalf("the shell must contain %q", required)
+		}
+	}
+
+	// Turbopack refuses to follow the remote's symlink out of the app's own
+	// root, so the build root is the solution's. Without it the shell answers
+	// 500 while the link, the exports map and the file are all correct.
+	config := shellNextConfigSource("notes-fe-remote")
+	for _, required := range []string{`root: resolve("../../..")`, `transpilePackages: ["notes-fe-remote"]`, "externalDir: true"} {
+		if !strings.Contains(config, required) {
+			t.Fatalf("the shell's next.config.ts must contain %q", required)
+		}
+	}
+	// wiki's `webpack` block is a hard error on the Next this agent
+	// scaffolds: Next 16 runs Turbopack and refuses a webpack config.
+	if strings.Contains(config, "webpack(") {
+		t.Fatal("a webpack config is refused by the Next this agent scaffolds")
 	}
 }

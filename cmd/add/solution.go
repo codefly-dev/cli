@@ -219,7 +219,16 @@ func addSolution(ctx context.Context, name string) (result error) {
 		return err
 	}
 
-	// 5. The documents. The three at the module root, and the page
+	// 5. The page shell, over the generic app the nextjs agent scaffolded.
+	// It runs here because it is the only step after BOTH agents: the nextjs
+	// agent would overwrite anything the solution agent wrote into its
+	// service, and what it leaves on its own is a standalone web app with
+	// placeholder login routes and "Your app is running" — not a solution.
+	if err := applySolutionShell(ctx, mod, name+"-fe-remote"); err != nil {
+		return err
+	}
+
+	// 6. The documents. The three at the module root, and the page
 	// declaration beside the entry service.
 	for _, document := range documents {
 		path := filepath.Join(mod.Dir(), filepath.FromSlash(document.name))
@@ -237,7 +246,7 @@ func addSolution(ctx context.Context, name string) (result error) {
 		return fmt.Errorf("the generated %s is not readable by core: %w", solutionrun.FrontendFileName, err)
 	}
 
-	// 6. The backend's published contract, and its entry in the package.
+	// 7. The backend's published contract, and its entry in the package.
 	//
 	// The authority derives the method policy of every route from it, so a
 	// solution whose package carries none admits no call to any route it
