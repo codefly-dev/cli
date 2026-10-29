@@ -9,29 +9,45 @@ import (
 )
 
 // PreviewManagedProcessGroups lists live, authenticated, in-scope registrations
-// without signaling or removing records. Refusals match managed stop admission.
+// without signaling or removing records. Refusals match managed stop admission:
+// a group whose ownership cannot be decided is left out and named in the error,
+// with how to recover it, and every other group is still listed.
 func PreviewManagedProcessGroups(ctx context.Context, scope Scope) ([]int, error) {
 	groups, err := runners.ListProcessGroups(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var selected []int
+	var kept []error
 	for _, group := range groups {
 		if !group.Alive() {
 			continue
 		}
 		ownership, err := group.InspectOwnership(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("inspect registered group %d: %w", group.PGID(), err)
+			kept = append(kept, undecided(group.PGID(), err))
+			continue
 		}
 		if !ownership.Authenticated {
-			return nil, fmt.Errorf("group %d ownership is unproven", group.PGID())
+			kept = append(kept, undecided(group.PGID(), errUnproven))
+			continue
 		}
 		if registeredGroupInScope(group, ownership, scope) {
 			selected = append(selected, group.PGID())
 		}
 	}
-	return selected, nil
+	return selected, errors.Join(kept...)
+}
+
+// errUnproven: the group's members do not prove they belong to its record.
+var errUnproven = errors.New("live group ownership is unproven")
+
+// undecided is a live registered group Core cannot decide is the one its
+// record describes (an unproven owner, or a boot identity an older writer
+// recorded differently). It is kept without signaling; the error names it and
+// the supported way to recover it, so one such group never hides the others.
+func undecided(pgid int, err error) error {
+	return fmt.Errorf("inspect registered group %d: %w; kept without signaling, recover it with `codefly recover process-group %d --preview`", pgid, err, pgid)
 }
 
 // Core owns supported registry discovery, authentication and identity-bound
@@ -70,10 +86,10 @@ func reconcileRegisteredGroup(ctx context.Context, group *runners.TrackedProcess
 	}
 	ownership, err := group.InspectOwnership(ctx)
 	if err != nil {
-		return CleanupFailed, false, err
+		return CleanupFailed, false, undecided(group.PGID(), err)
 	}
 	if !ownership.Authenticated {
-		return CleanupFailed, false, fmt.Errorf("live group ownership is unproven; registration retained without signaling")
+		return CleanupFailed, false, undecided(group.PGID(), errUnproven)
 	}
 	if !registeredGroupInScope(group, ownership, policy.scope) {
 		return CleanupClean, true, nil

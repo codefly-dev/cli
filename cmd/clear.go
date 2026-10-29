@@ -188,19 +188,23 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 // files under ~/.codefly/runs — or counts it on a dry run.
 func sweepStaleState(ctx context.Context, w *wool.Wool, options clearOptions) []error {
 	if options.dryRun {
+		var failures []error
 		if !options.keepProcesses {
+			// A group the preview cannot decide is named in err and kept; the
+			// rest are still listed, and the dry run goes on to count sockets.
 			groups, err := processgroup.PreviewManagedProcessGroups(ctx, options.scope)
-			if err != nil {
-				return []error{err}
-			}
 			w.Info("would stop registered process groups", wool.Field("count", len(groups)), wool.Field("pgids", groups))
+			if err != nil {
+				w.Warn("would keep process groups whose ownership cannot be decided", wool.ErrField(err))
+				failures = append(failures, err)
+			}
 		}
 		if n := manager.CountStaleAgentSockets(); n > 0 {
 			w.Info("would remove stale agent sockets", wool.Field("count", n))
 		} else {
 			w.Info("no stale agent sockets")
 		}
-		return nil
+		return failures
 	}
 	if n := manager.SweepStaleAgentSockets(); n > 0 {
 		w.Info("removed stale agent sockets", wool.Field("count", n))

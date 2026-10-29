@@ -339,7 +339,11 @@ for the solution's own audience, so relaying such a call puts the solution
 between the person and the module, and admission refuses it. Reads and work
 that are the solution's own go through the backend as usual.
 
-The backend's language is --agent (go by default, python for the same shape).
+--agent names the agent that scaffolds the backend, and it must be a SOLUTION
+agent (default: solution-go). The service agent of the same language is a
+different thing: the go agent scaffolds a service — no declared operation, no
+published policy, no page remote — and delivery refuses the result. Naming
+one is refused here, with the solution agent to use instead.
 
 What this writes, and what stays yours: the module, both services, the
 solution manifest, the module contract, the package identity and the page
@@ -356,8 +360,9 @@ codefly add solution [flags]
 Flags:
 
 ```
-      --agent string                     Service agent for the backend (default: go). The backend's language is this flag, not a different shape
+      --agent string                     Agent that scaffolds the backend (default: solution-go). Must be a SOLUTION agent; naming the service agent of a language is refused, with the one to use instead
       --authority-interface string       The authority interface the backend requires, as <publisher>/<name>@<range> (default "codefly.dev/authority@>=0.2.0 <0.4.0")
+      --authority-version string         Commit of codefly-dev/authority the playground pins (default: its current default-branch head, resolved here). Must be a commit the DEFAULT BRANCH holds: a PR head reads the same and dies on squash-merge
       --consumes stringArray             A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract
       --description string               Short description written to module.codefly.yaml
       --executor string                  A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)

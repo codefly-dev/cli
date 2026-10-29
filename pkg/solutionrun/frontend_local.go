@@ -567,9 +567,35 @@ func (s *frontendSources) sync(ctx context.Context, destination string) error {
 	return nil
 }
 
+// installCommand is how the staged project's dependencies are installed:
+// `npm ci` against a lockfile, and `npm install` when there is none.
+//
+// `npm ci` is the right command wherever a lock exists — it installs exactly
+// what the lock pins and fails on any drift from it — but it cannot run
+// without one at all, by design: "loadVirtual requires existing shrinkwrap
+// file", which is what a freshly scaffolded page remote hits. The solution
+// boots, its backend answers, and delivery then reports the frontend
+// unbuildable for a project whose only fault is that nobody has installed it
+// yet.
+//
+// Falling back is safe precisely because this runs in STAGING, a copy of the
+// sources: the lock npm resolves is written to the copy and the author's tree
+// is not touched. Reproducibility is unchanged for every project that has a
+// lock, which is every project that has ever been installed.
+func installCommand(projectDir string) []string {
+	const npm = "npm"
+	for _, lock := range []string{"package-lock.json", "npm-shrinkwrap.json"} {
+		if _, err := os.Stat(filepath.Join(projectDir, lock)); err == nil {
+			return []string{npm, "ci"}
+		}
+	}
+	return []string{npm, "install"}
+}
+
 // buildNatively runs the frontend's own npm build in staging, a copy of
-// exactly its sources — `npm ci` first when the copy's dependencies were not
-// installed from this lockfile — and answers the bundle it wrote. The
+// exactly its sources — installing first (see installCommand) when the copy's
+// dependencies were not installed from this lockfile — and answers the bundle
+// it wrote. The
 // component's own node_modules and files are never touched. A failure names the
 // command and carries the end of its output.
 func (s *frontendSources) buildNatively(ctx context.Context, module *resources.Module, staging string, install bool) (string, error) {
@@ -582,7 +608,7 @@ func (s *frontendSources) buildNatively(ctx context.Context, module *resources.M
 	}
 	steps := [][]string{{"npm", "run", "build"}}
 	if install {
-		steps = append([][]string{{"npm", "ci"}}, steps...)
+		steps = append([][]string{installCommand(projectDir)}, steps...)
 	}
 	for _, step := range steps {
 		//nolint:gosec // G204: fixed npm executable and arguments, no shell.
@@ -617,6 +643,16 @@ func nativeBuildEnvironment(environ []string) []string {
 		switch {
 		case name == "PATH", name == "HOME", name == "USER", name == "LOGNAME", name == "TMPDIR", name == "LANG", name == "LC_ALL",
 			name == "NODE_EXTRA_CA_CERTS", name == "SSL_CERT_FILE",
+			// The registry credential. A solution's page depends on the
+			// @codefly-dev kits, which are published to GitHub Packages, so
+			// the .npmrc beside it reads ${NODE_AUTH_TOKEN} — and an
+			// allow-list that drops it makes that file impossible to satisfy:
+			// the install fails "401 Unauthorized ... unauthenticated" no
+			// matter what the operator exports, with nothing saying the CLI
+			// removed it. It is the one secret an npm install is supposed to
+			// carry, and npm_config_* above can already carry the same
+			// credential by another spelling.
+			name == "NODE_AUTH_TOKEN",
 			strings.EqualFold(name, "HTTP_PROXY"), strings.EqualFold(name, "HTTPS_PROXY"), strings.EqualFold(name, "NO_PROXY"),
 			strings.HasPrefix(strings.ToLower(name), "npm_config_"):
 			kept = append(kept, entry)
