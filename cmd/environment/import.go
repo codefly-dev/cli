@@ -199,6 +199,32 @@ type importOptions struct {
 	stdout            io.Writer
 }
 
+// retirementInputs parses the operator's --retire-service-key directives and,
+// when there are any, loads the workspace graph they resolve against: the
+// workspace as it stands on disk, because retirement names an existing
+// service, not one this import adds. The graph is loaded under
+// inspectionContext: LoadWorkspaceFromDir MIGRATES a legacy flat workspace,
+// writing and deleting as it goes, and the host's resolver would clone an
+// unmaterialized pin into the module cache. A --dry-run or a refused directive
+// must do neither. A retirement needs an existing environment to retire from.
+func retirementInputs(ctx context.Context, opts *importOptions, envNode *yaml.Node) ([]retirement, *resources.Workspace, error) {
+	retirements, err := parseRetirements(opts.retireServiceKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(retirements) == 0 {
+		return nil, nil, nil
+	}
+	graphWorkspace, err := resources.LoadWorkspaceFromDir(inspectionContext(ctx), opts.dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if envNode == nil {
+		return nil, nil, fmt.Errorf("--retire-service-key needs an existing environment %q to retire a key from", opts.envName)
+	}
+	return retirements, graphWorkspace, nil
+}
+
 // runImport parses the contract, merges its owned fields into the named
 // environment of workspace.codefly.yaml, and either writes the file or, under
 // --dry-run, prints its unified diff and writes nothing.
@@ -252,25 +278,9 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return fmt.Errorf("environment %q already targets namespace %q, not %q; reconcile its existing identity, secrets and delivery declarations before importing a different target", opts.envName, existing.Value, env.Namespace)
 	}
 
-	retirements, err := parseRetirements(opts.retireServiceKeys)
+	retirements, graphWorkspace, err := retirementInputs(ctx, opts, envNode)
 	if err != nil {
 		return err
-	}
-	// The graph a destination is resolved against is the workspace as it stands
-	// on disk: retirement names an existing service, not one this import adds.
-	var graphWorkspace *resources.Workspace
-	if len(retirements) > 0 {
-		// Checked under inspectionContext: LoadWorkspaceFromDir MIGRATES a
-		// legacy flat workspace, writing and deleting as it goes, and the
-		// host's resolver would clone an unmaterialized pin into the module
-		// cache. A --dry-run or a refused directive must do neither.
-		graphWorkspace, err = resources.LoadWorkspaceFromDir(inspectionContext(ctx), opts.dir)
-		if err != nil {
-			return err
-		}
-		if envNode == nil {
-			return fmt.Errorf("--retire-service-key needs an existing environment %q to retire a key from", opts.envName)
-		}
 	}
 	var updated []byte
 	if envNode == nil {
