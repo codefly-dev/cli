@@ -830,10 +830,8 @@ composition interface — `host.composition.v1.CompositionService/ApplyManifest`
 This is what a cell's delivery Job runs: a GitOps publish toward a host whose
 delivery endpoint declares `codefly.dev/composition` writes one paired document
 per manifest into the delivery overlay and renders the manifest Job to run
-`/bin/codefly delivery apply` with the projected token. The image that Job
-pins, codefly companion `0.0.6`, executes on both architectures but predates
-this verb, so the Job fails until the companion is republished from a CLI that
-has it.
+`/bin/codefly delivery apply` with the projected token, from the codefly
+companion `0.0.7`, the first tag whose static binary carries this verb.
 
 Each document is one `ApplyManifestRequest` carrying **both** signed halves:
 core's module manifest in its DSSE carrier, and the authority declaration

@@ -70,28 +70,23 @@ const (
 
 	// pairedDeliveryImage is the image a PAIRED delivery Job runs, which must
 	// execute codefly itself rather than a shell script: the index digest of
-	// tag 0.0.6, the same companion built by the same recipe
+	// tag 0.0.7, the same companion built by the same recipe
 	// (core companions/codefly/Dockerfile, published by this repo's
 	// companions.yaml, which cross-compiles the CLI into
-	// bin/linux/<arch>/codefly).
+	// bin/linux/<arch>/codefly) from a CLI that carries `delivery apply`
+	// (core bumped every companion in codefly-dev/core#875, because every one
+	// of them bakes the CLI). Measured on linux/amd64 and linux/arm64:
+	// `delivery apply --help` answers.
 	//
 	// It is a SEPARATE pin because deliveryImage's /bin/codefly cannot execute:
 	// at 0.0.4 the cross-compiled binary was dynamically linked against glibc
 	// while the base is Alpine, so its interpreter — /lib/ld-linux-aarch64.so.1
 	// on arm64, /lib64/ld-linux-x86-64.so.2 on amd64, where /lib64 does not
-	// exist at all — is absent and exec fails with ENOENT. The recipe's own
-	// comment says the publisher cross-compiles a STATIC binary; by 0.0.6 it
-	// does, and that image runs on both architectures while still carrying
-	// every tool the shell runner calls. The shell runner's pin is left where
-	// it is so moving it is its own change, with its own re-render of every
-	// cell.
-	//
-	// 0.0.6's codefly PREDATES `delivery apply`: measured on linux/arm64 and
-	// linux/amd64, it executes, and refuses `--documents` as an unknown flag.
-	// So a paired Job rendered against this pin fails, loudly, until the
-	// companion is republished from a CLI that has the verb and this digest
-	// moves to it (with a re-render of the cell, which declares it too).
-	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:f93e862d8bc09f6461800b843003f106725e261066afa61fd73442a3ec531117"
+	// exist at all — is absent and exec fails with ENOENT. Since 0.0.6 the
+	// publisher cross-compiles a STATIC binary, and 0.0.6's binary predated the
+	// verb. The shell runner's pin is left where it is so moving it is its own
+	// change, with its own re-render of every cell.
+	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:1cbd3826d33517926bdfeaec70c9666d7ccde8c7a8d7edf398540a892c75049c"
 
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"
