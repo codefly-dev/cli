@@ -137,7 +137,8 @@ type imageInputs struct {
 	GoModules []string `json:"go_module_digests,omitempty"`
 	// Bases is the resolved manifest digest of each external image the recipe's
 	// Dockerfile builds from.
-	Bases []string `json:"base_image_digests,omitempty"`
+	Bases         []string                     `json:"base_image_digests,omitempty"`
+	ImageBindings []*builderv0.BuildImageInput `json:"image_bindings,omitempty"`
 }
 
 // imageCacheEntry records which image a previously executed build produced for
@@ -272,7 +273,11 @@ func identityClasses(inputs *imageInputs) (*buildClasses, error) {
 	if err != nil {
 		return nil, err
 	}
-	bases, err := classDigest("bases", inputs.Bases)
+	var baseInputs any = inputs.Bases
+	if len(inputs.ImageBindings) > 0 {
+		baseInputs = []any{inputs.Bases, inputs.ImageBindings}
+	}
+	bases, err := classDigest("bases", baseInputs)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +309,7 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 
 // imageBuildIdentity digests the inputs of one recipe's image build. A zero
 // identity with no error means the build is not cacheable and must run.
-func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies, mirrors map[string]string) (imageIdentity, error) {
+func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies, mirrors map[string]string, bindings ...*builderv0.BuildImageInput) (imageIdentity, error) {
 	recipeTree := plan.GetDigest()
 	if recipeTree == "" {
 		return imageIdentity{}, fmt.Errorf("recipe tree of %s declares no verified content digest", recipe.GetName())
@@ -322,16 +327,17 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 		return imageIdentity{}, err
 	}
 	inputs := imageInputs{
-		Schema:       imageCacheSchema,
-		Recipe:       recipe.GetName(),
-		Dockerfile:   recipe.GetDockerfile(),
-		Context:      recipe.GetContext(),
-		Dockerignore: recipe.GetDockerignore(),
-		Command:      normalizedBuildxArgs(args, scope.ContextDir, dockerfilePath, proxies),
-		RecipeTree:   recipeTree,
-		ContextTree:  contextTree,
-		GoModules:    goModules,
-		Bases:        bases,
+		Schema:        imageCacheSchema,
+		Recipe:        recipe.GetName(),
+		Dockerfile:    recipe.GetDockerfile(),
+		Context:       recipe.GetContext(),
+		Dockerignore:  recipe.GetDockerignore(),
+		Command:       normalizedBuildxArgs(args, scope.ContextDir, dockerfilePath, proxies),
+		RecipeTree:    recipeTree,
+		ContextTree:   contextTree,
+		GoModules:     goModules,
+		Bases:         bases,
+		ImageBindings: bindings,
 	}
 	payload, err := json.Marshal(inputs)
 	if err != nil {

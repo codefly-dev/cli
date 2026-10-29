@@ -43,7 +43,8 @@ type Builder struct {
 	outputPropertyForBuild *BuilderBuildManager
 	outputPropertyForSync  *BuilderSyncManager
 
-	imageDigest string
+	imageDigest   string
+	imageBindings []*builderv0.BuildImageInput
 
 	// localRuntime builds a recipe for this machine's container engine, keeping
 	// generated files out of authored services and naming the image by its inputs.
@@ -267,6 +268,9 @@ func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuil
 	if err := b.world.checkDisposableImagePolicy(); err != nil {
 		return nil, err
 	}
+	if err := b.selectBuildImages(ctx); err != nil {
+		return nil, err
+	}
 	dockerContext, err := builder.DockerBuildContext(ctx, b.world.Workspace)
 	if err != nil {
 		return nil, err
@@ -274,6 +278,7 @@ func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuil
 	if _, err = dockerhelpers.CacheArguments(b.world.BuildCache, coreservices.RecipeBuildPlatforms()); err != nil {
 		return nil, fmt.Errorf("cannot configure build cache: %w", err)
 	}
+	dockerContext.ImageBindings = b.imageBindings
 	dockerContext.Cache = scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), "")
 	dockerContext.BuildxBuilder = b.world.BuildxBuilder
 	mirrors := registryMirrors(b.world.Env)
@@ -377,12 +382,18 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
+	if len(b.imageBindings) > 0 && resp.GetResult().GetDockerBuildPlan() == nil {
+		return nil, fmt.Errorf("image bindings require a Docker build plan")
+	}
 	planned := &plannedBuild{recipeRoot: recipeRoot, outputDir: outputDir, response: resp}
 	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
 		// Fetch only for a recipe tree that verifies: a declared module root is
 		// resolved against the context the verified plan selects.
 		if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 			return nil, w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
+		}
+		if err := verifyBuildImages(outputDir, plan, b.imageBindings); err != nil {
+			return nil, err
 		}
 		if err := b.checkDisposableImagePlan(plan); err != nil {
 			return nil, err

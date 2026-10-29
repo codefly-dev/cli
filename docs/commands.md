@@ -5078,3 +5078,54 @@ on each `foreign_methods` entry with `service:`. The hop routes it only to that
 service's published gRPC/Connect listeners. An absent selector requires exactly
 one such service; unknown or non-protobuf selections are refused. This does not
 change a method's authority policy or authorize shadowing a published method.
+
+### Environment build images
+
+`codefly environment images <env> --file images.yaml` replaces the environment's
+image-selection policy; `--dry-run` shows the workspace diff and `{}` clears it.
+The same `build-images` object can arrive through `environment import` from
+infra-base's coordinate contract, with `requires_capabilities: [build-image-bindings]`.
+An imported policy replaces the whole object so removed overrides cannot linger.
+An omitted object preserves an operator-owned policy; an explicit `{}` clears it.
+
+```yaml
+registries:
+  docker.io: registry.example/approved-public
+# Keys name an agent type, not its release version.
+types:
+  codefly.dev/go-grpc:
+    runtime:
+      reference: registry.example/approved/alpine@sha256:<approved-index-digest>
+      variant: alpine3.23-musl
+services:
+  payments/api:
+    runtime:
+      reference: registry.example/payments/alpine@sha256:<qualified-index-digest>
+      variant: alpine3.23-musl
+```
+
+Replace the example digests with actual 64-character SHA256 index digests.
+A service's role wins over the type's role; otherwise registry relocation applies
+to the agent's default, preserving its digest and repository path. Explicit
+replacement references are already destinations and are not relocated again.
+This differs from `registry.mirrors`: relocation renders the destination into
+the recipe and makes no upstream fallback claim. Output images still use
+`registry.url`. Host Docker credentials authenticate selected registries; policy
+contains no credentials.
+
+The running agent must advertise `base-image-bindings/v1` and its loaded service's
+roles and recipe variants. A native Go service exposes `runtime`; a static Go
+service exposes `runtime-support` for the files assembled into its scratch
+runtime. Selecting the wrong role or an unsupported variant refuses. The CLI
+checks FROM, external COPY, RUN mount sources and the Dockerfile frontend against
+the selected references before prefetch/build. Agents render recipes; the CLI
+does not rewrite them. Existing agents without this contract continue to work
+when no policy applies, and refuse when one does.
+
+Effective bindings enter the image input digest, base-input label and
+`org.codefly.build.image-bindings` label. Policy builds use input-qualified tags,
+so they neither overwrite an owner release nor reuse its image merely because
+its application source is unchanged. This is image selection, not package-source
+restriction, network isolation, automatic Wolfi adaptation or CVE clearance.
+Qualify replacement contents and every target architecture before adoption;
+a variant declaration alone does not prove an image's ABI or tools.

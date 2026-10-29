@@ -133,6 +133,9 @@ func (env *Environment) Validate() error {
 	if err := env.Registry.Validate(); err != nil {
 		return err
 	}
+	if err := env.BuildImages.Validate(); err != nil {
+		return err
+	}
 	// A developer identity is a local host's allowlist entry. A deployed host
 	// refuses it anyway, by its own allowlist; refusing it here keeps a
 	// developer's identity out of every manifest a hosted environment renders.
@@ -264,7 +267,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 				// A module-qualified service-identity key names exactly one
 				// service of that module, or nothing (a typo that would leave
 				// the workload on the default identity with no report).
-				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config") {
+				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config" || block == "build-images") {
 					if !slices.Contains(byName[service], name) {
 						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
 					}

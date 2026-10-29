@@ -1332,6 +1332,11 @@ func (env *Environment) validateServiceKeyCollisions() error {
 // projection time, so ValidateEnvironments cross-checks every such block.
 func (env *Environment) serviceScopedNames() map[string][]string {
 	names := make(map[string][]string, 3)
+	if env.BuildImages != nil {
+		for name := range env.BuildImages.Services {
+			names["build-images"] = append(names["build-images"], name)
+		}
+	}
 	if env.ServiceSecrets != nil {
 		for name := range env.ServiceSecrets.Services {
 			names["service-secrets"] = append(names["service-secrets"], name)
@@ -1473,10 +1478,11 @@ type Environment struct {
 	// Empty values fall back to legacy defaults (local k3d, ~/.kube/config,
 	// the default namespace, the --org flag's hardcoded registry) so
 	// existing workspace YAMLs keep working unchanged.
-	Cluster   *EnvironmentCluster  `yaml:"cluster,omitempty"`
-	Registry  *EnvironmentRegistry `yaml:"registry,omitempty"`
-	Namespace string               `yaml:"namespace,omitempty"`
-	Gitops    *EnvironmentGitops   `yaml:"gitops,omitempty"`
+	Cluster     *EnvironmentCluster  `yaml:"cluster,omitempty"`
+	Registry    *EnvironmentRegistry `yaml:"registry,omitempty"`
+	BuildImages *BuildImages         `yaml:"build-images,omitempty"`
+	Namespace   string               `yaml:"namespace,omitempty"`
+	Gitops      *EnvironmentGitops   `yaml:"gitops,omitempty"`
 
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
 

@@ -465,6 +465,10 @@ func applyContractFields(target, declaration *yaml.Node) {
 	for i := 0; i+1 < len(declaration.Content); i += 2 {
 		key, value := declaration.Content[i].Value, declaration.Content[i+1]
 		current := yamledit.MapValue(target, key)
+		if key == "build-images" {
+			yamledit.SetMapValue(target, key, value)
+			continue
+		}
 		if current != nil && current.Kind == yaml.ScalarNode && value.Kind == yaml.ScalarNode && current.Tag == value.Tag && current.Value == value.Value {
 			continue
 		}
