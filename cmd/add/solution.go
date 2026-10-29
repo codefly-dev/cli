@@ -57,7 +57,11 @@ for the solution's own audience, so relaying such a call puts the solution
 between the person and the module, and admission refuses it. Reads and work
 that are the solution's own go through the backend as usual.
 
-The backend's language is --agent (go by default, python for the same shape).
+--agent names the agent that scaffolds the backend, and it must be a SOLUTION
+agent (default: solution-go). The service agent of the same language is a
+different thing: the go agent scaffolds a service — no declared operation, no
+published policy, no page remote — and delivery refuses the result. Naming
+one is refused here, with the solution agent to use instead.
 
 What this writes, and what stays yours: the module, both services, the
 solution manifest, the module contract, the package identity and the page
@@ -69,8 +73,8 @@ are the composition's to say and are never guessed here.`,
   codefly add solution wiki --package-id obin/wiki \
       --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
 
-  # The same shape with a Python backend — the language is the agent.
-  codefly add solution forecast --package-id obin/forecast --agent python`,
+  # A solution agent other than the default.
+  codefly add solution forecast --package-id obin/forecast --agent solution-python`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		cli.Init()
@@ -110,6 +114,14 @@ func addSolution(ctx context.Context, name string) (result error) {
 	w := wool.Get(ctx).In("cmd.add.solution")
 
 	documents, err := solutionDocuments(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	// Resolved with the other input, BEFORE the first write: naming the
+	// service agent instead of the solution agent is an ordinary mistake and
+	// must cost nothing, not half a module.
+	entryAgent, err := solutionAgentFor(solutionAgentInput)
 	if err != nil {
 		return err
 	}
@@ -164,10 +176,6 @@ func addSolution(ctx context.Context, name string) (result error) {
 	previousWithDefault := withDefault
 	withDefault = solutionWithDefault
 	defer func() { withDefault = previousWithDefault }()
-	entryAgent := solutionAgentInput
-	if entryAgent == "" {
-		entryAgent = solutionEntryAgent
-	}
 	for _, scaffolded := range []struct{ service, agent string }{
 		{solutionEntryService, entryAgent},
 		{solutionPageService, solutionPageAgent},
@@ -440,7 +448,7 @@ func reportNextSteps(name string) {
 
 func init() {
 	SolutionCmd.Flags().StringVar(&solutionPackageID, "package-id", "", "The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it")
-	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Service agent for the backend (default: "+solutionEntryAgent+"). The backend's language is this flag, not a different shape. It must be an agent that can scaffold: python-fastapi, not the generic python")
+	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Agent that scaffolds the backend (default: "+solutionEntryAgent+"). Must be a SOLUTION agent; naming the service agent of a language is refused, with the one to use instead")
 	SolutionCmd.Flags().StringArrayVar(&solutionConsumes, "consumes", nil, "A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract")
 	SolutionCmd.Flags().StringVar(&solutionExecutor, "executor", "", "A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)")
 	SolutionCmd.Flags().StringVar(&solutionDescription, "description", "", "Short description written to module.codefly.yaml")

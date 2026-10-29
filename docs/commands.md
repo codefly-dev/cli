@@ -2393,11 +2393,21 @@ codefly add solution wiki --package-id obin/wiki \
     --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
 ```
 
-The same shape with a Python backend — the language is the agent:
+**The backend is scaffolded by a solution agent, not a service agent.** The two
+are different things and the CLI refuses the wrong one rather than quietly
+substituting it:
 
-```sh
-codefly add solution forecast --package-id obin/forecast --agent python-fastapi
 ```
+$ codefly add solution demo --package-id obin/demo --agent go
+--agent go is the SERVICE agent: it scaffolds a service, not a solution — no
+declared operation, no published policy, no page remote, and delivery refuses
+the result. Pass --agent solution-go
+```
+
+`solution-go` builds on **solution-runtime-go**: the viewer's Work Context, the
+authority's check against each route's published policy, the passthrough that
+relays a module call *as the viewer*, the interface document, and the `./Page`
+remote a host federates. The refusal happens before anything is written.
 
 Scaffolds a solution — a module a host installs and runs as a product surface —
 in the one shape a solution has. There is no shape flag: a second shape beside
@@ -2436,7 +2446,7 @@ hop, which lets through only a call the authority checked.
 | Flag | Description |
 |------|-------------|
 | `--package-id` | The `<owner>/<name>` identity the solution is published under. Required — nothing can derive who publishes it |
-| `--agent` | Service agent for the backend (default `go`). The backend's language is this flag, not a different shape. It must be an agent that can **scaffold**: `python-fastapi`, not the generic `python`, which runs a Python service but defines no project template |
+| `--agent` | Agent that scaffolds the backend (default `solution-go`). Must be a **solution** agent; naming the service agent of a language (`go`, `python-fastapi`) is refused, naming the solution agent to use instead |
 | `--consumes` | A module this solution calls, as `[<id>=]<protocol>:<module>/<service>/<endpoint>`. Repeatable. Route names only — authority is declared once, in the module contract |
 | `--executor` | A `codefly:solution` executor to name in the solution manifest. Omitted by default: Core specifies no executor protocol and none is published |
 | `--title` / `--order` | The page's title and position in the host's shell |

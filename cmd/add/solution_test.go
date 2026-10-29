@@ -387,3 +387,42 @@ func TestSolutionCommandIsRegisteredAndHelpStandsAlone(t *testing.T) {
 		t.Errorf("solution rejected a valid name: %v", err)
 	}
 }
+
+// TestTheServiceAgentOfALanguageIsRefused. `codefly add solution --agent go`
+// used to scaffold a Go SERVICE into the shape of a solution: a net/http mux
+// serving /health, no declared operation, no published policy and no page
+// remote. Every document was valid, nothing said a word, and delivery refused
+// the result for a frontend it had no npm project to build.
+//
+// The refusal names the solution agent rather than substituting it: which
+// agent to run is the author's statement, and quietly running another is the
+// CLI deciding what they meant.
+func TestTheServiceAgentOfALanguageIsRefused(t *testing.T) {
+	for serviceAgent, solutionAgent := range map[string]string{
+		"go":             "solution-go",
+		"python":         "solution-python",
+		"python-fastapi": "solution-python",
+	} {
+		resolved, err := solutionAgentFor(serviceAgent)
+		if err == nil {
+			t.Fatalf("--agent %s was accepted and resolved to %q; the service agent scaffolds a service, not a solution", serviceAgent, resolved)
+		}
+		if !strings.Contains(err.Error(), solutionAgent) {
+			t.Fatalf("refusing --agent %s must name %s to use instead, got: %v", serviceAgent, solutionAgent, err)
+		}
+	}
+}
+
+// TestTheDefaultAndAnUnknownAgentAreBothAccepted. An agent this build has
+// never heard of is accepted: a publisher may ship a solution agent newer
+// than this CLI, and refusing by allow-list would make the CLI the gatekeeper
+// of a registry it does not own.
+func TestTheDefaultAndAnUnknownAgentAreBothAccepted(t *testing.T) {
+	resolved, err := solutionAgentFor("")
+	if err != nil || resolved != solutionEntryAgent {
+		t.Fatalf("no --agent must resolve to %s, got %q (%v)", solutionEntryAgent, resolved, err)
+	}
+	if resolved, err = solutionAgentFor("solution-rust"); err != nil || resolved != "solution-rust" {
+		t.Fatalf("an unknown agent must be accepted as named, got %q (%v)", resolved, err)
+	}
+}

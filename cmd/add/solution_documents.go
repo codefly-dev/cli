@@ -46,9 +46,58 @@ import (
 const (
 	solutionEntryService = "backend"
 	solutionPageService  = "web"
-	solutionEntryAgent   = "go"
 	solutionPageAgent    = "nextjs"
+	// solutionEntryAgent scaffolds the backend when --agent names no other.
+	// It is a SOLUTION agent, which is a different thing from the service
+	// agent of the same language — see solutionAgentFor.
+	solutionEntryAgent = "solution-go"
 )
+
+// serviceAgentSolutionAgent maps a SERVICE agent to the SOLUTION agent of the
+// same language.
+//
+// The two are not interchangeable and the difference is not a detail. A
+// service agent scaffolds a service: `go` writes a net/http mux serving
+// /health. A solution agent scaffolds a solution: the solution runtime, the
+// viewer's Work Context, a published policy on every route the authority
+// checks against, the passthrough that relays a module call AS THE VIEWER,
+// the interface document, and the ./Page remote a host federates.
+//
+// `codefly add solution` used to take the service agent and scaffold a
+// service into the shape of a solution. What came out served nothing a viewer
+// could reach, published no policy, and failed delivery outright ("declares a
+// frontend and holds no npm project to build it from"). Nothing said so: the
+// documents were all valid.
+//
+// So this is a REFUSAL, not a substitution. Passing `--agent go` is a
+// statement about which agent to run, and quietly running a different one
+// would be the CLI deciding what the author meant. It names the solution
+// agent for that language instead and stops.
+var serviceAgentSolutionAgent = map[string]string{
+	"go":             "solution-go",
+	"python":         "solution-python",
+	"python-fastapi": "solution-python",
+}
+
+// solutionAgentFor checks the agent the author named is one that scaffolds a
+// solution, and says which one they meant when it is not.
+//
+// An agent this table does not know is accepted: a publisher may ship a
+// solution agent this build has never heard of, and refusing by allow-list
+// would make the CLI the gatekeeper of a registry it does not own. What is
+// refused is the specific, silent mistake — naming the service agent of a
+// language whose solution agent exists.
+func solutionAgentFor(agent string) (string, error) {
+	if agent == "" {
+		return solutionEntryAgent, nil
+	}
+	if solutionAgent, isServiceAgent := serviceAgentSolutionAgent[agent]; isServiceAgent {
+		return "", fmt.Errorf(
+			"--agent %s is the SERVICE agent: it scaffolds a service, not a solution — no declared operation, no published policy, no page remote, and delivery refuses the result. Pass --agent %s",
+			agent, solutionAgent)
+	}
+	return agent, nil
+}
 
 // authorityInterfaceRange is the published interface a solution's backend
 // requires: the authority gateway on a laptop, the host in a cell. A
