@@ -103,13 +103,19 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 // deriveCell is RenderCell without the write: the cell file the rendered
 // trees and the composition describe, and the path it belongs at.
 func deriveCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (cellfile.File, CellResult, error) {
+	return deriveCellFrom(ctx, workspace, env, "")
+}
+
+func deriveCellFrom(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, modulesDir string) (cellfile.File, CellResult, error) {
 	if workspace == nil || env == nil {
 		return cellfile.File{}, CellResult{}, errors.New("a cell is rendered for a workspace and an environment")
 	}
 	if env.Host == nil {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("environment %s declares no host, so it has no cell to describe", env.Name)
 	}
-	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
+	if modulesDir == "" {
+		modulesDir = filepath.Dir(moduleRenderDestination(workspace, "module"))
+	}
 	entries, err := os.ReadDir(modulesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module has been rendered under %s", modulesDir)
@@ -164,6 +170,22 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if err = refuseUnrenderedModules(ctx, workspace, env, result.Modules); err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
+	// Undelivered modules have no workload identity the cell can admit.
+	delivered := map[string]bool{}
+	for _, namespace := range file.Namespaces {
+		for _, workload := range namespace.Workloads {
+			delivered[workload.Service] = true
+		}
+	}
+	for ni := range file.Namespaces {
+		for wi := range file.Namespaces[ni].Workloads {
+			workload := &file.Namespaces[ni].Workloads[wi]
+			for ei := range workload.Endpoints {
+				endpoint := &workload.Endpoints[ei]
+				endpoint.Consumers = slices.DeleteFunc(endpoint.Consumers, func(service string) bool { return !delivered[service] })
+			}
+		}
+	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
@@ -203,6 +225,34 @@ func refuseUnrenderedModules(ctx context.Context, workspace *resources.Workspace
 	}
 	if len(missing) == 0 {
 		return nil
+	}
+	previousPath, err := CellPath(workspace, env)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(previousPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read previous cell before checking missing renders: %w", err)
+	}
+	if err == nil {
+		previous, parseErr := cellfile.Parse(data)
+		if parseErr != nil {
+			return fmt.Errorf("read previous cell before checking missing renders: %w", parseErr)
+		}
+		if previous.Environment != env.Name || previous.Coordinate != env.Host.Coordinate || previous.Component != env.Host.Component || previous.TrustDomain != env.Host.TrustDomain || previous.Domain != env.Host.Domain {
+			return errors.New("previous cell identity differs from this environment; cannot establish which modules were delivered")
+		}
+		delivered := make(map[string]bool, len(previous.Namespaces))
+		for _, namespace := range previous.Namespaces {
+			if namespace.Module == "" {
+				return errors.New("previous cell namespace names no module; cannot establish which modules were delivered")
+			}
+			delivered[namespace.Module] = true
+		}
+		missing = slices.DeleteFunc(missing, func(module string) bool { return !delivered[module] })
+		if len(missing) == 0 {
+			return nil
+		}
 	}
 	sort.Strings(missing)
 	commands := make([]string, 0, len(missing))

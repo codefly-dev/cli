@@ -465,6 +465,33 @@ func TestDeployDevIntoAHostedEnvironmentRederivesTheCellFile(t *testing.T) {
 	require.ElementsMatch(t, result.Changed, strings.Split(committed, "\n"), "the commit carries the cell file with the re-pin")
 }
 
+func TestDeployDevUsesPublishedEnvironmentWithoutTouchingOtherRender(t *testing.T) {
+	isolateGit(t)
+	workspace, env, request, _ := hostedDevFixture(t)
+	env.Gitops = &environments.EnvironmentGitops{Path: "deployments/environments/staging"}
+	published := filepath.Join(workspace.Dir(), env.Gitops.Path, "modules")
+	require.NoError(t, os.MkdirAll(filepath.Dir(published), 0o755))
+	require.NoError(t, os.Rename(filepath.Join(workspace.Dir(), "deployments/modules"), published))
+	file, cell, err := deriveCellFrom(t.Context(), workspace, env, published)
+	require.NoError(t, err)
+	require.NoError(t, writeCell(&file, cell.Path))
+	// A scratch render for another environment must neither block nor be edited.
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "production")
+	scratch := moduleRenderDestination(workspace, "shop")
+	before := snapshotTree(t, scratch)
+	runGit(t, workspace.Dir(), "init", "-q")
+	runGit(t, workspace.Dir(), "add", ".")
+	runGit(t, workspace.Dir(), "commit", "-q", "-m", "publication")
+	request.Published = true
+	stubBuild(t, []string{"registry.example.test/acme/api:1.2.0@" + devNewDigest}, nil)
+	result, err := DeployDev(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, before, snapshotTree(t, scratch))
+	require.Equal(t, filepath.Join(published, "shop"), result.Root)
+	require.Equal(t, devNewDigest, cellWorkloadImage(t, cell.Path, "api").Digest)
+	require.Equal(t, "sha256:"+strings.Repeat("a", 64), cellWorkloadImage(t, cell.Path, "ledger").Digest)
+}
+
 // The cell file is re-derived from the whole workspace, so a dev deployment
 // whose re-derived file would approve anything the branch's file does not —
 // beyond the one service's new build — is refused before anything is built,
@@ -580,4 +607,27 @@ func TestDeployDevCarriesThePublishedDeliveryOverlayAsFound(t *testing.T) {
 	}
 	require.True(t, listed, "the re-derived inventory lists the delivery overlay as found: %+v", after.Files)
 	require.Equal(t, moduleManifestDir, after.ModuleManifestPath)
+}
+
+func TestDevBuildPreservesPublishedRepositoryPrefix(t *testing.T) {
+	for _, registry := range []string{"registry.example.com", "localhost:5000"} {
+		t.Run(registry, func(t *testing.T) {
+			root := t.TempDir()
+			unit := InventoryUnit{Path: "services/api"}
+			unitRoot := filepath.Join(root, unit.Path)
+			require.NoError(t, os.MkdirAll(unitRoot, 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(unitRoot, "deployment.yaml"), []byte(devDeployment("api", registry+"/product/shop/api:old@"+devOldDigest)), 0644))
+			env := environmentNamed("staging")
+			env.Registry = &environments.EnvironmentRegistry{URL: registry, Auth: "docker-creds"}
+			selected, err := devBuildEnvironment(root, unit, env, "shop/api")
+			require.NoError(t, err)
+			require.Equal(t, registry+"/product", selected.Registry.URL)
+			require.Equal(t, env.Registry.Auth, selected.Registry.Auth)
+			require.Equal(t, registry, env.Registry.URL, "leave other services' environment unchanged")
+			env.Registry.URL = "another.example.com"
+			selected, err = devBuildEnvironment(root, unit, env, "shop/api")
+			require.NoError(t, err)
+			require.Same(t, env, selected, "never redirect to a registry outside the declaration")
+		})
+	}
 }

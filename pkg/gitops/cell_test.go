@@ -658,3 +658,47 @@ func TestThePreparedRunnableReachIsAConsumerEdge(t *testing.T) {
 		require.EqualError(t, err, "module shop derived operation shop-workload-sync: service api publishes it on endpoint workload, which that service does not declare")
 	})
 }
+
+func TestExistingCellPermitsNewUnrenderedModulesWithoutLosingDeliveredModules(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	before, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	workspace.Modules = append(workspace.Modules, &resources.ModuleReference{Name: "future"})
+	require.NoError(t, refuseUnrenderedModules(context.Background(), workspace, env, []string{"shop", "billing"}))
+	require.ErrorContains(t, refuseUnrenderedModules(context.Background(), workspace, env, []string{"shop"}), "billing")
+	after, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	modulePath := filepath.Join(workspace.Dir(), "modules", "future")
+	servicePath := filepath.Join(modulePath, "services", "consumer")
+	require.NoError(t, os.MkdirAll(servicePath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modulePath, resources.ModuleConfigurationName), []byte("kind: module\nname: future\nservices:\n  - name: consumer\n"), 0o644))
+	service := cellServiceYAML("consumer") + "service-dependencies:\n  - name: api\n    module: shop\n    endpoints:\n      - name: grpc\n"
+	require.NoError(t, os.WriteFile(filepath.Join(servicePath, resources.ServiceConfigurationName), []byte(service), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	current, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	file, err := cellfile.Parse(current)
+	require.NoError(t, err)
+	for _, namespace := range file.Namespaces {
+		for _, workload := range namespace.Workloads {
+			for _, endpoint := range workload.Endpoints {
+				require.NotContains(t, endpoint.Consumers, "future/consumer")
+			}
+		}
+	}
+
+	previous, err := cellfile.Parse(before)
+	require.NoError(t, err)
+	previous.Coordinate = "another-cell"
+	require.NoError(t, writeCell(previous, result.Path))
+	require.ErrorContains(t, refuseUnrenderedModules(context.Background(), workspace, env, []string{"shop", "billing"}), "identity differs")
+	require.NoError(t, os.Remove(result.Path))
+	require.ErrorContains(t, refuseUnrenderedModules(context.Background(), workspace, env, []string{"shop", "billing"}), "future")
+}
