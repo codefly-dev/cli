@@ -300,11 +300,20 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 # contract and SCOPED api.consumes — which is why solution.codefly.yaml's
 # api.consumes carries route names only.
 #
-# It asks for nothing yet. Add a binding per module call the solution makes ON
-# A PERSON'S BEHALF, with the audience as a slot into the composition's own
-# group: the audience a module verifies is the composition's to say. A call the
-# authority holds to a person IN PERSON takes no binding here — the page makes
-# it, as the person.
+# It asks for nothing at another module yet. Add a binding per module call the
+# solution makes ON A PERSON'S BEHALF, with the audience as a slot into the
+# composition's own group: the audience a module verifies is the composition's
+# to say. A call the authority holds to a person IN PERSON takes no binding
+# here — the page makes it, as the person.
+#
+# ROLES. A solution is a unit a person installs, and the authority refuses to
+# admit one that offers a person no role to hold on it ("declares 0 role(s)
+# and none is \"installer\""). The installer role below is scoped to this
+# solution's own page, the one resource a scaffold knows it has. Name the
+# solution's real resource kinds in scope_ceilings and widen the role to them,
+# and add a role per other kind of person who uses it (wiki: editor, viewer;
+# proposals: reviewer, viewer). A role may grant a scope only within a
+# ceiling, or through a binding it names, so the two cannot drift apart.
 `
 
 // solutionContract is the module contract the solution ships: the principal
@@ -319,15 +328,44 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 // A solution scaffolded without it receives no owner-selected scope and can
 // act for nobody.
 func solutionContract(name string) *modulecontract.Contract {
+	// The solution's own permission vocabulary, and the one role the host
+	// requires. A solution is a unit a PERSON installs, so the authority
+	// refuses to admit one that offers a person no role to hold on it:
+	//
+	//	state: forbidden: <name> declares 0 role(s) and none is "installer":
+	//	a solution declares an installer role
+	//
+	// That refusal happens at `runtime-run`, after the whole composition has
+	// booted, and every document reads fine until then — which is how seven
+	// of the nine solutions in one fleet came to declare no role at all. Only
+	// the two that are actually run, wiki and proposals, declare one.
+	//
+	// The kind is derived, not guessed at: every solution this command
+	// scaffolds exposes a page, so `<name>.page` is the one resource it is
+	// known to have. A solution whose domain object is something else renames
+	// it here and in the role together — core's Contract.Validate refuses a
+	// role granting a scope no ceiling covers, so the pair cannot drift
+	// apart silently.
+	ownScope := []modulecontract.CeilingScope{{
+		ResourceKind: name + ".page",
+		Actions:      []string{"read", "write"},
+	}}
 	return &modulecontract.Contract{
-		Schema:        modulecontract.SchemaV1,
-		Principal:     name,
-		OwnerAware:    true,
-		Namespaces:    []string{},
-		Queues:        []string{},
-		ScopeCeilings: []modulecontract.ScopeCeiling{},
-		Bindings:      []modulecontract.Binding{},
-		Destinations:  []modulecontract.Destination{},
+		Schema:     modulecontract.SchemaV1,
+		Principal:  name,
+		OwnerAware: true,
+		Namespaces: []string{},
+		Queues:     []string{},
+		ScopeCeilings: []modulecontract.ScopeCeiling{{
+			ResourceKind: name + ".page",
+			Actions:      []string{"read", "write"},
+		}},
+		Roles: []modulecontract.Role{{
+			Name:   modulecontract.InstallerRole,
+			Scopes: ownScope,
+		}},
+		Bindings:     []modulecontract.Binding{},
+		Destinations: []modulecontract.Destination{},
 	}
 }
 

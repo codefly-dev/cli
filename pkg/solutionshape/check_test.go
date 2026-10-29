@@ -49,7 +49,14 @@ principal: wiki
 owner_aware: true
 namespaces: []
 queues: []
-scope_ceilings: []
+scope_ceilings:
+    - resource_kind: wiki.page
+      actions: [read, write]
+roles:
+    - name: installer
+      scopes:
+        - resource_kind: wiki.page
+          actions: [read, write]
 bindings: []
 `)
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
@@ -390,9 +397,75 @@ func TestAPageShellWithNoAppWarns(t *testing.T) {
 		t.Fatal("a warning was treated as a failure")
 	}
 
-	// With an app beside it, the finding goes away.
-	write(t, filepath.Join(dir, "services", PageService, "package.json"), `{"name":"web","private":true}`)
+	// With an app where the manifest says it is, the finding goes away.
+	write(t, filepath.Join(dir, "services", PageService, "code", "package.json"), `{"name":"web","private":true}`)
 	if checkFor(t, Inspect("wiki", dir), CodePageShellHasNoApp).Status != StatusOK {
 		t.Fatal("a shell with a real app was still reported")
+	}
+}
+
+// TestAPageShellFindsItsAppWhereTheManifestSaysItIs covers the two layouts in
+// use. They differ by exactly `spec.source-dir`, and a check that knew only
+// one reported the other as having no app: a shell this CLI scaffolds takes
+// the nextjs agent's default and gets its app under `code/`, while the
+// fleet's hand-written pages sit at the service root and say `source-dir: .`.
+// The first `codefly add solution` ever run reported its own freshly
+// scaffolded, working shell as empty.
+func TestAPageShellFindsItsAppWhereTheManifestSaysItIs(t *testing.T) {
+	for _, layout := range []struct {
+		name string
+		// sourceDir is written into spec; empty means the key is absent, so
+		// the agent's own default applies.
+		sourceDir string
+		appDir    string
+	}{
+		{"the agent's default puts the app under code/", "", "code"},
+		{"source-dir . puts the app at the service root", ".", ""},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
+			dir := conformingSolution(t)
+			shell := filepath.Join(dir, "services", PageService)
+			if layout.sourceDir != "" {
+				manifest := filepath.Join(shell, "service.codefly.yaml")
+				existing, err := os.ReadFile(manifest)
+				if err != nil {
+					t.Fatalf("cannot read the shell's manifest: %v", err)
+				}
+				write(t, manifest, string(existing)+"spec:\n    source-dir: "+layout.sourceDir+"\n")
+			}
+			write(t, filepath.Join(shell, layout.appDir, "package.json"), `{"name":"web","private":true}`)
+			if checkFor(t, Inspect("wiki", dir), CodePageShellHasNoApp).Status != StatusOK {
+				t.Fatal("the shell's app was not found where the manifest says it is")
+			}
+		})
+	}
+}
+
+// TestAContractWithNoInstallerRoleFails covers the rule the authority states
+// at runtime and nothing else catches. A solution is a unit a person installs,
+// so a contract offering no installer role is refused — at `runtime-run`,
+// after the whole composition has booted. Seven of nine solutions in one fleet
+// declared no role at all and the shape checker called them all conformant.
+func TestAContractWithNoInstallerRoleFails(t *testing.T) {
+	dir := conformingSolution(t)
+	if checkFor(t, Inspect("wiki", dir), CodeInstallerRoleMissing).Status != StatusOK {
+		t.Fatal("a contract declaring the installer role was reported")
+	}
+
+	// Strip the roles: the contract still reads, and everything else passes.
+	write(t, filepath.Join(dir, "module.contract.codefly.yaml"), `schema: codefly/module-contract/v1
+principal: wiki
+owner_aware: true
+namespaces: []
+queues: []
+scope_ceilings: []
+bindings: []
+`)
+	report := Inspect("wiki", dir)
+	if checkFor(t, report, CodeInstallerRoleMissing).Status != StatusFail {
+		t.Fatal("a contract with no installer role was not reported")
+	}
+	if report.Conforms() {
+		t.Fatal("a solution the authority refuses to admit was called conformant")
 	}
 }

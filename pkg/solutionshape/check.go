@@ -79,6 +79,7 @@ const (
 	CodeConsumedWithoutBinding  = "consumed_module_without_binding"
 	CodePageShellHasNoApp       = "page_shell_has_no_app"
 	CodePageExportedTooWidely   = "page_shell_exported_too_widely"
+	CodeInstallerRoleMissing    = "installer_role_missing"
 )
 
 // Check is one rule's outcome, with the fix when it failed.
@@ -292,6 +293,8 @@ func (r *Report) checkContract(dir string, consumed []string) {
 	r.ok(CodeContractMissing, fmt.Sprintf("the contract declares principal %q", contract.Principal))
 	r.checkConsumedModulesHaveAuthority(consumed, contract)
 
+	r.checkInstallerRole(contract)
+
 	// The one that fails silently, and the reason this checker exists.
 	if contract.OwnerAware {
 		r.ok(CodeOwnerAwareMissing, "the contract declares owner-aware checking")
@@ -299,6 +302,38 @@ func (r *Report) checkContract(dir string, consumed []string) {
 		r.fail(CodeOwnerAwareMissing, "the contract does not declare owner-aware checking",
 			"the authority issues a person a capability at a solution ONLY when it declares owner_aware: true, and refuses by name otherwise. Without it this solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you")
 	}
+}
+
+// checkInstallerRole holds the contract to the role the host requires of a
+// solution. A solution is a unit a PERSON installs, so the authority refuses
+// to admit one that offers a person no role to hold on it:
+//
+//	state: forbidden: <name> declares 0 role(s) and none is "installer":
+//	a solution declares an installer role
+//
+// It is reported here because of WHEN that refusal arrives: at `runtime-run`,
+// after the whole composition — authority, store, every consumed module — has
+// booted. Every document reads fine until then, `manifest.Validate` passes,
+// and the three consumer-repository gates pass. Of the nine solutions in one
+// fleet, seven declared no role at all and only the two that are actually
+// run, wiki and proposals, declared one; the shape checker called all nine
+// conformant.
+//
+// Only the role's EXISTENCE is checked. What it should grant is the
+// solution's own business, and core's Contract.Validate already refuses a
+// role granting a scope no ceiling covers or no binding spells out — a rule
+// this package must not restate, having once shipped a permissions check that
+// failed wiki and proposals, the only two solutions known to work.
+func (r *Report) checkInstallerRole(contract *modulecontract.Contract) {
+	for index := range contract.Roles {
+		if contract.Roles[index].Name == modulecontract.InstallerRole {
+			r.ok(CodeInstallerRoleMissing, "the contract declares the installer role")
+			return
+		}
+	}
+	r.fail(CodeInstallerRoleMissing,
+		fmt.Sprintf("the contract declares %d role(s) and none is %q", len(contract.Roles), modulecontract.InstallerRole),
+		"the authority refuses to admit a solution that offers a person no role to hold on it, and it refuses at runtime-run — after the whole composition has booted and every document has read fine. Declare an installer role scoped within the contract's own scope_ceilings")
 }
 
 // checkPackage holds the published identity, and the one thing about it that
@@ -537,13 +572,15 @@ func (r *Report) checkConsumedModulesHaveAuthority(consumes []string, contract *
 // and the first sign is a run that does nothing.
 func (r *Report) checkPageShellHasAnApp(dir string) {
 	shell := filepath.Join(dir, "services", PageService)
-	if _, err := os.Stat(filepath.Join(shell, "service.codefly.yaml")); err != nil {
+	service, err := resources.LoadFromDir[resources.Service](context.Background(), shell)
+	if err != nil {
 		// No manifest at all is the module declaring a service it does not
 		// have, which the entry-service rules already speak to.
 		return
 	}
+	app := filepath.Join(shell, pageSourceDir(service))
 	for _, marker := range []string{"package.json", "next.config.ts", "next.config.js"} {
-		if _, err := os.Stat(filepath.Join(shell, marker)); err == nil {
+		if _, statErr := os.Stat(filepath.Join(app, marker)); statErr == nil {
 			r.ok(CodePageShellHasNoApp, "the page's shell has an app behind it")
 			return
 		}
@@ -551,4 +588,21 @@ func (r *Report) checkPageShellHasAnApp(dir string) {
 	r.warn(CodePageShellHasNoApp,
 		fmt.Sprintf("the %q shell is declared with no app behind it", PageService),
 		"`codefly run service "+PageService+"` has nothing to start. Write the shell, or drop the service from module.codefly.yaml — a declaration with no source is the one state neither reading the manifests nor running the gates reveals")
+}
+
+// pageSourceDir is where the shell's app lives, relative to the service: the
+// manifest's `spec.source-dir`, or `code` when it says nothing.
+//
+// The empty default is the nextjs agent's own (`Settings.NodeSourceDir`), and
+// the two layouts in use differ by exactly this key: a shell this CLI
+// scaffolds takes the agent's default and gets an app under `code/`, while the
+// fleet's hand-written pages sit at the service root and say `source-dir: .`.
+// A check that assumed either one called the other empty — the scaffolded
+// shell was reported as having no app while its package.json sat one directory
+// down.
+func pageSourceDir(service *resources.Service) string {
+	if dir, ok := service.Spec["source-dir"].(string); ok && dir != "" {
+		return dir
+	}
+	return "code"
 }

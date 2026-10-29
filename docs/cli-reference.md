@@ -356,7 +356,7 @@ codefly add solution [flags]
 Flags:
 
 ```
-      --agent string                     Service agent for the backend (default: go). The backend's language is this flag, not a different shape
+      --agent string                     Service agent for the backend (default: go). The backend's language is this flag, not a different shape. It must be an agent that can scaffold: python-fastapi, not the generic python
       --authority-interface string       The authority interface the backend requires, as <publisher>/<name>@<range> (default "codefly.dev/authority@>=0.2.0 <0.4.0")
       --consumes stringArray             A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract
       --description string               Short description written to module.codefly.yaml

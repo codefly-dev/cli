@@ -2,6 +2,7 @@ package add
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,7 +106,7 @@ var (
 // input — the consumed bindings, a document the schema refuses — is rendered
 // and validated BEFORE the first write, so a mistyped flag leaves no
 // half-built module behind.
-func addSolution(ctx context.Context, name string) error {
+func addSolution(ctx context.Context, name string) (result error) {
 	w := wool.Get(ctx).In("cmd.add.solution")
 
 	documents, err := solutionDocuments(ctx, name)
@@ -129,6 +130,34 @@ func addSolution(ctx context.Context, name string) error {
 	if moduleErr := addModule(name); moduleErr != nil {
 		return moduleErr
 	}
+	// `add module` rolls back only what fails inside its own call. Everything
+	// below can fail with the module already written — an agent that cannot
+	// scaffold the service is the ordinary case, not a hypothetical: the
+	// generic `python` agent runs a Python service but defines no project
+	// template, so `--agent python` always fails here. Without this the
+	// author is left a module and a half-built service to delete by hand
+	// before they can retry.
+	defer func() {
+		if result == nil {
+			return
+		}
+		// Re-read, for the same reason step 3 does: the handle loaded above
+		// predates the module, so deleting through it reports that the module
+		// <name> does not exist and leaves it on disk.
+		current, loadErr := common.LoadWorkspace(ctx)
+		if loadErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back: cannot re-load the workspace: %w", loadErr))
+			return
+		}
+		moduleDir := current.ModulePath(ctx, &resources.ModuleReference{Name: name})
+		if rollbackErr := current.DeleteModule(ctx, name); rollbackErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back module reference: %w", rollbackErr))
+			return
+		}
+		if rollbackErr := os.RemoveAll(moduleDir); rollbackErr != nil {
+			result = errors.Join(result, fmt.Errorf("roll back module directory: %w", rollbackErr))
+		}
+	}()
 
 	// 2. Both services, through the agents' own Create flows — the same call
 	// `add service` makes.
@@ -149,6 +178,14 @@ func addSolution(ctx context.Context, name string) error {
 		}
 	}
 
+	// Re-read the workspace: the handle above was loaded before `add module`
+	// wrote the module into it, so it still lists the modules that existed
+	// when this command started. `add service` re-reads for the same reason,
+	// which is why the two services above resolved and this did not.
+	workspace, err = common.LoadWorkspace(ctx)
+	if err != nil {
+		return w.Wrapf(err, "cannot re-load the workspace after scaffolding")
+	}
 	mod, err := workspace.LoadModuleFromName(ctx, name)
 	if err != nil {
 		return w.Wrapf(err, "cannot load the scaffolded module")
@@ -403,7 +440,7 @@ func reportNextSteps(name string) {
 
 func init() {
 	SolutionCmd.Flags().StringVar(&solutionPackageID, "package-id", "", "The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it")
-	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Service agent for the backend (default: "+solutionEntryAgent+"). The backend's language is this flag, not a different shape")
+	SolutionCmd.Flags().StringVar(&solutionAgentInput, "agent", "", "Service agent for the backend (default: "+solutionEntryAgent+"). The backend's language is this flag, not a different shape. It must be an agent that can scaffold: python-fastapi, not the generic python")
 	SolutionCmd.Flags().StringArrayVar(&solutionConsumes, "consumes", nil, "A module this solution calls, as [<id>=]<protocol>:<module>/<service>/<endpoint>. Repeatable. Route names only — authority is declared once, in the module contract")
 	SolutionCmd.Flags().StringVar(&solutionExecutor, "executor", "", "A codefly:solution executor to name in the solution manifest. Omitted by default: core specifies no executor protocol and none is published (codefly-dev/cli#1215)")
 	SolutionCmd.Flags().StringVar(&solutionDescription, "description", "", "Short description written to module.codefly.yaml")
