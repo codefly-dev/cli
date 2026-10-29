@@ -2809,10 +2809,16 @@ block is unsupported; when the bare key is not declared by the selected
 environment; when the incoming contract **still** declares that bare key, which
 means it is current rather than retired; when the contract declares no such
 destination under that block; or when the workspace composes no service for the
-destination. Destination existence is proved against the loaded composition,
-and that inspection is read-only — it refuses a pending legacy-workspace
-migration rather than performing one, so a rejected directive and `--dry-run`
-leave every file untouched.
+destination. Destination existence is proved against the loaded composition.
+
+That inspection does not modify the workspace: it refuses a pending
+legacy-workspace migration rather than performing one, so a rejected directive
+and `--dry-run` leave `workspace.codefly.yaml`, the module files and the
+service sources exactly as they were. The boundary is the workspace and its
+sources, not the whole filesystem — reading a composition that pins a module
+resolves that pin, and resolving an uncached pin populates the CLI-managed
+module cache, as any other command reading the same composition does. A pin
+that cannot be resolved refuses; nothing is fabricated.
 
 It changes only the environment being imported. Another environment carrying the
 same bare key keeps it; whether that one is also stale is its owner's call.

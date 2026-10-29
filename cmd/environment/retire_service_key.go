@@ -116,6 +116,14 @@ func applyRetirements(ctx context.Context, target, declaration *yaml.Node, works
 	// The same refusal applies to the composed child loads this walks, so an
 	// inspection cannot migrate a legacy flat module on the way to answering
 	// whether a destination exists.
+	//
+	// It bounds workspace mutation, not every effect. Core is explicit that
+	// "hosts remain responsible for the effects of any resolver they attach to
+	// the context": a pinned module reference is resolved to answer this
+	// question, and resolving an uncached pin clones it into the CLI-managed
+	// module cache. That is dependency-cache bookkeeping outside the workspace,
+	// the same acquisition any other reader of this composition performs, and
+	// an unresolvable pin refuses rather than being fabricated.
 	composed, err := workspace.LoadServiceWithModules(resources.WithWorkspaceMigrationRefusal(ctx))
 	if err != nil {
 		return nil, err
