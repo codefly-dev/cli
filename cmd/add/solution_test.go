@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -511,5 +512,46 @@ func TestThePlaygroundNamesTheEdge(t *testing.T) {
 		if !strings.Contains(workspace, required) {
 			t.Fatalf("the playground workspace must contain %q", required)
 		}
+	}
+}
+
+// TestTheInstallationAdmitsTheFixturesPeople. A solution the authority has no
+// installation for refuses every capability — "audience %q is not installed
+// in this organization, so there is no installation to seal the capability
+// to" — so the page can only render its not-installed branch. The fixture
+// itself names who exists; which solutions are installed is each composed
+// module's fragment to say.
+//
+// TEAMS ARE WHAT ADMIT ANYONE BUT THE OWNER, and dropping them is the
+// mistake this guards: with `role` and `owner` alone every other person of
+// the fixture signs in and is refused by name, "<person> holds no role on
+// <solution>". Verified against the running authority — maya, rémi, alex and
+// dev all reach the solution's route; no-roles, in no team, gets 403.
+func TestTheInstallationAdmitsTheFixturesPeople(t *testing.T) {
+	fragment := fixtureComposition("notes")
+	for _, required := range []string{
+		"schema: codefly.dev/authority/fixture-composition/v1",
+		"organization: acme",
+		"target: notes",
+		"owner: alex",
+		"teams: [finance, engineering]",
+	} {
+		if !strings.Contains(fragment, required) {
+			t.Fatalf("the fixture composition must contain %q, got:\n%s", required, fragment)
+		}
+	}
+}
+
+// TestTheContractDeclaresARoleBesidesInstaller. The organization is installed
+// as viewer, so the contract has to declare that role: a role the contract
+// does not name is one the authority never issues.
+func TestTheContractDeclaresARoleBesidesInstaller(t *testing.T) {
+	contract := solutionContract("notes")
+	var names []string
+	for index := range contract.Roles {
+		names = append(names, contract.Roles[index].Name)
+	}
+	if !slices.Contains(names, "installer") || !slices.Contains(names, "viewer") {
+		t.Fatalf("the contract must declare installer and viewer, got %v", names)
 	}
 }

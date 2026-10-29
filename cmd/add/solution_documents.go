@@ -376,6 +376,15 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 // person capabilities from the authority"), and refuses it by name otherwise.
 // A solution scaffolded without it receives no owner-selected scope and can
 // act for nobody.
+// readAction and writeAction are the two actions a scaffolded solution's own
+// vocabulary carries, spelled once: they appear in the ceiling and in each
+// role that sits within it, and a typo between them is a role the authority
+// silently never issues.
+const (
+	readAction  = "read"
+	writeAction = "write"
+)
+
 func solutionContract(name string) *modulecontract.Contract {
 	// The solution's own permission vocabulary, and the one role the host
 	// requires. A solution is a unit a PERSON installs, so the authority
@@ -397,7 +406,7 @@ func solutionContract(name string) *modulecontract.Contract {
 	// apart silently.
 	ownScope := []modulecontract.CeilingScope{{
 		ResourceKind: name + ".page",
-		Actions:      []string{"read", "write"},
+		Actions:      []string{readAction, writeAction},
 	}}
 	return &modulecontract.Contract{
 		Schema:     modulecontract.SchemaV1,
@@ -407,12 +416,21 @@ func solutionContract(name string) *modulecontract.Contract {
 		Queues:     []string{},
 		ScopeCeilings: []modulecontract.ScopeCeiling{{
 			ResourceKind: name + ".page",
-			Actions:      []string{"read", "write"},
+			Actions:      []string{readAction, writeAction},
 		}},
-		Roles: []modulecontract.Role{{
-			Name:   modulecontract.InstallerRole,
-			Scopes: ownScope,
-		}},
+		Roles: []modulecontract.Role{
+			{Name: modulecontract.InstallerRole, Scopes: ownScope},
+			// The role the ORGANIZATION is installed as, so the people of an
+			// installation can open the solution at all. Without a role
+			// besides installer only the owner holds anything, and everyone
+			// else is refused by name — "<person> holds no role on <name>" —
+			// which is a correct refusal and a useless scaffold. wiki and
+			// proposals both declare a viewer beside their installer.
+			{Name: "viewer", Scopes: []modulecontract.CeilingScope{{
+				ResourceKind: name + ".page",
+				Actions:      []string{readAction},
+			}}},
+		},
 		Bindings:     []modulecontract.Binding{},
 		Destinations: []modulecontract.Destination{},
 	}

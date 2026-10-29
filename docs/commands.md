@@ -2428,6 +2428,7 @@ What it creates:
 | `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the **installer role** — the authority refuses to admit a solution that offers a person no role to hold on it |
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+| `configurations/local/fixture-composition.yaml` | who, in the development fixture, has this solution **installed**. Without it the authority refuses every capability ("not installed in this organization") and the page can only render its not-installed branch. `teams` is what admits anyone but the owner |
 | `playground/` + `Makefile` | the composition that runs the solution LOCALLY on the development authority — `make playground`. It names `authority/edge` explicitly, because the edge is not a dependency of the backend and nothing elects it as ingress, so neither `run solution` nor `run workspace` starts it |
 | `contracts/api` + the package's `api-contracts` | the backend's published http contract, generated as the last step. The authority derives the method policy of **every route** from it, so a solution carrying none admits no call to any route it serves — and says so only as a warning in the authority's log, during a run |
 
@@ -2448,6 +2449,16 @@ in a way that says so — the shell's own port (the page reports "This page is
 not behind its sign-in edge") and the authority's REST port (every browser
 path 404s). In a cell the host's gateway plays the edge's part; the playground
 is local only.
+
+Sign in as any of the fixture's acme people in a team — `maya`, `remi`,
+`alex`, `dev` — and the solution's route answers:
+
+```
+GET /v1/notes/overview   200   {"solution":"notes","consumes":[]}
+```
+
+`no-roles`, who is in no team, signs in and is refused by name (403, *"holds
+no role on notes"*). That is the fixture doing its job, not a fault.
 
 The authority is pinned by commit, resolved from its **default branch** when
 the solution is scaffolded: it publishes no module release, and a PR head

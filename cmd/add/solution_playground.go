@@ -66,6 +66,16 @@ func applySolutionPlayground(ctx context.Context, module *resources.Module, auth
 		"configurations/local/edge.env":      playgroundEdgeGroup(module.Name),
 		"README.md":                          playgroundReadme(module.Name),
 	}
+	// The solution's own fragment of the authority's fixture-composition
+	// document. It belongs beside the SOLUTION, not in the playground: the
+	// composing workspace merges every composed module's fragment, and this
+	// is the solution's.
+	if err := shared.WriteFileAtomic(ctx,
+		filepath.Join(module.Dir(), "configurations", "local", "fixture-composition.yaml"),
+		[]byte(fixtureComposition(module.Name)), 0o644); err != nil {
+		cli.Warning("the fixture composition was not written: %v", err)
+		return
+	}
 	for name, content := range files {
 		if err := shared.WriteFileAtomic(ctx, filepath.Join(root, filepath.FromSlash(name)), []byte(content), 0o644); err != nil {
 			cli.Warning("the playground's %s was not written: %v", name, err)
@@ -231,5 +241,47 @@ Then open the address the EDGE prints:
 In a cell the host's gateway is the origin and issues the Work Contexts. The
 development authority stands in for it here, and nothing in this directory
 describes a deployment.
+`, titleFromName(name), name, name, name)
+}
+
+// fixtureComposition is this solution's fragment of the local authority's
+// fixture-composition document: who, in the development fixture, has this
+// solution INSTALLED.
+//
+// Without it the solution runs and the person signs in, and the authority
+// still refuses every capability — "audience %q is not installed in this
+// organization, so there is no installation to seal the capability to" — so
+// the page renders its not-installed branch and nothing else. The fixture
+// itself names only who exists and the authority's own vocabulary; which
+// solutions are installed is the composing workspace's to say, merged from
+// each composed module's fragment.
+//
+// alex is the acme admin of the authority's shipped fixture, so the
+// installation is owned by a person who exists. Change the organization, the
+// owner and the role as the solution grows roles of its own.
+func fixtureComposition(name string) string {
+	return fmt.Sprintf(`# %s's fragment of the local authority's fixture-composition document
+# (codefly-dev/authority libraries/fixture-composition, schema v1): what is
+# this solution's own in the fixture of a run that composes it.
+#
+# `+"`codefly run`"+` merges this with every composed module's fragment into the
+# composing workspace's configurations/local/fixture-composition.yaml, the
+# document the authority reads. A grant a module states in its own fragment is
+# never restated here: the merge refuses it, naming both.
+schema: codefly.dev/authority/fixture-composition/v1
+installations:
+  # WITHOUT THIS the authority refuses every capability at this solution —
+  # "audience %q is not installed in this organization" — and the page can
+  # only render its not-installed branch.
+  #
+  # TEAMS ARE WHAT ADMIT ANYONE BUT THE OWNER. The role below is the
+  # owner's, and the owner is alex, the acme admin of the authority's
+  # shipped fixture; with no teams every other person signs in and is
+  # refused by name —
+  # "<person> holds no role on %s" — which is a correct refusal and a
+  # useless playground. finance and engineering are the fixture's acme teams,
+  # so maya, rémi, alex and dev can all open it; no-roles, who is in no team,
+  # still cannot, and that is the fixture showing a real refusal.
+  - {organization: acme, target: %s, role: viewer, owner: alex, teams: [finance, engineering]}
 `, titleFromName(name), name, name, name)
 }
