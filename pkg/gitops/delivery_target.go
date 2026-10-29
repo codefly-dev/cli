@@ -66,8 +66,20 @@ func resolveDeliveryTarget(ctx context.Context, workspace *resources.Workspace, 
 	if endpoint.Secured {
 		scheme = httpsScheme
 	}
+	address := serviceName + "." + namespace + ".svc.cluster.local:" + strconv.FormatUint(uint64(port), 10)
+	// Which half (or halves) may be delivered here is the HOST's declaration,
+	// read the one way the run already reads it. A render that guessed from
+	// the endpoint's api instead is how a connect-typed delivery API came to
+	// be posted a REST path it does not route.
+	composition, err := HostImplements(ctx, workspace, module, serviceName, endpointName, CompositionInterface)
+	if err != nil {
+		return nil, err
+	}
 	return &DeliveryTarget{
-		URL:      scheme + "://" + serviceName + "." + namespace + ".svc.cluster.local:" + strconv.FormatUint(uint64(port), 10),
-		Audience: env.Host.Audience,
+		URL:         scheme + "://" + address,
+		Audience:    env.Host.Audience,
+		Address:     address,
+		Composition: composition,
+		API:         endpoint.API,
 	}, nil
 }

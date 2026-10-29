@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"gopkg.in/yaml.v3"
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
@@ -222,4 +223,58 @@ func renderedCarriers(directory string) (map[string]deliveredManifest, error) {
 		}
 	}
 	return rendered, nil
+}
+
+// PairedDocumentKey is the key a paired delivery document is carried under in
+// its ConfigMap, beside the module manifest's own keys.
+const PairedDocumentKey = "paired-delivery.json"
+
+// pairedDocumentConfigMapName is the ConfigMap holding one binding's paired
+// document. It is its own ConfigMap rather than another key on the manifest's,
+// because the manifest ConfigMap is read back by every reader of a delivered
+// overlay (renderedManifests, priorDeliveredManifests, the cell's own
+// validators) and an unknown key there is a change to a published shape.
+func pairedDocumentConfigMapName(binding string) string {
+	return moduleManifestConfigMapName(binding) + "-paired"
+}
+
+// pairedDocumentFile is the file a binding's paired document is written to in
+// the overlay.
+func pairedDocumentFile(binding string) string { return binding + "-paired.yaml" }
+
+// pairedDocumentConfigMap is the ConfigMap a paired document travels in, as a
+// struct so the delivered YAML has a stable field order.
+type pairedDocumentConfigMap struct {
+	APIVersion string                      `yaml:"apiVersion"`
+	Kind       string                      `yaml:"kind"`
+	Metadata   moduleManifestConfigMapMeta `yaml:"metadata"`
+	Data       map[string]string           `yaml:"data"`
+}
+
+// writePairedDocumentInTree writes one binding's paired document into the
+// overlay. It carries no credential, so it is an ordinary rendered manifest
+// and nothing in it is a secret.
+func writePairedDocumentInTree(tree *renderRoot, directory, namespace, binding string, document []byte) error {
+	configMap := pairedDocumentConfigMap{
+		APIVersion: "v1",
+		Kind:       kindConfigMap,
+		Metadata: moduleManifestConfigMapMeta{
+			Name:      pairedDocumentConfigMapName(binding),
+			Namespace: namespace,
+			Labels: map[string]string{
+				managedByLabel: managedByCodefly,
+				documentLabel:  pairedDeliveryKind,
+				bindingLabel:   binding,
+			},
+		},
+		Data: map[string]string{PairedDocumentKey: string(document)},
+	}
+	body, err := yaml.Marshal(configMap)
+	if err != nil {
+		return fmt.Errorf("encode the paired delivery document of %s: %w", binding, err)
+	}
+	if err = tree.write(directory, pairedDocumentFile(binding), body); err != nil {
+		return fmt.Errorf("write the paired delivery document of %s: %w", binding, err)
+	}
+	return nil
 }

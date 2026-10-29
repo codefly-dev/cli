@@ -68,6 +68,25 @@ const (
 	// first Job that runs the new one.
 	deliveryImage = "ghcr.io/codefly-dev/codefly@sha256:8fcaaea34622eb1743a5b755c7c6540a0be245cb37c8b2188732f45c8207a833"
 
+	// pairedDeliveryImage is the image a PAIRED delivery Job runs, which must
+	// execute codefly itself rather than a shell script: the index digest of
+	// tag 0.0.6, the same companion built by the same recipe
+	// (core companions/codefly/Dockerfile, published by this repo's
+	// companions.yaml, which cross-compiles the CLI into
+	// bin/linux/<arch>/codefly).
+	//
+	// It is a SEPARATE pin because deliveryImage's /bin/codefly cannot execute:
+	// at 0.0.4 the cross-compiled binary was dynamically linked against glibc
+	// while the base is Alpine, so its interpreter — /lib/ld-linux-aarch64.so.1
+	// on arm64, /lib64/ld-linux-x86-64.so.2 on amd64, where /lib64 does not
+	// exist at all — is absent and exec fails with ENOENT. The recipe's own
+	// comment says the publisher cross-compiles a STATIC binary; by 0.0.6 it
+	// does, and that image runs on both architectures while still carrying
+	// every tool the shell runner calls. The shell runner's pin is left where
+	// it is so moving it is its own change, with its own re-render of every
+	// cell.
+	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:f93e862d8bc09f6461800b843003f106725e261066afa61fd73442a3ec531117"
+
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"
 
@@ -153,6 +172,19 @@ type DeliveryTarget struct {
 	// Audience is the audience the host verifies a carrier token against; the
 	// Job's projected ServiceAccount token is minted for it.
 	Audience string
+	// Address is "<service>.<namespace>.svc.cluster.local:<port>" — the same
+	// endpoint without a scheme, which is what a gRPC target is.
+	Address string
+	// Composition reports that the endpoint host.delivery names DECLARES
+	// codefly.dev/composition (HostImplements), so what delivers to it must
+	// carry BOTH signed halves through ApplyManifest. A host that declares no
+	// such interface takes the Core half alone over its HTTP manifest route,
+	// and a module delivered that way reaches it with no roles.
+	Composition bool
+	// API is the endpoint's declared api, carried so a render refuses an
+	// endpoint it cannot post to by name rather than rendering a request that
+	// endpoint does not route.
+	API string
 }
 
 // deliveryDocument is one carrier a Job delivers: the ConfigMap holding it and
@@ -383,13 +415,64 @@ type deliveryCarrier struct {
 // deliveredDocumentLabel names the kind it delivers: an envelope Job in the
 // host's namespace runs the same admitted pod as that namespace's manifest
 // Job.
-func deliveryCarrierOf() deliveryCarrier {
+func deliveryCarrierOf(paired bool) deliveryCarrier {
+	image := deliveryImage
+	if paired {
+		image = pairedDeliveryImage
+	}
 	return deliveryCarrier{
 		Kind:           kindJob,
 		Labels:         map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryCarrierValue},
 		ServiceAccount: deliveryServiceAccount,
 		Container:      deliveryContainerName,
-		Image:          deliveryImage,
+		Image:          image,
+	}
+}
+
+// deliveryCommand is what the carrier's container runs: the shell runner that
+// POSTs each document to the host's HTTP manifest route, or — for a host whose
+// delivery endpoint declares codefly.dev/composition — codefly itself, sending
+// both signed halves through ApplyManifest.
+//
+// The paired runner takes its inputs as FLAGS rather than environment, because
+// there is no shell: the arguments are the manifest's own record of what the
+// Job delivers and where. The credential is not among them; the runner reads
+// it from the projected token at execution, which is the only moment a token
+// with a lifetime of minutes exists.
+func deliveryCommand(target *DeliveryTarget, path string) []string {
+	if !target.Composition {
+		return []string{"/bin/sh", "-ec", deliveryScript}
+	}
+	return []string{
+		"/bin/codefly", "delivery", "apply",
+		"--documents", deliveryDocumentsMount,
+		"--address", target.Address,
+		"--identity-file", deliveryIdentityMount + "/" + deliveryTokenFile,
+		"--budget", strconv.Itoa(deliveryBudgetSeconds) + "s",
+		"--request-timeout", strconv.Itoa(deliveryRequestSeconds) + "s",
+		"--max-pause", strconv.Itoa(deliveryMaxPause) + "s",
+	}
+}
+
+// deliveryEnvironment is the shell runner's environment. A paired Job carries
+// none of it: its inputs are its arguments, and a variable a runner does not
+// read is a statement nothing checks.
+func deliveryEnvironment(target *DeliveryTarget, path string) []deliveryEnv {
+	if target.Composition {
+		return nil
+	}
+	return []deliveryEnv{
+		{Name: "DELIVERY_URL", Value: target.URL},
+		{Name: "DELIVERY_PATH", Value: path},
+		{Name: "DELIVERY_DOCUMENTS", Value: deliveryDocumentsMount},
+		{Name: "DELIVERY_BUDGET_SECONDS", Value: strconv.Itoa(deliveryBudgetSeconds)},
+		{Name: "DELIVERY_REQUEST_SECONDS", Value: strconv.Itoa(deliveryRequestSeconds)},
+		{Name: "DELIVERY_MAX_PAUSE_SECONDS", Value: strconv.Itoa(deliveryMaxPause)},
+		// Named for what it is, the FILE the projected identity is read
+		// from: a variable named *_TOKEN carrying a value is classified
+		// as a credential by the promotable ruleset, which refuses the
+		// manifest — and the value is a path, never the token.
+		{Name: "DELIVERY_IDENTITY_FILE", Value: deliveryIdentityMount + "/" + deliveryTokenFile},
 	}
 }
 
@@ -416,7 +499,7 @@ func renderDeliveryJob(directory, name, namespace, kind, path string, target *De
 			Items: []deliveryKeyToPath{{Key: document.Key, Path: document.Name}},
 		}})
 	}
-	carrier := deliveryCarrierOf()
+	carrier := deliveryCarrierOf(target.Composition)
 	jobLabels := maps.Clone(carrier.Labels)
 	jobLabels[deliveredDocumentLabel] = kind
 	job := deliveryJobManifest{
@@ -446,20 +529,8 @@ func renderDeliveryJob(directory, name, namespace, kind, path string, target *De
 		Containers: []deliveryContainer{{
 			Name:    carrier.Container,
 			Image:   carrier.Image,
-			Command: []string{"/bin/sh", "-ec", deliveryScript},
-			Env: []deliveryEnv{
-				{Name: "DELIVERY_URL", Value: target.URL},
-				{Name: "DELIVERY_PATH", Value: path},
-				{Name: "DELIVERY_DOCUMENTS", Value: deliveryDocumentsMount},
-				{Name: "DELIVERY_BUDGET_SECONDS", Value: strconv.Itoa(deliveryBudgetSeconds)},
-				{Name: "DELIVERY_REQUEST_SECONDS", Value: strconv.Itoa(deliveryRequestSeconds)},
-				{Name: "DELIVERY_MAX_PAUSE_SECONDS", Value: strconv.Itoa(deliveryMaxPause)},
-				// Named for what it is, the FILE the projected identity is read
-				// from: a variable named *_TOKEN carrying a value is classified
-				// as a credential by the promotable ruleset, which refuses the
-				// manifest — and the value is a path, never the token.
-				{Name: "DELIVERY_IDENTITY_FILE", Value: deliveryIdentityMount + "/" + deliveryTokenFile},
-			},
+			Command: deliveryCommand(target, path),
+			Env:     deliveryEnvironment(target, path),
 			VolumeMounts: []deliveryVolumeMount{
 				{Name: "documents", MountPath: deliveryDocumentsMount, ReadOnly: true},
 				{Name: "token", MountPath: deliveryIdentityMount, ReadOnly: true},
