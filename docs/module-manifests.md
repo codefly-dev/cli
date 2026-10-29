@@ -312,6 +312,54 @@ false declaration stays false, including for solutions with roles or
 solution by name. The declaration participates in delivery generation changes
 and is omitted from withdrawals together with other live policy.
 
+**The installation declaration is authored, carried verbatim, and compared
+across both signed documents.** A unit declares, at the top level of its
+`module.contract.codefly.yaml`, which standing role an installation's agent
+holds and which modules it reaches with the person's Work Context:
+
+```yaml
+installation_role: installer        # or "none", or omitted
+edge_dependencies:
+  - module: robin                   # the signed principal, not a name or binding id
+    presence: required              # "required" or "optional", no default
+  - module: annotations
+    presence: optional
+```
+
+`installation_role` has three states and core validates all of them: **omitted**
+is undeclared, the literal **`none`** is no standing machine authority, and any
+other value must name a role the unit itself declares. Matching is strictly
+literal — no trimming or case-folding in any owner, so `" installer "`,
+`" none "` and `" "` are refused rather than resolved, and an empty string is
+not `none`. `edge_dependencies` declares presence only: it grants nothing, and
+each `module` is the exact signed principal the host resolves through its own
+catalogue. A dependency list is never inferred from a module's bindings, which
+cover what it calls on its own behalf rather than what a person reaches at the
+edge.
+
+The CLI carries both onto **two** signed documents and normalizes neither: the
+core manifest's `authority` block (`installation_role`, `edge_dependencies`) and
+the composition delivery's `AuthorityManifestV1` (`installation_role` field 8,
+`edge_dependencies` field 9). Declaration order is preserved — the list is a
+sequence, not a set, and sorting it would change what is signed. Nothing is
+trimmed, defaulted, deduplicated or resolved, because authority compares the two
+documents **byte for byte** and refuses a disagreement: `installation_role` must
+match exactly (empty and `none` differ), and `edge_dependencies` must match in
+length and in each ordered `module`/`presence` pair. An absent or empty list is
+the same zero-edge declaration on either side, so the CLI delivers an empty list
+as absent and the two spellings cannot disagree. A declaration on only one
+document — including a module manifest whose authority document is missing
+entirely — is refused before anything is stored, while a unit declaring neither
+pairs as it always did.
+
+Because the comparison is authority's, the CLI reimplements none of it and adds
+no second parser: core validates the declaration once, the CLI carries it, and
+authority refuses any delivery whose two documents disagree. A declaration is
+reason enough for an authority document to exist: a unit whose only policy is an
+installation declaration still delivers one. Paired delivery of these fields
+requires a host reader that reads them; the rendered-manifest delivery job is
+not qualified as a paired producer.
+
 **A solution's roles are part of its contract.** A unit a person uses declares
 the roles a person may hold on an installation of it in the same
 `module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under

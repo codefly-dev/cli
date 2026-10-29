@@ -2,8 +2,11 @@ package gitops
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/delivered"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
@@ -51,6 +54,83 @@ func producedCarriers(t *testing.T, declaration string) (*solutionhost.ModuleMan
 	})
 	require.NoError(t, err)
 	return manifest, sidecar
+}
+
+// TestTheSignedSidecarOnTheWireCarriesTheDeclaration is the actual-wire
+// regression the independent review asked for: it drives the REAL
+// CompositionDelivery with a REAL contract read, delivers through
+// NativeDeliverer, and reads the declaration back off the signed authority
+// document the peer received.
+//
+// The agreement proof below marshals the proto itself, so it cannot catch
+// three regressions the review named: dropping the installation callback at
+// the construction site, omitting either field in
+// CompositionDelivery.declaration, or reverting its declaration-presence
+// condition. This does, because the only thing it reads is what went over the
+// wire.
+func TestTheSignedSidecarOnTheWireCarriesTheDeclaration(t *testing.T) {
+	for name, tc := range map[string]struct {
+		declaration string
+		wantRole    string
+		wantEdges   [][2]string
+		wantSidecar bool
+	}{
+		"a named selector with ordered edges": {`installation_role: installer
+edge_dependencies:
+  - module: robin
+    presence: required
+  - module: annotations
+    presence: optional
+`, "installer", [][2]string{{"robin", "required"}, {"annotations", "optional"}}, true},
+		"the none selector alone is reason enough for a sidecar": {
+			"installation_role: none\n", "none", nil, true},
+		"edges alone are reason enough for a sidecar": {`edge_dependencies:
+  - module: robin
+    presence: required
+`, "", [][2]string{{"robin", "required"}}, true},
+		"no declaration, and nothing else to declare, means no sidecar": {"", "", nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// A real contract on disk, read by the real reader.
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, modulecontract.FileName),
+				[]byte(declaringContract(tc.declaration)), 0o600))
+
+			conn, peer := pairedConnection(t)
+			signer := nativeSigner(t)
+			composition := NewCompositionDelivery(conn, signer,
+				func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
+				func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return nil, nil },
+				func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, nil },
+				func(context.Context, string) (bool, error) { return false, nil },
+				func(_ context.Context, _ string) (string, []*compositionv1.EdgeDependencyV1, error) {
+					return InstallationDeclaration(dir)
+				})
+			d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare,
+				Token: func(string) (string, error) { return "credential", nil }}
+			_, err := d.Deliver(t.Context(), pairedManifest())
+			require.NoError(t, err)
+
+			requests := peer.requests()
+			require.Len(t, requests, 1)
+			if !tc.wantSidecar {
+				require.Nil(t, requests[0].Authority,
+					"a module declaring nothing must deliver no authority document")
+				return
+			}
+			require.NotNil(t, requests[0].Authority, "the declaration must produce a signed sidecar")
+
+			var policy compositionv1.AuthorityManifestV1
+			require.NoError(t, proto.Unmarshal(requests[0].Authority.GetDocument(), &policy))
+			require.Equal(t, tc.wantRole, policy.GetInstallationRole())
+			require.Len(t, policy.GetEdgeDependencies(), len(tc.wantEdges))
+			for i, want := range tc.wantEdges {
+				require.Equal(t, want[0], policy.GetEdgeDependencies()[i].GetModule(),
+					"edge %d module, in authored order", i)
+				require.Equal(t, want[1], policy.GetEdgeDependencies()[i].GetPresence(), "edge %d presence", i)
+			}
+		})
+	}
 }
 
 // TestTheProducedCarriersAgreeUnderAuthoritysRule runs the CLI's OWN two
