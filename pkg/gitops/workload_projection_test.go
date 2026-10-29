@@ -134,6 +134,190 @@ func renderedVolumeOf(t *testing.T, destination, service, volume string) (map[st
 	return nil, nil
 }
 
+// renderedContainerEnv is every env entry of one container of the rendered
+// unit, keyed by variable name.
+func renderedContainerEnv(t *testing.T, destination, service, container string) map[string]map[string]any {
+	t.Helper()
+	manifests, err := overlayManifests(filepath.Join(destination, "services", service, "overlays", "prod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range manifests {
+		if item.kind != kindDeployment {
+			continue
+		}
+		spec, _ := podSpec(item)
+		for _, entry := range sliceField(spec, "containers") {
+			found, _ := entry.(map[string]any)
+			if found["name"] != container {
+				continue
+			}
+			env := map[string]map[string]any{}
+			for _, raw := range sliceField(found, "env") {
+				if variable, _ := raw.(map[string]any); variable != nil {
+					name, _ := variable["name"].(string)
+					env[name] = variable
+				}
+			}
+			return env
+		}
+	}
+	// An absent container is not a failure: a single-container fixture has no
+	// sidecar, and a caller asserting "told nothing" reads an empty set.
+	return nil
+}
+
+// TestAnIdentityWorkloadIsToldWhereItsTokenIs is the Blue gateway failure:
+// the render mounted the projection correctly and told the process nothing,
+// so Hop's RunCredential — which reads CODEFLY__WORKLOAD_TOKEN_FILE and
+// refuses when it is absent, inferring no Kubernetes default — acquired no
+// publication lease and Front.Ready refused, on a Deployment whose
+// ServiceAccount, volume and mount were all right.
+//
+// The variable travels with the mount, into the SAME container, and its value
+// is derived from the mount and file rather than written twice, so the
+// projection and the path it advertises cannot drift. A native run is handed
+// the same variable name from the same constant.
+func TestAnIdentityWorkloadIsToldWhereItsTokenIs(t *testing.T) {
+	for name, generate := range map[string]func(context.Context, string) error{
+		"a kustomized overlay":     kustomizedWorkload(sidecarDeployment),
+		"an overlay of manifests":  renderWorkload(sidecarDeployment),
+		"a single-container agent": kustomizedWorkload(pinnedDeployment),
+	} {
+		t.Run(name, func(t *testing.T) {
+			destination := filepath.Join(t.TempDir(), "modules", "crm")
+			if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), generate); err != nil {
+				t.Fatal(err)
+			}
+
+			// The mount is the premise: without it the variable would name a
+			// file the container does not have.
+			volume, mounts := renderedVolume(t, destination, identityTokenVolume)
+			if volume == nil || len(mounts["api"]) != 1 {
+				t.Fatal("the workload projects no identity token into its api container")
+			}
+
+			env := renderedContainerEnv(t, destination, "api", "api")
+			entry, told := env[WorkloadTokenFileVariable]
+			if !told {
+				t.Fatalf("the api container is not told where its token is; it has %v", env)
+			}
+			if got := entry["value"]; got != projectedTokenPath() {
+				t.Errorf("%s = %v, want the mounted path %s", WorkloadTokenFileVariable, got, projectedTokenPath())
+			}
+			// The value must BE the mount's path, not a literal that happens
+			// to match it today.
+			if entry["value"] != mounts["api"][0]["mountPath"].(string)+"/"+identityTokenFile {
+				t.Errorf("%s = %v, which is not the file inside the mount at %v",
+					WorkloadTokenFileVariable, entry["value"], mounts["api"][0]["mountPath"])
+			}
+			// A path is a literal: any authored source for this key is cleared,
+			// or the container would read a ConfigMap value instead.
+			if source, present := entry["valueFrom"]; present && source != nil {
+				t.Errorf("%s carries valueFrom %v, want no source for a literal path", WorkloadTokenFileVariable, source)
+			}
+
+			// Only the container that holds the token is told about it.
+			if sidecar := renderedContainerEnv(t, destination, "api", "sidecar"); len(sidecar) > 0 {
+				if _, leaked := sidecar[WorkloadTokenFileVariable]; leaked {
+					t.Error("the sidecar is told where a token it does not mount is")
+				}
+			}
+		})
+	}
+}
+
+// A service no host admits is told nothing, because it is projected nothing:
+// the variable must never name a file that is not there. The module keeps an
+// identity service — a module with no workload at all is refused by its own
+// manifest — and the assertion is on the service that has none.
+func TestAServiceWithoutAnIdentityIsToldNoTokenPath(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	options := solutionRenderOptions(destination)
+	options.Units = promotableServiceGraph("crm", []string{"api", "worker"})
+	if _, err := RenderOwnedTree(context.Background(), options, kustomizedWorkloads(map[string]string{
+		"api":    pinnedDeployment,
+		"worker": strings.ReplaceAll(pinnedDeployment, "name: api", "name: worker"),
+	})); err != nil {
+		t.Fatal(err)
+	}
+	// api is the identity service and keeps its projection.
+	if volume, _ := renderedVolumeOf(t, destination, "api", identityTokenVolume); volume == nil {
+		t.Fatal("the identity service projects no token")
+	}
+	// worker is not one.
+	if volume, _ := renderedVolumeOf(t, destination, "worker", identityTokenVolume); volume != nil {
+		t.Fatal("a service with no identity projects a token")
+	}
+	if _, told := renderedContainerEnv(t, destination, "worker", "api")[WorkloadTokenFileVariable]; told {
+		t.Error("a service with no identity is told where a token it does not have is")
+	}
+}
+
+// TestTheTokenPathAllowanceIsExactlyOnePair holds the credential guard where
+// the allowance stops. The render exempts ONE name carrying ONE value, on a
+// container that mounts the token; everything adjacent stays refused, because
+// the exemption exists for a path and not for the word TOKEN.
+//
+// The two predicates are exercised directly: driving these through a whole
+// render refuses them earlier, on the hand-written mount, which would prove
+// the projection validator rather than the classification.
+func TestTheTokenPathAllowanceIsExactlyOnePair(t *testing.T) {
+	entry := func(name, value string) map[string]any {
+		return map[string]any{"name": name, "value": value}
+	}
+	for name, tc := range map[string]struct {
+		entry   map[string]any
+		allowed bool
+	}{
+		"the exact pair":                    {entry(WorkloadTokenFileVariable, projectedTokenPath()), true},
+		"a different value, same name":      {entry(WorkloadTokenFileVariable, "/etc/elsewhere/token"), false},
+		"a real token literal, same shape":  {entry("CODEFLY__WORKLOAD_TOKEN", "eyJhbGciOi.not.a.path"), false},
+		"the path under another name":       {entry("CODEFLY__SESSION_TOKEN", projectedTokenPath()), false},
+		"the mount directory, not the file": {entry(WorkloadTokenFileVariable, identityTokenMount), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if allowed := projectedTokenPathEntry(tc.entry); allowed != tc.allowed {
+				t.Errorf("projectedTokenPathEntry(%v) = %v, want %v", tc.entry, allowed, tc.allowed)
+			}
+			// Whatever the allowance says, a credential-named key still has to
+			// be classified as one: the exemption narrows the refusal, it does
+			// not reclassify the key.
+			if !isCredentialKey(tc.entry["name"].(string), true) {
+				t.Errorf("%v is no longer classified as a credential key", tc.entry["name"])
+			}
+		})
+	}
+}
+
+// The variable may only sit on the container that mounts the token: the
+// allowance above must not become a way to put the path anywhere.
+func TestTheTokenPathMustSitOnTheMountingContainer(t *testing.T) {
+	told := []any{map[string]any{"name": WorkloadTokenFileVariable, "value": projectedTokenPath()}}
+	mount := []any{map[string]any{"name": identityTokenVolume, "mountPath": identityTokenMount}}
+	for name, tc := range map[string]struct {
+		container map[string]any
+		refused   bool
+	}{
+		"told and mounting":      {map[string]any{"name": "api", "env": told, "volumeMounts": mount}, false},
+		"told, mounting nothing": {map[string]any{"name": "api", "env": told}, true},
+		"told, mounting elsewhere": {map[string]any{"name": "api", "env": told, "volumeMounts": []any{
+			map[string]any{"name": identityTokenVolume, "mountPath": "/somewhere/else"},
+		}}, true},
+		"mounting, told nothing": {map[string]any{"name": "api", "volumeMounts": mount}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := holdTokenPathToItsMount(tc.container, []string{"spec", "containers", "[0]"})
+			if tc.refused != (err != nil) {
+				t.Fatalf("refused=%v, want %v (err=%v)", err != nil, tc.refused, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "mounts no "+identityTokenVolume) {
+				t.Errorf("refusal does not name the missing mount: %v", err)
+			}
+		})
+	}
+}
+
 // TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken: an identity workload
 // proves who it is with a ServiceAccount token projected for the host's
 // audience — mounted at the path the SDK reads, ONLY into the container its

@@ -1284,8 +1284,15 @@ func inspectValueAllowingExpressions(
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) {
+		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) &&
+			!projectedTokenPathEntry(typed) {
 			return fmt.Errorf("%s.value contains credential value", strings.Join(path, "."))
+		}
+		// A container telling a process where its projected token is must be
+		// the container that mounts it, or the path names a file this
+		// workload does not have and the credential never resolves.
+		if err := holdTokenPathToItsMount(typed, path); err != nil {
+			return err
 		}
 		for key, child := range typed {
 			next := extendPath(path, key)
@@ -1426,6 +1433,61 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 //
 // One narrowing of core's classification is made here, and only here: a public
 // client identifier. See publicClientIdentifier.
+// holdTokenPathToItsMount refuses a container that declares the projected
+// token's path variable without mounting the token at that path.
+//
+// The allowance in projectedTokenPathEntry exempts one exact name and value
+// from the credential-literal refusal; this is what keeps that exemption from
+// becoming a way to put the variable anywhere. A sidecar beside the
+// authenticating container, or a workload no host admits, gets neither the
+// mount nor the variable — and if something hands it the variable alone, the
+// render says so here rather than at runtime, where it reads as a refused
+// credential rather than a missing file.
+func holdTokenPathToItsMount(container map[string]any, path []string) error {
+	entries := sliceField(container, "env")
+	if len(entries) == 0 {
+		return nil
+	}
+	declares := false
+	for _, raw := range entries {
+		if entry, _ := raw.(map[string]any); entry != nil && entry["name"] == WorkloadTokenFileVariable {
+			declares = true
+			break
+		}
+	}
+	if !declares {
+		return nil
+	}
+	for _, raw := range sliceField(container, "volumeMounts") {
+		mount, _ := raw.(map[string]any)
+		if mount != nil && mount["name"] == identityTokenVolume && mount["mountPath"] == identityTokenMount {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s declares %s and mounts no %s at %s, so the path names a file it does not have",
+		strings.Join(path, "."), WorkloadTokenFileVariable, identityTokenVolume, identityTokenMount)
+}
+
+// projectedTokenPathEntry reports whether an env entry is the render's own// projectedTokenPathEntry reports whether an env entry is the render's own
+// projected-token PATH: the one variable name Hop's RunCredential reads,
+// carrying exactly the path this render mounts the token at.
+//
+// isCredentialKey classifies that name as credential material because it
+// contains TOKEN, and a literal value under a credential-named key is
+// otherwise refused — correctly, since that is how a secret becomes a
+// plaintext manifest. A mount path is not secret material, so this corrects
+// the classification for one exact pair and nothing else: a different value
+// under the same name stays refused, as does every other credential-named key.
+//
+// It does not establish that the container holding it mounts the token —
+// validateProjectedTokenPaths does, over the rendered overlay, so a workload
+// told to read a file it does not have is refused there.
+func projectedTokenPathEntry(entry map[string]any) bool {
+	name, named := entry["name"].(string)
+	value, valued := entry["value"].(string)
+	return named && valued && name == WorkloadTokenFileVariable && value == projectedTokenPath()
+}
+
 func isCredentialKey(key string, configurationName bool) bool {
 	classify := resources.IsSensitiveKey
 	scanned := key

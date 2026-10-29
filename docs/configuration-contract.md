@@ -115,6 +115,39 @@ identity on a managed service uses
 service's own identity uses `["service-identity"]`.
 Proxy containers, image choices and loopback routing are not part of this contract.
 
+## The projected identity token, and the path that names it
+
+A workload a host admits proves who it is with a ServiceAccount token the
+render projects for the host's audience. Two things reach the container, and
+both are the render's:
+
+- the `codefly-workload-identity` volume, mounted read-only at
+  `/var/run/secrets/codefly`, with the token at `token` inside it; and
+- `CODEFLY__WORKLOAD_TOKEN_FILE`, carrying that file's full path.
+
+**The mount alone is not the contract.** The SDK's `ProjectedTokenFile` is a
+path *value* its caller supplies and reads no environment itself, and the
+consumer that presents the credential reads only this variable and refuses when
+it is absent — it infers no default path. A workload that mounts the token and
+is told nothing therefore acquires no publication lease, and its readiness
+refuses, with a correctly rendered volume and ServiceAccount. A native run is
+handed the same variable name, from the same constant, pointing at the path it
+writes the projection to; deployed and native differ only in the path.
+
+The value is derived from the mount and the filename rather than written twice,
+so the projection and the path it advertises cannot drift. Only the container
+that mounts the token is told about it — never a sidecar beside it.
+
+The variable's name contains `TOKEN`, so it is classified as a credential key,
+and a literal value under such a key is normally refused: that is how a secret
+would otherwise become a plaintext manifest. A mount path is not secret
+material, so the render admits **exactly one** pair — this variable name
+carrying exactly the path it mounts — and refuses everything adjacent: a
+different value under the same name, the same path under another
+credential-named key, a real token literal, and the variable on any container
+that does not mount the token at that path. There is no general exemption for
+`*_FILE` names and the classifier itself is unchanged.
+
 ## Public module artifacts
 
 A workspace configuration value may be **bound to a file in a composed
