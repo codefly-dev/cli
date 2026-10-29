@@ -215,6 +215,14 @@ playground: remote
 
 .PHONY: remote
 remote:
+	@test -n "$$NODE_AUTH_TOKEN" || { \
+	  echo "NODE_AUTH_TOKEN is not set. The page's kits are published to GitHub"; \
+	  echo "Packages, so the install needs a token with read:packages:"; \
+	  echo ""; \
+	  echo "    export NODE_AUTH_TOKEN=\$$(gh auth token)"; \
+	  echo ""; \
+	  echo "Without it npm answers 401 Unauthorized and says nothing about why."; \
+	  exit 1; }
 	cd services/fe-remote && npm install --no-audit --no-fund && npm run build
 	test -f services/fe-remote/dist/mf-manifest.json
 `, titleFromName(name), name, name, playgroundDir)
@@ -223,6 +231,7 @@ remote:
 func playgroundReadme(name string) string {
 	return fmt.Sprintf(`# %s — the playground
 
+	export NODE_AUTH_TOKEN=$(gh auth token)   # read:packages, for the page's kits
 	make playground
 
 Then open the address the EDGE prints:
@@ -238,6 +247,13 @@ Then open the address the EDGE prints:
 | `+"`authority/store`"+` | the authority's own store, where approvals persist |
 | `+"`%s/backend`"+` | this solution's entry service |
 | `+"`%s/web`"+` | the shell that serves the page, mounting the same `+"`./Page`"+` a host federates |
+
+## The token
+
+The page's kits (@codefly-dev/*) are published to GitHub Packages, and
+services/fe-remote/.npmrc reads NODE_AUTH_TOKEN for them. Without it npm
+answers "401 Unauthorized - unauthenticated" and names no cause, so
+make playground refuses to start until it is set.
 
 ## The two addresses that are not it
 

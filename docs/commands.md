@@ -2435,9 +2435,20 @@ What it creates:
 `services/fe-remote` — the `./Page` remote itself — is written by the solution
 agent, not by this command: it is an npm package, not a Codefly service.
 
-**Running it.** `make playground` builds the page's remote, starts the
-development authority and this solution, and prints the one address a browser
-opens:
+**Running it.**
+
+```sh
+export NODE_AUTH_TOKEN=$(gh auth token)   # read:packages, for the page's kits
+make playground
+```
+
+The token is a prerequisite, not a nicety: the page's `@codefly-dev/*` kits are
+published to GitHub Packages and the remote's `.npmrc` reads it, so without one
+npm answers `401 Unauthorized - unauthenticated` and names no cause. The
+playground refuses to start and says which command sets it.
+
+`make playground` builds the page's remote, starts the development authority
+and this solution, and prints the one address a browser opens:
 
 ```
 edge listening on :14581, routing 1 module(s)
