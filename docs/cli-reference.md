@@ -2038,10 +2038,10 @@ codefly delete service [flags]
 
 ## `codefly delivery`
 
-Manage delivery signing keys
+Manage delivery signing keys and send prepared delivery documents
 
 ```
-Manage the local keys used to sign delivery documents for a local cluster.
+Manage the local keys used to sign delivery documents for a local cluster, and send the prepared paired documents a render wrote to the host's composition interface.
 ```
 
 ```
@@ -2050,7 +2050,64 @@ codefly delivery <subcommand>
 
 Subcommands:
 
+- [`codefly delivery apply`](#codefly-delivery-apply)
 - [`codefly delivery key`](#codefly-delivery-key)
+- [`codefly delivery prepare`](#codefly-delivery-prepare)
+
+## `codefly delivery apply`
+
+Send prepared paired delivery documents to the host's composition interface
+
+```
+Send the prepared delivery documents under --documents to the host's composition
+interface (host.composition.v1.CompositionService/ApplyManifest) at --address.
+
+Each document is one ApplyManifestRequest carrying both signed halves — core's
+module manifest in its DSSE carrier, and the authority declaration signed
+against that carrier's exact bytes: method policies, scope ceilings, roles,
+owner-awareness, the installation selector and its person-context edges. Only
+this interface takes the pair. The host's legacy HTTP manifest route takes the
+Core half alone, so a module delivered that way reaches the host with no roles.
+
+A prepared document carries NO credential: a delivery credential is a
+projected ServiceAccount token with a lifetime of minutes, and one written into
+a rendered manifest would be a published secret and expired by the time the
+manifest synced. The credential is read from --identity-file at execution,
+once per request, so a token rotated between rounds is the one the next round
+sends. It is sent RAW, in the request's credential field, because the host adds
+the bearer scheme itself. It is never printed and never passed as an argument.
+
+Documents are sent in ROUNDS: every pending one once per round, then a pause
+that doubles up to --max-pause, until each is answered or --budget is spent, so
+a document the host keeps failing never keeps a later one — a withdrawal among
+them — from its first attempt. A refusal the host means (an invalid document, a
+refused carrier, a stale or rewritten generation, a withdrawal it keeps
+terminal) refuses that document and is not retried; only "not serving yet"
+(unavailable, out of time, out of capacity) is. The command fails when any
+document was not accepted, so a delivery that did not land fails the Job that
+ran it.
+
+The address is the host's delivery endpoint. A Connect endpoint is one: a
+Connect server answers the gRPC protocol on the same listener (h2c in
+plaintext), so --address is <host>:<port> of the endpoint the environment's
+host.delivery names, and --secure only when that endpoint serves TLS itself.
+```
+
+```
+codefly delivery apply [flags]
+```
+
+Flags:
+
+```
+      --address string             <host>:<port> of the host's delivery endpoint
+      --budget duration            Bound on the whole run (default 25m0s)
+      --documents string           Directory holding the prepared delivery documents (*.json)
+      --identity-file string       Path of the projected delivery credential, read at execution
+      --max-pause duration         Longest pause between rounds (default 1m0s)
+      --request-timeout duration   Bound on one call (default 30s)
+      --secure                     Dial with TLS, for a delivery endpoint that serves it itself
+```
 
 ## `codefly delivery key`
 
@@ -2062,6 +2119,51 @@ Create or load the machine's developer signing key and print its key ID and publ
 
 ```
 codefly delivery key [flags]
+```
+
+## `codefly delivery prepare`
+
+Prepare the paired delivery documents from a rendered delivery overlay
+
+```
+Write one prepared paired document per module manifest in a rendered delivery
+overlay, for 'codefly delivery apply' to send.
+
+Each document carries BOTH signed halves: the Core carrier the overlay already
+holds — settled at its generation by the publish that wrote it — and the
+authority declaration signed against that carrier's exact bytes, read from the
+modules themselves: method policies, scope ceilings, roles, owner-awareness,
+the installation selector and its person-context edges. Core's own manifest has
+no roles field, so this is the only way a module's roles reach a host.
+
+Nothing is re-rendered and no generation is re-settled: a manifest the overlay
+does not carry is not invented here, and a manifest whose carrier is unsigned
+is refused by name rather than prepared Core-only — a document that quietly
+dropped the authority half would reach the host looking like a success and
+compose a module with no roles.
+
+A withdrawal declares nothing and keeps its Core-only identity.
+
+The documents carry no credential. 'codefly delivery apply' reads it from the
+projection at execution.
+
+Signing uses release custody (VAULT_ADDR + VAULT_TOKEN +
+CODEFLY_RELEASE_TRANSIT_KEY, or CODEFLY_RELEASE_KMS_KEY). Pass --developer to
+sign with this machine's developer key instead, which only a local
+qualification host admits.
+```
+
+```
+codefly delivery prepare [flags]
+```
+
+Flags:
+
+```
+      --developer        Sign with this machine's developer key, for a local qualification host
+      --env string       Environment whose host the declarations are read for
+      --out string       Directory the prepared documents are written to
+      --overlay string   Rendered delivery overlay holding the module manifest carriers
 ```
 
 ## `codefly deploy`

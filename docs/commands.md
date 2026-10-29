@@ -787,6 +787,83 @@ machine key is returned on later calls.
 codefly delivery key
 ```
 
+### `codefly delivery prepare`
+
+Write the paired documents `codefly delivery apply` sends, from the carriers a
+render already settled and the declarations the modules themselves hold.
+
+Each document carries both signed halves: the Core carrier the overlay holds —
+settled at its generation by the publish that wrote it — and the authority
+declaration signed against that carrier's exact bytes, read from the modules:
+method policies, scope ceilings, roles, owner-awareness, the installation
+selector and its person-context edges. Core's own manifest has **no roles
+field**, so this is the only way a module's roles reach a host.
+
+Nothing is re-rendered and no generation is re-settled. A manifest the overlay
+does not carry is not invented here, and a manifest whose carrier is unsigned
+is **refused by name** rather than prepared Core-only — a document that quietly
+dropped the authority half would reach the host looking like a success and
+compose the module with no roles. A withdrawal declares nothing and keeps its
+Core-only identity.
+
+Signing uses release custody (`VAULT_ADDR` + `VAULT_TOKEN` +
+`CODEFLY_RELEASE_TRANSIT_KEY`, or `CODEFLY_RELEASE_KMS_KEY`). `--developer`
+signs with this machine's developer key instead, which only a local
+qualification host admits; it is never chosen implicitly, because a
+developer-signed document delivered to a real host is refused there, far from
+the cause.
+
+```bash
+codefly delivery prepare --overlay deployments/environments/blue/modules/wiki/delivery \
+  --out ./prepared --env blue
+codefly delivery prepare --overlay ./delivery --out ./prepared --env local --developer
+```
+
+### `codefly delivery apply`
+
+Send the prepared paired delivery documents a render wrote to the host's
+composition interface — `host.composition.v1.CompositionService/ApplyManifest`.
+This is what a cell's delivery Job runs.
+
+Each document is one `ApplyManifestRequest` carrying **both** signed halves:
+core's module manifest in its DSSE carrier, and the authority declaration
+signed against that carrier's exact bytes — method policies, scope ceilings,
+roles, owner-awareness, the installation selector and its person-context edges.
+Only this interface takes the pair. The host's legacy HTTP manifest route takes
+the Core half alone, so a module delivered that way reaches the host with no
+roles at all.
+
+A prepared document carries **no credential**. A delivery credential is a
+projected ServiceAccount token with a lifetime of minutes, and one written into
+a rendered manifest would be a published secret and expired by the time the
+manifest synced — so a document that holds one is refused rather than sent. The
+credential is read from `--identity-file` at execution, once per request, so a
+token rotated between rounds is the one the next round sends. It is sent raw in
+the request's credential field, because the host adds the bearer scheme itself,
+and it is never printed and never passed as an argument.
+
+Documents are sent in **rounds**: every pending one once per round, then a
+pause that doubles up to `--max-pause`, until each is answered or `--budget` is
+spent — so a document the host keeps failing never keeps a later one, a
+withdrawal among them, from its first attempt. A refusal the host means (an
+invalid document, a refused carrier, a stale or rewritten generation, a
+withdrawal it keeps terminal) refuses that document and is not retried; only
+"not serving yet" — unavailable, out of time, out of capacity — is. The command
+fails when any document was not accepted, so a delivery that did not land fails
+the Job that ran it.
+
+`--address` is `<host>:<port>` of the endpoint the environment's `host.delivery`
+names. A Connect endpoint is one: a Connect server answers the gRPC protocol on
+the same listener (h2c in plaintext). Pass `--secure` only for a delivery
+endpoint that serves TLS itself.
+
+```bash
+codefly delivery apply --documents /etc/codefly/delivery \
+  --address accounts.platform.svc.cluster.local:8081 \
+  --identity-file /var/run/secrets/codefly/delivery-token
+codefly delivery apply --documents ./prepared --address localhost:8081 --identity-file ./token --budget 2m
+```
+
 ### `codefly run cluster [module...]`
 
 Run the composition on the environment's local **k3d** cluster through the same

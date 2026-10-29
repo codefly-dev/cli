@@ -688,13 +688,70 @@ emitter older than the field rather than a cell without one.
 is.** `renderDeliveryJob` names `/platform/_delivery/manifest` regardless, so a
 `host.delivery` naming a `connect` endpoint renders a Job whose POST that
 endpoint does not route: the 404 is not in the verdict set, so it is retried
-every round until the budget is spent and the Job fails. The Job is also not a
+every round until the budget is spent and the Job fails. That Job is also not a
 qualified paired producer — it carries the Core signed carrier alone, and a
 module's roles exist only on the proto sidecar the composition interface
-carries — so a module delivered this way reaches the host with no roles at all.
-Both facts are the same gap: the render never reads the declared endpoint's
-`api`, and the one producer that speaks the composition interface
-(`CompositionDelivery`) is wired only into a native run.
+carries, since core's own `Authority` has no roles field — so a module
+delivered that way reaches the host with no roles at all.
+
+## The paired delivery
+
+A paired delivery carries BOTH signed documents to the host's composition
+interface: the Core carrier, and the authority declaration signed against that
+carrier's exact bytes. It is the only delivery that carries a module's roles.
+
+Two verbs, because the halves are signed where release custody is and sent from
+inside the cell, after the module's workloads exist:
+
+- **`codefly delivery prepare`** reads the carriers a render settled in a
+  delivery overlay and the declarations the modules hold, and writes one
+  `ApplyManifestRequest` per manifest. The authority half is stamped with the
+  module, the generation and the digest of the exact Core bytes beside it
+  (`SignedAuthorityDocument`), so a signed authority cannot be replayed against
+  another manifest, generation or module. A carrier with no signature is
+  refused by name rather than prepared Core-only. A withdrawal declares nothing
+  and keeps its Core-only identity.
+- **`codefly delivery apply`** sends them to
+  `host.composition.v1.CompositionService/ApplyManifest`. A Connect endpoint is
+  a gRPC endpoint: a Connect server answers the gRPC protocol on the same
+  listener (h2c in plaintext), so `--address` is the `<host>:<port>` of the
+  endpoint `host.delivery` names.
+
+**The credential is the one field that cannot travel between those moments.** A
+delivery credential is a projected ServiceAccount token with a lifetime of
+minutes; one written into a rendered manifest would be a published secret and
+expired by the time the manifest synced. So a prepared document carries
+`credential: ""`, the sender refuses a document that holds one, and the token is
+read from the projection AT EXECUTION — once per request, so a rotation between
+rounds is sent on the next one. It goes RAW, with no bearer scheme, because the
+host adds the scheme itself before it authorizes the carrier. It is never
+printed, never an argument, and never in an error.
+
+**One rule, two producers.** A native run and a prepared document are the two
+producers of the authority half, and the host compares the pair under a single
+rule, so the binding (`SignedAuthorityDocument`) and the five declarations read
+(`AuthoritySources`) are each one implementation used by both. Two copies would
+be two ways to disagree with a rule neither producer can see.
+
+**Retry and refusal.** Documents are sent in rounds — every pending one once
+per round, a pause that doubles, until each is answered or the budget is spent —
+so a document the host keeps failing never keeps a later one, a withdrawal
+among them, from its first attempt. Only "not serving yet" is retried
+(`HostStatusError.Transient`: unavailable, out of time, out of capacity). Every
+other code is the host's answer: an invalid document, a refused carrier, a
+stale or rewritten generation, a withdrawal it keeps terminal. `FailedPrecondition`
+is among them, and it is the status a Connect transport renders as **412** —
+which the shell runner's verdict set (`400|401|403|409|422`) did not hold, so it
+retried a terminal refusal until the budget was gone.
+
+**What is not wired yet.** The render still emits the curl Job: `writeManifestSet`
+does not yet write prepared documents or name these verbs, so a GitOps rollout
+takes the Core-only route until it does. And the delivery Job's image cannot run
+these verbs today — `ghcr.io/codefly-dev/codefly@sha256:8fcaaea3…` carries
+`/bin/codefly`, but it is a glibc executable in an Alpine (musl) image with no
+glibc loader, so it fails to exec on both `linux/amd64` (`/lib64` absent) and
+`linux/arm64`. Until that image ships a runnable binary, the paired verbs run
+from a CLI outside the Job.
 
 ## The module envelope
 
