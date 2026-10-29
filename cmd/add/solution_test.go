@@ -577,3 +577,21 @@ func TestThePlaygroundBuildsTheRemoteFirst(t *testing.T) {
 		}
 	}
 }
+
+// TestThePlaygroundRefusesWithoutTheRegistryToken. The page's kits are
+// published to GitHub Packages and the remote's .npmrc reads
+// NODE_AUTH_TOKEN, so without it npm answers "401 Unauthorized -
+// unauthenticated" and names no cause. The playground says so itself rather
+// than letting a newcomer meet that.
+func TestThePlaygroundRefusesWithoutTheRegistryToken(t *testing.T) {
+	makefile := playgroundMakefile("notes")
+	if !strings.Contains(makefile, "NODE_AUTH_TOKEN") {
+		t.Fatalf("the remote target must check for the registry token:\n%s", makefile)
+	}
+	if !strings.Contains(makefile, "gh auth token") {
+		t.Fatal("the refusal must name the command that sets it")
+	}
+	if !strings.Contains(playgroundReadme("notes"), "NODE_AUTH_TOKEN") {
+		t.Fatal("the playground README must state the token as a prerequisite")
+	}
+}
