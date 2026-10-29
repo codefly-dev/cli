@@ -5114,9 +5114,9 @@ the recipe and makes no upstream fallback claim. Output images still use
 contains no credentials.
 
 The running agent must advertise `base-image-bindings/v1` and its loaded service's
-roles and recipe variants. A native Go service exposes `runtime`; a static Go
-service exposes `runtime-support` for the files assembled into its scratch
-runtime. Selecting the wrong role or an unsupported variant refuses. The CLI
+roles and recipe variants. Go services expose a stable `runtime` input, so one
+type-wide binding covers native and static services. Native services use it as
+the final-stage base; static services use it only to assemble files for scratch. Selecting the wrong role or an unsupported variant refuses. The CLI
 checks FROM, external COPY, RUN mount sources and the Dockerfile frontend against
 the selected references before prefetch/build. Agents render recipes; the CLI
 does not rewrite them. Existing agents without this contract continue to work
