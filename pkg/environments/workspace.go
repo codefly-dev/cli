@@ -352,14 +352,6 @@ func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace
 	return nil
 }
 
-// ServicesByName exposes the workspace's service-name index to callers outside
-// this package — `codefly environment import` resolves an explicit retirement
-// directive's destination against the same graph the validators use, rather
-// than building a second notion of which services exist.
-func ServicesByName(ctx context.Context, workspace *resources.Workspace) (map[string][]string, error) {
-	return servicesByName(ctx, workspace)
-}
-
 // servicesByName indexes the workspace's services by bare name, each entry the
 // distinct module-qualified uniques carrying that name, sorted. Reading the module
 // references rather than loading each service is enough: this answers which
