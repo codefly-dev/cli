@@ -124,7 +124,12 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	file := cellfile.File{
 		Schema: cellfile.Schema, Environment: env.Name,
 		Coordinate: env.Host.Coordinate, Component: env.Host.Component, Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
-		Source: cellSource(ctx, workspace, env),
+		// Verbatim: the cell says WHICH endpoint is the delivery API, and its
+		// consumer resolves that named endpoint itself. isDeliveryVerifier
+		// below marks the workload that serves it but drops the endpoint name,
+		// which left a consumer nothing to resolve and no choice but to guess.
+		DeliveryTarget: env.Host.Delivery,
+		Source:         cellSource(ctx, workspace, env),
 	}
 	result := CellResult{Source: file.Source != nil, ConfiguredEdges: configured}
 	for _, entry := range entries {

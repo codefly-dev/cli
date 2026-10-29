@@ -670,6 +670,32 @@ units; the module that serves the delivery API itself (`hostsDelivery`)
 follows its units. What is not verified: no parent application has run this
 ordering against a real readiness model.
 
+**The cell file names the delivery endpoint, and carries no port.** The cell's
+top-level `delivery_target` is the `host.delivery` identity verbatim —
+`<module>/<service>/<endpoint>`, the same spelling the render resolves. A
+consumer deriving what may reach the delivery API resolves that named endpoint
+on the named service itself, as the render does; the document states no address
+and no port, because a port here is the hardcoding the cell file exists to
+remove. The per-workload `verifier` flag cannot stand in for it: one workload
+serves every endpoint of its service, so the flag is identical whichever
+endpoint the host names, and a consumer holding only the flag has to guess the
+endpoint — by its `api`, which is how a `connect`-typed delivery API came to be
+granted on a REST port. The field is always written, since a host block without
+a well-formed delivery identity does not validate, so its absence means an
+emitter older than the field rather than a cell without one.
+
+**The rendered Job posts a REST path, whatever the declared endpoint's api
+is.** `renderDeliveryJob` names `/platform/_delivery/manifest` regardless, so a
+`host.delivery` naming a `connect` endpoint renders a Job whose POST that
+endpoint does not route: the 404 is not in the verdict set, so it is retried
+every round until the budget is spent and the Job fails. The Job is also not a
+qualified paired producer — it carries the Core signed carrier alone, and a
+module's roles exist only on the proto sidecar the composition interface
+carries — so a module delivered this way reaches the host with no roles at all.
+Both facts are the same gap: the render never reads the declared endpoint's
+`api`, and the one producer that speaks the composition interface
+(`CompositionDelivery`) is wired only into a native run.
+
 ## The module envelope
 
 The module envelope is what a host grants each module principal: one

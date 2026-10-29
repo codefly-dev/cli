@@ -658,3 +658,39 @@ func TestThePreparedRunnableReachIsAConsumerEdge(t *testing.T) {
 		require.EqualError(t, err, "module shop derived operation shop-workload-sync: service api publishes it on endpoint workload, which that service does not declare")
 	})
 }
+
+// The cell must say WHICH endpoint is the delivery API, not only which
+// workload serves it. A consumer deriving what may reach the delivery API has
+// to resolve a port, and the verifier flag alone leaves it nothing to resolve:
+// one workload serves every endpoint of its service, so the flag is identical
+// whichever endpoint the host names. A consumer with only that fact must guess
+// — by the endpoint's api, which is how a connect-typed delivery API came to
+// be granted on a REST port — so the name is carried verbatim, resolved by
+// whoever reads it.
+func TestTheCellNamesTheDeliveryEndpointAndNotOnlyItsWorkload(t *testing.T) {
+	host := "      delivery: billing/ledger/http"
+	for _, declared := range []string{"billing/ledger/http", "billing/ledger/grpc"} {
+		t.Run(declared, func(t *testing.T) {
+			workspace := writeCellWorkspace(t, [3]string{
+				resources.WorkspaceConfigurationName, host, "      delivery: " + declared,
+			})
+			env := selectedEnvironment(t, workspace, "staging")
+			renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+			renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+			result, err := RenderCell(context.Background(), workspace, env)
+			require.NoError(t, err)
+			data, err := os.ReadFile(result.Path)
+			require.NoError(t, err)
+			file, err := cellfile.Parse(data)
+			require.NoError(t, err)
+			require.Equal(t, declared, file.DeliveryTarget,
+				"the host block's delivery identity, verbatim: the same <module>/<service>/<endpoint> spelling the render resolves, never an address or a port")
+			require.Contains(t, string(data), "delivery_target: "+declared)
+			ledger := file.Namespaces[0].Workloads[0]
+			require.True(t, ledger.Verifier,
+				"the same workload serves both endpoints, so the verifier flag is identical either way and cannot say which endpoint the host named")
+			require.Equal(t, []string{"grpc", "http"}, []string{ledger.Endpoints[0].Name, ledger.Endpoints[1].Name},
+				"and both endpoints are inventoried either way, so neither is distinguishable by its presence")
+		})
+	}
+}

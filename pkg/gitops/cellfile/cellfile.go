@@ -30,14 +30,25 @@ const FileName = "cell.yaml"
 // File is the whole cell: one header naming the host, and one namespace entry
 // per module delivered to it, sorted by namespace name.
 type File struct {
-	Schema      string      `yaml:"schema"`
-	Coordinate  string      `yaml:"coordinate"`
-	Component   string      `yaml:"component"`
-	Environment string      `yaml:"environment"`
-	Source      *Source     `yaml:"source,omitempty"`
-	Domain      string      `yaml:"domain,omitempty"`
-	TrustDomain string      `yaml:"trust_domain"`
-	Namespaces  []Namespace `yaml:"namespaces"`
+	Schema      string  `yaml:"schema"`
+	Coordinate  string  `yaml:"coordinate"`
+	Component   string  `yaml:"component"`
+	Environment string  `yaml:"environment"`
+	Source      *Source `yaml:"source,omitempty"`
+	Domain      string  `yaml:"domain,omitempty"`
+	TrustDomain string  `yaml:"trust_domain"`
+	// DeliveryTarget is the composition identity of the host's delivery API —
+	// "<module>/<service>/<endpoint>" — mirrored VERBATIM from the
+	// environment's host block, never resolved to an address or a port here.
+	// A consumer deriving what may reach the delivery API resolves the NAMED
+	// endpoint on the named service, the way the render does: a port in this
+	// document would be the hardcoding the cell file exists to remove, and
+	// guessing the endpoint by its api is how a connect-typed delivery API
+	// came to be granted on a REST port. It is always present: a host block
+	// without a well-formed delivery identity does not validate, so absence
+	// means an emitter older than this field rather than a cell without one.
+	DeliveryTarget string      `yaml:"delivery_target"`
+	Namespaces     []Namespace `yaml:"namespaces"`
 }
 
 // Source is the composition-owned repository, the branch the rendered trees
