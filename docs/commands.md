@@ -2766,37 +2766,6 @@ environment no longer holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
-**A service key the contract re-keyed is retired.** Because maps merge by key,
-a producer that re-spells a service-scoped entry — `object-storage` becoming
-`documents/object-storage` under `service-config`, `service-identity`,
-`service-mesh` or `service-secrets` — would otherwise leave *both*. The bare
-key then resolves against a workspace that may compose two services of that
-name and is refused as ambiguous, and re-importing could not clear it, because
-import is what preserved it. So the import withdraws the bare key, but only
-when it can tell that is what happened, and only when nothing is lost:
-
-- the key is bare, and the contract no longer declares it;
-- the contract declares **exactly one** qualified key whose service name is
-  that bare name; and
-- the two decode to the same value.
-
-A contract declaring a qualified key does not prove the bare key was ever the
-contract's, so nothing else is reconciled by inference:
-
-- **Several qualified keys share the name** — say the contract declares both
-  `documents/object-storage` and `saas/object-storage`. Which one the bare key
-  meant is recorded nowhere, so the import is refused and names them all
-  rather than picking one.
-- **The values differ** — the operator may have edited one. The import is
-  refused and names both, so the choice stays theirs.
-- **No qualified key shares the name** — the key is the operator's, and it is
-  left exactly as it is.
-
-Both refusals happen before anything is written, so a workspace is never left
-half-reconciled. Values are compared by what they mean, not by their bytes:
-comments, key order and indentation never make equal values look like a
-conflict.
-
 An import re-serializes only the selected environment item. Surrounding workspace
 bytes remain unchanged; a provenance comment records the coordinate and
 import time. `--dry-run` prints the diff without writing. After a write, workspace

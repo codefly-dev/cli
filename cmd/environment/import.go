@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -256,9 +255,6 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		withdrawOwnedAbsences(envNode, declaredEnvironment, contractOwnedOptional, false)
 		if intent != nil {
 			withdrawOwnedAbsences(envNode, declaredEnvironment, productOwnedOptional, true)
-		}
-		if err := withdrawRenamedServiceKeys(envNode, declaredEnvironment); err != nil {
-			return err
 		}
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
@@ -518,108 +514,6 @@ func withdrawOwnedAbsences(target, declaration *yaml.Node, owned map[string][]st
 			}
 		}
 	}
-}
-
-// serviceScopedBlocks are the environment blocks whose `services` map is keyed
-// by service name, and which therefore go ambiguous when two modules compose a
-// service of the same name.
-var serviceScopedBlocks = []string{"service-config", "service-identity", "service-mesh", "service-secrets"}
-
-// withdrawRenamedServiceKeys retires a BARE service key that the contract has
-// replaced with a module-qualified one.
-//
-// applyContractFields merges: it sets what the declaration carries and removes
-// nothing. So when a producer re-keys `object-storage` as
-// `documents/object-storage`, an import ADDS the qualified key and KEEPS the
-// bare one. The bare key then resolves against a workspace that composes two
-// services of that name and is refused as ambiguous — and re-importing cannot
-// clear it, because import is exactly what preserved it.
-//
-// THE OWNERSHIP RULE, which is deliberately narrow: a contract declaration does
-// not prove that a bare key was ever the contract's. All that is inferred here
-// is a rename, and only when all three hold —
-//
-//  1. the key is bare and the contract no longer declares it;
-//  2. the contract declares EXACTLY ONE qualified key whose service name is
-//     that bare name, so there is one destination and nothing to choose; and
-//  3. the bare key and that one destination decode to the same value, so
-//     withdrawing the bare key discards nothing.
-//
-// Anything else is left on disk or refused, never reconciled by guesswork:
-//
-//   - Several qualified keys share the basename: the bare key could have meant
-//     any of them, so the import is refused and names them all. Picking the
-//     first or last would be arbitrary.
-//   - The values differ: the operator may have edited one, so the import is
-//     refused and names both.
-//   - No qualified key shares the basename: the key is the operator's and is
-//     left exactly as it is.
-//
-// A refusal happens before anything is written, so the workspace is never left
-// half-reconciled.
-func withdrawRenamedServiceKeys(target, declaration *yaml.Node) error {
-	for _, block := range serviceScopedBlocks {
-		declaredBlock, currentBlock := yamledit.MapValue(declaration, block), yamledit.MapValue(target, block)
-		if declaredBlock == nil || currentBlock == nil {
-			continue
-		}
-		declaredServices, currentServices := yamledit.MapValue(declaredBlock, "services"), yamledit.MapValue(currentBlock, "services")
-		if declaredServices == nil || currentServices == nil || currentServices.Kind != yaml.MappingNode {
-			continue
-		}
-		// EVERY qualified destination per bare name, never just one: a map
-		// keyed by basename would silently keep whichever came last.
-		destinations := map[string][]string{}
-		values := map[string]*yaml.Node{}
-		for i := 0; i+1 < len(declaredServices.Content); i += 2 {
-			key := declaredServices.Content[i].Value
-			if _, name, qualified := strings.Cut(key, "/"); qualified {
-				destinations[name] = append(destinations[name], key)
-				values[key] = declaredServices.Content[i+1]
-			}
-		}
-		for i := 0; i+1 < len(currentServices.Content); {
-			key := currentServices.Content[i].Value
-			named := destinations[key]
-			if strings.Contains(key, "/") || len(named) == 0 || yamledit.MapValue(declaredServices, key) != nil {
-				i += 2
-				continue
-			}
-			if len(named) > 1 {
-				return fmt.Errorf("%s declares %q and the contract declares %s: which one the bare key meant is not recorded anywhere, "+
-					"so remove %q from the workspace yourself rather than have the import choose",
-					block, key, strings.Join(named, " and "), key)
-			}
-			same, err := sameYAML(currentServices.Content[i+1], values[named[0]])
-			if err != nil {
-				return err
-			}
-			if !same {
-				return fmt.Errorf("%s names both %q and its replacement %q with different values; "+
-					"remove whichever is stale from the workspace before importing, so the import does not choose for you",
-					block, key, named[0])
-			}
-			currentServices.Content = append(currentServices.Content[:i], currentServices.Content[i+2:]...)
-		}
-	}
-	return nil
-}
-
-// sameYAML compares two nodes by the VALUE they decode to, not by their
-// serialized form. One side is parsed from the workspace file and the other
-// freshly encoded from the contract, so they differ in style, indentation,
-// tags and comments even when they say the same thing; comparing their bytes
-// would report a conflict for every rename and refuse imports that have
-// nothing to reconcile.
-func sameYAML(first, second *yaml.Node) (bool, error) {
-	var left, right any
-	if err := first.Decode(&left); err != nil {
-		return false, err
-	}
-	if err := second.Decode(&right); err != nil {
-		return false, err
-	}
-	return reflect.DeepEqual(left, right), nil
 }
 
 // applyProductIntent adds the product intent's decisions, when one was passed,
