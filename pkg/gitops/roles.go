@@ -59,7 +59,40 @@ func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 	return out, nil
 }
 
-// OwnerAware reads the module's explicit declaration that it checks resource
+// InstallationDeclaration reads a module's installation declaration from its
+// own contract: the agent's standing role selector and the modules it reaches
+// with the person's Work Context.
+//
+// Both are carried VERBATIM. Core validated them already (contracts/module
+// rules.go: strict literal selector, no trim or case-fold, a named selector
+// held to a declared role), and the paired agreement rule compares this
+// document against the Core signed manifest byte-for-byte — empty and "none"
+// differ, nil and [] are equivalent zero edges. So nothing here trims,
+// defaults, sorts, deduplicates or resolves: an edge's Module is the signed
+// principal the host resolves through its catalogue, never a name, a binding
+// id or a release.
+//
+// No contract means no declaration, which is distinct from a contract
+// declaring none.
+func InstallationDeclaration(dir string) (string, []*compositionv1.EdgeDependencyV1, error) {
+	contract, err := ownContract(dir)
+	if err != nil || contract == nil {
+		return "", nil, err
+	}
+	edges := make([]*compositionv1.EdgeDependencyV1, 0, len(contract.EdgeDependencies))
+	for _, edge := range contract.EdgeDependencies {
+		edges = append(edges, &compositionv1.EdgeDependencyV1{Module: edge.Module, Presence: edge.Presence})
+	}
+	if len(edges) == 0 {
+		// nil and [] are equivalent zero edges, and a repeated proto field
+		// cannot carry the difference; deliver nil so the two spellings
+		// serialize identically.
+		edges = nil
+	}
+	return contract.InstallationRole, edges, nil
+}
+
+// OwnerAware reads the module's explicit declaration that it checks resource// OwnerAware reads the module's explicit declaration that it checks resource
 // owners. No contract or an omitted declaration means false, never an inference
 // from the presence of roles or installation-owned scopes.
 func OwnerAware(dir string) (bool, error) {

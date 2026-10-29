@@ -36,6 +36,11 @@ type CompositionDelivery struct {
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
 	// ownerAware reads the module's explicit owner-selector enforcement declaration.
 	ownerAware func(ctx context.Context, module string) (bool, error)
+	// installation reads the module's installation declaration: the standing
+	// role selector and the person-context edges it reaches. Carried verbatim
+	// — the paired agreement rule compares this document against the Core
+	// signed manifest byte-for-byte.
+	installation func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error)
 
 	mu      sync.Mutex
 	applied map[string]AppliedManifest
@@ -47,13 +52,18 @@ type CompositionDelivery struct {
 // actions on each of its own resource kinds, read by ceilings from its module
 // contract (core's manifest names the kinds alone), and the roles a solution
 // declares, read by roles from its module contract too (core's manifest
-// carries none), and its explicit owner-aware declaration.
+// carries none), and its explicit owner-aware declaration, and the
+// installation declaration read by installation from that contract — the
+// selector and person-context edges, carried verbatim because the paired
+// agreement rule compares this document against the Core signed manifest
+// byte-for-byte.
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error),
-	ownerAware func(ctx context.Context, module string) (bool, error)) *CompositionDelivery {
-	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, ownerAware: ownerAware, applied: map[string]AppliedManifest{}}
+	ownerAware func(ctx context.Context, module string) (bool, error),
+	installation func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error)) *CompositionDelivery {
+	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, ownerAware: ownerAware, installation: installation, applied: map[string]AppliedManifest{}}
 }
 
 func (c *CompositionDelivery) post(ctx context.Context, module string, signed *solutionhost.Signed, token string, declaration []byte) (Receipt, error) {
@@ -139,11 +149,21 @@ func (c *CompositionDelivery) declaration(ctx context.Context, module string) ([
 			return nil, err
 		}
 	}
-	if !declared && len(ceilings) == 0 && len(roles) == 0 && !ownerAware {
+	var installationRole string
+	var edges []*compositionv1.EdgeDependencyV1
+	if c.installation != nil {
+		var err error
+		if installationRole, edges, err = c.installation(ctx, module); err != nil {
+			return nil, err
+		}
+	}
+	if !declared && len(ceilings) == 0 && len(roles) == 0 && !ownerAware &&
+		installationRole == "" && len(edges) == 0 {
 		return nil, nil
 	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
 		Methods: methods, ScopeCeilings: ceilings, Roles: roles, OwnerAware: ownerAware,
+		InstallationRole: installationRole, EdgeDependencies: edges,
 	})
 }
 

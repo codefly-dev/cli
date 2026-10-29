@@ -643,6 +643,13 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 				return false, err
 			}
 			return gitops.OwnerAware(dir)
+		},
+		func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error) {
+			dir, err := load(ctx, module)
+			if err != nil {
+				return "", nil, err
+			}
+			return gitops.InstallationDeclaration(dir)
 		})
 }
 

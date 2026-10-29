@@ -232,7 +232,7 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
 		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
 		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) },
-		func(context.Context, string) (bool, error) { return OwnerAware(dir) })
+		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil)
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},
