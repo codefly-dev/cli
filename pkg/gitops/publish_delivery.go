@@ -96,6 +96,14 @@ type deliveryPublishOptions struct {
 	// publish that may not deliver unsigned gives when its signer had no
 	// identity. Empty means the release workflow.
 	Signs string
+	// Declarations reads a module's own declaration — the authority half of a
+	// paired delivery. It is read only where the host's delivery endpoint
+	// declares codefly.dev/composition (Target.Composition), because that is
+	// the only interface that takes the pair. nil leaves a paired publish
+	// unable to prepare, and it refuses rather than deliver the Core half
+	// alone: a module delivered Core-only reaches the host with no roles and
+	// looks like a success.
+	Declarations *AuthoritySources
 }
 
 // unsignedRefusal is the refusal of a publish that may not deliver unsigned
@@ -227,7 +235,7 @@ func settleManifests(
 	if err != nil {
 		return nil, nil, err
 	}
-	files, err := writeManifestSet(target, overlay, inventory, settled, names, opts)
+	files, err := writeManifestSet(ctx, target, overlay, inventory, settled, names, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -470,8 +478,10 @@ func signCarrier(ctx context.Context, what string, payload []byte, carrier *[]by
 }
 
 // writeManifestSet writes the settled manifests, the delivery account and the
-// Job that POSTs every signed carrier, and returns the overlay's file list.
-func writeManifestSet(target, overlay string, inventory *Inventory, settled map[string]deliveredManifest, names []string, opts *deliveryPublishOptions) ([]string, error) {
+// Job that delivers every signed carrier — toward a host that declares
+// codefly.dev/composition, as one paired document per carrier — and returns
+// the overlay's file list.
+func writeManifestSet(ctx context.Context, target, overlay string, inventory *Inventory, settled map[string]deliveredManifest, names []string, opts *deliveryPublishOptions) ([]string, error) {
 	directory := filepath.Join(target, filepath.FromSlash(overlay))
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create delivery overlay: %w", err)
@@ -481,6 +491,11 @@ func writeManifestSet(target, overlay string, inventory *Inventory, settled map[
 		return nil, err
 	}
 	defer tree.Close()
+	paired := opts.Target != nil && opts.Target.Composition
+	if paired && opts.Declarations == nil {
+		return nil, fmt.Errorf("the delivery endpoint %s declares %s, which takes both signed halves, and this publish was given no way to read module declarations; it will not deliver the Core half alone, because a module delivered that way reaches the host with no roles",
+			opts.Target.Address, CompositionInterface)
+	}
 	var files []string
 	var documents []deliveryDocument
 	var carriers [][]byte
@@ -491,12 +506,38 @@ func writeManifestSet(target, overlay string, inventory *Inventory, settled map[
 			return nil, writeErr
 		}
 		files = append(files, file)
-		if len(entry.carrier) > 0 {
+		if len(entry.carrier) == 0 {
+			continue
+		}
+		if !paired {
 			documents = append(documents, deliveryDocument{
 				ConfigMap: moduleManifestConfigMapName(binding), Key: solutionhost.SignedFileName, Name: binding + ".json",
 			})
 			carriers = append(carriers, entry.carrier)
+			continue
 		}
+		// The paired document: both signed halves in one ApplyManifestRequest,
+		// in its own ConfigMap beside the manifest's (pairedDocumentConfigMapName
+		// says why), so the Job mounts one file per binding and the authority
+		// half travels with the Core bytes it was signed against.
+		var declaration []byte
+		if !entry.manifest.Removed {
+			if declaration, err = opts.Declarations.Declaration(ctx, entry.manifest.Alias); err != nil {
+				return nil, fmt.Errorf("read the declaration of module %s: %w", entry.manifest.Alias, err)
+			}
+		}
+		pair, pairErr := PreparedPairedDocument(entry.carrier, declaration, resolvedSigner(opts))
+		if pairErr != nil {
+			return nil, pairErr
+		}
+		if err = writePairedDocumentInTree(tree, directory, inventory.Namespace, binding, pair); err != nil {
+			return nil, err
+		}
+		files = append(files, pairedDocumentFile(binding))
+		documents = append(documents, deliveryDocument{
+			ConfigMap: pairedDocumentConfigMapName(binding), Key: PairedDocumentKey, Name: binding + ".json",
+		})
+		carriers = append(carriers, pair)
 	}
 	if opts.Target == nil {
 		return files, nil

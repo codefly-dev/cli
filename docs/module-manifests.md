@@ -357,8 +357,11 @@ no second parser: core validates the declaration once, the CLI carries it, and
 authority refuses any delivery whose two documents disagree. A declaration is
 reason enough for an authority document to exist: a unit whose only policy is an
 installation declaration still delivers one. Paired delivery of these fields
-requires a host reader that reads them; the rendered-manifest delivery job is
-not qualified as a paired producer.
+requires a host reader that reads them: a publish toward a host whose delivery
+endpoint declares `codefly.dev/composition` renders the paired Job (see
+[The paired delivery](#the-paired-delivery)); toward any other host the
+rendered-manifest delivery Job carries the Core half alone and is not a paired
+producer.
 
 **A solution's roles are part of its contract.** A unit a person uses declares
 the roles a person may hold on an installation of it in the same
@@ -684,12 +687,14 @@ granted on a REST port. The field is always written, since a host block without
 a well-formed delivery identity does not validate, so its absence means an
 emitter older than the field rather than a cell without one.
 
-**The rendered Job posts a REST path, whatever the declared endpoint's api
-is.** `renderDeliveryJob` names `/platform/_delivery/manifest` regardless, so a
-`host.delivery` naming a `connect` endpoint renders a Job whose POST that
-endpoint does not route: the 404 is not in the verdict set, so it is retried
-every round until the budget is spent and the Job fails. That Job is also not a
-qualified paired producer — it carries the Core signed carrier alone, and a
+**Which Job a publish renders is the host's declaration.** When the endpoint
+`host.delivery` names declares `codefly.dev/composition` (`HostImplements`, the
+one reader a native run uses too), the manifest Job runs the paired runner —
+see [The paired delivery](#the-paired-delivery). Otherwise it runs the shell
+runner, which POSTs `/platform/_delivery/manifest` whatever the endpoint's api
+is: a `connect` endpoint that declares no composition interface does not route
+that POST, the 404 is not in the verdict set, and the Job retries it until the
+budget is spent. The shell runner carries the Core signed carrier alone, and a
 module's roles exist only on the proto sidecar the composition interface
 carries, since core's own `Authority` has no roles field — so a module
 delivered that way reaches the host with no roles at all.
@@ -744,14 +749,44 @@ is among them, and it is the status a Connect transport renders as **412** —
 which the shell runner's verdict set (`400|401|403|409|422`) did not hold, so it
 retried a terminal refusal until the budget was gone.
 
-**What is not wired yet.** The render still emits the curl Job: `writeManifestSet`
-does not yet write prepared documents or name these verbs, so a GitOps rollout
-takes the Core-only route until it does. And the delivery Job's image cannot run
-these verbs today — `ghcr.io/codefly-dev/codefly@sha256:8fcaaea3…` carries
-`/bin/codefly`, but it is a glibc executable in an Alpine (musl) image with no
-glibc loader, so it fails to exec on both `linux/amd64` (`/lib64` absent) and
-`linux/arm64`. Until that image ships a runnable binary, the paired verbs run
-from a CLI outside the Job.
+**What a GitOps publish renders.** Toward a host whose delivery endpoint
+declares `codefly.dev/composition`, publish writes the pair itself, from the
+same composed workspace a native run reads (`WorkspaceAuthoritySources`):
+
+- one paired document per manifest, in its own ConfigMap
+  `module-manifest-<binding>-paired` (file `<binding>-paired.yaml`, label
+  `codefly.dev/document: paired-delivery`, key `paired-delivery.json`) beside
+  the manifest's own ConfigMap, which keeps its shape for every reader of a
+  delivered overlay. A withdrawal's document carries the Core half alone.
+- the manifest Job, running `/bin/codefly delivery apply --documents … --address
+  <service>.<namespace>.svc.cluster.local:<port> --identity-file …` with the
+  projected token, no shell and no `DELIVERY_*` environment, mounting the
+  paired ConfigMaps rather than the Core-only carriers.
+
+A publish toward such a host that has no way to read module declarations is
+refused by name: it does not deliver the Core half alone.
+
+**The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
+the codefly companion tag `0.0.6`, whose `/bin/codefly` is a static binary that
+executes on `linux/amd64` and `linux/arm64` (the shell runner's
+`deliveryImage`, tag `0.0.4`, carries a glibc binary in an Alpine image and
+cannot exec it). The image follows the ENVIRONMENT: in a paired environment
+every delivery Job — the host namespace's envelope Job included — runs the
+paired image, and the cell file declares that image for every namespace's
+`delivery`, because a cell admits one carrier per namespace by its exact
+declaration. What follows the document kind is only the command: the
+composition interface has no envelope method, so the envelope Job keeps the
+shell runner and POSTs `/platform/_delivery/envelope`, which the paired image
+also carries every tool for.
+
+**Not yet runnable in a cell.** `0.0.6`'s `/bin/codefly` predates
+`delivery apply`: measured on both architectures, it executes and refuses
+`--documents` as an unknown flag, so a paired Job rendered today fails loudly.
+The pin moves when the codefly companion is republished from a CLI that has the
+verb, and the cell must be re-rendered with it. Until then the verbs run from a
+CLI outside the Job. The branch's own build of the verb was run inside the
+`0.0.6` image as the Job runs it (uid 65532, read-only root, 64Mi) and started
+and refused an empty document set as designed.
 
 ## The module envelope
 

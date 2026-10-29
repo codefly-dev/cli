@@ -799,6 +799,10 @@ method policies, scope ceilings, roles, owner-awareness, the installation
 selector and its person-context edges. Core's own manifest has **no roles
 field**, so this is the only way a module's roles reach a host.
 
+A GitOps publish toward a host that declares `codefly.dev/composition` writes
+these same documents into the overlay itself; `prepare` is for sending a pair
+from outside the Job.
+
 Nothing is re-rendered and no generation is re-settled. A manifest the overlay
 does not carry is not invented here, and a manifest whose carrier is unsigned
 is **refused by name** rather than prepared Core-only — a document that quietly
@@ -823,7 +827,13 @@ codefly delivery prepare --overlay ./delivery --out ./prepared --env local --dev
 
 Send the prepared paired delivery documents a render wrote to the host's
 composition interface — `host.composition.v1.CompositionService/ApplyManifest`.
-This is what a cell's delivery Job runs.
+This is what a cell's delivery Job runs: a GitOps publish toward a host whose
+delivery endpoint declares `codefly.dev/composition` writes one paired document
+per manifest into the delivery overlay and renders the manifest Job to run
+`/bin/codefly delivery apply` with the projected token. The image that Job
+pins, codefly companion `0.0.6`, executes on both architectures but predates
+this verb, so the Job fails until the companion is republished from a CLI that
+has it.
 
 Each document is one `ApplyManifestRequest` carrying **both** signed halves:
 core's module manifest in its DSSE carrier, and the authority declaration

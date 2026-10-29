@@ -85,6 +85,12 @@ const (
 	// every tool the shell runner calls. The shell runner's pin is left where
 	// it is so moving it is its own change, with its own re-render of every
 	// cell.
+	//
+	// 0.0.6's codefly PREDATES `delivery apply`: measured on linux/arm64 and
+	// linux/amd64, it executes, and refuses `--documents` as an unknown flag.
+	// So a paired Job rendered against this pin fails, loudly, until the
+	// companion is republished from a CLI that has the verb and this digest
+	// moves to it (with a re-render of the cell, which declares it too).
 	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:f93e862d8bc09f6461800b843003f106725e261066afa61fd73442a3ec531117"
 
 	// deliveryContainerName is the one container of a delivery Job.
@@ -414,7 +420,10 @@ type deliveryCarrier struct {
 // the pod is labelled as the carrier and only the Job's own
 // deliveredDocumentLabel names the kind it delivers: an envelope Job in the
 // host's namespace runs the same admitted pod as that namespace's manifest
-// Job.
+// Job. paired is the ENVIRONMENT's — its delivery endpoint declares
+// codefly.dev/composition — never the document's, so every Job in a paired
+// environment, an envelope Job included, runs the paired image; what differs
+// by kind is only the command (pairedRunner).
 func deliveryCarrierOf(paired bool) deliveryCarrier {
 	image := deliveryImage
 	if paired {
@@ -429,18 +438,30 @@ func deliveryCarrierOf(paired bool) deliveryCarrier {
 	}
 }
 
+// pairedRunner reports whether a Job delivering kind to target runs codefly's
+// paired runner rather than the shell runner. Only a module manifest has a
+// method on the composition interface (ApplyManifest); the envelope has none,
+// so an envelope Job keeps POSTing its carrier over HTTP even toward a host
+// that declares codefly.dev/composition. The IMAGE is not decided here: it is
+// the namespace's carrier (deliveryCarrierOf(target.Composition)), because a
+// cell admits one carrier per namespace and the host's namespace runs both
+// Jobs — the paired image carries every tool the shell runner calls.
+func pairedRunner(target *DeliveryTarget, kind string) bool {
+	return target.Composition && kind == deliveryManifest
+}
+
 // deliveryCommand is what the carrier's container runs: the shell runner that
-// POSTs each document to the host's HTTP manifest route, or — for a host whose
-// delivery endpoint declares codefly.dev/composition — codefly itself, sending
-// both signed halves through ApplyManifest.
+// POSTs each document to the host's HTTP delivery route, or — for a manifest
+// delivered to a host whose delivery endpoint declares codefly.dev/composition
+// — codefly itself, sending both signed halves through ApplyManifest.
 //
 // The paired runner takes its inputs as FLAGS rather than environment, because
 // there is no shell: the arguments are the manifest's own record of what the
 // Job delivers and where. The credential is not among them; the runner reads
 // it from the projected token at execution, which is the only moment a token
 // with a lifetime of minutes exists.
-func deliveryCommand(target *DeliveryTarget, path string) []string {
-	if !target.Composition {
+func deliveryCommand(target *DeliveryTarget, kind string) []string {
+	if !pairedRunner(target, kind) {
 		return []string{"/bin/sh", "-ec", deliveryScript}
 	}
 	return []string{
@@ -457,8 +478,8 @@ func deliveryCommand(target *DeliveryTarget, path string) []string {
 // deliveryEnvironment is the shell runner's environment. A paired Job carries
 // none of it: its inputs are its arguments, and a variable a runner does not
 // read is a statement nothing checks.
-func deliveryEnvironment(target *DeliveryTarget, path string) []deliveryEnv {
-	if target.Composition {
+func deliveryEnvironment(target *DeliveryTarget, kind, path string) []deliveryEnv {
+	if pairedRunner(target, kind) {
 		return nil
 	}
 	return []deliveryEnv{
@@ -478,7 +499,7 @@ func deliveryEnvironment(target *DeliveryTarget, path string) []deliveryEnv {
 
 // renderDeliveryJob writes the Job delivering documents to the host's delivery
 // route into the overlay directory, and returns the manifest's file name. The
-// pod it runs is deliveryCarrierOf(), and nothing else.
+// pod it runs is deliveryCarrierOf(target.Composition), and nothing else.
 func renderDeliveryJob(directory, name, namespace, kind, path string, target *DeliveryTarget, documents []deliveryDocument) (string, error) {
 	if len(documents) > deliveryDocumentBound {
 		return "", fmt.Errorf("the %s set carries %d documents and one delivery Job attempts at most %d within its budget (%d seconds, %d per request); the set does not shrink until the host acknowledges its tombstones, which the delivery API does not offer yet",
@@ -529,8 +550,8 @@ func renderDeliveryJob(directory, name, namespace, kind, path string, target *De
 		Containers: []deliveryContainer{{
 			Name:    carrier.Container,
 			Image:   carrier.Image,
-			Command: deliveryCommand(target, path),
-			Env:     deliveryEnvironment(target, path),
+			Command: deliveryCommand(target, kind),
+			Env:     deliveryEnvironment(target, kind, path),
 			VolumeMounts: []deliveryVolumeMount{
 				{Name: "documents", MountPath: deliveryDocumentsMount, ReadOnly: true},
 				{Name: "token", MountPath: deliveryIdentityMount, ReadOnly: true},

@@ -101,7 +101,7 @@ func TestPublishDeliversTheModuleEnvelopeLikeAManifest(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(jobBytes, &job))
 	require.Equal(t, deliveredEnvelopeKind, job.Metadata.Labels[deliveredDocumentLabel])
 	require.Equal(t, deliveryCarrierValue, job.Metadata.Labels[deliveryLabel], "the Job is selected as the carrier too")
-	require.Equal(t, deliveryCarrierOf().Labels, job.Spec.Template.Metadata.Labels, "the pod is the carrier the cell admits")
+	require.Equal(t, deliveryCarrierOf(false).Labels, job.Spec.Template.Metadata.Labels, "the pod is the carrier the cell admits")
 	require.Equal(t, "crm", job.Metadata.Namespace)
 	for _, want := range []string{"value: " + envelopeDeliveryPath, "key: " + solutionhost.EnvelopeSignedFileName, "name: " + moduleEnvelopeConfigMap, "serviceAccountName: delivery"} {
 		require.Contains(t, string(jobBytes), want)

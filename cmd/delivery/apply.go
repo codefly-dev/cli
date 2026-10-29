@@ -68,7 +68,11 @@ ran it.
 The address is the host's delivery endpoint. A Connect endpoint is one: a
 Connect server answers the gRPC protocol on the same listener (h2c in
 plaintext), so --address is <host>:<port> of the endpoint the environment's
-host.delivery names, and --secure only when that endpoint serves TLS itself.`,
+host.delivery names, and --secure only when that endpoint serves TLS itself.
+
+A GitOps publish toward a host whose delivery endpoint declares
+codefly.dev/composition writes these documents into the delivery overlay, one
+per manifest, and renders the manifest's delivery Job to run this command.`,
 	Example: `  codefly delivery apply --documents /etc/codefly/delivery --address accounts.platform.svc.cluster.local:8081 --identity-file /var/run/secrets/codefly/delivery-token
   codefly delivery apply --documents ./prepared --address localhost:8081 --identity-file ./token --budget 2m`,
 	Args: cobra.NoArgs,

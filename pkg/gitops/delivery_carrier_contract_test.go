@@ -42,12 +42,14 @@ func TestTheDeliveryCarrierLabelValueIsFrozen(t *testing.T) {
 // delivery Jobs. Within one render they must be the same label set.
 func TestTheCellSelectorIsTheLabelSetTheCarrierPodCarries(t *testing.T) {
 	env := &environments.Environment{Name: "prod", Host: testHost()}
-	delivery, err := cellDelivery(env, "example-prod-shop")
-	require.NoError(t, err)
-	require.Equal(t, deliveryCarrierOf().Labels, delivery.Selector,
-		"the cell's carrier selector and the delivery pod's labels are one label set")
-	require.Equal(t, deliveryServiceAccount, delivery.ServiceAccount,
-		"the cell admits the account the delivery Job runs as")
+	for _, paired := range []bool{false, true} {
+		delivery, err := cellDelivery(env, "example-prod-shop", paired)
+		require.NoError(t, err)
+		require.Equal(t, deliveryCarrierOf(paired).Labels, delivery.Selector,
+			"the cell's carrier selector and the delivery pod's labels are one label set")
+		require.Equal(t, deliveryServiceAccount, delivery.ServiceAccount,
+			"the cell admits the account the delivery Job runs as")
+	}
 }
 
 // The cell file declares the carrier's image as codefly's own repository on
@@ -55,10 +57,12 @@ func TestTheCellSelectorIsTheLabelSetTheCarrierPodCarries(t *testing.T) {
 // the render pins, and it is never pulled from Docker Hub.
 func TestTheCellDeclaresCodeflysOwnDeliveryImage(t *testing.T) {
 	env := &environments.Environment{Name: "prod", Host: testHost()}
-	delivery, err := cellDelivery(env, "example-prod-shop")
-	require.NoError(t, err)
-	require.Equal(t, "ghcr.io/codefly-dev/codefly", delivery.Image.Repository)
-	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, delivery.Image.Digest)
-	require.Equal(t, delivery.Image.Repository+"@"+delivery.Image.Digest, deliveryImage,
-		"the cell's carrier image is the image the delivery Job runs")
+	for paired, image := range map[bool]string{false: deliveryImage, true: pairedDeliveryImage} {
+		delivery, err := cellDelivery(env, "example-prod-shop", paired)
+		require.NoError(t, err)
+		require.Equal(t, "ghcr.io/codefly-dev/codefly", delivery.Image.Repository)
+		require.Regexp(t, `^sha256:[0-9a-f]{64}$`, delivery.Image.Digest)
+		require.Equal(t, delivery.Image.Repository+"@"+delivery.Image.Digest, image,
+			"the cell's carrier image is the image the delivery Job runs")
+	}
 }
