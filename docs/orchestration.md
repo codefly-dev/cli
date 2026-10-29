@@ -1150,7 +1150,10 @@ recover its groups; upgrade the cleanup consumer along with the producer.
 error when a live leader has the recorded start identity but a different boot
 identity. Older Darwin agents wrote a boot timestamp where current agents write
 a boot-session UUID. This mismatch does not prove PID reuse: cleanup neither
-signals the group nor discards its recovery evidence. Recover the owning run
+signals the group nor discards its recovery evidence. Such a group is kept and
+named, with `codefly recover process-group PGID --preview`, in the error; it
+does not stop a preview (`codefly clear --dry-run`) from listing every other
+group, nor a stop from handling them. Recover the owning run
 and update its agent before restarting. A successful stop must not hide a
 process it could not authenticate. If registry cleanup fails, stop also skips
 the signature-based orphan fallback so it cannot bypass that refusal.

@@ -2,11 +2,13 @@ package processgroup
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -90,5 +92,73 @@ func TestRegisteredStopUsesPersistedWorkspaceAfterOwnerAndEnvironmentDisappear(t
 	}
 	if !found {
 		t.Fatalf("target missing from recovery evidence: %+v", evidence)
+	}
+}
+
+// legacyBootID rewrites a group's registry record as an older Darwin writer
+// left it: the boot id differs while the leader's pid and start are unchanged,
+// which Core refuses to decide (checkBootIdentity) and keeps the record for.
+func legacyBootID(t *testing.T, pgid int) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := filepath.Glob(filepath.Join(home, ".codefly", "*", "authenticated-v2", strconv.Itoa(pgid)+".pgid"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("record for %d: %v %v", pgid, paths, err)
+	}
+	raw, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	// An older writer recorded one boot id for the leader and the owner alike.
+	for _, field := range []string{"leader", "owner"} {
+		identity, ok := record[field].(map[string]any)
+		if !ok {
+			t.Fatalf("record has no %s: %s", field, raw)
+		}
+		identity["boot_id"] = "1793000000:123456"
+	}
+	out, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths[0], out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// One group whose boot identity Core cannot decide is kept and named, with
+// the command that recovers it, but it no longer stops the preview or the
+// stop from handling every other group in the workspace (cli#1233).
+func TestAnUndecidableGroupIsKeptWithoutStoppingTheRest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workspace := newWorkspace(t, "first")
+	undecidable := startUnobservableRun(t, workspace, workspace)
+	healthy := startUnobservableRun(t, workspace, workspace)
+	legacyBootID(t, undecidable)
+
+	preview, err := PreviewManagedProcessGroups(context.Background(), InWorkspace(workspace))
+	if len(preview) != 1 || preview[0] != healthy {
+		t.Fatalf("preview=%v err=%v, want only the healthy group %d", preview, err, healthy)
+	}
+	if err == nil || !strings.Contains(err.Error(), strconv.Itoa(undecidable)) || !strings.Contains(err.Error(), "codefly recover process-group "+strconv.Itoa(undecidable)) {
+		t.Fatalf("preview error %v does not name the undecidable group and its recovery", err)
+	}
+
+	_, err = StopManagedProcessGroups(context.Background(), InWorkspace(workspace))
+	if groupAlive(healthy) {
+		t.Fatal("the healthy group survived the stop")
+	}
+	if !groupAlive(undecidable) {
+		t.Fatal("the undecidable group was signaled")
+	}
+	if err == nil || !strings.Contains(err.Error(), "codefly recover process-group "+strconv.Itoa(undecidable)) {
+		t.Fatalf("stop error %v does not name the undecidable group's recovery", err)
 	}
 }
