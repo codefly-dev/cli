@@ -32,9 +32,8 @@ const provenanceMarker = "imported from coordinate contract"
 const legacyProvenanceMarker = "imported from cell contract"
 
 var (
-	importNamespace  string
-	importDryRun     bool
-	importRetireKeys []string
+	importNamespace string
+	importDryRun    bool
 )
 
 var importCmd = &cobra.Command{
@@ -73,6 +72,11 @@ full delivery.intent.yaml is not interpreted.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// First, so an early refusal resets too: cobra keeps parsed flag values
+		// and their Changed bits on this package-level command, and they would
+		// otherwise reach the next run in the same process.
+		defer resetInvocationFlags(cmd)
+
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -89,6 +93,17 @@ full delivery.intent.yaml is not interpreted.`,
 		}
 
 		productPath, err := cmd.Flags().GetString("product-intent")
+		if err != nil {
+			return err
+		}
+		// Read per invocation, and cleared afterwards. This command object is a
+		// package-level var, and cobra keeps a parsed flag's value and its
+		// Changed bit on that object's own FlagSet — so a second Execute in
+		// the same process inherited the first run's directives and then
+		// failed the one-shot check against a key the first run had already
+		// retired. Separate processes were never affected, which is why only
+		// the public two-Execute path showed it.
+		retireKeys, err := cmd.Flags().GetStringArray("retire-service-key")
 		if err != nil {
 			return err
 		}
@@ -116,7 +131,7 @@ full delivery.intent.yaml is not interpreted.`,
 			namespace:         importNamespace,
 			namespaceSet:      cmd.Flags().Changed("namespace"),
 			dryRun:            importDryRun,
-			retireServiceKeys: importRetireKeys,
+			retireServiceKeys: retireKeys,
 			// UTC so the provenance timestamp does not vary by the operator's
 			// machine timezone and churn the diff on re-import across a team.
 			now:    time.Now().UTC(),
@@ -245,11 +260,11 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	// on disk: retirement names an existing service, not one this import adds.
 	var graphWorkspace *resources.Workspace
 	if len(retirements) > 0 {
-		// LoadWorkspaceFromDir MIGRATES a legacy flat workspace, writing and
-		// deleting files as it goes. Validating a directive must never do that:
-		// a --dry-run or a refused directive has to leave the tree untouched,
-		// so inspection refuses the migration instead of performing it.
-		graphWorkspace, err = resources.LoadWorkspaceFromDir(resources.WithWorkspaceMigrationRefusal(ctx), opts.dir)
+		// Checked under inspectionContext: LoadWorkspaceFromDir MIGRATES a
+		// legacy flat workspace, writing and deleting as it goes, and the
+		// host's resolver would clone an unmaterialized pin into the module
+		// cache. A --dry-run or a refused directive must do neither.
+		graphWorkspace, err = resources.LoadWorkspaceFromDir(inspectionContext(ctx), opts.dir)
 		if err != nil {
 			return err
 		}
@@ -638,7 +653,7 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 	// anything on its own.
 	retired := make([]string, 0, len(opts.retireServiceKeys))
 	for _, directive := range opts.retireServiceKeys {
-		retired = append(retired, fmt.Sprintf("# %soperator retired %s on %s",
+		retired = append(retired, fmt.Sprintf("# %s: operator retired %s on %s",
 			provenanceMarker, strings.TrimSpace(directive), opts.now.Format(time.RFC3339)))
 	}
 
@@ -661,7 +676,7 @@ func init() {
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
-	importCmd.Flags().StringArrayVar(&importRetireKeys, "retire-service-key", nil,
+	importCmd.Flags().StringArray("retire-service-key", nil,
 		"Retire a bare service key the producer re-keyed, as <block>:<bare-key>=<module>/<service> (repeatable). "+
 			"Blocks: service-config, service-identity, service-mesh. The whole named entry is removed")
 }

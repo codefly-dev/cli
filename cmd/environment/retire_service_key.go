@@ -9,6 +9,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
 	"github.com/codefly-dev/core/resources"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
 )
 
@@ -113,18 +115,7 @@ func applyRetirements(ctx context.Context, target, declaration *yaml.Node, works
 	// references alone can report a qualified name the workspace does not
 	// actually compose, and a destination that does not exist is exactly what
 	// must be refused here.
-	// The same refusal applies to the composed child loads this walks, so an
-	// inspection cannot migrate a legacy flat module on the way to answering
-	// whether a destination exists.
-	//
-	// It bounds workspace mutation, not every effect. Core is explicit that
-	// "hosts remain responsible for the effects of any resolver they attach to
-	// the context": a pinned module reference is resolved to answer this
-	// question, and resolving an uncached pin clones it into the CLI-managed
-	// module cache. That is dependency-cache bookkeeping outside the workspace,
-	// the same acquisition any other reader of this composition performs, and
-	// an unresolvable pin refuses rather than being fabricated.
-	composed, err := workspace.LoadServiceWithModules(resources.WithWorkspaceMigrationRefusal(ctx))
+	composed, err := workspace.LoadServiceWithModules(inspectionContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +192,64 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// composes reports whether the workspace actually composes the qualified
+// resetInvocationFlags returns this command's flags to their unset state after
+// a run.
+//
+// The command is a package-level var and cobra keeps each parsed flag's value
+// and its Changed bit on that object's FlagSet, so a process that runs the
+// command twice carries the first run's flags into the second. Separate
+// processes are unaffected, which is why only the two-Execute path shows it.
+//
+// It is not specific to one flag. `--retire-service-key` inherited its
+// directives and then failed the one-shot check; `--cell-contract` stayed
+// Changed and made a later `--coordinate-contract` run fail "pass only one";
+// `--namespace` would leak an assertion the second run never made, since
+// Changed is what distinguishes asserting a namespace from omitting it. Every
+// flag here is invocation-scoped, so every one is cleared.
+func resetInvocationFlags(cmd *cobra.Command) {
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		if slice, ok := flag.Value.(pflag.SliceValue); ok {
+			_ = slice.Replace(nil)
+		} else {
+			_ = flag.Value.Set(flag.DefValue)
+		}
+		flag.Changed = false
+	})
+}
+
+// inspectionContext is the context a retirement directive is checked under.// inspectionContext is the context a retirement directive is checked under. It
+// adds nothing to the host's own; it takes two things away.
+//
+// Migration is refused, so a legacy flat module is not decoded, merged, saved
+// or removed on the way to answering whether a destination exists. Core's own
+// doc is explicit that this bounds workspace files and no more: "hosts remain
+// responsible for the effects of any resolver they attach to the context."
+//
+// So the resolver is replaced too. The host installs one that resolves a
+// pinned `workspaces:` reference by cloning it into the CLI-managed module
+// cache; a dry-run that acquired a dependency to decide it would refuse is not
+// the read-only check this operation promises. Answering with a refusal costs
+// the operator one explicit materialization they would have run anyway.
+//
+// Sources already prepared are unaffected, because they never reach a
+// resolver: a module with a local path override, or one already materialized,
+// resolves from disk. Only an unmaterialized pinned reference asks — and that
+// is exactly the acquisition being declined.
+func inspectionContext(ctx context.Context) context.Context {
+	return resources.WithWorkspaceResolver(
+		resources.WithWorkspaceMigrationRefusal(ctx),
+		func(_ context.Context, ref *resources.WorkspaceReference) (string, error) {
+			name := "a workspace reference"
+			if ref != nil {
+				name = strconv.Quote(ref.Name)
+			}
+			return "", fmt.Errorf("--retire-service-key checks the destination against the composition, and %s is not materialized here; "+
+				"this check acquires nothing, so materialize it first and import again", name)
+		},
+	)
+}
+
+// composes reports whether the workspace actually composes the qualified// composes reports whether the workspace actually composes the qualified
 // <module>/<service> destination.
 func composes(services []*resources.ServiceWithModule, destination string) bool {
 	module, service, qualified := strings.Cut(destination, "/")

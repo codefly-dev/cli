@@ -336,6 +336,92 @@ func TestRetireIsOneShot(t *testing.T) {
 	}
 }
 
+// TestRetireFlagDoesNotLeakBetweenExecutions is the reviewer's public-surface
+// finding: the flag was bound to a package-level slice, so a second
+// Cmd.Execute in the SAME process still carried the first run's directives and
+// failed the one-shot check against a key the first run had already retired.
+// Separate processes were never affected, which is why the command tests
+// missed it.
+func TestRetireFlagDoesNotLeakBetweenExecutions(t *testing.T) {
+	dir := retireWorkspace(t, bareShared)
+	contract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(contract, []byte(retireContract), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	// The same package-level command object both times, which is what a single
+	// process does.
+	run := func(args ...string) error {
+		Cmd.SetOut(io.Discard)
+		Cmd.SetErr(io.Discard)
+		Cmd.SetArgs(args)
+		return Cmd.Execute()
+	}
+	base := []string{"import", "azure", "--coordinate-contract", contract}
+
+	if err := run(append(base, "--retire-service-key", "service-config:object-storage=documents/object-storage")...); err != nil {
+		t.Fatalf("first execute: %v", err)
+	}
+	// Second execute WITHOUT the flag. It must not inherit the directive.
+	if err := run(base...); err != nil {
+		t.Fatalf("second execute without the flag inherited the first run's directive: %v", err)
+	}
+}
+
+// TestRetireRefusesToAcquireAnUnmaterializedReference: the destination check
+// reads the composition, and the host's resolver would clone an unmaterialized
+// pinned reference into the module cache to answer. A check that acquires a
+// dependency in order to decide it would refuse is not read-only, so the
+// resolver is replaced for the inspection and the directive refuses instead.
+func TestRetireRefusesToAcquireAnUnmaterializedReference(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(resources.WorkspaceConfigurationName, `name: acme
+layout: modules
+workspaces:
+    - name: upstream
+      source: obin-ai/not-materialized
+      version: 0.1.0
+modules:
+    - name: documents
+environments:
+    - name: azure
+      namespace: acme
+      service-config:
+          services:
+              object-storage:
+                  values:
+                      BUCKET: shared
+              documents/object-storage:
+                  values:
+                      BUCKET: shared
+`)
+	write(filepath.Join("modules", "documents", resources.ModuleConfigurationName), "kind: module\nname: documents\nservices:\n    - name: object-storage\n")
+	write(filepath.Join("modules", "documents", "services", "object-storage", resources.ServiceConfigurationName),
+		"kind: service\nname: object-storage\nversion: 0.0.0\n"+
+			"agent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n")
+
+	before := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	_, err := retireImport(t, dir, []string{"service-config:object-storage=documents/object-storage"}, true)
+	if err == nil {
+		t.Fatal("expected a refusal rather than an acquisition")
+	}
+	if !strings.Contains(err.Error(), "acquires nothing") && !strings.Contains(err.Error(), "not materialized") {
+		t.Errorf("refusal does not explain the unmaterialized reference: %v", err)
+	}
+	if readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)) != before {
+		t.Error("the workspace was modified by a refused import")
+	}
+}
+
 // Provenance records the action as metadata, and does NOT put the one-shot
 // directive into the re-run hint, which would fail if anyone re-ran it.
 func TestRetireProvenanceKeepsTheRerunHintReusable(t *testing.T) {
