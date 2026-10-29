@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -235,6 +236,19 @@ func addSolution(ctx context.Context, name string) (result error) {
 	if _, err := solutionrun.DeclaredFrontend(ctx, mod); err != nil {
 		return fmt.Errorf("the generated %s is not readable by core: %w", solutionrun.FrontendFileName, err)
 	}
+
+	// 6. The backend's published contract, and its entry in the package.
+	//
+	// The authority derives the method policy of every route from it, so a
+	// solution whose package carries none admits no call to any route it
+	// serves — and says so only as a warning in the authority's log, during
+	// a run. Generated here so what this command leaves behind is a solution
+	// that conforms, rather than one whose first `codefly doctor solution`
+	// fails on a step the author had no reason to know about.
+	if err := generate.PublishModuleContracts(ctx, workspace, mod); err != nil {
+		return fmt.Errorf("cannot publish the backend's contract: %w", err)
+	}
+	cli.Info("wrote contracts/api and the package's api-contracts entry")
 
 	cli.Header(1, "Solution <%s> scaffolded: %s (entry) and %s (the page's shell).", name, solutionEntryService, solutionPageService)
 	reportNextSteps(name)

@@ -1073,3 +1073,23 @@ func contractRoutes(groups []*basev0.RestRouteGroup) []composition.APIContractRo
 	}
 	return routes
 }
+
+// PublishModuleContracts writes a module's published API contracts and adds
+// them to its package manifest — the same work `codefly generate contracts`
+// does with no flags, exported so a command that scaffolds a module can leave
+// it in the state that command would.
+//
+// `codefly add solution` calls it as its last step. Without it a scaffolded
+// solution declares a package carrying no contract, and the authority is
+// delivered its scope ceilings and no method policy at all — "no delivered
+// method policies; declared ceilings alone do not admit a call" — so the
+// backend serves its route, the route declares its policy, and every call is
+// refused with only a line in the authority's log to say why.
+func PublishModuleContracts(ctx context.Context, workspace *resources.Workspace, module *resources.Module) error {
+	_, err := generateContracts(ctx, workspace, module, generateOptions{
+		canonicalOutput: filepath.Join(module.Dir(), "contracts", "api"),
+		writeDir:        filepath.Join(module.Dir(), "contracts", "api"),
+		updateManifest:  true,
+	})
+	return err
+}

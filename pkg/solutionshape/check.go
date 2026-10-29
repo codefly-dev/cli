@@ -80,6 +80,7 @@ const (
 	CodePageShellHasNoApp       = "page_shell_has_no_app"
 	CodePageExportedTooWidely   = "page_shell_exported_too_widely"
 	CodeInstallerRoleMissing    = "installer_role_missing"
+	CodeBackendContractMissing  = "backend_contract_missing"
 )
 
 // Check is one rule's outcome, with the fix when it failed.
@@ -350,6 +351,7 @@ func (r *Report) checkPackage(dir string) {
 		return
 	}
 	r.ok(CodePackageMissing, fmt.Sprintf("the package publishes %s@%s", packaged.ID, packaged.Version))
+	r.checkBackendContract(packaged)
 
 	for index := range packaged.Services {
 		if packaged.Services[index].Name == PageService {
@@ -360,6 +362,43 @@ func (r *Report) checkPackage(dir string) {
 		}
 	}
 	r.ok(CodePackagePublishesShell, "the package does not publish the shell")
+}
+
+// checkBackendContract holds the package to carrying the backend's published
+// http contract, which is what the authority checks a call against.
+//
+// The CLI derives the authority's per-route method policies from the contract
+// the package declares (pkg/gitops ServiceMethodPolicies reads api-contracts).
+// A package that declares none delivers the module's scope ceilings and NO
+// method policy, and the authority says so and then refuses everything:
+//
+//	permissions: WARN <solution>@1: no delivered method policies;
+//	declared ceilings alone do not admit a call
+//
+// Every document reads fine, the backend boots, the route is served and its
+// policy is declared — and no call to it can ever be admitted. The only sign
+// is that one warning, in the authority's log, during a run.
+//
+// `codefly generate contracts` writes the contract and adds the entry, but it
+// refuses unless the package also declares the "contracts" artifact root,
+// which is why the remediation names both. Of the nine solutions in one
+// fleet, the two that are actually run — wiki and proposals — declare them
+// and the other seven declare neither.
+func (r *Report) checkBackendContract(packaged *composition.PackageManifest) {
+	for index := range packaged.Services {
+		service := &packaged.Services[index]
+		if service.Name != EntryService {
+			continue
+		}
+		if len(service.APIContracts) > 0 {
+			r.ok(CodeBackendContractMissing, "the package carries the backend's published contract")
+			return
+		}
+		r.fail(CodeBackendContractMissing,
+			fmt.Sprintf("the package publishes %q and carries no contract for it", EntryService),
+			"the authority derives the method policy of every route from this contract, so without it the solution is delivered its ceilings and no policy, and admits no call to any route it serves. Declare \"contracts\" under artifact-roots and run `codefly generate contracts`")
+		return
+	}
 }
 
 // checkFrontend reads the page declaration with core's own strict parser —

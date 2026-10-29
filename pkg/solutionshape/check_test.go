@@ -59,16 +59,27 @@ roles:
           actions: [read, write]
 bindings: []
 `)
+	// The published contract the package carries. The manifest loader checks
+	// every artifact root exists on disk, and the authority derives each
+	// route's method policy from this document.
+	write(t, filepath.Join(dir, "contracts", "api", "backend", "http", "openapi.json"), `{"openapi":"3.0.0"}`)
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
 schema: codefly/module-package/v2
 id: obin/wiki
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
 artifact-roots:
+    - contracts
     - services
 services:
     - name: backend
       endpoints: [http]
+      api-contracts:
+        - endpoint: http
+          kind: openapi
+          package: wiki solution backend
+          path: contracts/api/backend/http/openapi.json
+          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 contracts:
     composition: ">=2.0.0 <3.0.0"
 `)
@@ -261,10 +272,17 @@ id: obin/wiki
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
 artifact-roots:
+    - contracts
     - services
 services:
     - name: backend
       endpoints: [http]
+      api-contracts:
+        - endpoint: http
+          kind: openapi
+          package: wiki solution backend
+          path: contracts/api/backend/http/openapi.json
+          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     - name: web
       endpoints: [http]
 contracts:
@@ -467,5 +485,42 @@ bindings: []
 	}
 	if report.Conforms() {
 		t.Fatal("a solution the authority refuses to admit was called conformant")
+	}
+}
+
+// TestAPackageCarryingNoBackendContractFails. The authority derives the
+// method policy of every route from the contract the package carries, so a
+// package declaring none is delivered the module's ceilings and no policy —
+// "no delivered method policies; declared ceilings alone do not admit a
+// call". The backend boots, serves its route, declares its policy, and admits
+// nothing; the only sign is a warning in the authority's log during a run.
+//
+// Of the nine solutions in one fleet, the two that are actually run — wiki
+// and proposals — carry it and the other seven do not.
+func TestAPackageCarryingNoBackendContractFails(t *testing.T) {
+	dir := conformingSolution(t)
+	if checkFor(t, Inspect("wiki", dir), CodeBackendContractMissing).Status != StatusOK {
+		t.Fatal("a package carrying the backend's contract was reported")
+	}
+
+	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
+schema: codefly/module-package/v2
+id: obin/wiki
+version: 0.1.0
+minimum-codefly-version: ">=0.1.220 <1.0.0"
+artifact-roots:
+    - services
+services:
+    - name: backend
+      endpoints: [http]
+contracts:
+    composition: ">=2.0.0 <3.0.0"
+`)
+	report := Inspect("wiki", dir)
+	if checkFor(t, report, CodeBackendContractMissing).Status != StatusFail {
+		t.Fatal("a package carrying no contract for the backend was not reported")
+	}
+	if report.Conforms() {
+		t.Fatal("a solution that can admit no call to any route it serves was called conformant")
 	}
 }
