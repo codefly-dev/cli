@@ -496,7 +496,22 @@ func solutionPackage(id, toolVersion, declaredFloor string) (*composition.Packag
 		ID:                    id,
 		Version:               "0.1.0",
 		MinimumCodeflyVersion: floor,
-		ArtifactRoots:         []string{"services"},
+		// "contracts" alongside "services": `codefly generate contracts`
+		// writes the backend's published http contract to
+		// contracts/api/backend/http/openapi.json, and a package that does
+		// not declare the root cannot carry it — "the package cannot carry
+		// the backend/http contract ... add \"contracts\" under
+		// artifact-roots", which is where the generate stops.
+		//
+		// It is not a packaging detail. The CLI derives the authority's
+		// per-route method policies from the contract this package carries
+		// (ServiceMethodPolicies reads api-contracts), so without it the
+		// authority is delivered the module's ceilings and no method policy
+		// at all — "no delivered method policies; declared ceilings alone do
+		// not admit a call". The backend serves its route, the route declares
+		// its policy, and every call is still refused, with the only sign a
+		// warning in the authority's log.
+		ArtifactRoots: []string{"contracts", "services"},
 		// The backend only. The shell is scaffolded and composed; it is not
 		// published, because a host that federates the remote needs no shell.
 		Services:  []composition.ProvidedService{{Name: solutionEntryService, Endpoints: []string{standards.HTTP}}},
