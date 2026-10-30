@@ -24,12 +24,13 @@ import (
 //     declares it consumes;
 //   - a browser reaches a solution backend or a module's declared page through it
 //     (/<alias>/…), so it must reach each component's entry endpoint — the
-//     one HTTP endpoint the solution's entry service declares — in plain
-//     HTTP, the way it already reaches a module. Nothing a solution reports
-//     at run time is an address: the gateway routes a solution from its
-//     applied module manifest's endpoints, which carry these addresses, as it routes a
-//     module, and a solution's transport identity is the mesh's, not a
-//     certificate it serves.
+//     one http, rest or connect endpoint the entry service declares
+//     (pageEntryEndpoint) — in plain HTTP, the way it already reaches a
+//     module. Nothing a solution reports at run time is an address: the
+//     gateway routes a solution from its applied module manifest's
+//     endpoints, which carry these addresses, as it routes a module, and a
+//     solution's transport identity is the mesh's, not a certificate it
+//     serves.
 //
 // Both come from here the same way every carrier does: the producer's own
 // network mappings (producerNetworkMappings — its deployed in-cluster mappings
@@ -171,8 +172,9 @@ func (route hostRoute) describe() string {
 // /v1/<alias> on the module's name, so a consume that names it under another
 // alias, or two solutions reaching one module through different endpoints,
 // has no single route and is refused rather than chosen between; and it
-// routes /<alias>/ to one HTTP endpoint of the solution's entry service, so an
-// entry declaring none or several is refused the same way.
+// routes /<alias>/ to one http, rest or connect endpoint of the component's
+// entry service (pageEntryEndpoint), so an entry with no single one is refused
+// the same way.
 func (world *World) hostRoutes(ctx context.Context, hostModule string) ([]hostRoute, error) {
 	return hostRoutes(ctx, world.Workspace, hostModule)
 }
@@ -290,22 +292,51 @@ func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace,
 		if err != nil {
 			return nil, fmt.Errorf("component %s names %s as its service-entry: %w", component.Name, component.ServiceEntry, err)
 		}
-		var candidates []string
-		for _, endpoint := range entry.Endpoints {
-			if endpoint != nil && (endpoint.API == standards.HTTP || endpoint.API == standards.REST) {
-				candidates = append(candidates, endpoint.Name)
-			}
+		endpoint, err := pageEntryEndpoint(entry.Endpoints)
+		if err != nil {
+			return nil, fmt.Errorf("component %s's entry service %s %w; the host forwards /%s/ to one", component.Name, entry.Name, err, component.Name)
 		}
-		switch len(candidates) {
-		case 1:
-			routes = append(routes, hostRoute{solution: component.Name, module: component.Name, service: entry.Name, endpoint: candidates[0], backend: true})
-		case 0:
-			return nil, fmt.Errorf("component %s's entry service %s declares no http or rest endpoint; the host forwards /%s/ to one", component.Name, entry.Name, component.Name)
-		default:
-			return nil, fmt.Errorf("component %s's entry service %s declares several http or rest endpoints (%s); the host forwards /%s/ to one, and which has no single answer", component.Name, entry.Name, strings.Join(candidates, ", "), component.Name)
-		}
+		routes = append(routes, hostRoute{solution: component.Name, module: component.Name, service: entry.Name, endpoint: endpoint, backend: true})
 	}
 	return routes, nil
+}
+
+// pageEntryEndpoint is the one endpoint of a component's entry service the
+// host forwards /<alias>/ to: its http, rest or connect endpoint. Connect is
+// HTTP (HTTP/1.1 + JSON) on its own listener, so the host forwards a page's
+// calls to it exactly as to an HTTP endpoint, which is what lets a gRPC +
+// Connect backend own a page. An entry declaring exactly one rest and one
+// connect endpoint is forwarded to connect: REST is deprecated, and Connect
+// serves the same API. Any other entry with none, or several, has no single
+// answer and is refused, naming the endpoints it declares.
+func pageEntryEndpoint(endpoints []*resources.Endpoint) (string, error) {
+	var candidates, declared []string
+	byAPI := map[string][]string{}
+	for _, endpoint := range endpoints {
+		if endpoint == nil {
+			continue
+		}
+		named := endpoint.Name + " (" + endpoint.API + ")"
+		declared = append(declared, named)
+		if endpoint.API == standards.HTTP || endpoint.API == standards.REST || endpoint.API == standards.CONNECT {
+			candidates = append(candidates, named)
+			byAPI[endpoint.API] = append(byAPI[endpoint.API], endpoint.Name)
+		}
+	}
+	switch {
+	case len(candidates) == 1:
+		for _, names := range byAPI {
+			return names[0], nil
+		}
+	case len(candidates) == 2 && len(byAPI[standards.REST]) == 1 && len(byAPI[standards.CONNECT]) == 1:
+		return byAPI[standards.CONNECT][0], nil
+	case len(candidates) == 0:
+		if len(declared) == 0 {
+			declared = []string{"none"}
+		}
+		return "", fmt.Errorf("declares no http, rest or connect endpoint (it declares: %s)", strings.Join(declared, ", "))
+	}
+	return "", fmt.Errorf("declares several http, rest or connect endpoints (%s)", strings.Join(candidates, ", "))
 }
 
 // HostRouteCarriers is hostRouteCarriers for a render: the gateway's route

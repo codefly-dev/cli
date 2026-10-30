@@ -267,8 +267,8 @@ func TestOneUnroutableConsumeLeavesTheOtherRoutes(t *testing.T) {
 // rather than one being chosen.
 func TestASolutionBackendIsOneHTTPEndpointOfItsEntry(t *testing.T) {
 	for _, tc := range []struct{ name, endpoints, want string }{
-		{"none", "endpoints:\n    - name: grpc\n      api: grpc\n", "declares no http or rest endpoint"},
-		{"several", "endpoints:\n    - name: http\n      api: http\n    - name: rest\n      api: rest\n", "several http or rest endpoints (http, rest)"},
+		{"none", "endpoints:\n    - name: grpc\n      api: grpc\n", "declares no http, rest or connect endpoint (it declares: grpc (grpc))"},
+		{"several", "endpoints:\n    - name: http\n      api: http\n    - name: rest\n      api: rest\n", "several http, rest or connect endpoints (http (http), rest (rest))"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			world, workspace := hostRoutesWorld(t, SnapshotMode, func(dir string) {
@@ -287,44 +287,81 @@ func TestASolutionBackendIsOneHTTPEndpointOfItsEntry(t *testing.T) {
 	}
 }
 
-// A shared module's page is a route independently of any solution's API needs.
+// A shared module's page is a route independently of any solution's API needs,
+// and a gRPC + Connect backend owns one: the host forwards the page's calls to
+// its Connect endpoint as it would to an HTTP one.
 func TestModulePageGetsACarrierWithoutASolutionConsumer(t *testing.T) {
-	for _, mode := range []Mode{SnapshotMode, RunMode} {
-		t.Run(fmt.Sprint(mode), func(t *testing.T) {
-			world, workspace := hostRoutesWorld(t, mode, func(dir string) {
-				writeWikiConsumes(t, dir, "")
-				module := filepath.Join(dir, "modules", "docs")
-				path := filepath.Join(module, "module.codefly.yaml")
-				raw, err := os.ReadFile(path)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, append(raw, []byte("service-entry: documents\n")...), 0o600))
-				entry := filepath.Join(module, "services", "documents")
-				require.NoError(t, os.WriteFile(filepath.Join(entry, "solution.frontend.codefly.yaml"), []byte("title: Documents\norder: 0\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
-				path = filepath.Join(entry, "service.codefly.yaml")
-				raw, err = os.ReadFile(path)
-				require.NoError(t, err)
-				head, _, found := strings.Cut(string(raw), "endpoints:\n")
-				require.True(t, found)
-				require.NoError(t, os.WriteFile(path, []byte(head+"endpoints:\n    - name: web\n      api: http\n      visibility: internal\n"), 0o600))
-			})
-			gateway := parityService(t, workspace, "host", "gateway")
-			access := resources.NewContainerNetworkAccess()
-			if mode == RunMode {
-				access = resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
-				for _, pair := range [][2]string{{"docs", "documents"}, {"wiki", "backend"}} {
-					service := parityService(t, workspace, pair[0], pair[1])
-					identity, err := service.Identity()
+	for _, tc := range []struct{ name, endpoints string }{
+		{"http", "    - name: web\n      api: http\n      visibility: internal\n"},
+		{"connect", "    - name: grpc\n      api: grpc\n      visibility: internal\n    - name: web\n      api: connect\n      visibility: internal\n"},
+	} {
+		for _, mode := range []Mode{SnapshotMode, RunMode} {
+			t.Run(fmt.Sprint(tc.name, "/", mode), func(t *testing.T) {
+				world, workspace := hostRoutesWorld(t, mode, func(dir string) {
+					writeWikiConsumes(t, dir, "")
+					module := filepath.Join(dir, "modules", "docs")
+					path := filepath.Join(module, "module.codefly.yaml")
+					raw, err := os.ReadFile(path)
 					require.NoError(t, err)
-					endpoints, err := service.LoadEndpoints(t.Context())
+					require.NoError(t, os.WriteFile(path, append(raw, []byte("service-entry: documents\n")...), 0o600))
+					entry := filepath.Join(module, "services", "documents")
+					require.NoError(t, os.WriteFile(filepath.Join(entry, "solution.frontend.codefly.yaml"), []byte("title: Documents\norder: 0\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+					path = filepath.Join(entry, "service.codefly.yaml")
+					raw, err = os.ReadFile(path)
 					require.NoError(t, err)
-					require.NoError(t, world.SharedState.RecordEndpoints(t.Context(), identity, endpoints))
+					head, _, found := strings.Cut(string(raw), "endpoints:\n")
+					require.True(t, found)
+					require.NoError(t, os.WriteFile(path, []byte(head+"endpoints:\n"+tc.endpoints), 0o600))
+				})
+				gateway := parityService(t, workspace, "host", "gateway")
+				access := resources.NewContainerNetworkAccess()
+				if mode == RunMode {
+					access = resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+					for _, pair := range [][2]string{{"docs", "documents"}, {"wiki", "backend"}} {
+						service := parityService(t, workspace, pair[0], pair[1])
+						identity, err := service.Identity()
+						require.NoError(t, err)
+						endpoints, err := service.LoadEndpoints(t.Context())
+						require.NoError(t, err)
+						require.NoError(t, world.SharedState.RecordEndpoints(t.Context(), identity, endpoints))
+					}
 				}
+				carriers, problems, err := world.hostRouteCarriers(t.Context(), gateway, access)
+				require.NoError(t, err)
+				require.Empty(t, problems)
+				key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: tc.name})
+				require.NotEmpty(t, carriers[key], "the module page needs its own route without a solution consumer")
+			})
+		}
+	}
+}
+
+// The page's entry is the entry service's one http, rest or connect endpoint;
+// one rest beside one connect is forwarded to connect (REST is deprecated), and
+// anything else with no single answer is refused naming what it declares.
+func TestAPageEntryIsOneHTTPRestOrConnectEndpoint(t *testing.T) {
+	endpoint := func(name, api string) *resources.Endpoint { return &resources.Endpoint{Name: name, API: api} }
+	for _, tc := range []struct {
+		name      string
+		endpoints []*resources.Endpoint
+		want      string
+		refusal   string
+	}{
+		{"grpc and connect", []*resources.Endpoint{endpoint("grpc", "grpc"), endpoint("connect", "connect")}, "connect", ""},
+		{"rest and connect", []*resources.Endpoint{endpoint("rest", "rest"), endpoint("connect", "connect")}, "connect", ""},
+		{"grpc only", []*resources.Endpoint{endpoint("grpc", "grpc")}, "", "declares no http, rest or connect endpoint (it declares: grpc (grpc))"},
+		{"nothing", nil, "", "(it declares: none)"},
+		{"two connect", []*resources.Endpoint{endpoint("a", "connect"), endpoint("b", "connect")}, "", "several http, rest or connect endpoints (a (connect), b (connect))"},
+		{"http and connect", []*resources.Endpoint{endpoint("http", "http"), endpoint("connect", "connect")}, "", "several http, rest or connect endpoints (http (http), connect (connect))"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pageEntryEndpoint(tc.endpoints)
+			if tc.refusal != "" {
+				require.ErrorContains(t, err, tc.refusal)
+				return
 			}
-			carriers, problems, err := world.hostRouteCarriers(t.Context(), gateway, access)
 			require.NoError(t, err)
-			require.Empty(t, problems)
-			key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
-			require.NotEmpty(t, carriers[key], "the module page needs its own route without a solution consumer")
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
