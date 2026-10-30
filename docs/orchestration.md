@@ -137,6 +137,16 @@ The `World` holds shared state that all managers can access:
 
 ### Workspace configuration groups
 
+SDK dependency sessions receive these groups through the CLI configuration RPC,
+including excluded-root consumers. The RPC uses the same resolver as a running
+service, preserving endpoint resolution and credential withholding.
+The current dependency RPC resolves references for the service's selected runtime
+context; the SDK process must use that same context. An excluded SDK consumer's
+saved container preference does not negotiate a native test process's context.
+The Core SDK also does not remove previously injected keys on refresh until the
+session is released. One-shot native admission evidence does not qualify either
+mixed-context selection or removal of credentials during refresh.
+
 Every path that delivers workspace configuration groups to a service resolves
 them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
 
@@ -1322,3 +1332,20 @@ An explicit workspace document retains precedence, including a document written
 by `codefly generate fixture-composition`. Generation and the read-only provider
 share the same fragment discovery and merge. Direct Core configuration reads do
 not synthesize this CLI-owned group; consumers that need it use the shared reader.
+
+### Identity for dependency clients
+
+A native dependency run using `--exclude-root` keeps a root declaring
+`module-identity: true` in the authority declaration set. After the dependency
+barrier, the launcher prepares that root's own credential and waits for the
+ordinary signed admission to apply. The root is not started by an agent, is not
+marked Running, and contributes no ready endpoint. Its credential refresh belongs to the
+flow lifetime and ends on Stop or Destroy. Already-issued bytes retain their
+ordinary expiry; teardown makes no immediate-revocation claim.
+
+The dependency SDK receives the prepared workload projection through
+`GetConfiguration.ProcessVariables`, alongside the active environment and
+service-scoped overrides. The same carriers reach `--output-env`. Reading
+configuration never creates or restores a credential, and no dependency's token
+is substituted for the root's. A root requesting identity in a run with no
+workload authority fails before its dependency environment is reported ready.

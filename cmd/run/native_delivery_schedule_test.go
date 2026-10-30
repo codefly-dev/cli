@@ -327,7 +327,7 @@ func (f *fakeLauncherFlow) EndpointCarriers(context.Context, string, *basev0.Net
 func (f *fakeLauncherFlow) ReadyEndpointCarriers(context.Context, string, *basev0.NetworkAccess, []string) (map[string]string, error) {
 	return nil, errors.New("no endpoints in this test")
 }
-func (f *fakeLauncherFlow) LocalRuntimeServices() []string { return []string{"model/api"} }
+func (f *fakeLauncherFlow) LocalAuthorityServices() []string { return []string{"model/api"} }
 func (f *fakeLauncherFlow) ServiceReadiness(_ context.Context, service string) *orchestration.ReadinessFailure {
 	if f.ready(service) {
 		return nil

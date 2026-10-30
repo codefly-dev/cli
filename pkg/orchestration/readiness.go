@@ -32,6 +32,9 @@ const (
 	// successfully. An endpointless dependency (a one-shot job) is satisfied by
 	// this predicate alone: having no endpoint is not evidence of readiness.
 	PredicateLifecycle ReadinessPredicate = "lifecycle"
+	// PredicateExternalIdentity waits for the excluded consumer's admission;
+	// it makes no claim about a listener or process started by the launcher.
+	PredicateExternalIdentity ReadinessPredicate = "external-identity"
 	// PredicateRunner revokes readiness once a started runner reports failure.
 	PredicateRunner ReadinessPredicate = "runner"
 	// PredicateMapping requires a consumed endpoint to have a recorded network
@@ -140,6 +143,9 @@ func (flow *Flow) Readiness(ctx context.Context) *ReadinessFailure {
 	}
 	if failure, ok := flow.Failure(); ok {
 		return &ReadinessFailure{Service: failure.Service, Predicate: PredicateRunner, Reason: failure.Message}
+	}
+	if flow.externalIdentityOrigin() && !flow.externalPrepared.Load() {
+		return &ReadinessFailure{Service: resources.WithUnique(flow.originService).Unique(), Predicate: PredicateExternalIdentity, Reason: "external workload admission has not completed"}
 	}
 	requirements, err := flow.readinessRequirements(ctx)
 	if err != nil {

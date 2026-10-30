@@ -143,7 +143,7 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 // admission as run, with explicit configuration and flow-owned teardown.
 // Call after InitManagers determines whether this test starts any service.
 func AttachNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, selectedRuntime, fixture string) error {
-	if len(flow.LocalRuntimeServices()) == 0 {
+	if len(flow.LocalAuthorityServices()) == 0 {
 		return nil
 	}
 	_, err := newNativeLauncher(ctx, flow, workspace, env, selectedRuntime, fixture)
@@ -193,6 +193,7 @@ func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace 
 	world.RenderOwnedGroups = cluster.renderOwnedGroups
 	world.RuntimeOverrides = cluster.runtimeOverrides
 	world.BeginRuntimeStart = cluster.beginRuntimeStart
+	world.PrepareExternalWorkload = cluster.prepareExternalWorkload
 	go cluster.refreshTokens(ctx)
 	w.Info("native run: the run vouches for the composition's workloads", wool.Field("anchor", launcherIdentity.AnchorFingerprint()[:16]))
 	world.BeforeRuntimeStop = cluster.close

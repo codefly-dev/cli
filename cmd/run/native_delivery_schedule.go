@@ -35,7 +35,7 @@ type launcherFlow interface {
 	ServiceRuntimeContext(unique string) string
 	EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error)
 	ReadyEndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess, services []string) (map[string]string, error)
-	LocalRuntimeServices() []string
+	LocalAuthorityServices() []string
 	CheckRoutingSnapshot(ctx context.Context, workspace *resources.Workspace) error
 	ServiceReadiness(ctx context.Context, service string) *orchestration.ReadinessFailure
 }

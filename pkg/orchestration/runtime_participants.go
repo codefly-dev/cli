@@ -25,6 +25,14 @@ func (flow *Flow) LocalRuntimeServices() []string {
 func (flow *Flow) publishRuntimeServices() {
 	selected := flow.selectedRuntimeServices()
 	flow.runtimeParticipants.Store(&selected)
+	declared := slices.Clone(selected)
+	if flow.externalIdentityOrigin() {
+		unique := resources.WithUnique(flow.originService).Unique()
+		if !slices.Contains(declared, unique) {
+			declared = append(declared, unique)
+		}
+	}
+	flow.authorityParticipants.Store(&declared)
 }
 
 func (flow *Flow) selectedRuntimeServices() []string {
@@ -61,4 +69,29 @@ func (flow *Flow) selectedRuntimeServices() []string {
 		}
 	}
 	return selected
+}
+
+// LocalAuthorityServices also declares an excluded root driven by a dependency
+// client. LocalRuntimeServices remains the actual agent Start set.
+func (flow *Flow) LocalAuthorityServices() []string {
+	if flow != nil {
+		if selected := flow.authorityParticipants.Load(); selected != nil {
+			return slices.Clone(*selected)
+		}
+	}
+	return nil
+}
+
+func (flow *Flow) externalIdentityOrigin() bool {
+	if flow == nil || flow.world == nil || flow.world.Mode != RunMode || flow.validationSkipped ||
+		!flow.excludeRoot || flow.originService == nil || !flow.originService.ModuleIdentity {
+		return false
+	}
+	unique := resources.WithUnique(flow.originService).Unique()
+	for _, remote := range flow.remoteServices {
+		if remote.Unique() == unique {
+			return false
+		}
+	}
+	return true
 }
