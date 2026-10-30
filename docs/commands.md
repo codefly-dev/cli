@@ -525,11 +525,15 @@ host's gateway (`/v1/<as>/…`), and a browser reaches a solution's page and
 backend through it (`/<alias>/…`), so the environment's `host.gateway` service
 receives a `CODEFLY__ENDPOINT__…` carrier for every module endpoint a composed
 solution's `api.consumes` names and one for every composed solution's backend
-endpoint — the one `http` or `rest` endpoint its `service-entry` declares — in
-a run at the address the run allocated, at the gateway's own network access;
-in a render at the producer's in-cluster address. The gateway resolves both
-through the Codefly SDK from the carrier and forwards plain HTTP: a solution
-reports no address and serves no certificate, the mesh carries its identity.
+and every module's declared page — the one `http`, `rest` or `connect` endpoint
+its `service-entry` declares (Connect is HTTP on its own listener, so a gRPC +
+Connect backend owns a page; one `rest` beside one `connect` is forwarded to
+`connect`, since REST is deprecated; none or several is refused, naming the
+endpoints the entry declares) — in a run at the address the run allocated, at
+the gateway's own network access; in a render at the producer's in-cluster
+address. The gateway resolves both through the Codefly SDK from the carrier and
+forwards plain HTTP: a solution reports no address and serves no certificate,
+the mesh carries its identity.
 No dependency edge is added: the gateway neither waits on nor builds a module
 or a solution. The derivation is the one every carrier uses (the producer's
 own mappings, judged by its declared visibility for the gateway's module, so a
