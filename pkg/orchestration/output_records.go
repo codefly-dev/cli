@@ -1,8 +1,6 @@
 package orchestration
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -77,6 +75,10 @@ func validOutputKey(key string) error {
 	return nil
 }
 
+// configurationDocumentDigestLength is the length of the digest core appends
+// to a document prefix, read from core's own key rather than recomputed.
+var configurationDocumentDigestLength = len(resources.ConfigurationDocumentKey("", "", "", false)) - len(resources.ConfigurationDocumentPrefix)
+
 // isConfigurationDocumentCarrier reports a structured configuration
 // document's carrier exactly as core mints it (resources.ConfigurationDocumentKey):
 // one of the two document prefixes and a lowercase hex SHA-256, nothing else.
@@ -94,7 +96,7 @@ func isConfigurationDocumentCarrier(key string) bool {
 		if !found {
 			continue
 		}
-		if len(digest) != hex.EncodedLen(sha256.Size) {
+		if len(digest) != configurationDocumentDigestLength {
 			return false
 		}
 		for index := 0; index < len(digest); index++ {
