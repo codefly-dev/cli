@@ -4664,6 +4664,7 @@ codefly doctor workspace --env staging         # validate a declared environment
 codefly doctor workspace --module payments     # restrict to one module's services
 codefly doctor workspace --service api         # restrict to one service's declared dependencies
 codefly doctor workspace --json                # machine-readable report (for worktree managers)
+codefly doctor workspace --naming-scope gate   # check runnable bindings generated for a run in scope `gate`
 codefly doctor workspace --timeout 10s         # bound secret-provider resolution
 ```
 
@@ -4712,7 +4713,11 @@ What it checks, in order:
    value is ok; a selected binding the group does not hold fails as
    `configuration_missing` with `codefly generate runnable-bindings --env
    <env>` as its remedy. Existing binding values are also compared with the
-   generator's current preparation: changed addresses, contracts or policies,
+   generator's current preparation, in the naming scope `--naming-scope`
+   names, read as `codefly run --naming-scope` and `generate runnable-bindings
+   --naming-scope` read it (omitted keeps the environment's declared scope,
+   empty clears it), so bindings generated for a run in a scope are checked in
+   that scope and the remedy names it: changed addresses, contracts or policies,
    obsolete extra bindings and output left after the last operation disappears
    fail as `configuration_invalid`. This comparison checks effective values;
    the generator's `--check` additionally checks exact file bytes. The delivery
@@ -4748,7 +4753,8 @@ narrower of the two and wins when both are given.
 **Exit codes:** `0` — ready (warnings allowed); `1` — at least one check
 failed (or the command itself failed).
 
-**JSON contract** (`--json`, stdout): `{schema_version: 1, workspace,
+**JSON contract** (`--json`, stdout — and stdout carries nothing else: every
+log line, including core's warnings, goes to stderr): `{schema_version: 1, workspace,
 workspace_dir, environment, environment_declared, module?, service?, status:
 "ready"|"not_ready", checks: [{code, name, status: "ok"|"warn"|"fail",
 message, remediation?}]}`. Output never contains configuration values, raw
