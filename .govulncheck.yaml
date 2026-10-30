@@ -34,7 +34,9 @@ suppressions:
       Follow-up unchanged and still not landed: core migrates
       releaseupdate/go-selfupdate off x/crypto/openpgp. Drop this entry
       once that ships.
-    reviewed: 2026-09-14
+      2026-10-30 re-review: govulncheck 1.9.0 (db 2026-10-27) still reports
+      one module-level trace, no symbol reached, Fixed still N/A.
+    reviewed: 2026-10-30
 
   - id: GO-2026-4887
     module: github.com/docker/docker
@@ -51,7 +53,11 @@ suppressions:
       Upstream fix: only in github.com/moby/moby/v2 >= 2.0.0-beta.8. That
       is a renamed module and still pre-release; github.com/docker/docker
       publishes no v29 tag, so no dependency bump makes this actionable.
-    reviewed: 2026-09-14
+      2026-10-30 re-review: docker/docker v28.5.2 is the newest v28 release;
+      the fix exists only in moby/moby/v2 (2.0.0-beta.8). 95 traces, all
+      client/* or api/types/* frames and package-init chains; none reaches
+      pkg/authorization or the daemon.
+    reviewed: 2026-10-30
 
   - id: GO-2026-4883
     module: github.com/docker/docker
@@ -63,4 +69,6 @@ suppressions:
       pkg/authorization.
       Upstream fix: only in github.com/moby/moby/v2 >= 2.0.0-beta.8, the
       renamed pre-release module; unreachable from docker/docker v28.
-    reviewed: 2026-09-14
+      2026-10-30 re-review: same trace set and verdict as GO-2026-4887;
+      docker/docker v28.5.2 is the newest v28, fix only in moby/moby/v2.
+    reviewed: 2026-10-30

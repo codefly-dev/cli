@@ -121,6 +121,51 @@ never `--stand-alone` or `--exclude-root`; `--exclude-dependency` and
 out. The selected environment's `exclude-services` also removes services from
 the composition roots; a module withdrawn whole contributes no root, including
 its service-entry. CLI and run-profile exclusions still apply on top.
+
+**An operation is held to the environment it selected, never refused because a
+DIFFERENT environment's `exclude-services` is inconsistent with the workspace
+graph.** Run, build, deploy and `deploy gitops render` each check the one
+environment they were given against the graph, and a refusal names that
+environment in the message itself rather than only under `--debug`.
+
+This is scoped to the graph-consistency check, which is where the
+cross-environment refusal came from. It is not a general rule that other
+environments are ignored. The selection covers every check that judges an
+environment's declarations against the workspace's current service graph:
+`exclude-services`, the service-scoped names (`service-config`,
+`service-identity`, `service-mesh`, `service-secrets`) and
+`managed-services`. Those are narrowed together because they fail the same
+way — a bare `store` key becomes ambiguous the moment a second module
+composes a service of that name, and the environment that wrote the key may
+not be the one being rendered.
+
+The graph itself is still the whole workspace's. A name is ambiguous because
+of what the workspace composes; the selection decides whose declarations are
+judged against it, never what it contains.
+
+Two things still hold every environment, deliberately. The check decodes and
+validates EVERY environment's declarations before comparing the selected one
+against the graph, so a **malformed** declaration anywhere — an unqualified
+name, a duplicate, a service withdrawn from itself — still refuses, whatever
+was selected; that is a workspace that does not say what it means, not a
+disagreement with the graph. (Loading does not refuse: such a workspace still
+loads and a clean environment still selects. It is the validation that
+refuses.) Module namespaces and host composition are likewise whole-workspace,
+being invariants of the workspace rather than of a selection.
+This matters because the exclusion graph is the workspace's **current**
+composition: an environment imported before a module overlay added a service
+carries no `withdrawn-from` for it, so holding every environment to that graph
+refused a correct render of a different environment — and the operator could
+not satisfy it, since re-importing the offending environment requires the
+product intent to declare it.
+
+Every CLI path that checks exclusions against the graph selects an
+environment: run, build, test and deploy through the flow, `deploy gitops
+render` and the solution and dev renders through the workspace validation, and
+`codefly doctor workspace` through its own scope check — doctor selects and
+calls the selected check directly, rather than relying on the fallback. The
+whole-workspace form, which holds every environment's graph at once, remains
+the behaviour for a caller that has selected none.
 The deterministic port hash folds every endpoint into a few thousand
 buckets, so a `--naming-scope` can hash two endpoints to one port and abort
 the run; `--temporary-ports` sidesteps the hash, under the ordering its
@@ -740,6 +785,91 @@ machine key is returned on later calls.
 
 ```bash
 codefly delivery key
+```
+
+### `codefly delivery prepare`
+
+Write the paired documents `codefly delivery apply` sends, from the carriers a
+render already settled and the declarations the modules themselves hold.
+
+Each document carries both signed halves: the Core carrier the overlay holds —
+settled at its generation by the publish that wrote it — and the authority
+declaration signed against that carrier's exact bytes, read from the modules:
+method policies, scope ceilings, roles, owner-awareness, the installation
+selector and its person-context edges. Core's own manifest has **no roles
+field**, so this is the only way a module's roles reach a host.
+
+A GitOps publish toward a host that declares `codefly.dev/composition` writes
+these same documents into the overlay itself; `prepare` is for sending a pair
+from outside the Job.
+
+Nothing is re-rendered and no generation is re-settled. A manifest the overlay
+does not carry is not invented here, and a manifest whose carrier is unsigned
+is **refused by name** rather than prepared Core-only — a document that quietly
+dropped the authority half would reach the host looking like a success and
+compose the module with no roles. A withdrawal declares nothing and keeps its
+Core-only identity.
+
+Signing uses release custody (`VAULT_ADDR` + `VAULT_TOKEN` +
+`CODEFLY_RELEASE_TRANSIT_KEY`, or `CODEFLY_RELEASE_KMS_KEY`). `--developer`
+signs with this machine's developer key instead, which only a local
+qualification host admits; it is never chosen implicitly, because a
+developer-signed document delivered to a real host is refused there, far from
+the cause.
+
+```bash
+codefly delivery prepare --overlay deployments/environments/blue/modules/wiki/delivery \
+  --out ./prepared --env blue
+codefly delivery prepare --overlay ./delivery --out ./prepared --env local --developer
+```
+
+### `codefly delivery apply`
+
+Send the prepared paired delivery documents a render wrote to the host's
+composition interface — `host.composition.v1.CompositionService/ApplyManifest`.
+This is what a cell's delivery Job runs: a GitOps publish toward a host whose
+delivery endpoint declares `codefly.dev/composition` writes one paired document
+per manifest into the delivery overlay and renders the manifest Job to run
+`/bin/codefly delivery apply` with the projected token, from the codefly
+companion `0.0.7`, the first tag whose static binary carries this verb.
+
+Each document is one `ApplyManifestRequest` carrying **both** signed halves:
+core's module manifest in its DSSE carrier, and the authority declaration
+signed against that carrier's exact bytes — method policies, scope ceilings,
+roles, owner-awareness, the installation selector and its person-context edges.
+Only this interface takes the pair. The host's legacy HTTP manifest route takes
+the Core half alone, so a module delivered that way reaches the host with no
+roles at all.
+
+A prepared document carries **no credential**. A delivery credential is a
+projected ServiceAccount token with a lifetime of minutes, and one written into
+a rendered manifest would be a published secret and expired by the time the
+manifest synced — so a document that holds one is refused rather than sent. The
+credential is read from `--identity-file` at execution, once per request, so a
+token rotated between rounds is the one the next round sends. It is sent raw in
+the request's credential field, because the host adds the bearer scheme itself,
+and it is never printed and never passed as an argument.
+
+Documents are sent in **rounds**: every pending one once per round, then a
+pause that doubles up to `--max-pause`, until each is answered or `--budget` is
+spent — so a document the host keeps failing never keeps a later one, a
+withdrawal among them, from its first attempt. A refusal the host means (an
+invalid document, a refused carrier, a stale or rewritten generation, a
+withdrawal it keeps terminal) refuses that document and is not retried; only
+"not serving yet" — unavailable, out of time, out of capacity — is. The command
+fails when any document was not accepted, so a delivery that did not land fails
+the Job that ran it.
+
+`--address` is `<host>:<port>` of the endpoint the environment's `host.delivery`
+names. A Connect endpoint is one: a Connect server answers the gRPC protocol on
+the same listener (h2c in plaintext). Pass `--secure` only for a delivery
+endpoint that serves TLS itself.
+
+```bash
+codefly delivery apply --documents /etc/codefly/delivery \
+  --address accounts.platform.svc.cluster.local:8081 \
+  --identity-file /var/run/secrets/codefly/delivery-token
+codefly delivery apply --documents ./prepared --address localhost:8081 --identity-file ./token --budget 2m
 ```
 
 ### `codefly run cluster [module...]`
@@ -2788,6 +2918,76 @@ render stops pulling from, publishing bundles to or logging in to a registry the
 environment no longer holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
+
+#### Retiring a key the producer re-keyed
+
+Because maps merge by key, a producer that re-spells a service-scoped entry —
+`object-storage` becoming `documents/object-storage` — leaves **both**. The bare
+key then resolves against a workspace that may compose two services of that
+name and is refused as ambiguous, and no ordinary re-import clears it, because
+merging is what preserved it.
+
+`--retire-service-key <block>:<bare-key>=<module>/<service>` (repeatable) is the
+operator stating that one bare key is the old spelling of one qualified service:
+
+```
+codefly environment import blue --coordinate-contract contract.json \
+  --retire-service-key service-config:object-storage=documents/object-storage \
+  --retire-service-key service-identity:object-storage=documents/object-storage
+```
+
+The CLI never infers this. Equal values are not evidence and are never
+compared: a bare key can name a genuinely different service whose values
+happen to match, so only the directive authorizes a removal.
+
+**It deletes the whole named entry.** Not the part that overlaps the
+replacement — the entry. `service-config` resolution copies a bare entry's
+values and then overlays the qualified entry's, so a bare entry can supply keys
+the destination does not declare; those stop being set. The run prints which
+keys those are before writing, and `--dry-run` shows the same with the diff.
+The replacement is whatever the contract imported, verbatim: nothing is copied,
+renamed or merged across from the entry being retired.
+
+Supported blocks are `service-config`, `service-identity` and `service-mesh`.
+`service-secrets` is **refused by name**: a bare key there is not merely a
+different spelling, because a remote reference changes what is owned and what is
+a credential, and rewriting it produces a workspace validation then rejects.
+Retiring a secrets key needs its own answer. For `service-mesh`, shape
+validation already requires qualified keys, so retirement there repairs an
+invalid or stale declaration rather than migrating a once-valid bare form.
+
+A directive is refused, before anything is written, when it is malformed; when
+it names the same key twice, or twice with different destinations; when the
+block is unsupported; when the bare key is not declared by the selected
+environment; when the incoming contract **still** declares that bare key, which
+means it is current rather than retired; when the contract declares no such
+destination under that block; or when the workspace composes no service for the
+destination. Destination existence is proved against the loaded composition.
+
+That inspection acquires nothing and writes nothing. It refuses a pending
+legacy-workspace migration rather than performing one, and it refuses a
+`workspaces:` reference that is not materialized here rather than fetching it
+to answer — a check that acquired a dependency in order to decide it would
+refuse is not read-only. So a rejected directive and `--dry-run` leave
+`workspace.codefly.yaml`, the module files, the service sources and the module
+cache exactly as they were.
+
+Sources already prepared are unaffected: a module with a local path override,
+or one already materialized, resolves from disk and never reaches a resolver.
+Only an unmaterialized pinned reference is declined, and the refusal says to
+materialize it and import again.
+
+It changes only the environment being imported. Another environment carrying the
+same bare key keeps it; whether that one is also stale is its owner's call.
+
+**The directive is one-shot.** It requires the bare key to still be there, so
+once a run has written the file the same command refuses. Note that readiness
+validation runs *after* the write: a non-zero exit can still mean the retirement
+committed, and the retry must omit the flag. Provenance records each retirement
+as an operator action with its date, on its own line and deliberately not inside
+the re-run hint, which stays replayable. That record is a note about one import,
+not a durable audit log and not evidence that the key was ever the contract's —
+nothing reads it, and a later ordinary import may replace it.
 
 An import re-serializes only the selected environment item. Surrounding workspace
 bytes remain unchanged; a provenance comment records the coordinate and

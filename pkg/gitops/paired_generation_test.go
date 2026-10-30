@@ -124,7 +124,7 @@ func TestNativeGenerationIncludesEachAuthorityPolicyInput(t *testing.T) {
 						return nil, nil
 					}
 					return []*compositionv1.RoleV1{{Name: "viewer", Scopes: scopes()}}, nil
-				}, func(context.Context, string) (bool, error) { return input == "owner-aware" && action == "write", nil })
+				}, func(context.Context, string) (bool, error) { return input == "owner-aware" && action == "write", nil }, nil)
 			d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { return "credential", nil }}
 			_, err := d.Deliver(t.Context(), pairedManifest())
 			require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestNativeLostAcknowledgementCannotReuseGenerationForDifferentPolicy(t *tes
 	action := "read"
 	composition := NewCompositionDelivery(conn, signer, func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 		return []*compositionv1.MethodPolicyV1{{Method: "/probe.Items/Get", Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "probe.items", Actions: []string{action}}}}}, true, nil
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { return "credential", nil }}
 	peer.mu.Lock()
 	peer.loseReply = true
@@ -186,7 +186,7 @@ func TestNativePolicySnapshotCannotChangeBetweenSettlementAndSend(t *testing.T) 
 	composition := NewCompositionDelivery(conn, signer, func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 		reads++
 		return []*compositionv1.MethodPolicyV1{policy}, true, nil
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { policy.Requires[0].Actions[0] = "write"; return "credential", nil }}
 	_, err := d.Deliver(t.Context(), pairedManifest())
 	require.NoError(t, err)
@@ -203,7 +203,7 @@ func TestPairedPolicyPresenceAndWithdrawalReplay(t *testing.T) {
 	c := NewCompositionDelivery(conn, signer, func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 		reads++
 		return nil, declared, nil
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: c.Prepare, Token: func(string) (string, error) { return "credential", nil }}
 	for _, present := range []bool{false, false, true, true, false} {
 		declared = present
@@ -234,7 +234,7 @@ func TestPairedMigrationPreservesTerminalGeneration(t *testing.T) {
 		t.Run(fmt.Sprint(removed), func(t *testing.T) {
 			conn, peer := pairedConnection(t)
 			signer := nativeSigner(t)
-			c := NewCompositionDelivery(conn, signer, nil, nil, nil, nil)
+			c := NewCompositionDelivery(conn, signer, nil, nil, nil, nil, nil)
 			d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: c.Prepare, Token: func(string) (string, error) { return "credential", nil }}
 			manifest := pairedManifest()
 			if removed {
@@ -395,7 +395,7 @@ func TestNativeRevivalAfterAWithdrawalIsTheHostsToRefuse(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			conn, peer := pairedConnection(t)
 			signer := nativeSigner(t)
-			c := NewCompositionDelivery(conn, signer, nil, nil, nil, nil)
+			c := NewCompositionDelivery(conn, signer, nil, nil, nil, nil, nil)
 			d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: c.Prepare, Token: func(string) (string, error) { return "credential", nil }}
 			_, err := d.Deliver(t.Context(), pairedManifest())
 			require.NoError(t, err)
@@ -435,7 +435,7 @@ func TestNativeRevivalAfterAWithdrawalIsTheHostsToRefuse(t *testing.T) {
 			require.False(t, refusal.Transient())
 
 			restarted, _ := pairedConnection(t)
-			fresh := NewCompositionDelivery(restarted, signer, nil, nil, nil, nil)
+			fresh := NewCompositionDelivery(restarted, signer, nil, nil, nil, nil, nil)
 			d = &NativeDeliverer{Signer: signer, StateDir: d.StateDir, Prepare: fresh.Prepare, Token: d.Token}
 			_, err = d.Deliver(t.Context(), pairedManifest())
 			require.NoError(t, err, "a host started again accepts the module at the reserved generation")

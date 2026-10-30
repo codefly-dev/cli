@@ -157,6 +157,16 @@ func moduleAuthority(
 			return nil, err
 		}
 	}
+	// The installation declaration, carried VERBATIM. Core validated it
+	// (contracts/module rules.go: strict literal selector, no trim or
+	// case-fold) and the paired agreement rule compares it byte-for-byte on
+	// both signed carriers, where empty and "none" differ and nil and [] are
+	// equivalent zero edges. So the CLI normalizes nothing, defaults nothing,
+	// sorts nothing and re-parses nothing: an edge list keeps its declaration
+	// order, and EdgeDependency.Module stays the signed principal the host
+	// resolves through its catalogue — never a name, binding id or release.
+	authority.InstallationRole = resolved.InstallationRole
+	authority.EdgeDependencies = append([]modulecontract.EdgeDependency(nil), resolved.EdgeDependencies...)
 	authority.Queues = append([]string(nil), resolved.Queues...)
 	authority.Namespaces = append([]string(nil), resolved.Namespaces...)
 	for _, ceiling := range resolved.ScopeCeilings {

@@ -157,7 +157,29 @@ func refuseReservedAnnotation(tree *renderRoot, owned string, opts *RenderOption
 	return nil
 }
 
-// projectIdentityToken projects the host-audience token into the
+// WorkloadTokenFileVariable names the projected identity token's path to the
+// process that must present it. The mount alone does not satisfy the consumer:
+// the SDK's ProjectedTokenFile is a path VALUE its caller supplies and reads
+// no environment itself (sdk-go workcontext mint.go), and Hop's RunCredential
+// reads only this variable and refuses when it is absent — it infers no
+// Kubernetes default. So a workload that mounts the token and is told nothing
+// acquires no publication lease, and its Front.Ready refuses, which is how a
+// correctly rendered volume and ServiceAccount still produced a gateway that
+// could not register.
+//
+// A native run supplies it from the path it writes the projection to; a
+// deployed workload is told the path this render mounts it at. One name, one
+// meaning, both paths — and it is a path, never a credential.
+const WorkloadTokenFileVariable = "CODEFLY__WORKLOAD_TOKEN_FILE" //nolint:gosec // G101: the name of a path variable, not a credential
+
+// projectedTokenPath is where this render mounts the identity token, which is
+// the value WorkloadTokenFileVariable carries. Derived from the mount and file
+// so the projection and the variable cannot drift apart.
+func projectedTokenPath() string {
+	return path.Join(identityTokenMount, identityTokenFile)
+}
+
+// projectIdentityToken projects the host-audience token into the// projectIdentityToken projects the host-audience token into the
 // authenticating container of each serving workload of an identity service's
 // unit, unless that container already mounts one for the audience.
 func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, identity IdentityWorkload) error {
@@ -190,7 +212,14 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, i
 		if workload.hasVolume(identityTokenVolume) {
 			return fmt.Errorf("workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, identityTokenVolume)
 		}
-		patches = append(patches, &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
+		patches = append(patches, &podProjection{
+			kind: workload.Kind, name: workload.Name, container: container.Name,
+			volume: volume, mount: mount,
+			// The path travels with the mount that creates it, into the same
+			// container, so the consumer is never told to read a file this
+			// workload does not have.
+			env: map[string]string{WorkloadTokenFileVariable: projectedTokenPath()},
+		})
 	}
 	return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 }

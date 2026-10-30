@@ -121,10 +121,23 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
+	// The delivery carrier the cell admits follows the HOST's own declaration,
+	// read the one way everything else reads it (HostImplements), so the cell
+	// and the Job publish writes cannot disagree about which image runs.
+	hostModule, hostService, hostEndpoint := env.Host.DeliveryEndpoint()
+	paired, err := HostImplements(ctx, workspace, hostModule, hostService, hostEndpoint, CompositionInterface)
+	if err != nil {
+		return cellfile.File{}, CellResult{}, err
+	}
 	file := cellfile.File{
 		Schema: cellfile.Schema, Environment: env.Name,
 		Coordinate: env.Host.Coordinate, Component: env.Host.Component, Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
-		Source: cellSource(ctx, workspace, env),
+		// Verbatim: the cell says WHICH endpoint is the delivery API, and its
+		// consumer resolves that named endpoint itself. isDeliveryVerifier
+		// below marks the workload that serves it but drops the endpoint name,
+		// which left a consumer nothing to resolve and no choice but to guess.
+		DeliveryTarget: env.Host.Delivery,
+		Source:         cellSource(ctx, workspace, env),
 	}
 	result := CellResult{Source: file.Source != nil, ConfiguredEdges: configured}
 	for _, entry := range entries {
@@ -151,7 +164,7 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 				return cellfile.File{}, CellResult{}, fmt.Errorf("the render of module %s still delivers %s/%s, which environment %s excludes (exclude-services); render %s again for %s", inventory.Module, inventory.Module, unit.Name, env.Name, inventory.Module, env.Name)
 			}
 		}
-		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)
+		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers, paired)
 		if namespaceErr != nil {
 			return cellfile.File{}, CellResult{}, namespaceErr
 		}
@@ -259,7 +272,7 @@ func cellSource(ctx context.Context, workspace *resources.Workspace, env *enviro
 
 // cellNamespace derives one module's namespace entry from its rendered tree
 // and the composition's declarations for it.
-func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory, consumers map[string][]string) (cellfile.Namespace, error) {
+func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory, consumers map[string][]string, paired bool) (cellfile.Namespace, error) {
 	namespace := cellfile.Namespace{Name: inventory.Namespace, Module: inventory.Module}
 	if namespace.Name == "" {
 		return cellfile.Namespace{}, fmt.Errorf("the render of module %s names no namespace", inventory.Module)
@@ -396,7 +409,7 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		return cellfile.Namespace{}, err
 	}
 	if carries {
-		delivery, err := cellDelivery(env, namespace.Name)
+		delivery, err := cellDelivery(env, namespace.Name, paired)
 		if err != nil {
 			return cellfile.Namespace{}, fmt.Errorf("module %s: %w", inventory.Module, err)
 		}
@@ -551,8 +564,13 @@ func carriesDelivery(workspace *resources.Workspace, env *environments.Environme
 // itself is always written at publish, into the delivery repository, so a tree
 // in the workspace never holds it, and the cell must declare the carrier
 // before publish runs for its admission to let the Job in.
-func cellDelivery(env *environments.Environment, namespace string) (*cellfile.Delivery, error) {
-	carrier := deliveryCarrierOf()
+// paired says whether the environment's delivery endpoint declares
+// codefly.dev/composition, because a paired Job runs a different image — one
+// that can execute codefly rather than a shell script — and a cell admits the
+// carrier by its exact declaration, so the two must agree or the pod the Job
+// creates matches no approved entry and the delivery sync fails naming neither.
+func cellDelivery(env *environments.Environment, namespace string, paired bool) (*cellfile.Delivery, error) {
+	carrier := deliveryCarrierOf(paired)
 	repository, digest, err := splitPinnedImage(carrier.Image)
 	if err != nil {
 		return nil, fmt.Errorf("the delivery Job's %w", err)

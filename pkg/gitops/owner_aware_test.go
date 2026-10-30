@@ -101,7 +101,7 @@ func issuedScopes(in []*authorityv1.WorkScopeV1) []*basev0.WorkScopeV1 {
 func TestOwnerAwareReadFailureStopsDelivery(t *testing.T) {
 	dir := writeContract(t, ownedContract+"owner_aware: yes\n")
 	d := NewCompositionDelivery(nil, nativeSigner(t), nil, nil, nil,
-		func(context.Context, string) (bool, error) { return OwnerAware(dir) })
+		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil)
 	_, err := d.Prepare(t.Context(), "shop", false)
 	require.ErrorContains(t, err, "owner_aware")
 	for _, dir := range []string{"", t.TempDir()} {

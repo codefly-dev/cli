@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -121,6 +122,84 @@ func TestPlanRefusesARootGroupReferenceToAnExcludedService(t *testing.T) {
 	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, false)
 	require.ErrorContains(t, err, "from this environment (exclude-services")
 	require.ErrorContains(t, err, "platform/authority")
+}
+
+// TestNewFlowIsNotRefusedOverAnotherEnvironmentsManagedService closes the gap
+// the reviewer found: ValidateWorkspace narrows managed-service keys, but
+// NewFlow validates them on its OWN call (flow.go), which every render,
+// build, run and deploy reaches through renderServiceFlow and friends. A
+// regression that only drives ValidateWorkspace cannot see that call, so the
+// narrowing has to be proved here, at the seam the real render uses.
+//
+// `stale` names a bare managed service "vault" while two modules compose a
+// service of that name, so the key is ambiguous. A flow selecting `staging`,
+// which declares no managed services at all, must not inherit that refusal —
+// a flow resolves managed services through the SELECTED env.ManagedService
+// and never asks another environment's.
+func TestNewFlowIsNotRefusedOverAnotherEnvironmentsManagedService(t *testing.T) {
+	ctx := context.Background()
+	files := exclusionWorkspaceFiles("")
+	files["modules/depot/module.codefly.yaml"] = "kind: module\nname: depot\nservices:\n    - name: vault\n"
+	files["modules/depot/services/vault/service.codefly.yaml"] = `kind: service
+name: vault
+version: 0.0.0
+module: depot
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.1
+    publisher: codefly.ai
+`
+	files["workspace.codefly.yaml"] = `name: acme
+layout: modules
+modules:
+    - name: shop
+    - name: depot
+environments:
+    - name: staging
+      namespace: acme
+    - name: stale
+      namespace: acme
+      managed-services:
+          vault:
+              kind: external
+              external-name: vault.example.com
+`
+	workspace := writeTempWorkspace(t, files)
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	api, err := module.LoadServiceFromName(ctx, "api")
+	require.NoError(t, err)
+
+	// The owning environment really is ambiguous: selecting it still refuses,
+	// so the next assertion is not vacuous.
+	stale, err := SelectEnvironment(workspace, "stale")
+	require.NoError(t, err)
+	_, err = NewFlow(ctx, workspace, module, api, stale, RunMode)
+	require.ErrorContains(t, err, "ambiguous",
+		"the environment that owns the stale managed-service key must still be refused")
+
+	staging, err := SelectEnvironment(workspace, "staging")
+	require.NoError(t, err)
+	_, err = NewFlow(ctx, workspace, module, api, staging, RunMode)
+	require.NoError(t, err, "a flow is held to its own environment's managed services, never another's")
+
+	// With no selection the whole workspace is still held, so the
+	// workspace-wide callers keep the behaviour they had.
+	require.ErrorContains(t, environments.ValidateManagedServices(ctx, workspace), "ambiguous",
+		"with no selection every environment's managed services are still held")
+	require.ErrorContains(t, environments.ValidateManagedServices(ctx, workspace, nil), "ambiguous",
+		"a nil selection is the same as none, not a silent skip")
+
+	// And the check is still against the whole COMPOSITION rather than the
+	// run's closure: shop/api does not depend on anything in depot, so a
+	// closure-scoped check would not see the second "vault" at all. Selecting
+	// the environment that owns the key must still refuse it.
+	staleFlowService, err := module.LoadServiceFromName(ctx, "vault")
+	require.NoError(t, err)
+	_, err = NewFlow(ctx, workspace, module, staleFlowService, stale, RunMode)
+	require.ErrorContains(t, err, "ambiguous",
+		"ambiguity outside the run's closure is still judged, for the selected environment's own keys")
 }
 
 // TestFlowIsNotRefusedOverAnotherEnvironmentsExclusion is the Blue render

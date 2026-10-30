@@ -158,7 +158,7 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 		return ceilings, nil
 	}, func(_ context.Context, module string) ([]*compositionv1.RoleV1, error) {
 		return roles, nil
-	}, nil)
+	}, nil, nil)
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "console", Alias: "console", Kind: solutionhost.KindModule, Generation: 3,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "console", Version: "0.1.0"},

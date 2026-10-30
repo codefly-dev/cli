@@ -258,3 +258,23 @@ func TestAPublishListsPreparedBindingsInTheEnvelopeItDelivers(t *testing.T) {
 	require.NoError(t, json.Unmarshal(publication.options.Envelope.Principals["shop"], &grant))
 	require.Equal(t, "module_actor", grant.OperationAudiences[preparedKey].DelegationMode)
 }
+
+// A prepared binding addressed to the installing module itself is installed
+// nowhere: not in the module's request and not in its envelope entry. The host
+// admits a self-addressed binding only as headless work, and a module needs no
+// capability to reach its own operations.
+func TestAPreparedBindingAddressedToTheInstallerItselfIsNotInstalled(t *testing.T) {
+	grants := []preparedGrant{
+		{key: "SHOP__API_CONNECT_LIST", audience: "shop", invoke: []preparedScope{{kind: "shop.items", actions: []string{"read"}}}},
+		{key: "ACME__ITEMS_CONNECT_READ", audience: "acme.items", invoke: []preparedScope{{kind: "acme.item", actions: []string{"read"}}}},
+	}
+	authority := &solutionhost.Authority{Principal: "shop"}
+	require.NoError(t, appendPreparedBindings(authority, "shop", grants))
+	require.Len(t, authority.Bindings, 1)
+	require.Equal(t, "ACME__ITEMS_CONNECT_READ", authority.Bindings[0].ID)
+
+	entry, err := withPreparedEntries("shop", json.RawMessage(`{"resources":["shop.items"]}`), grants)
+	require.NoError(t, err)
+	require.Contains(t, string(entry), "ACME__ITEMS_CONNECT_READ")
+	require.NotContains(t, string(entry), "SHOP__API_CONNECT_LIST")
+}

@@ -141,7 +141,7 @@ func deliverTo(t *testing.T, target orchestration.GRPCTarget) func(context.Conte
 		conn, err := target.Dial()
 		require.NoError(t, err)
 		defer func() { _ = conn.Close() }()
-		composition := gitops.NewCompositionDelivery(conn, signer, nil, nil, nil, nil)
+		composition := gitops.NewCompositionDelivery(conn, signer, nil, nil, nil, nil, nil)
 		deliverer := &gitops.NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { return "token", nil }}
 		_, err = deliverer.Deliver(ctx, &solutionhost.ModuleManifest{
 			Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.model", Alias: "model", Kind: solutionhost.KindModule,

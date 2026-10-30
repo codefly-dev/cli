@@ -72,6 +72,11 @@ full delivery.intent.yaml is not interpreted.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// First, so an early refusal resets too: cobra keeps parsed flag values
+		// and their Changed bits on this package-level command, and they would
+		// otherwise reach the next run in the same process.
+		defer resetInvocationFlags(cmd)
+
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -88,6 +93,17 @@ full delivery.intent.yaml is not interpreted.`,
 		}
 
 		productPath, err := cmd.Flags().GetString("product-intent")
+		if err != nil {
+			return err
+		}
+		// Read per invocation, and cleared afterwards. This command object is a
+		// package-level var, and cobra keeps a parsed flag's value and its
+		// Changed bit on that object's own FlagSet — so a second Execute in
+		// the same process inherited the first run's directives and then
+		// failed the one-shot check against a key the first run had already
+		// retired. Separate processes were never affected, which is why only
+		// the public two-Execute path showed it.
+		retireKeys, err := cmd.Flags().GetStringArray("retire-service-key")
 		if err != nil {
 			return err
 		}
@@ -115,6 +131,7 @@ full delivery.intent.yaml is not interpreted.`,
 			namespace:         importNamespace,
 			namespaceSet:      cmd.Flags().Changed("namespace"),
 			dryRun:            importDryRun,
+			retireServiceKeys: retireKeys,
 			// UTC so the provenance timestamp does not vary by the operator's
 			// machine timezone and churn the diff on re-import across a team.
 			now:    time.Now().UTC(),
@@ -177,8 +194,35 @@ type importOptions struct {
 	namespace         string
 	namespaceSet      bool
 	dryRun            bool
+	retireServiceKeys []string
 	now               time.Time
 	stdout            io.Writer
+}
+
+// retirementInputs parses the operator's --retire-service-key directives and,
+// when there are any, loads the workspace graph they resolve against: the
+// workspace as it stands on disk, because retirement names an existing
+// service, not one this import adds. The graph is loaded under
+// inspectionContext: LoadWorkspaceFromDir MIGRATES a legacy flat workspace,
+// writing and deleting as it goes, and the host's resolver would clone an
+// unmaterialized pin into the module cache. A --dry-run or a refused directive
+// must do neither. A retirement needs an existing environment to retire from.
+func retirementInputs(ctx context.Context, opts *importOptions, envNode *yaml.Node) ([]retirement, *resources.Workspace, error) {
+	retirements, err := parseRetirements(opts.retireServiceKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(retirements) == 0 {
+		return nil, nil, nil
+	}
+	graphWorkspace, err := resources.LoadWorkspaceFromDir(inspectionContext(ctx), opts.dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if envNode == nil {
+		return nil, nil, fmt.Errorf("--retire-service-key needs an existing environment %q to retire a key from", opts.envName)
+	}
+	return retirements, graphWorkspace, nil
 }
 
 // runImport parses the contract, merges its owned fields into the named
@@ -234,6 +278,10 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return fmt.Errorf("environment %q already targets namespace %q, not %q; reconcile its existing identity, secrets and delivery declarations before importing a different target", opts.envName, existing.Value, env.Namespace)
 	}
 
+	retirements, graphWorkspace, err := retirementInputs(ctx, opts, envNode)
+	if err != nil {
+		return err
+	}
 	var updated []byte
 	if envNode == nil {
 		// New environment: serialize ToEnvironment's result whole, so a field
@@ -255,6 +303,16 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		withdrawOwnedAbsences(envNode, declaredEnvironment, contractOwnedOptional, false)
 		if intent != nil {
 			withdrawOwnedAbsences(envNode, declaredEnvironment, productOwnedOptional, true)
+		}
+		// Explicit operator-stated retirements, checked against the merged
+		// declaration and the workspace graph. Any refusal returns before the
+		// write below, so a rejected import changes nothing on disk.
+		notes, retireErr := applyRetirements(ctx, envNode, declaredEnvironment, graphWorkspace, retirements)
+		if retireErr != nil {
+			return retireErr
+		}
+		for _, note := range notes {
+			fmt.Fprintln(opts.stdout, note)
 		}
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
@@ -601,6 +659,21 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 		line += " --product-intent …"
 	}
 
+	// Retirements are recorded as historical metadata on their own lines, and
+	// deliberately NOT appended to the re-run hint above: the directive is
+	// one-shot — it requires the bare key to still be present — so a hint
+	// carrying it would fail if anyone re-ran it verbatim.
+	//
+	// These lines record that an operator asked for the change on a date. They
+	// are NOT evidence that the key was ever the contract's, and no import
+	// reads them: nothing here grants a later run permission to retire
+	// anything on its own.
+	retired := make([]string, 0, len(opts.retireServiceKeys))
+	for _, directive := range opts.retireServiceKeys {
+		retired = append(retired, fmt.Sprintf("# %s: operator retired %s on %s",
+			provenanceMarker, strings.TrimSpace(directive), opts.now.Format(time.RFC3339)))
+	}
+
 	kept := make([]string, 0)
 	for _, existing := range strings.Split(envNode.HeadComment, "\n") {
 		if existing == "" ||
@@ -610,7 +683,7 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 		}
 		kept = append(kept, existing)
 	}
-	envNode.HeadComment = strings.Join(append([]string{line}, kept...), "\n")
+	envNode.HeadComment = strings.Join(append(append([]string{line}, retired...), kept...), "\n")
 }
 
 func init() {
@@ -620,4 +693,7 @@ func init() {
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
+	importCmd.Flags().StringArray("retire-service-key", nil,
+		"Retire a bare service key the producer re-keyed, as <block>:<bare-key>=<module>/<service> (repeatable). "+
+			"Blocks: service-config, service-identity, service-mesh. The whole named entry is removed")
 }

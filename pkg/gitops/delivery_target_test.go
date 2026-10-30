@@ -53,7 +53,13 @@ func TestDeliveryTargetIsResolvedFromTheCompositionNeverDeclared(t *testing.T) {
 	// a rest endpoint (8080), never the container port the service declares
 	// (8443): the Job dials the Service, and the Service publishes the
 	// allocated port in front of whatever the pod listens on.
-	require.Equal(t, &DeliveryTarget{URL: "https://accounts.acme-platform.svc.cluster.local:8080", Audience: "accounts"}, target)
+	// The address is the same endpoint without a scheme, which is what the
+	// paired runner dials; a host whose endpoint declares no
+	// codefly.dev/composition is not a paired target.
+	require.Equal(t, &DeliveryTarget{
+		URL: "https://accounts.acme-platform.svc.cluster.local:8080", Audience: "accounts",
+		Address: "accounts.acme-platform.svc.cluster.local:8080", API: "rest",
+	}, target)
 
 	plain := writeHostWorkspace(t, false, true)
 	target, err = resolveDeliveryTarget(context.Background(), plain, selectedEnvironment(t, plain, "staging"))

@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -25,17 +26,11 @@ type CompositionDelivery struct {
 	client compositionv1.CompositionServiceClient
 	// signer is the run's release key, which signs the core manifest too.
 	signer solutionhost.Signer
-	// methods reads what each method of a module declares, from its package;
-	// ok false means the module declares no method policy.
-	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error)
-	// ceilings reads the module's own resource kinds with their actions, from
-	// its module contract; none when it publishes no contract.
-	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error)
-	// roles reads the roles a solution declares, from its module contract;
-	// none for a module, which declares no roles.
-	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
-	// ownerAware reads the module's explicit owner-selector enforcement declaration.
-	ownerAware func(ctx context.Context, module string) (bool, error)
+	// sources are the module's own declarations, read where they live. One
+	// value because a publish preparing a document for a cell to send reads the
+	// very same five (AuthoritySources), and two copies of that list is two
+	// ways for the pair the host compares to disagree.
+	sources AuthoritySources
 
 	mu      sync.Mutex
 	applied map[string]AppliedManifest
@@ -47,13 +42,22 @@ type CompositionDelivery struct {
 // actions on each of its own resource kinds, read by ceilings from its module
 // contract (core's manifest names the kinds alone), and the roles a solution
 // declares, read by roles from its module contract too (core's manifest
-// carries none), and its explicit owner-aware declaration.
+// carries none), and its explicit owner-aware declaration, and the
+// installation declaration read by installation from that contract — the
+// selector and person-context edges, carried verbatim because the paired
+// agreement rule compares this document against the Core signed manifest
+// byte-for-byte.
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),
 	roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error),
-	ownerAware func(ctx context.Context, module string) (bool, error)) *CompositionDelivery {
-	return &CompositionDelivery{client: compositionv1.NewCompositionServiceClient(conn), signer: signer, methods: methods, ceilings: ceilings, roles: roles, ownerAware: ownerAware, applied: map[string]AppliedManifest{}}
+	ownerAware func(ctx context.Context, module string) (bool, error),
+	installation func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error)) *CompositionDelivery {
+	return &CompositionDelivery{
+		client: compositionv1.NewCompositionServiceClient(conn), signer: signer,
+		sources: AuthoritySources{Methods: methods, Ceilings: ceilings, Roles: roles, OwnerAware: ownerAware, Installation: installation},
+		applied: map[string]AppliedManifest{},
+	}
 }
 
 func (c *CompositionDelivery) post(ctx context.Context, module string, signed *solutionhost.Signed, token string, declaration []byte) (Receipt, error) {
@@ -94,7 +98,7 @@ func (c *CompositionDelivery) Prepare(ctx context.Context, module string, remove
 	var declaration []byte
 	if !removed && c.signer != nil {
 		var err error
-		declaration, err = c.declaration(ctx, module)
+		declaration, err = c.sources.Declaration(ctx, module)
 		if err != nil {
 			return nil, err
 		}
@@ -109,48 +113,114 @@ func (c *CompositionDelivery) Prepare(ctx context.Context, module string, remove
 	}}, nil
 }
 
-func (c *CompositionDelivery) declaration(ctx context.Context, module string) ([]byte, error) {
+// AuthoritySources are a module's own declarations, each read where it lives:
+// the method policies its package declares, the actions on its own resource
+// kinds, the roles a solution declares, its explicit owner-aware declaration,
+// and its installation declaration — the standing role selector and the
+// person-context edges it reaches.
+//
+// It is one type because there are two producers of the authority half: a
+// native run sending it over the composition interface, and a publish
+// preparing a document for a cell's delivery to send later. They must read the
+// same five things and marshal them the same way, or the pair the host
+// compares byte-for-byte disagrees for a reason neither producer can see. A
+// nil reader declares nothing, which is how a caller that has only some of
+// them (a local qualification) is not forced to invent the rest.
+type AuthoritySources struct {
+	// Methods reads what each method of a module declares, from its package;
+	// ok false means the module declares no method policy.
+	Methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error)
+	// Ceilings reads the module's own resource kinds with their actions, from
+	// its module contract; none when it publishes no contract.
+	Ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error)
+	// Roles reads the roles a solution declares, from its module contract;
+	// none for a module, which declares no roles. Core's own manifest has no
+	// roles field at all, so this is the only way a role reaches a host.
+	Roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
+	// OwnerAware reads the module's explicit owner-selector enforcement declaration.
+	OwnerAware func(ctx context.Context, module string) (bool, error)
+	// Installation reads the installation declaration. Carried verbatim — the
+	// paired agreement rule compares this document against the Core signed
+	// manifest byte-for-byte.
+	Installation func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error)
+}
+
+// Declaration captures one module's declaration as the deterministic bytes
+// both identify its generation and are signed as the authority half. A module
+// that declares nothing at all answers nil, not an empty document: absence and
+// an empty declaration are different things to the host, and a nil here is
+// what keeps a withdrawal Core-only.
+func (s AuthoritySources) Declaration(ctx context.Context, module string) ([]byte, error) {
 	var methods []*compositionv1.MethodPolicyV1
 	declared := false
-	if c.methods != nil {
+	if s.Methods != nil {
 		var err error
-		if methods, declared, err = c.methods(ctx, module); err != nil {
+		if methods, declared, err = s.Methods(ctx, module); err != nil {
 			return nil, err
 		}
 	}
 	var ceilings []*authorityv1.WorkScopeV1
-	if c.ceilings != nil {
+	if s.Ceilings != nil {
 		var err error
-		if ceilings, err = c.ceilings(ctx, module); err != nil {
+		if ceilings, err = s.Ceilings(ctx, module); err != nil {
 			return nil, err
 		}
 	}
 	var roles []*compositionv1.RoleV1
-	if c.roles != nil {
+	if s.Roles != nil {
 		var err error
-		if roles, err = c.roles(ctx, module); err != nil {
+		if roles, err = s.Roles(ctx, module); err != nil {
 			return nil, err
 		}
 	}
 	var ownerAware bool
-	if c.ownerAware != nil {
+	if s.OwnerAware != nil {
 		var err error
-		if ownerAware, err = c.ownerAware(ctx, module); err != nil {
+		if ownerAware, err = s.OwnerAware(ctx, module); err != nil {
 			return nil, err
 		}
 	}
-	if !declared && len(ceilings) == 0 && len(roles) == 0 && !ownerAware {
+	var installationRole string
+	var edges []*compositionv1.EdgeDependencyV1
+	if s.Installation != nil {
+		var err error
+		if installationRole, edges, err = s.Installation(ctx, module); err != nil {
+			return nil, err
+		}
+	}
+	if !declared && len(ceilings) == 0 && len(roles) == 0 && !ownerAware &&
+		installationRole == "" && len(edges) == 0 {
 		return nil, nil
 	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
 		Methods: methods, ScopeCeilings: ceilings, Roles: roles, OwnerAware: ownerAware,
+		InstallationRole: installationRole, EdgeDependencies: edges,
 	})
 }
 
 // authority binds the captured declaration to the final Core bytes and signs it.
 func (c *CompositionDelivery) authority(manifest *solutionhost.ModuleManifest, core, declaration []byte) (*compositionv1.SignedManifestV1, error) {
+	return SignedAuthorityDocument(manifest, core, declaration, c.signer)
+}
+
+// SignedAuthorityDocument binds a captured declaration to the final Core bytes
+// and signs it: the authority half of a paired delivery.
+//
+// It is ONE function because there are two producers of that half — a native
+// run sending it over the composition interface, and a publish preparing it
+// for a cell's delivery to send later — and the host compares the pair under a
+// single rule. Two implementations of this binding would be two ways to
+// disagree with it. The module, the generation and the digest of the exact
+// Core bytes are stamped here rather than taken from the declaration, so the
+// signed authority cannot be replayed against another manifest, another
+// generation or another module. A nil declaration carries nothing, which is
+// how a withdrawal keeps its Core-only identity.
+func SignedAuthorityDocument(manifest *solutionhost.ModuleManifest, core, declaration []byte, signer solutionhost.Signer) (*compositionv1.SignedManifestV1, error) {
 	if declaration == nil {
 		return nil, nil
+	}
+	if signer == nil {
+		return nil, errors.New("the authority half of a paired delivery is signed by the release key, and none was given")
 	}
 	var policy compositionv1.AuthorityManifestV1
 	if err := proto.Unmarshal(declaration, &policy); err != nil {
@@ -161,7 +231,7 @@ func (c *CompositionDelivery) authority(manifest *solutionhost.ModuleManifest, c
 	if err != nil {
 		return nil, err
 	}
-	envelope, err := delivery.Sign(document, c.signer.KeyID(), c.signer.Sign)
+	envelope, err := delivery.Sign(document, signer.KeyID(), signer.Sign)
 	if err != nil {
 		return nil, err
 	}

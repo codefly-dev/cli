@@ -211,18 +211,26 @@ func validateResourcePathComponent(kind, name string) error {
 // caller: it selects, and calls ValidateEnvironmentExclusions directly
 // (cmd/doctor_workspace.go) rather than relying on this fallback.
 //
-// What the selection narrows is EXACTLY the graph-consistency check, and
-// nothing else in this function:
+// What the selection narrows is EXACTLY the checks that judge an
+// environment's declarations against the workspace's current service graph:
+// exclude-services consistency, service-scoped names (service-config,
+// service-identity, service-mesh) and managed-service keys. Those are the
+// ones that can disagree with the graph for reasons outside the selected
+// environment, and they are narrowed together because they fail the same way.
+//
+// Everything else still holds every environment, deliberately:
 //
 //   - FromWorkspace above decodes and validates every environment, including
-//     the SHAPE of its exclude-services (qualified names, duplicates,
-//     self-withdrawal). A malformed exclusion anywhere still refuses here.
-//   - module namespaces, host composition, service-scoped names and
-//     managed-service keys are all still held across every environment.
+//     the SHAPE of its declarations (qualified names, duplicates,
+//     self-withdrawal). A malformed declaration anywhere still refuses here,
+//     whatever was selected: that is not a disagreement with the graph, it is
+//     a workspace that does not say what it means.
+//   - module namespaces and host composition are invariants of the workspace
+//     rather than of a selection.
 //
-// Those remain whole-workspace deliberately — they are invariants of the
-// workspace, not of a selection — but they are the same cross-environment
-// shape, so narrowing them is a separate decision, not an oversight here.
+// The graph itself is still built from the whole workspace. A bare name is
+// ambiguous because of what the workspace composes; the selection decides
+// whose declarations are judged against it, never what it contains.
 func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, selected ...*Environment) error {
 	environments, err := FromWorkspace(workspace)
 	if err != nil {
@@ -243,9 +251,17 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 	if excludedErr := validateSelectedExclusions(ctx, workspace, selected); excludedErr != nil {
 		return w.Wrap(excludedErr)
 	}
+	// The graph passes below hold the SELECTED environment, for the same
+	// reason the exclusion pass above does: they resolve a declared name
+	// against the workspace's CURRENT service graph, so an environment whose
+	// composition predates a module overlay disagrees with that graph through
+	// no fault of the operation being run. Holding every environment to it
+	// refused `render --env blue` over `staging`'s bare "object-storage",
+	// which two modules now declare — and blue could not be repaired from its
+	// own side, because the offending declaration is not blue's.
+	scoped := selectedOrAll(environments, selected)
 	needsGraph := false
-
-	for _, env := range environments {
+	for _, env := range scoped {
 		if env != nil && (len(env.serviceScopedNames()) > 0 || len(env.ManagedServices) > 0) {
 			needsGraph = true
 			break
@@ -254,11 +270,14 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 	if !needsGraph {
 		return nil
 	}
+	// The graph itself stays whole-workspace: a name is ambiguous because of
+	// what the WORKSPACE composes, not because of what one environment says.
+	// Only the declarations judged against it are narrowed.
 	byName, err := servicesByName(ctx, workspace)
 	if err != nil {
 		return w.Wrap(err)
 	}
-	for _, env := range environments {
+	for _, env := range scoped {
 		if env == nil {
 			continue
 		}
@@ -299,14 +318,20 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 //
 // It loads the graph only when an environment declares a managed service, so a
 // workspace without any pays one in-memory projection and no disk read.
-func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace) error {
+func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace, selected ...*Environment) error {
 	declared, err := FromWorkspace(workspace)
 	if err != nil {
 		return err
 	}
 	w := wool.Get(ctx).In("Workspace::ValidateManagedServices", wool.NameField(workspace.Name))
+	// A caller that selected an environment is held to that environment's keys,
+	// the same way ValidateWorkspace is: a flow resolves managed services
+	// through the SELECTED env.ManagedService and never asks another
+	// environment's, so another's stale bare key must not refuse it. A caller
+	// with no selection still holds every environment.
+	scoped := selectedOrAll(declared, selected)
 	needsGraph := false
-	for _, env := range declared {
+	for _, env := range scoped {
 		if env != nil && len(env.ManagedServices) > 0 {
 			needsGraph = true
 			break
@@ -319,7 +344,7 @@ func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace
 	if err != nil {
 		return w.Wrap(err)
 	}
-	for _, env := range declared {
+	for _, env := range scoped {
 		if env == nil {
 			continue
 		}
@@ -425,4 +450,19 @@ func validateSelectedExclusions(ctx context.Context, workspace *resources.Worksp
 		return ValidateEnvironmentExclusions(ctx, workspace, env)
 	}
 	return ValidateExcludedServices(ctx, workspace)
+}
+
+// selectedOrAll answers which environments a selection-aware pass holds: the
+// one that was selected, or every declared environment when nothing was. A nil
+// selection is the same as none — a caller that has no environment must not
+// silently skip the check — which is the rule validateSelectedExclusions
+// already follows.
+func selectedOrAll(environments []*Environment, selected []*Environment) []*Environment {
+	for _, env := range selected {
+		if env == nil {
+			continue
+		}
+		return []*Environment{env}
+	}
+	return environments
 }

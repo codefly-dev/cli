@@ -94,6 +94,36 @@ func writeAuthorityWorkspace(t *testing.T) (*resources.Workspace, *resources.Mod
 // writeAuthorityWorkspaceRunning is writeAuthorityWorkspace with the service
 // declaration supplied, so a case about which agent runs "api" states that
 // rather than re-laying the whole composition beside it.
+// declaringContract is the smallest valid contract for shop that carries an
+// installation declaration: one ceiling, one role within it, and whatever the
+// case declares. Core validates the selector against the declared roles, so a
+// case naming a role must declare it.
+func declaringContract(declaration string) string {
+	return `schema: codefly/module-contract/v1
+principal: shop
+namespaces: [shop]
+queues: []
+scope_ceilings: [{resource_kind: shop.orders, actions: [read]}]
+bindings: []
+destinations: []
+roles:
+  - name: installer
+    scopes: [{resource_kind: shop.orders, actions: [read]}]
+` + declaration
+}
+
+// writeAuthorityWorkspaceDeclaring is writeAuthorityWorkspace with the module
+// contract replaced by one carrying the stated installation declaration.
+func writeAuthorityWorkspaceDeclaring(t *testing.T, declaration string) (*resources.Workspace, *resources.Module) {
+	t.Helper()
+	workspace, module := writeAuthorityWorkspace(t)
+	path := filepath.Join(module.Dir(), modulecontract.FileName)
+	require.NoError(t, os.WriteFile(path, []byte(declaringContract(declaration)), 0o644))
+	reloaded, loadErr := workspace.LoadModuleFromName(context.Background(), "shop")
+	require.NoError(t, loadErr)
+	return workspace, reloaded
+}
+
 func writeAuthorityWorkspaceRunning(t *testing.T, service string) (*resources.Workspace, *resources.Module) {
 	t.Helper()
 	workspace := writeHostedWorkspace(t)
@@ -189,6 +219,68 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 // TestAModuleWithoutAContractAsksForNothingButRunsAsItsPrincipal: a module
 // publishing no contract asks for no binding, and its manifest still names
 // its principal, so every workload of it runs as it.
+// TestTheInstallationDeclarationIsCarriedVerbatim is the CLI's half of the
+// paired agreement rule: the selector and the edge list reach the signed Core
+// carrier exactly as declared.
+//
+// The rule compares both signed carriers BYTE-FOR-BYTE and refuses a
+// mismatch, with empty and "none" distinct and nil/[] equivalent zero edges.
+// So any normalization here — trimming, defaulting, sorting, deduplicating,
+// or resolving EdgeDependency.Module to anything — would make the CLI the
+// party that broke the comparison. Core validated the declaration already
+// (contracts/module rules.go), and the host resolves the principal through
+// its catalogue; neither is the CLI's to repeat.
+func TestTheInstallationDeclarationIsCarriedVerbatim(t *testing.T) {
+	declared := `installation_role: installer
+edge_dependencies:
+  - module: robin
+    presence: required
+  - module: annotations
+    presence: optional
+`
+	workspace, module := writeAuthorityWorkspaceDeclaring(t, declared)
+	env := selectedEnvironment(t, workspace, "staging")
+	services := loadServices(t, workspace, "shop", "api")
+
+	authority, err := shopAuthority(t, workspace, module, services, env)
+	require.NoError(t, err)
+	require.Equal(t, "installer", authority.InstallationRole)
+	// Declaration order, not sorted: "robin" before "annotations" is the
+	// authored order and sorting would reorder them.
+	require.Equal(t, []modulecontract.EdgeDependency{
+		{Module: "robin", Presence: "required"},
+		{Module: "annotations", Presence: "optional"},
+	}, authority.EdgeDependencies)
+
+	// And it survives into the delivered manifest, which is what is signed.
+	_, manifest := renderShopManifest(t, workspace, module, env)
+	require.Equal(t, authority.InstallationRole, manifest.Authority.InstallationRole)
+	require.Equal(t, authority.EdgeDependencies, manifest.Authority.EdgeDependencies)
+}
+
+// "none" is a value, not an absence: the rule treats empty and "none" as
+// different, so the CLI must deliver the literal rather than collapsing it.
+func TestTheNoneSelectorIsCarriedAsAValue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		declared string
+		want     string
+	}{
+		"none":       {"\ninstallation_role: none\n", "none"},
+		"undeclared": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			workspace, module := writeAuthorityWorkspaceDeclaring(t, tc.declared)
+			env := selectedEnvironment(t, workspace, "staging")
+			services := loadServices(t, workspace, "shop", "api")
+
+			authority, err := shopAuthority(t, workspace, module, services, env)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, authority.InstallationRole)
+			require.Empty(t, authority.EdgeDependencies)
+		})
+	}
+}
+
 func TestAModuleWithoutAContractAsksForNothingButRunsAsItsPrincipal(t *testing.T) {
 	workspace, module := writeAuthorityWorkspace(t)
 	require.NoError(t, os.Remove(filepath.Join(module.Dir(), modulecontract.FileName)))

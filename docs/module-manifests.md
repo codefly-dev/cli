@@ -312,6 +312,57 @@ false declaration stays false, including for solutions with roles or
 solution by name. The declaration participates in delivery generation changes
 and is omitted from withdrawals together with other live policy.
 
+**The installation declaration is authored, carried verbatim, and compared
+across both signed documents.** A unit declares, at the top level of its
+`module.contract.codefly.yaml`, which standing role an installation's agent
+holds and which modules it reaches with the person's Work Context:
+
+```yaml
+installation_role: installer        # or "none", or omitted
+edge_dependencies:
+  - module: robin                   # the signed principal, not a name or binding id
+    presence: required              # "required" or "optional", no default
+  - module: annotations
+    presence: optional
+```
+
+`installation_role` has three states and core validates all of them: **omitted**
+is undeclared, the literal **`none`** is no standing machine authority, and any
+other value must name a role the unit itself declares. Matching is strictly
+literal — no trimming or case-folding in any owner, so `" installer "`,
+`" none "` and `" "` are refused rather than resolved, and an empty string is
+not `none`. `edge_dependencies` declares presence only: it grants nothing, and
+each `module` is the exact signed principal the host resolves through its own
+catalogue. A dependency list is never inferred from a module's bindings, which
+cover what it calls on its own behalf rather than what a person reaches at the
+edge.
+
+The CLI carries both onto **two** signed documents and normalizes neither: the
+core manifest's `authority` block (`installation_role`, `edge_dependencies`) and
+the composition delivery's `AuthorityManifestV1` (`installation_role` field 8,
+`edge_dependencies` field 9). Declaration order is preserved — the list is a
+sequence, not a set, and sorting it would change what is signed. Nothing is
+trimmed, defaulted, deduplicated or resolved, because authority compares the two
+documents **byte for byte** and refuses a disagreement: `installation_role` must
+match exactly (empty and `none` differ), and `edge_dependencies` must match in
+length and in each ordered `module`/`presence` pair. An absent or empty list is
+the same zero-edge declaration on either side, so the CLI delivers an empty list
+as absent and the two spellings cannot disagree. A declaration on only one
+document — including a module manifest whose authority document is missing
+entirely — is refused before anything is stored, while a unit declaring neither
+pairs as it always did.
+
+Because the comparison is authority's, the CLI reimplements none of it and adds
+no second parser: core validates the declaration once, the CLI carries it, and
+authority refuses any delivery whose two documents disagree. A declaration is
+reason enough for an authority document to exist: a unit whose only policy is an
+installation declaration still delivers one. Paired delivery of these fields
+requires a host reader that reads them: a publish toward a host whose delivery
+endpoint declares `codefly.dev/composition` renders the paired Job (see
+[The paired delivery](#the-paired-delivery)); toward any other host the
+rendered-manifest delivery Job carries the Core half alone and is not a paired
+producer.
+
 **A solution's roles are part of its contract.** A unit a person uses declares
 the roles a person may hold on an installation of it in the same
 `module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under
@@ -621,6 +672,118 @@ by wave, the delivery goes beside the module's consumers, after its bootstrap
 units; the module that serves the delivery API itself (`hostsDelivery`)
 follows its units. What is not verified: no parent application has run this
 ordering against a real readiness model.
+
+**The cell file names the delivery endpoint, and carries no port.** The cell's
+top-level `delivery_target` is the `host.delivery` identity verbatim —
+`<module>/<service>/<endpoint>`, the same spelling the render resolves. A
+consumer deriving what may reach the delivery API resolves that named endpoint
+on the named service itself, as the render does; the document states no address
+and no port, because a port here is the hardcoding the cell file exists to
+remove. The per-workload `verifier` flag cannot stand in for it: one workload
+serves every endpoint of its service, so the flag is identical whichever
+endpoint the host names, and a consumer holding only the flag has to guess the
+endpoint — by its `api`, which is how a `connect`-typed delivery API came to be
+granted on a REST port. The field is always written, since a host block without
+a well-formed delivery identity does not validate, so its absence means an
+emitter older than the field rather than a cell without one.
+
+**Which Job a publish renders is the host's declaration.** When the endpoint
+`host.delivery` names declares `codefly.dev/composition` (`HostImplements`, the
+one reader a native run uses too), the manifest Job runs the paired runner —
+see [The paired delivery](#the-paired-delivery). Otherwise it runs the shell
+runner, which POSTs `/platform/_delivery/manifest` whatever the endpoint's api
+is: a `connect` endpoint that declares no composition interface does not route
+that POST, the 404 is not in the verdict set, and the Job retries it until the
+budget is spent. The shell runner carries the Core signed carrier alone, and a
+module's roles exist only on the proto sidecar the composition interface
+carries, since core's own `Authority` has no roles field — so a module
+delivered that way reaches the host with no roles at all.
+
+## The paired delivery
+
+A paired delivery carries BOTH signed documents to the host's composition
+interface: the Core carrier, and the authority declaration signed against that
+carrier's exact bytes. It is the only delivery that carries a module's roles.
+
+Two verbs, because the halves are signed where release custody is and sent from
+inside the cell, after the module's workloads exist:
+
+- **`codefly delivery prepare`** reads the carriers a render settled in a
+  delivery overlay and the declarations the modules hold, and writes one
+  `ApplyManifestRequest` per manifest. The authority half is stamped with the
+  module, the generation and the digest of the exact Core bytes beside it
+  (`SignedAuthorityDocument`), so a signed authority cannot be replayed against
+  another manifest, generation or module. A carrier with no signature is
+  refused by name rather than prepared Core-only. A withdrawal declares nothing
+  and keeps its Core-only identity.
+- **`codefly delivery apply`** sends them to
+  `host.composition.v1.CompositionService/ApplyManifest`. A Connect endpoint is
+  a gRPC endpoint: a Connect server answers the gRPC protocol on the same
+  listener (h2c in plaintext), so `--address` is the `<host>:<port>` of the
+  endpoint `host.delivery` names.
+
+**The credential is the one field that cannot travel between those moments.** A
+delivery credential is a projected ServiceAccount token with a lifetime of
+minutes; one written into a rendered manifest would be a published secret and
+expired by the time the manifest synced. So a prepared document carries
+`credential: ""`, the sender refuses a document that holds one, and the token is
+read from the projection AT EXECUTION — once per request, so a rotation between
+rounds is sent on the next one. It goes RAW, with no bearer scheme, because the
+host adds the scheme itself before it authorizes the carrier. It is never
+printed, never an argument, and never in an error.
+
+**One rule, two producers.** A native run and a prepared document are the two
+producers of the authority half, and the host compares the pair under a single
+rule, so the binding (`SignedAuthorityDocument`) and the five declarations read
+(`AuthoritySources`) are each one implementation used by both. Two copies would
+be two ways to disagree with a rule neither producer can see.
+
+**Retry and refusal.** Documents are sent in rounds — every pending one once
+per round, a pause that doubles, until each is answered or the budget is spent —
+so a document the host keeps failing never keeps a later one, a withdrawal
+among them, from its first attempt. Only "not serving yet" is retried
+(`HostStatusError.Transient`: unavailable, out of time, out of capacity). Every
+other code is the host's answer: an invalid document, a refused carrier, a
+stale or rewritten generation, a withdrawal it keeps terminal. `FailedPrecondition`
+is among them, and it is the status a Connect transport renders as **412** —
+which the shell runner's verdict set (`400|401|403|409|422`) did not hold, so it
+retried a terminal refusal until the budget was gone.
+
+**What a GitOps publish renders.** Toward a host whose delivery endpoint
+declares `codefly.dev/composition`, publish writes the pair itself, from the
+same composed workspace a native run reads (`WorkspaceAuthoritySources`):
+
+- one paired document per manifest, in its own ConfigMap
+  `module-manifest-<binding>-paired` (file `<binding>-paired.yaml`, label
+  `codefly.dev/document: paired-delivery`, key `paired-delivery.json`) beside
+  the manifest's own ConfigMap, which keeps its shape for every reader of a
+  delivered overlay. A withdrawal's document carries the Core half alone.
+- the manifest Job, running `/bin/codefly delivery apply --documents … --address
+  <service>.<namespace>.svc.cluster.local:<port> --identity-file …` with the
+  projected token, no shell and no `DELIVERY_*` environment, mounting the
+  paired ConfigMaps rather than the Core-only carriers.
+
+A publish toward such a host that has no way to read module declarations is
+refused by name: it does not deliver the Core half alone.
+
+**The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
+the codefly companion tag `0.0.7`, whose `/bin/codefly` is a static binary that
+carries this verb and executes on `linux/amd64` and `linux/arm64` (the shell runner's
+`deliveryImage`, tag `0.0.4`, carries a glibc binary in an Alpine image and
+cannot exec it). The image follows the ENVIRONMENT: in a paired environment
+every delivery Job — the host namespace's envelope Job included — runs the
+paired image, and the cell file declares that image for every namespace's
+`delivery`, because a cell admits one carrier per namespace by its exact
+declaration. What follows the document kind is only the command: the
+composition interface has no envelope method, so the envelope Job keeps the
+shell runner and POSTs `/platform/_delivery/envelope`, which the paired image
+also carries every tool for.
+
+**Moving the pin.** Every companion bakes the CLI, so a CLI verb a Job must
+run needs a new companion version for all of them (core
+`docs/runbooks/publish-companions.md`); `0.0.6` predated `delivery apply` and
+`0.0.7` is the first tag that carries it. A moved pin changes every cell's
+`delivery` declaration, so the cell is re-rendered with it.
 
 ## The module envelope
 

@@ -328,7 +328,7 @@ func TestRuntimeOverridesDoNotIssueOrRestoreCredentials(t *testing.T) {
 	cluster, _ := admissionLauncher(t)
 	service, err := cluster.composed().LoadService(t.Context(), &resources.ServiceWithModule{Module: "alpha", Name: "api"})
 	require.NoError(t, err)
-	path := cluster.runtimeOverrides(service)[workloadTokenFileVariable]
+	path := cluster.runtimeOverrides(service)[gitops.WorkloadTokenFileVariable]
 	require.NotEmpty(t, path)
 	require.NoFileExists(t, path)
 	_, projected := cluster.vouch.Projected("alpha/api")
@@ -337,7 +337,7 @@ func TestRuntimeOverridesDoNotIssueOrRestoreCredentials(t *testing.T) {
 	require.NoError(t, err)
 	require.FileExists(t, path)
 	attempt.Complete(false)
-	require.Equal(t, path, cluster.runtimeOverrides(service)[workloadTokenFileVariable])
+	require.Equal(t, path, cluster.runtimeOverrides(service)[gitops.WorkloadTokenFileVariable])
 	_, projected = cluster.vouch.Projected("alpha/api")
 	require.False(t, projected, "late environment preparation cannot restore refresh membership")
 }
@@ -360,7 +360,7 @@ func (p *admittedRuntimePeer) Start(_ context.Context, req *runtimev0.StartReque
 	if len(p.composition.snapshots()) < 2 {
 		return nil, fmt.Errorf("Start preceded selected declarations")
 	}
-	if _, err := os.Stat(req.GetOverrides()[workloadTokenFileVariable]); err != nil {
+	if _, err := os.Stat(req.GetOverrides()[gitops.WorkloadTokenFileVariable]); err != nil {
 		return nil, err
 	}
 	p.starts.Add(1)

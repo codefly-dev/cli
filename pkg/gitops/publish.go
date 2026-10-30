@@ -427,6 +427,15 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 		return err
 	}
 	p.options.Target = target
+	// A host that declares codefly.dev/composition takes BOTH signed halves,
+	// so the publish that settles the Core half must also be able to read each
+	// module's declaration. Read the same five things a native run reads, from
+	// the same composed workspace, so neither producer of the authority half
+	// can read a different module than the other.
+	if target != nil && target.Composition {
+		sources := WorkspaceAuthoritySources(workspace, env)
+		p.options.Declarations = &sources
+	}
 	if env.Host != nil {
 		p.options.Domain = env.Host.Domain
 		p.options.Coordinate = env.Host.Coordinate

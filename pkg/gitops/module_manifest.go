@@ -47,6 +47,12 @@ const (
 	// binding the document declares.
 	documentLabel      = "codefly.dev/document"
 	moduleManifestKind = "module-manifest"
+	// pairedDeliveryKind is its value for a PAIRED delivery document: the
+	// module manifest's signed carrier and the authority declaration signed
+	// against it, in the one request the composition interface takes. It is a
+	// separate kind because a reader of a delivered overlay must tell the two
+	// apart — a paired document is not a manifest and does not parse as one.
+	pairedDeliveryKind = "paired-delivery"
 	bindingLabel       = "codefly.dev/binding"
 	managedByLabel     = "app.kubernetes.io/managed-by"
 	managedByCodefly   = "codefly"

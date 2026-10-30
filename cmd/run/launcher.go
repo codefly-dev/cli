@@ -383,7 +383,7 @@ func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string
 	if ok {
 		// A module-identity service reads its token from the path a cell's
 		// render mounts unless told otherwise; this is the otherwise.
-		out[workloadTokenFileVariable] = cluster.vouch.ProjectionPath(identity.Workload(cluster.env.Host.TrustDomain))
+		out[gitops.WorkloadTokenFileVariable] = cluster.vouch.ProjectionPath(identity.Workload(cluster.env.Host.TrustDomain))
 	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
@@ -643,6 +643,13 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 				return false, err
 			}
 			return gitops.OwnerAware(dir)
+		},
+		func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error) {
+			dir, err := load(ctx, module)
+			if err != nil {
+				return "", nil, err
+			}
+			return gitops.InstallationDeclaration(dir)
 		})
 }
 
@@ -800,10 +807,6 @@ func (cluster *launcher) forget(unique string) {
 	delete(cluster.running, unique)
 	cluster.mu.Unlock()
 }
-
-// workloadTokenFileVariable names the projected token's path to a process
-// that cannot read it from the path a pod mounts it at.
-const workloadTokenFileVariable = "CODEFLY__WORKLOAD_TOKEN_FILE" //nolint:gosec // G101: the name of a path variable, not a credential
 
 // delivers reports whether this run delivers a manifest for an identity's
 // module: every module but the host's own.

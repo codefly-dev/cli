@@ -145,9 +145,19 @@ func scopeStrings(scopes []preparedScope) []string {
 // appendPreparedBindings adds a binding per prepared key to a module's request.
 // A key the module's own contract already uses is refused by name: one id, two
 // declarations of what it asks.
+//
+// A prepared binding addressed to the module itself is not installed: the
+// composition prepares every runnable for every installer, so a module whose
+// own operations are runnables (robin's chat methods) would otherwise ask for
+// a person-delegated capability to call itself — which the host refuses, as
+// a binding naming its own module is only ever headless work — and reaching
+// its own operations needs no capability at all.
 func appendPreparedBindings(authority *solutionhost.Authority, module string, grants []preparedGrant) error {
 	for i := range grants {
 		grant := &grants[i]
+		if grant.audience == module {
+			continue
+		}
 		for _, existing := range authority.Bindings {
 			if existing.ID == grant.key {
 				return fmt.Errorf("module %s declares binding %s and installs the prepared binding %s/%s under the same id; a binding has one declaration", module, existing.ID, runnablespkg.RunnableBindingsGroup, grant.key)
@@ -279,6 +289,9 @@ func withPreparedEntries(principal string, grant json.RawMessage, grants []prepa
 	}
 	for i := range grants {
 		prepared := &grants[i]
+		if prepared.audience == principal {
+			continue
+		}
 		if _, stated := audiences[prepared.key]; stated {
 			continue
 		}

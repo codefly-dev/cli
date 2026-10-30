@@ -96,6 +96,14 @@ type deliveryPublishOptions struct {
 	// publish that may not deliver unsigned gives when its signer had no
 	// identity. Empty means the release workflow.
 	Signs string
+	// Declarations reads a module's own declaration — the authority half of a
+	// paired delivery. It is read only where the host's delivery endpoint
+	// declares codefly.dev/composition (Target.Composition), because that is
+	// the only interface that takes the pair. nil leaves a paired publish
+	// unable to prepare, and it refuses rather than deliver the Core half
+	// alone: a module delivered Core-only reaches the host with no roles and
+	// looks like a success.
+	Declarations *AuthoritySources
 }
 
 // unsignedRefusal is the refusal of a publish that may not deliver unsigned
@@ -204,6 +212,13 @@ func settleManifests(
 	if err != nil {
 		return nil, nil, err
 	}
+	if opts.Target != nil && opts.Target.Composition {
+		delivered, filesErr := deliveredOverlayFiles(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
+		if filesErr != nil {
+			return nil, nil, filesErr
+		}
+		advanceIntoPairedSettlement(settled, prior, delivered)
+	}
 	names := sortedBindings(settled)
 	// Each manifest at its settled generation is held against what the base
 	// branch delivered for its binding with core's own admission — a
@@ -227,7 +242,7 @@ func settleManifests(
 	if err != nil {
 		return nil, nil, err
 	}
-	files, err := writeManifestSet(target, overlay, inventory, settled, names, opts)
+	files, err := writeManifestSet(ctx, target, overlay, inventory, settled, names, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -331,6 +346,34 @@ func settledManifestSet(rendered, prior map[string]deliveredManifest) (map[strin
 		settled[binding] = entry
 	}
 	return settled, nil
+}
+
+// advanceIntoPairedSettlement moves a binding into paired settlement: a
+// manifest the base branch delivered Core-only — no paired document beside
+// its carrier — that this publish delivers paired keeps nothing of that
+// generation, because the host holds the generation with no authority
+// document and refuses the same generation offered with one as a history
+// conflict ("authority document digest stored=… (present=false)"), and the
+// old record cannot establish policy equality either way. It advances once,
+// as the native run's record does on the same transition, and is signed
+// again. A withdrawal keeps its Core-only identity.
+func advanceIntoPairedSettlement(settled, prior map[string]deliveredManifest, deliveredFiles []string) {
+	paired := map[string]bool{}
+	for _, name := range deliveredFiles {
+		paired[name] = true
+	}
+	for binding, entry := range settled {
+		previous, delivered := prior[binding]
+		if !delivered || entry.manifest.Removed || entry.manifest.Generation != previous.manifest.Generation {
+			continue
+		}
+		if paired[pairedDocumentFile(binding)] {
+			continue
+		}
+		entry.manifest.Generation = previous.manifest.Generation + 1
+		entry.carrier = nil
+		settled[binding] = entry
+	}
 }
 
 // settledGeneration is the generation of a candidate against the manifest
@@ -470,8 +513,10 @@ func signCarrier(ctx context.Context, what string, payload []byte, carrier *[]by
 }
 
 // writeManifestSet writes the settled manifests, the delivery account and the
-// Job that POSTs every signed carrier, and returns the overlay's file list.
-func writeManifestSet(target, overlay string, inventory *Inventory, settled map[string]deliveredManifest, names []string, opts *deliveryPublishOptions) ([]string, error) {
+// Job that delivers every signed carrier — toward a host that declares
+// codefly.dev/composition, as one paired document per carrier — and returns
+// the overlay's file list.
+func writeManifestSet(ctx context.Context, target, overlay string, inventory *Inventory, settled map[string]deliveredManifest, names []string, opts *deliveryPublishOptions) ([]string, error) {
 	directory := filepath.Join(target, filepath.FromSlash(overlay))
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create delivery overlay: %w", err)
@@ -481,6 +526,11 @@ func writeManifestSet(target, overlay string, inventory *Inventory, settled map[
 		return nil, err
 	}
 	defer tree.Close()
+	paired := opts.Target != nil && opts.Target.Composition
+	if paired && opts.Declarations == nil {
+		return nil, fmt.Errorf("the delivery endpoint %s declares %s, which takes both signed halves, and this publish was given no way to read module declarations; it will not deliver the Core half alone, because a module delivered that way reaches the host with no roles",
+			opts.Target.Address, CompositionInterface)
+	}
 	var files []string
 	var documents []deliveryDocument
 	var carriers [][]byte
@@ -491,12 +541,54 @@ func writeManifestSet(target, overlay string, inventory *Inventory, settled map[
 			return nil, writeErr
 		}
 		files = append(files, file)
-		if len(entry.carrier) > 0 {
+		if len(entry.carrier) == 0 {
+			continue
+		}
+		if !paired {
 			documents = append(documents, deliveryDocument{
 				ConfigMap: moduleManifestConfigMapName(binding), Key: solutionhost.SignedFileName, Name: binding + ".json",
 			})
 			carriers = append(carriers, entry.carrier)
+			continue
 		}
+		// The paired document: both signed halves in one ApplyManifestRequest,
+		// in its own ConfigMap beside the manifest's (pairedDocumentConfigMapName
+		// says why), so the Job mounts one file per binding and the authority
+		// half travels with the Core bytes it was signed against.
+		var declaration []byte
+		if !entry.manifest.Removed {
+			if declaration, err = opts.Declarations.Declaration(ctx, entry.manifest.Alias); err != nil {
+				return nil, fmt.Errorf("read the declaration of module %s: %w", entry.manifest.Alias, err)
+			}
+		}
+		// The pair is signed ONCE per publish and carried from the inspected
+		// plan to the publish that executes it, exactly like the Core carrier:
+		// a signature is fresh bytes each time (ECDSA, KMS), so a pair signed
+		// again on execution would change the overlay the plan was identified
+		// by and the publish would refuse its own plan as stale.
+		key := carrierKey(pairedDeliveryKind, binding, entry.manifest.Generation)
+		pair := opts.Reuse[key]
+		if pair == nil {
+			if opts.Executing {
+				return nil, fmt.Errorf("the paired document of %s was not prepared by the inspected plan, and the publish that executes a plan signs nothing the plan did not compare", binding)
+			}
+			var pairErr error
+			if pair, pairErr = PreparedPairedDocument(entry.carrier, declaration, resolvedSigner(opts)); pairErr != nil {
+				return nil, pairErr
+			}
+		}
+		if opts.Carriers == nil {
+			opts.Carriers = map[string][]byte{}
+		}
+		opts.Carriers[key] = pair
+		if err = writePairedDocumentInTree(tree, directory, inventory.Namespace, binding, pair); err != nil {
+			return nil, err
+		}
+		files = append(files, pairedDocumentFile(binding))
+		documents = append(documents, deliveryDocument{
+			ConfigMap: pairedDocumentConfigMapName(binding), Key: PairedDocumentKey, Name: binding + ".json",
+		})
+		carriers = append(carriers, pair)
 	}
 	if opts.Target == nil {
 		return files, nil
