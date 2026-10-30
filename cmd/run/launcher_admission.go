@@ -80,10 +80,6 @@ func (cluster *launcher) beginRuntimeStart(ctx context.Context, service *resourc
 // Failed Start leaves an admitted but unready workload, never a terminal
 // withdrawal; normal run teardown stops credential refresh.
 func (cluster *launcher) admitSelected(ctx context.Context) error {
-	if err := cluster.acquireDelivery(ctx); err != nil {
-		return err
-	}
-	defer cluster.delivery.Release(1)
 	// One snapshot of the selection decides both what is admitted and which
 	// binding targets are part of the run.
 	modules, selected := map[string]bool{}, map[string]bool{}
@@ -100,6 +96,27 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		names = append(names, module)
 	}
 	sort.Strings(names)
+	// A declared page is part of what a module is: the authority admits a
+	// module's roles only beside its page, so admission names the page's
+	// bundle as a ready delivery does. It is built here, before the delivery
+	// lock, so a build delays no other module's delivery; the ready delivery
+	// reuses the bundle retained for unchanged inputs.
+	loadedModules := make([]*resources.Module, len(names))
+	bundles := make([]*solutionhost.FrontendPayload, len(names))
+	for n, module := range names {
+		loaded, err := cluster.composed().LoadModuleFromName(ctx, module)
+		if err != nil {
+			return err
+		}
+		if bundles[n], err = cluster.frontendBundle(ctx, loaded); err != nil {
+			return err
+		}
+		loadedModules[n] = loaded
+	}
+	if err := cluster.acquireDelivery(ctx); err != nil {
+		return err
+	}
+	defer cluster.delivery.Release(1)
 	if err := cluster.checkRoutingSnapshot(ctx); err != nil {
 		return err
 	}
@@ -108,14 +125,8 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		return err
 	}
 	manifests := make([]*solutionhost.ModuleManifest, 0, len(names))
-	for _, module := range names {
-		loaded, err := cluster.composed().LoadModuleFromName(ctx, module)
-		if err != nil {
-			return err
-		}
-		// Admission builds no page: the bundle a ready delivery builds, outside
-		// the delivery lock, publishes it.
-		manifest, err := cluster.renderDelivery(ctx, deliverer, loaded, true, nil)
+	for n, module := range names {
+		manifest, err := cluster.renderDelivery(ctx, deliverer, loadedModules[n], true, bundles[n])
 		if err != nil {
 			return err
 		}
