@@ -352,7 +352,7 @@ func WorkspaceConfigurationsForChecking(
 	}
 	return &configurations.WorkspaceConfigurations{
 		Infos: workspaceConfigurationInfos(reader.Configurations()),
-	}, reader.CompositionRootWorkspaceConfigurationNames(), nil
+	}, runWideRootGroups(reader.CompositionRootWorkspaceConfigurationNames()), nil
 }
 
 // environmentExclusions is the environment's exclude-services as a set.

@@ -195,6 +195,11 @@ the called Connect surface before binding. Endpoint addresses still come from
 the existing network resolver, in the run's naming scope; see [naming scope and
 a declared call endpoint](#naming-scope-and-a-declared-call-endpoint).
 
+The file sits in the composition root's configuration directory, but the group
+is not run-wide: only a service that declares `runnable-bindings` in
+`workspace-configuration-dependencies` receives it, whole, in a run and in a
+render ([orchestration](orchestration.md#workspace-configuration-groups)).
+
 An environment that prepares no binding has no file when no module derives an
 operation. That absence is an answer, not a missing file: a service that
 declares `runnable-bindings` receives nothing for the group on a run, a build

@@ -152,7 +152,8 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
 
     the groups a service receives = the groups it declares
         (`workspace-configuration-dependencies`)
-      ∪ the groups the composition root provides run-wide
+      ∪ the groups the composition root provides run-wide,
+        except the declared-only ones
       − the groups the selected run profile excludes
 
 The render-owned `module-authority` group is supplied per workload by the
@@ -189,6 +190,16 @@ provide is left out the same way on every path: a service that declares it
 receives nothing for it and reads each key as not configured. A provided one
 is delivered like any other group, and one two composed modules define
 differently is still refused.
+
+The same group is **declared-only** (`environments.DeclaredOnlyWorkspaceConfiguration`):
+generation writes it to the composition root, which would otherwise make it
+run-wide, but it reaches only the services that declare it, in a run and in a
+render alike — the consumers `codefly doctor workspace` names as requiring it.
+It holds one prepared value per operation of every composed module, so handed
+to every service a composition of a hundred operations outgrew a native
+process's environment (#1256); no other service reads it. The plan gate reads
+the root's names through the same rule, so it never holds a service to a group
+it does not receive.
 
 **Addresses are kept across a reload.** `Runner.Init` pins the host ports a
 service was accepted at through core's port-override seam
