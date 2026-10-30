@@ -100,7 +100,7 @@ func runReadiness(t *testing.T, opts workspaceReadinessOptions) *workspaceReadin
 	if opts.timeout == 0 {
 		opts.timeout = 30 * time.Second
 	}
-	return workspaceReadiness(context.Background(), opts)
+	return workspaceReadiness(context.Background(), &opts)
 }
 
 func findDiagnostics(report *workspaceReadinessReport, code string) []workspaceDiagnostic {
@@ -992,7 +992,7 @@ func TestDoctorWorkspaceConcurrentChecksAreIndependent(t *testing.T) {
 			dir, baseline = failingDir, failingBaseline
 		}
 		wg.Go(func() {
-			report := workspaceReadiness(context.Background(), workspaceReadinessOptions{dir: dir, env: "local", timeout: 30 * time.Second})
+			report := workspaceReadiness(context.Background(), &workspaceReadinessOptions{dir: dir, env: "local", timeout: 30 * time.Second})
 			data, err := json.Marshal(report)
 			if err != nil {
 				errs <- err

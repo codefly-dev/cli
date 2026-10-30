@@ -2679,7 +2679,8 @@ Exit codes:
   0  the workspace is ready (warnings allowed)
   1  at least one check failed, or the command itself failed
 
-With --json, a versioned report is printed to stdout:
+With --json, a versioned report is printed to stdout, and stdout carries
+nothing else: every log line goes to stderr.
   {schema_version, workspace, workspace_dir, environment, environment_declared,
    module?, service?, status: ready|not_ready, checks: [{code, name, status,
    message, remediation?}]}
@@ -2687,6 +2688,11 @@ With --json, a versioned report is printed to stdout:
 --module and --service narrow the scope to one unit's declared configuration
 dependencies, so a sibling unit's missing configuration does not fail the
 check. --service is the narrower of the two and wins when both are given.
+
+--naming-scope checks the generated runnable bindings against the addresses
+of a run in that scope, as `codefly run --naming-scope` and
+`codefly generate runnable-bindings --naming-scope` read it: omitted keeps
+the environment's declared scope, empty clears it.
 
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
@@ -2713,11 +2719,12 @@ codefly doctor workspace [flags]
 Flags:
 
 ```
-      --env string         Environment to validate against (default "local")
-      --json               Print a machine-readable report to stdout
-      --module string      Restrict validation to one module's services and their declared configuration dependencies
-      --service string     Restrict validation to one service's declared configuration dependencies
-      --timeout duration   Overall bound; secret resolution is cancelled when it expires (default 30s)
+      --env string           Environment to validate against (default "local")
+      --json                 Print a machine-readable report to stdout; log lines go to stderr
+      --module string        Restrict validation to one module's services and their declared configuration dependencies
+      --naming-scope scope   Naming scope the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
+      --service string       Restrict validation to one service's declared configuration dependencies
+      --timeout duration     Overall bound; secret resolution is cancelled when it expires (default 30s)
 ```
 
 ## `codefly endpoint`
