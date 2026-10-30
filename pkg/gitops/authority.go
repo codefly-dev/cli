@@ -166,6 +166,8 @@ func moduleAuthority(
 	// order, and EdgeDependency.Module stays the signed principal the host
 	// resolves through its catalogue — never a name, binding id or release.
 	authority.InstallationRole = resolved.InstallationRole
+	authority.Setup = append([]modulecontract.ResolvedSetup(nil), resolved.Setup...)
+	authority.OwnerAwareResourceKinds = append([]string(nil), resolved.OwnerAwareResourceKinds...)
 	authority.EdgeDependencies = append([]modulecontract.EdgeDependency(nil), resolved.EdgeDependencies...)
 	authority.Queues = append([]string(nil), resolved.Queues...)
 	authority.Namespaces = append([]string(nil), resolved.Namespaces...)
