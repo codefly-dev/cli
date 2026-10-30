@@ -1,6 +1,8 @@
 package orchestration
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -23,7 +25,9 @@ type outputRecord struct {
 //
 // The reader (sdk-go LoadRuntimeEnvironmentFile) scans lines, strips one
 // trailing CR, cuts at the FIRST `=`, and refuses the whole file if any name
-// is not `CODEFLY__` plus at least one character of [A-Z0-9_]. So this is
+// is neither `CODEFLY__` plus at least one character of [A-Z0-9_] nor a
+// structured configuration document's carrier exactly as core mints it
+// (validOutputKey). So this is
 // transport grammar, not a second semantic carrier matcher, and it applies to
 // EVERY record in the batch — bound artifact, ordinary value, override,
 // identity, fixture, endpoint alike. A value carrying LF is the reason: the
@@ -61,6 +65,9 @@ func validOutputKey(key string) error {
 	if !strings.HasPrefix(key, prefix) || len(key) == len(prefix) {
 		return fmt.Errorf("its name is not a CODEFLY__ carrier, so the supported reader refuses the whole artifact")
 	}
+	if isConfigurationDocumentCarrier(key) {
+		return nil
+	}
 	for index := 0; index < len(key); index++ {
 		character := key[index]
 		if (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
@@ -68,6 +75,37 @@ func validOutputKey(key string) error {
 		}
 	}
 	return nil
+}
+
+// isConfigurationDocumentCarrier reports a structured configuration
+// document's carrier exactly as core mints it (resources.ConfigurationDocumentKey):
+// one of the two document prefixes and a lowercase hex SHA-256, nothing else.
+//
+// It is the one name outside [A-Z0-9_] the format carries. The digest is
+// lowercase because core spells it so, and every consumer finds the document by
+// calling that same function and looking the result up exactly; an uppercase
+// carrier would be missed by every consumer built on a core that mints the
+// lowercase one. So the grammar admits the name core mints rather than the
+// name being changed under its readers, and it admits only that shape: a
+// lowercase letter anywhere else is still refused.
+func isConfigurationDocumentCarrier(key string) bool {
+	for _, prefix := range []string{resources.ConfigurationDocumentPrefix, resources.SecretConfigurationDocumentPrefix} {
+		digest, found := strings.CutPrefix(key, prefix)
+		if !found {
+			continue
+		}
+		if len(digest) != hex.EncodedLen(sha256.Size) {
+			return false
+		}
+		for index := 0; index < len(digest); index++ {
+			character := digest[index]
+			if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // validOutputValue refuses the delimiters this format cannot represent. An

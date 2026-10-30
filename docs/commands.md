@@ -225,12 +225,14 @@ configuration.
 Two consequences worth stating plainly. An override whose key is not a
 `CODEFLY__` carrier (`--set FOO=bar`) now refuses the export rather than
 writing a file the reader would reject wholesale. And a **structured
-configuration document** cannot be exported this way at all: its carrier is a
-prefix plus a lowercase hex SHA256, which that grammar does not admit, so the
-reader has never been able to load such a file. The CLI now says so before
-writing instead of reporting success. Making it exportable needs an uppercase
-document carrier in core, or a reader in the SDK that accepts this one; neither
-is the CLI's to decide.
+configuration document** is the one carrier outside `[A-Z0-9_]` the format
+admits: its name is a document prefix plus a lowercase hex SHA-256, exactly as
+core mints it (`resources.ConfigurationDocumentKey`), and the reader (sdk-go
+`LoadRuntimeEnvironmentFile`) admits that shape and no other lowercase name.
+The name is kept rather than upper-cased because every consumer finds the
+document by calling that same core function and looking the result up
+exactly; a different spelling would be missed by every consumer built on a
+core that mints this one.
 
 **The delivery host's federation surface.** In a host environment the native
 run hands the service `host.delivery` names, when it declares the `federation`
