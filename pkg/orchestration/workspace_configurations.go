@@ -19,7 +19,8 @@ import (
 //	the groups a service receives = the groups it declares
 //	    (`workspace-configuration-dependencies`)
 //	  ∪ the groups the composition root provides run-wide
-//	    (core's GetCompositionRootWorkspaceConfigurations)
+//	    (core's GetCompositionRootWorkspaceConfigurations), except the
+//	    declared-only ones (environments.DeclaredOnlyWorkspaceConfiguration)
 //	  − the groups the selected run profile excludes
 //
 // Every path leaves render-owned groups to the per-workload projections, so
@@ -757,12 +758,25 @@ func (world *World) effectiveWorkspaceConfigurationGroups(declared []string) []s
 }
 
 // compositionRootWorkspaceConfigurationGroups names the composition root's own
-// groups, as the manager's loaders report them.
+// run-wide groups, as the manager's loaders report them.
 func (world *World) compositionRootWorkspaceConfigurationGroups() []string {
 	if world == nil || world.compositionRootGroups == nil {
 		return nil
 	}
-	return world.compositionRootGroups()
+	return runWideRootGroups(world.compositionRootGroups())
+}
+
+// runWideRootGroups is the composition root's groups less the declared-only
+// ones (environments.DeclaredOnlyWorkspaceConfiguration): the names every
+// service of the composition receives without declaring them. The resolution
+// and the plan gate both read the root's names through it, so they agree on
+// who receives a declared-only group: the services that declare it. The
+// loader's slice is never edited.
+func runWideRootGroups(names []string) []string {
+	if !slices.ContainsFunc(names, environments.DeclaredOnlyWorkspaceConfiguration) {
+		return names
+	}
+	return slices.DeleteFunc(slices.Clone(names), environments.DeclaredOnlyWorkspaceConfiguration)
 }
 
 // requireRootGroupSource refuses to resolve anything for a World that was built
@@ -793,7 +807,8 @@ func (world *World) requireRootGroupSource(declared []string) error {
 		own[group] = true
 	}
 	for _, info := range world.providedWorkspaceConfigurationInfos() {
-		if own[info.GetName()] || environments.RenderOwnedWorkspaceConfiguration(info.GetName()) {
+		if own[info.GetName()] || environments.RenderOwnedWorkspaceConfiguration(info.GetName()) ||
+			environments.DeclaredOnlyWorkspaceConfiguration(info.GetName()) {
 			continue
 		}
 		return fmt.Errorf("cannot resolve workspace configurations: this world was loaded with the group %q, which this service does not declare, but it has no composition-root group source, so it cannot tell whether that group is provided run-wide — and a root group it cannot name is one producer discovery never plans for, whose values go missing in silence. Bind World.compositionRootGroups as NewFlow does (configurations.Loader.CompositionRootWorkspaceConfigurationNames)",
@@ -1123,13 +1138,15 @@ func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen 
 	return false
 }
 
-// workspaceConfigurationExcluded reports whether a resolved workspace
-// configuration is profile-excluded or render-owned. Workspace configurations
-// carry their name on each Info (the Configuration.Origin is always "workspace"), and every Info
+// workspaceConfigurationExcluded reports whether a composition-root workspace
+// configuration is kept from a service that did not declare it: profile-excluded,
+// render-owned or declared-only. Workspace configurations carry their name on
+// each Info (the Configuration.Origin is always "workspace"), and every Info
 // in a given configuration shares that name.
 func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
 	for _, info := range conf.Infos {
-		if world.excludedWorkspaceConfigurations[info.Name] || environments.RenderOwnedWorkspaceConfiguration(info.Name) {
+		if world.excludedWorkspaceConfigurations[info.Name] || environments.RenderOwnedWorkspaceConfiguration(info.Name) ||
+			environments.DeclaredOnlyWorkspaceConfiguration(info.Name) {
 			return true
 		}
 	}

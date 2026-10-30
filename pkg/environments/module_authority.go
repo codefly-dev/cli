@@ -75,6 +75,18 @@ func OptionalWorkspaceConfiguration(group string) bool {
 	return group == runnables.RunnableBindingsGroup
 }
 
+// DeclaredOnlyWorkspaceConfiguration names the groups that reach only the
+// services declaring them in `workspace-configuration-dependencies`, even when
+// the composition root provides them, which otherwise makes a group run-wide.
+// runnable-bindings is one prepared value per operation of every composed
+// module, written to the root by `codefly generate runnable-bindings`: handed
+// to every service it outgrows a process environment (codefly-dev/cli#1256),
+// and only the services that install bindings read it — the same consumers
+// `codefly doctor workspace` names as requiring it.
+func DeclaredOnlyWorkspaceConfiguration(group string) bool {
+	return group == runnables.RunnableBindingsGroup
+}
+
 // ValidateHostComposition checks what a host block asks of the composition: a
 // `host.gateway` names a composed service with a workload of its own (a
 // managed service has none to front solutions with), and a service declaring
