@@ -898,7 +898,7 @@ func (cluster *launcher) renderDelivery(ctx context.Context, deliverer *gitops.N
 		}
 		services = append(services, service)
 	}
-	if early {
+	if early && bundle == nil {
 		// Deferral removes a page. Keep a previously published payload during
 		// unrelated partial startup instead of accidentally unpublishing it.
 		if previous := cluster.delivered[module]; previous != nil && previous.Frontend != nil {

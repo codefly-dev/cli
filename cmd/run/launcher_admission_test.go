@@ -23,6 +23,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/run/identity"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
@@ -489,4 +490,50 @@ func TestFailedExternalPreparationReleasesRefresh(t *testing.T) {
 	require.Error(t, err)
 	_, projected := cluster.vouch.Projected("alpha/api")
 	require.False(t, projected, "failed preparation removes refresh membership")
+}
+
+// A declared page is part of what a module is: the authority admits a module's
+// roles only beside its page, so admission names the page's bundle, built
+// before the first consumer starts, rather than deferring it to the ready
+// delivery. The ready delivery reuses the bundle retained for those inputs.
+func TestAdmissionCarriesADeclaredPage(t *testing.T) {
+	cluster, peer := admissionLauncher(t)
+	dir := filepath.Join(cluster.composed().Dir(), "modules", "alpha")
+	moduleFile := filepath.Join(dir, resources.ModuleConfigurationName)
+	body, err := os.ReadFile(moduleFile)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(moduleFile, append([]byte("service-entry: api\n"), body...), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "services", "api", solutionrun.FrontendFileName), []byte("title: Alpha\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+	remote := filepath.Join(dir, "services", "fe-remote")
+	require.NoError(t, os.MkdirAll(remote, 0o755))
+	for name, content := range map[string]string{"package.json": `{"scripts":{"build":"owner-build"}}`, "package-lock.json": `{"lockfileVersion":3}`, "Page.tsx": "page"} {
+		require.NoError(t, os.WriteFile(filepath.Join(remote, name), []byte(content), 0o600))
+	}
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	builds := filepath.Join(t.TempDir(), "builds")
+	fakeTool(t, bin, "npm", `case "$*" in
+ci) mkdir -p node_modules ;;
+"run build") echo build >> `+builds+` && mkdir -p dist && printf '{}' > dist/mf-manifest.json ;;
+esac
+`)
+	workspace, err := resources.LoadWorkspaceFromDir(t.Context(), cluster.composed().Dir())
+	require.NoError(t, err)
+	cluster.workspace = workspace
+
+	require.NoError(t, cluster.admitSelected(t.Context()))
+	pages := map[string]*solutionhost.FrontendPayload{}
+	for _, m := range peer.snapshots() {
+		if m.Frontend != nil {
+			pages[m.Alias] = m.Frontend.Payload
+		}
+	}
+	require.Len(t, pages, 1, "only the module that declares a page is admitted with one")
+	require.NotNil(t, pages["alpha"], "admission names the page's bundle")
+	require.NotEmpty(t, pages["alpha"].Digest)
+
+	require.NoError(t, cluster.admitSelected(t.Context()))
+	ran, err := os.ReadFile(builds)
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(string(ran), "build"), "unchanged inputs reuse the retained bundle")
 }
