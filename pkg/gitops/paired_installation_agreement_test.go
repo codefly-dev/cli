@@ -338,3 +338,40 @@ func TestNilAndEmptyEdgesAgree(t *testing.T) {
 
 	_ = context.Background()
 }
+
+func TestResolvedSetupAndOwnerKindsSurviveSignedDelivery(t *testing.T) {
+	conn, peer := pairedConnection(t)
+	signer := nativeSigner(t)
+	composition := NewCompositionDelivery(conn, signer,
+		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
+		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return nil, nil },
+		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, nil },
+		func(context.Context, string) (bool, error) { return false, nil }, nil)
+	d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { return "credential", nil }}
+	m := pairedManifest()
+	m.Authority = &solutionhost.Authority{Principal: m.Alias, Setup: []modulecontract.ResolvedSetup{{Binding: "schemas", Methods: []string{"/store.v1.Store/Define"}, Scopes: []string{"records.types:define"}}}, OwnerAwareResourceKinds: []string{"example.items"}}
+	_, err := d.Deliver(t.Context(), m)
+	require.NoError(t, err)
+	requests := peer.requests()
+	require.Len(t, requests, 1)
+	request := requests[0]
+	require.NotNil(t, request.Authority)
+	manifest, err := solutionhost.ManifestFromVerified(request.Carrier.Document)
+	require.NoError(t, err)
+	var policy compositionv1.AuthorityManifestV1
+	require.NoError(t, proto.Unmarshal(request.Authority.Document, &policy))
+	require.Equal(t, m.Authority.OwnerAwareResourceKinds, policy.OwnerAwareResourceKinds)
+	require.Len(t, policy.Setup, 1)
+	require.Equal(t, "schemas", policy.Setup[0].Binding)
+	require.Equal(t, m.Authority.Setup[0].Methods, policy.Setup[0].Methods)
+	require.Equal(t, m.Authority.Setup[0].Scopes, policy.Setup[0].Scopes)
+	doc := documentOf(t, request.Authority.Document, manifest)
+	doc.CoreManifestDigest = policy.CoreManifestDigest
+	doc.OwnerAwareResourceKinds = policy.OwnerAwareResourceKinds
+	for _, entry := range policy.Setup {
+		doc.Setup = append(doc.Setup, modulecontract.ResolvedSetup{Binding: entry.Binding, Methods: entry.Methods, Scopes: entry.Scopes})
+	}
+	require.NoError(t, delivered.Pair(doc, request.Carrier.Document, manifest))
+	doc.Setup[0].Methods = []string{"/store.v1.Store/Other"}
+	require.Error(t, delivered.Pair(doc, request.Carrier.Document, manifest), "equal permission cannot hide changed exact method")
+}

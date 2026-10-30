@@ -216,7 +216,8 @@ func (c *CompositionDelivery) authority(manifest *solutionhost.ModuleManifest, c
 // generation or another module. A nil declaration carries nothing, which is
 // how a withdrawal keeps its Core-only identity.
 func SignedAuthorityDocument(manifest *solutionhost.ModuleManifest, core, declaration []byte, signer solutionhost.Signer) (*compositionv1.SignedManifestV1, error) {
-	if declaration == nil {
+	hasResolved := !manifest.Removed && manifest.Authority != nil && (len(manifest.Authority.Setup) > 0 || len(manifest.Authority.OwnerAwareResourceKinds) > 0)
+	if declaration == nil && !hasResolved {
 		return nil, nil
 	}
 	if signer == nil {
@@ -225,6 +226,15 @@ func SignedAuthorityDocument(manifest *solutionhost.ModuleManifest, core, declar
 	var policy compositionv1.AuthorityManifestV1
 	if err := proto.Unmarshal(declaration, &policy); err != nil {
 		return nil, err
+	}
+	// Setup requirements need resolved callees. Use the Core-resolved carrier
+	// already captured by native run or publish, never reparse or re-resolve here.
+	policy.Setup, policy.OwnerAwareResourceKinds = nil, nil
+	if hasResolved {
+		policy.OwnerAwareResourceKinds = append([]string(nil), manifest.Authority.OwnerAwareResourceKinds...)
+		for _, entry := range manifest.Authority.Setup {
+			policy.Setup = append(policy.Setup, &compositionv1.SetupGrantV1{Binding: entry.Binding, Methods: append([]string(nil), entry.Methods...), Scopes: append([]string(nil), entry.Scopes...)})
+		}
 	}
 	policy.Module, policy.Generation, policy.CoreManifestDigest = manifest.Alias, manifest.Generation, delivery.Digest(core)
 	document, err := proto.MarshalOptions{Deterministic: true}.Marshal(&policy)
