@@ -111,8 +111,10 @@ func TestRefusalDiagnosticsCarryNoValuesOrMalformedKeys(t *testing.T) {
 	require.NotContains(t, err.Error(), "secret-value")
 }
 
-// readerGrammar is sdk-go v0.4.0's validRuntimeEnvironmentName, transcribed
-// for this test ONLY.
+// readerGrammar is sdk-go's validRuntimeEnvironmentName as of
+// codefly-dev/sdk-go#95, transcribed for this test ONLY: CODEFLY__ plus
+// [A-Z0-9_], or a configuration document's carrier — a document prefix and
+// exactly 64 lowercase hex digits.
 //
 // The CLI does not depend on root sdk-go and this must not make it: the
 // production check lives in validOutputKey, and the agreement between the two
@@ -120,6 +122,11 @@ func TestRefusalDiagnosticsCarryNoValuesOrMalformedKeys(t *testing.T) {
 // run. A roundtrip through the real reader is a separate, out-of-process
 // check against a built binary.
 func readerGrammar(name string) bool {
+	for _, prefix := range []string{"CODEFLY__CONFIGURATION_DOCUMENT_V1__", "CODEFLY__SECRET_CONFIGURATION_DOCUMENT_V1__"} {
+		if digest, found := strings.CutPrefix(name, prefix); found && len(digest) == 64 && strings.Trim(digest, "0123456789abcdef") == "" {
+			return true
+		}
+	}
 	if !strings.HasPrefix(name, "CODEFLY__") || len(name) == len("CODEFLY__") {
 		return false
 	}
@@ -144,6 +151,16 @@ func TestTheWriterAgreesWithTheReadersGrammar(t *testing.T) {
 		"CODEFLY__", "CODEFLY", "codefly__A", "CODEFLY__a", "CODEFLY__A-B", "CODEFLY__A B",
 		"CODEFLY__A=B", "CODEFLY__A\nB", "CODEFLY__Ä", "", "NOTE",
 		resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false),
+		resources.ConfigurationDocumentKey("saas/accounts", "fixture-composition", "local", true),
+		// The document shape admits its own digest and nothing near it.
+		resources.ConfigurationDocumentPrefix + strings.Repeat("a", 63),
+		resources.ConfigurationDocumentPrefix + strings.Repeat("a", 65),
+		resources.ConfigurationDocumentPrefix + strings.Repeat("g", 64),
+		resources.ConfigurationDocumentPrefix + strings.Repeat("a", 63) + "-",
+		resources.ConfigurationDocumentPrefix + strings.Repeat("A", 64),
+		resources.ConfigurationDocumentPrefix,
+		"CODEFLY__CONFIGURATION_DOCUMENT_V2__" + strings.Repeat("a", 64),
+		"CODEFLY__WORKSPACE_CONFIGURATION__" + strings.Repeat("a", 64),
 	} {
 		require.Equal(t, readerGrammar(name), validOutputKey(name) == nil,
 			"the writer and the supported reader disagree about a carrier name")
@@ -201,20 +218,15 @@ func TestTheWriterRefusesMalformedRetainedRecords(t *testing.T) {
 	}
 }
 
-// TestAStructuredConfigurationDocumentCannotBeExportedRaw records a defect
-// this format rule surfaced rather than created, and pins the CLI's honest
-// half of it.
-//
-// resources.ConfigurationDocumentKey is a prefix plus a LOWERCASE hex SHA256,
-// and sdk-go's validRuntimeEnvironmentName accepts only A–Z, 0–9 and `_`. So
-// the reader refuses the WHOLE artifact whenever a run exports a structured
-// configuration document — platform-core's merged fixture-composition is
-// exactly that shape. Before this check the CLI wrote such a file and
-// reported success; nothing could ever load it. Refusing before the first
-// write is the only answer available here: making it exportable needs either
-// an uppercase document carrier in core or a reader in sdk-go that accepts
-// this one, and neither belongs to the CLI.
-func TestAStructuredConfigurationDocumentCannotBeExportedRaw(t *testing.T) {
+// TestAStructuredConfigurationDocumentIsExported is the defect cli#1213's
+// check surfaced, closed: resources.ConfigurationDocumentKey is a prefix plus
+// a LOWERCASE hex SHA-256, and a run that delivers a structured configuration
+// document to the --output-env service — platform-core's merged
+// fixture-composition, which saas/auth-gateway receives — refused the whole
+// artifact ("its name is not uppercase ASCII…"). The carrier is now written
+// under the name core mints, and a consumer that looks it up the way the SDK
+// does (that same function, exactly) recovers the document.
+func TestAStructuredConfigurationDocumentIsExported(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "runtime.env")
 	native := resources.NewRuntimeContextNative()
@@ -223,12 +235,22 @@ func TestAStructuredConfigurationDocumentCannotBeExportedRaw(t *testing.T) {
 		Data: &basev0.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v1\nroles: []\n")},
 	}}}
 	key := resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false)
-	require.True(t, strings.HasPrefix(key, "CODEFLY__"), "the prefix is fine; the digest is not")
-	require.Error(t, validOutputKey(key), "the reader's own grammar refuses a lowercase hex digest")
+	require.NoError(t, validOutputKey(key))
 
-	err := AppendServiceProcessConfigurationsToFile(ctx, path, localRunEnvironment(), native, nil,
-		[]*basev0.Configuration{document}, nil, nil)
-	require.Error(t, err)
-	_, statErr := os.Stat(path)
-	require.True(t, os.IsNotExist(statErr), "nothing was written")
+	require.NoError(t, AppendServiceProcessConfigurationsToFile(ctx, path, localRunEnvironment(), native, nil,
+		[]*basev0.Configuration{document}, nil, nil))
+	body, err := os.ReadFile(path)
+	require.NoError(t, err)
+	values := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(body), "\n"), "\n") {
+		name, value, found := strings.Cut(line, "=")
+		require.True(t, found)
+		require.True(t, readerGrammar(name), "the supported reader admits every record written")
+		values[name] = value
+	}
+	encoded, found := values[key]
+	require.True(t, found, "the document rides the carrier core names")
+	content, err := resources.DecodeConfigurationDocument(encoded, resources.ConfigurationWorkspace, "fixture-composition", "local", false)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"schema":"codefly.dev/authority/fixture-composition/v1","roles":[]}`, string(content))
 }
