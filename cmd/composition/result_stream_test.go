@@ -1,6 +1,7 @@
 package composition
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -26,6 +27,8 @@ func TestCompositionResultStreamSurvivesConcurrentNarration(t *testing.T) {
 	restore := cli.ProtectResultStream()
 	cli.Info("reaping stale managed process group record=%s", "/runs/2049.pgid")
 	cli.Focus("reconciled managed process group")
+	// A record on a context with no wool provider takes wool's fallback.
+	wool.Get(context.Background()).Warn("composed modules disagree on a workspace configuration")
 	restore()
 
 	require.NoError(t, write.Close())
