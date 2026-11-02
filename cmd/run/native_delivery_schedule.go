@@ -12,6 +12,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -75,6 +76,16 @@ func deliveryAbandoned(err error) bool {
 // manifest the host refuses, a refusal it could not classify — is its answer,
 // and fails at once with its reason.
 func transientDeliveryRefusal(err error) bool {
+	if errors.Is(err, errDeliveryChanged) || errors.Is(err, solutionrun.ErrFrontendInputsChanged) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var uncertain *gitops.AppliedUnconfirmed
+	if errors.As(err, &uncertain) {
+		return true
+	}
 	var refusal *gitops.HostStatusError
 	if errors.As(err, &refusal) {
 		return refusal.Transient()

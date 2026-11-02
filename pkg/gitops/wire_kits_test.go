@@ -46,7 +46,7 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	config, err := os.ReadFile(configuration)
 	require.NoError(t, err)
 	require.Contains(t, string(config), "modules:\n  - name: shop\n")
-	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: assistant\n  - name: documents\n  - name: model-gateway\n", 1)), 0o644))
+	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: assistant\n  - name: documents\n  - name: model-gateway\n  - name: records\n", 1)), 0o644))
 	// The callees a binding that names its calls is resolved against
 	// (binding-names-calls): each declares what its calls require in its own
 	// published contract, a protobuf one and an OpenAPI one.
@@ -58,7 +58,7 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 		filepath.Join("modules", "assistant", resources.ModuleConfigurationName):                     "kind: module\nname: assistant\nservices:\n  - name: api\n",
 		filepath.Join("modules", "assistant", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "assistant") + "module-identity: true\n",
 		filepath.Join("modules", "assistant", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/assistant\nversion: 1.0.0\n",
-		filepath.Join("configurations", "staging", "assistant.env"):                                  "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nEVIDENCE_BINDING=evidence\nANNOTATIONS_PREFIX=annotations\nDOCUMENTS_AUDIENCE=documents\nREPLICA_AUDIENCE=documents\nCOLLECTIONS_AUDIENCE=documents\n",
+		filepath.Join("configurations", "staging", "assistant.env"):                                  "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nEVIDENCE_BINDING=evidence\nANNOTATIONS_PREFIX=annotations\nDOCUMENTS_AUDIENCE=documents\nREPLICA_AUDIENCE=documents\nCOLLECTIONS_AUDIENCE=documents\nRECORDS_AUDIENCE=records\n",
 	} {
 		full := filepath.Join(workspace.Dir(), rel)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
@@ -174,10 +174,10 @@ func TestTheModuleContractKitAdapterFailsOnUnrelatedErrors(t *testing.T) {
 	require.False(t, past)
 }
 
-// writeCalleePackages composes the two modules the kit's calls fixture calls:
+// writeCalleePackages composes the modules the kit's calls fixtures call:
 // documents, whose protobuf contract marks ResolveEvidence and
 // ReadDocumentExcerpt, and model-gateway, whose OpenAPI contract marks its two
-// routes.
+// routes; and records, whose setup call declares records.types:define.
 func writeCalleePackages(t *testing.T, root string) {
 	t.Helper()
 	read := &hopv1.Policy{Requires: []*hopv1.Requirement{{ResourceKind: "documents", Actions: []string{"read"}}, {ResourceKind: "documents.collection", Actions: []string{"read"}}}}
@@ -197,6 +197,16 @@ func writeCalleePackages(t *testing.T, root string) {
 		"/v1/model/profiles":{"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"modelservice.profiles","actions":["read"]}]}}},
 		"/v1/model/profiles/{name}:generate":{"post":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"modelservice.profiles","actions":["invoke"]}]}}}}}`)
 	writeCallee(t, filepath.Join(root, "modules", "model-gateway"), "model-gateway", "rest", "openapi", "ModelService", "openapi.json", openapi)
+	// Matches the Records owner's published DefineRecordType permission policy.
+	define := &descriptorpb.MethodDescriptorProto{Name: proto.String("DefineRecordType"), InputType: proto.String(".records.v1.Empty"), OutputType: proto.String(".records.v1.Empty"), Options: &descriptorpb.MethodOptions{}}
+	proto.SetExtension(define.Options, hopv1.E_Policy, &hopv1.Policy{Requires: []*hopv1.Requirement{{ResourceKind: "records.types", Actions: []string{"define"}}}})
+	set, err = proto.Marshal(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name: proto.String("records/v1/api.proto"), Package: proto.String("records.v1"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Empty")}},
+		Service:     []*descriptorpb.ServiceDescriptorProto{{Name: proto.String("RecordsService"), Method: []*descriptorpb.MethodDescriptorProto{define}}},
+	}}})
+	require.NoError(t, err)
+	writeCallee(t, filepath.Join(root, "modules", "records"), "records", "grpc", "protobuf", "records.v1", "contract.binpb", set)
 }
 
 // writeCallee writes one composed module publishing one contract.

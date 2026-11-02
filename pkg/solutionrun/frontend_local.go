@@ -56,8 +56,8 @@ func (b LocalFrontend) bound() int64 {
 type localFrontendRecord struct {
 	// Inputs is the digest of the inputs the bundle was built from.
 	Inputs string `json:"inputs"`
-	// Installed is the lockfile digest the staged copy's dependencies were
-	// last installed from (`npm ci`), for a native build.
+	// Installed is the install-input digest used to build this native bundle.
+	// The mutable staged installation has its own marker beside source/.
 	Installed string `json:"installed,omitempty"`
 	// Bundle is the retained bundle's digest.
 	Bundle string `json:"bundle"`
@@ -179,6 +179,11 @@ func (b LocalFrontend) prune(ctx context.Context, keep string) error {
 // Bundle answers the digest of the module's frontend bundle as its sources are
 // now, building it only when no bundle is retained for these sources.
 func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (string, error) {
+	guard, err := b.lock(ctx, module.Name)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = guard.Unlock() }()
 	sources, err := selectFrontendSources(ctx, module)
 	if err != nil {
 		return "", err
@@ -188,16 +193,11 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 		return "", err
 	}
 	recordPath := filepath.Join(b.StateDir, module.Name+".json")
-	guard, err := b.lock(ctx, module.Name)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = guard.Unlock() }()
 	var record localFrontendRecord
 	if data, readErr := os.ReadFile(recordPath); readErr == nil {
 		_ = json.Unmarshal(data, &record)
 	}
-	if record.Inputs == inputs && record.Bundle != "" && b.Retained(record.Bundle) {
+	if record.Inputs == inputs && (b.Docker || record.Installed == lock) && record.Bundle != "" && b.Retained(record.Bundle) {
 		return record.Bundle, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, localFrontendBuildBound)
@@ -212,17 +212,24 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 		root = filepath.Join(scratch, "bundle")
 		stage := func(ctx context.Context, _ *resources.Module, scratch string) (string, string, error) {
 			destination := filepath.Join(scratch, "source")
-			return destination, sources.component, sources.sync(ctx, destination)
+			return destination, sources.component, sources.stage(ctx, destination, module, b.Docker, inputs)
 		}
 		if err = buildFrontendBundle(ctx, module, root, stage); err != nil {
 			return "", err
 		}
 	} else {
 		staging := filepath.Join(b.stagingDir(module.Name), "source")
-		if root, err = sources.buildNatively(ctx, module, staging, lock != record.Installed); err != nil {
+		if root, err = sources.buildNatively(ctx, module, staging, lock, inputs); err != nil {
 			return "", err
 		}
 		record.Installed = lock
+	}
+	current, err := b.InputDigest(ctx, module)
+	if err != nil {
+		return "", err
+	}
+	if current != inputs {
+		return "", ErrFrontendInputsChanged
 	}
 	if record.Bundle, err = b.Retain(ctx, root); err != nil {
 		return "", fmt.Errorf("retain the frontend bundle of %s: %w", module.Name, err)
@@ -262,9 +269,9 @@ func (b LocalFrontend) Bundle(ctx context.Context, module *resources.Module) (st
 type frontendSources struct {
 	root, component, project string
 	files                    []string
-	// tarballs are the files local dependencies name: with the lockfile, what
-	// an install reads.
-	tarballs map[string]bool
+	// installFiles are local dependency inputs, including directory contents:
+	// npm may copy these packages into node_modules rather than link them.
+	installFiles map[string]bool
 }
 
 func selectFrontendSources(ctx context.Context, module *resources.Module) (*frontendSources, error) {
@@ -315,7 +322,11 @@ func selectFrontendSources(ctx context.Context, module *resources.Module) (*fron
 			return nil, fmt.Errorf("select the frontend sources of %s: %w", module.Name, err)
 		}
 		for name, tracked := range names {
-			add(rootRelative(root, filepath.Join(dir, name)), tracked)
+			relative := rootRelative(root, filepath.Join(dir, name))
+			add(relative, tracked)
+			if dir != projectDir {
+				named[relative] = true
+			}
 		}
 	}
 	for dir := projectDir; dir != root; {
@@ -336,7 +347,7 @@ func selectFrontendSources(ctx context.Context, module *resources.Module) (*fron
 			}
 		}
 	}
-	sources := &frontendSources{root: root, component: filepath.ToSlash(component), project: rootRelative(root, projectDir), tarballs: named}
+	sources := &frontendSources{root: root, component: filepath.ToSlash(component), project: rootRelative(root, projectDir), installFiles: named}
 	for relative := range selected {
 		sources.files = append(sources.files, relative)
 	}
@@ -458,9 +469,10 @@ func listFiles(ctx context.Context, dir string, repository, recursive bool) (map
 }
 
 // digest is the sources by path, mode and content, with how they are built,
-// and apart, the digest of what an install reads: the project's lockfile and
-// the tarballs its local dependencies name, so replacing a vendored tarball
-// in place installs it again. A symlink or special file among
+// and apart, the digest of what an install reads: the project's manifest and
+// lockfile, npm configuration, and local dependency contents (directories or
+// tarballs), so changing an installed input in place installs it again.
+// A symlink or special file among
 // them is refused by name: the deployed build refuses one too.
 func (s *frontendSources) digest(module *resources.Module, docker bool) (string, string, error) {
 	sum := sha256.New()
@@ -487,8 +499,8 @@ func (s *frontendSources) digest(module *resources.Module, docker bool) (string,
 		present++
 		hash := sha256.Sum256(content)
 		_, _ = fmt.Fprintf(sum, "%s\x00%o\x00%x\x00", relative, info.Mode().Perm(), hash)
-		if s.tarballs[relative] || relative == path.Join(s.project, "package-lock.json") || relative == path.Join(s.project, "npm-shrinkwrap.json") {
-			_, _ = fmt.Fprintf(install, "%s\x00%x\x00", relative, hash)
+		if s.installFiles[relative] || path.Base(relative) == ".npmrc" || relative == path.Join(s.project, "package.json") || relative == path.Join(s.project, "package-lock.json") || relative == path.Join(s.project, "npm-shrinkwrap.json") {
+			_, _ = fmt.Fprintf(install, "%s\x00%o\x00%x\x00", relative, info.Mode().Perm(), hash)
 			installs++
 		}
 	}
@@ -594,23 +606,39 @@ func installCommand(projectDir string) []string {
 
 // buildNatively runs the frontend's own npm build in staging, a copy of
 // exactly its sources — installing first (see installCommand) when the copy's
-// dependencies were not installed from this lockfile — and answers the bundle
+// dependencies were not installed from these inputs — and answers the bundle
 // it wrote. The
 // component's own node_modules and files are never touched. A failure names the
 // command and carries the end of its output.
-func (s *frontendSources) buildNatively(ctx context.Context, module *resources.Module, staging string, install bool) (string, error) {
-	if err := s.sync(ctx, staging); err != nil {
+func (s *frontendSources) buildNatively(ctx context.Context, module *resources.Module, staging, installInputs, inputs string) (string, error) {
+	if err := s.stage(ctx, staging, module, false, inputs); err != nil {
 		return "", fmt.Errorf("stage the frontend sources of %s: %w", module.Name, err)
 	}
 	projectDir := filepath.Join(staging, filepath.FromSlash(s.project))
+	// Bundle retention and installation have different failure lifetimes. A
+	// failed build may have installed new dependencies; the old bundle's record
+	// says nothing about that mutable copy. Keep its marker outside source/,
+	// where syncing the authored files does not remove it.
+	installedPath := filepath.Join(filepath.Dir(staging), "installed")
+	installed, err := os.ReadFile(installedPath)
+	install := err != nil || string(installed) != installInputs
 	if _, err := os.Stat(filepath.Join(projectDir, "node_modules")); err != nil {
 		install = true
 	}
 	steps := [][]string{{"npm", "run", "build"}}
 	if install {
+		// Invalidate before mutating anything: an interrupted/failed install
+		// must not leave a trusted marker. npm install (the no-lock path) can
+		// retain old file: copies, so install into an empty dependency tree.
+		if err := os.Remove(installedPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		if err := os.RemoveAll(filepath.Join(projectDir, "node_modules")); err != nil {
+			return "", err
+		}
 		steps = append([][]string{installCommand(projectDir)}, steps...)
 	}
-	for _, step := range steps {
+	for i, step := range steps {
 		//nolint:gosec // G204: fixed npm executable and arguments, no shell.
 		command := exec.CommandContext(ctx, step[0], step[1:]...)
 		command.Dir = projectDir
@@ -619,6 +647,11 @@ func (s *frontendSources) buildNatively(ctx context.Context, module *resources.M
 		command.Stdout, command.Stderr = &output, &output
 		if err := command.Run(); err != nil {
 			return "", fmt.Errorf("build the frontend of %s (%s in %s): %w\n%s", module.Name, strings.Join(step, " "), s.project, err, tail(output.String(), 40))
+		}
+		if install && i == 0 {
+			if err := os.WriteFile(installedPath, []byte(installInputs), 0o600); err != nil {
+				return "", err
+			}
 		}
 	}
 	services, err := filepath.Rel(module.Dir(), module.ServicesDir())

@@ -4734,6 +4734,7 @@ Flags:
       --stand-alone                               Begin service as standalone, i.e. without its dependencies
       --start-docker                              Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable (default true)
       --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --watch-frontends                           Watch selected local frontend sources and rebuild signed host bundles (independent of agent hot-reload; refresh the browser after delivery)
 ```
 
 ## `codefly run solution`
@@ -4758,6 +4759,7 @@ Flags:
       --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                            Silence services in CLI output
       --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --watch-frontends                           Watch selected local frontend sources and rebuild signed host bundles (independent of agent hot-reload; refresh the browser after delivery)
 ```
 
 ## `codefly run workspace`
@@ -4787,6 +4789,7 @@ Flags:
       --silent strings                            Silence services in CLI output
       --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
       --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --watch-frontends                           Watch selected local frontend sources and rebuild signed host bundles (independent of agent hot-reload; refresh the browser after delivery)
 ```
 
 ## `codefly sbom`

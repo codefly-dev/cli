@@ -34,11 +34,15 @@ import (
 
 type admissionFlow struct {
 	pairedLauncherFlow
-	selected []string
+	selected       []string
+	beforeCarriers func(string)
 }
 
 func (f *admissionFlow) LocalAuthorityServices() []string { return f.selected }
 func (f *admissionFlow) ReadyEndpointCarriers(_ context.Context, module string, _ *basev0.NetworkAccess, ready []string) (map[string]string, error) {
+	if f.beforeCarriers != nil {
+		f.beforeCarriers(module)
+	}
 	carriers := map[string]string{}
 	for _, unique := range ready {
 		ref, _ := resources.ParseServiceWithOptionalModule(unique)
@@ -52,16 +56,23 @@ type admissionPeer struct {
 	compositionv1.UnimplementedCompositionServiceServer
 	mu        sync.Mutex
 	manifests []*solutionhost.ModuleManifest
+	intercept func(context.Context, *compositionv1.ApplyManifestRequest, *solutionhost.ModuleManifest) error
 }
 
-func (p *admissionPeer) ApplyManifest(_ context.Context, req *compositionv1.ApplyManifestRequest) (*compositionv1.ApplyManifestResponse, error) {
+func (p *admissionPeer) ApplyManifest(ctx context.Context, req *compositionv1.ApplyManifestRequest) (*compositionv1.ApplyManifestResponse, error) {
 	m, err := solutionhost.ManifestFromVerified(req.GetCarrier().GetDocument())
 	if err != nil {
 		return nil, err
 	}
 	p.mu.Lock()
 	p.manifests = append(p.manifests, m)
+	intercept := p.intercept
 	p.mu.Unlock()
+	if intercept != nil {
+		if err := intercept(ctx, req, m); err != nil {
+			return nil, err
+		}
+	}
 	return &compositionv1.ApplyManifestResponse{Generation: m.Generation}, nil
 }
 
@@ -105,7 +116,7 @@ func admissionLauncher(t *testing.T) (*launcher, *admissionPeer) {
 	identities, err := gitops.ResolveNativeIdentities(t.Context(), workspace, env)
 	require.NoError(t, err)
 	flow := &admissionFlow{pairedLauncherFlow: pairedLauncherFlow{fakeLauncherFlow: fakeLauncherFlow{ready: func(string) bool { return true }}, address: listener.Addr().String()}, selected: []string{"model/model", "alpha/api", "beta/api"}}
-	cluster := &launcher{workspace: workspace, env: env, signer: signer, vouch: vouch, identities: identities, stateDir: t.TempDir(), hostModule: "model", hostService: "model", hostEndpoint: "rest", flow: flow, running: map[string]bool{}, delivered: map[string]*solutionhost.ModuleManifest{}, schedule: testDeliverySchedule, stop: make(chan struct{})}
+	cluster := &launcher{workspace: workspace, env: env, signer: signer, vouch: vouch, identities: identities, stateDir: t.TempDir(), hostModule: "model", hostService: "model", hostEndpoint: "rest", flow: flow, running: map[string]bool{}, delivered: map[string]*solutionhost.ModuleManifest{}, pendingWithdrawals: map[string]bool{}, schedule: testDeliverySchedule, stop: make(chan struct{})}
 	cluster.declare(identities)
 	t.Cleanup(cluster.close)
 	return cluster, peer

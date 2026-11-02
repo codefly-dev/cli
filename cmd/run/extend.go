@@ -216,6 +216,9 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 		if admitErr != nil {
 			return admitErr
 		}
+		if err := cluster.refreshFrontendWatches(ctx); err != nil {
+			return err
+		}
 		for _, unique := range admitted {
 			cli.Info("admitted %s: its identity is projected, and it is delivered to the host once running", unique)
 		}
