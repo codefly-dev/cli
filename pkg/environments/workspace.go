@@ -283,10 +283,12 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 		}
 		for block, names := range env.serviceScopedNames() {
 			for _, name := range names {
-				// A module-qualified service-identity key names exactly one
-				// service of that module, or nothing (a typo that would leave
-				// the workload on the default identity with no report).
-				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config" || block == "build-images") {
+				// A module-qualified key names exactly one service of that
+				// module, or nothing (a typo that would leave the workload on
+				// the default identity with no report). service-secrets needs
+				// the qualified form as much as the others: a bare "store" is
+				// ambiguous in any composition where several modules ship one.
+				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config" || block == "service-secrets" || block == "build-images") {
 					if !slices.Contains(byName[service], name) {
 						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
 					}

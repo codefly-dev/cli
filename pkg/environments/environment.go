@@ -1236,6 +1236,24 @@ type SecretScope struct {
 	Service   string
 }
 
+// MappingFor is a service's own secrets entry. A module-qualified entry wins
+// over a bare one, and is the only way to name a service whose bare name
+// several modules declare — eleven modules of one composition each ship a
+// "store", so "store" alone cannot say which. The bare form stays for a name
+// only one module has, which is how every environment written before the
+// qualified form states its services.
+func (s *EnvironmentServiceSecrets) MappingFor(module, service string) EnvironmentServiceSecretMapping {
+	if s == nil {
+		return EnvironmentServiceSecretMapping{}
+	}
+	if module != "" {
+		if mapping, named := s.Services[resources.ServiceUnique(module, service)]; named {
+			return mapping
+		}
+	}
+	return s.Services[service]
+}
+
 // RemoteRef locates one secret key of a service in the remote store. An explicit
 // per-service RemoteKeys entry wins; else the service's own Defaults template;
 // else the environment-wide Defaults template; else the "<service>/<key>" store
@@ -1244,7 +1262,7 @@ type SecretScope struct {
 // fallback path, the same as an environment that declares nothing.
 func (s *EnvironmentServiceSecrets) RemoteRef(scope SecretScope, key string) EnvironmentSecretRemoteRef {
 	if s != nil {
-		mapping := s.Services[scope.Service]
+		mapping := s.MappingFor(scope.Module, scope.Service)
 		if remote, ok := mapping.RemoteKeys[key]; ok {
 			return remote
 		}
