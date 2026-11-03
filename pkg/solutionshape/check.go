@@ -81,6 +81,8 @@ const (
 	CodePageExportedTooWidely   = "page_shell_exported_too_widely"
 	CodeInstallerRoleMissing    = "installer_role_missing"
 	CodeBackendContractMissing  = "backend_contract_missing"
+	// CodeRoleScopeUnreached and CodeOperationPoliciesUnread are declared in
+	// reached.go, beside the check that reports them.
 )
 
 // Check is one rule's outcome, with the fix when it failed.
@@ -131,11 +133,17 @@ func Inspect(moduleName, dir string) *Report {
 	consumed := report.checkManifest(raw)
 	module := report.checkModule(dir)
 	report.checkEntryService(dir)
-	report.checkContract(dir, consumed)
-	report.checkPackage(dir)
+	contract := report.checkContract(dir, consumed)
+	packaged := report.checkPackage(dir)
 	report.checkFrontend(dir)
 	if module != nil {
 		report.checkInterface(module)
+	}
+	// Last, because it is the only check that reads the contract and the
+	// package together: what the roles grant against what the published
+	// operations require.
+	if contract != nil && packaged != nil {
+		report.checkRoleScopesAreReached(dir, contract, packaged)
 	}
 	return report
 }
@@ -279,17 +287,19 @@ func (r *Report) checkEntryService(dir string) {
 }
 
 // checkContract holds the contract to the declaration that fails silently.
-func (r *Report) checkContract(dir string, consumed []string) {
+// It returns the loaded contract, for the one check that needs it beside the
+// package manifest, and nil when there is none to judge.
+func (r *Report) checkContract(dir string, consumed []string) *modulecontract.Contract {
 	if _, err := os.Stat(filepath.Join(dir, modulecontract.FileName)); errors.Is(err, os.ErrNotExist) {
 		r.fail(CodeContractMissing, fmt.Sprintf("no %s", modulecontract.FileName),
 			"it declares the principal every credential the solution mints is issued to; without it the solution has no declared identity to issue against")
-		return
+		return nil
 	}
 	contract, err := modulecontract.Load(dir)
 	if err != nil {
 		r.fail(CodeContractUnreadable, fmt.Sprintf("cannot read %s: %v", modulecontract.FileName, err),
 			"note that a core older than v0.19.7 refuses the WHOLE contract when it carries owner_aware, because core holds the document to its known fields")
-		return
+		return nil
 	}
 	r.ok(CodeContractMissing, fmt.Sprintf("the contract declares principal %q", contract.Principal))
 	r.checkConsumedModulesHaveAuthority(consumed, contract)
@@ -303,6 +313,7 @@ func (r *Report) checkContract(dir string, consumed []string) {
 		r.fail(CodeOwnerAwareMissing, "the contract does not declare owner-aware checking",
 			"the authority issues a person a capability at a solution ONLY when it declares owner_aware: true, and refuses by name otherwise. Without it this solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you")
 	}
+	return contract
 }
 
 // checkInstallerRole holds the contract to the role the host requires of a
@@ -339,16 +350,18 @@ func (r *Report) checkInstallerRole(contract *modulecontract.Contract) {
 
 // checkPackage holds the published identity, and the one thing about it that
 // is easy to get wrong in the right-looking direction.
-func (r *Report) checkPackage(dir string) {
+// It returns the loaded package manifest, for the one check that needs it
+// beside the contract, and nil when there is none to judge.
+func (r *Report) checkPackage(dir string) *composition.PackageManifest {
 	if _, err := os.Stat(filepath.Join(dir, composition.PackageManifestFileName)); errors.Is(err, os.ErrNotExist) {
 		r.fail(CodePackageMissing, fmt.Sprintf("no %s", composition.PackageManifestFileName),
 			"the render declares the solution's presence from this file; without it the host never lists the solution and nobody can install it, and the contract's scopes reach no host either")
-		return
+		return nil
 	}
 	packaged, err := composition.LoadPackageManifest(dir)
 	if err != nil {
 		r.fail(CodePackageUnreadable, fmt.Sprintf("cannot read %s: %v", composition.PackageManifestFileName, err), "")
-		return
+		return nil
 	}
 	r.ok(CodePackageMissing, fmt.Sprintf("the package publishes %s@%s", packaged.ID, packaged.Version))
 	r.checkBackendContract(packaged)
@@ -358,10 +371,11 @@ func (r *Report) checkPackage(dir string) {
 			r.warn(CodePackagePublishesShell,
 				fmt.Sprintf("the package publishes the %q shell", PageService),
 				"a host that federates the page's remote needs no shell of its own, so the shell is composed but not published")
-			return
+			return packaged
 		}
 	}
 	r.ok(CodePackagePublishesShell, "the package does not publish the shell")
+	return packaged
 }
 
 // checkBackendContract holds the package to carrying the backend's published
