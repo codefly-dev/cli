@@ -56,20 +56,34 @@ Every rule is one that silently broke something. The two worth knowing:
                  renders into a mesh allow rule straight to that module's
                  service, past the check.
 
+  role breadth   A role granting an action on one of the solution's OWN kinds
+                 that no route it publishes requires is checked by nothing, so
+                 holding it reaches nothing. It is reported as a warning: it
+                 refuses no call and breaks no run, and either a route is
+                 missing its policy or the role is wider than the solution.
+
 Permissions are judged by reading the contract through Core's own loader,
 which refuses a role granting a scope no binding backs and no ceiling covers
 ("role X grants documents:read, which is neither within the module's own scope
 ceilings nor a scope one of its bindings spells out"). That is the
 missing-permission class, caught before install rather than at the first
-refused call. What a composition's values resolve each binding to needs
-the composition and not the directory, and --env <environment> judges the
-rendered one: it compares every rendered module manifest's operation bindings
-against that environment's rendered module envelope — the ceiling the host
-enforces — and names each binding the ceiling does not admit. The host drops
-such a binding one line at a time on its own stdout, so nothing else says it:
-in a portal it reads as "tool exposure is unavailable", and an installation
-refuses with "module ... changed since review". Read-only, with no cluster and
-no credential.
+refused call.
+
+The opposite class — a role far wider than anything it reaches — is judged by
+comparing what each role grants on the solution's own kinds against what the
+operations in its published contracts require, read with the same reader the
+authority's own route policies are derived with. A role grant on a kind that
+comes from a BINDING is not judged: the module at the other end authorizes the
+relayed child, and its policies are not in this directory.
+
+What a composition's values resolve each binding to needs the composition and
+not the directory, and --env <environment> judges the rendered one: it compares
+every rendered module manifest's operation bindings against that environment's
+rendered module envelope — the ceiling the host enforces — and names each
+binding the ceiling does not admit. The host drops such a binding one line at a
+time on its own stdout, so nothing else says it: in a portal it reads as "tool
+exposure is unavailable", and an installation refuses with "module ... changed
+since review". Read-only, with no cluster and no credential.
 
 Exit codes:
   0  every judged solution conforms (warnings allowed)
@@ -88,9 +102,11 @@ module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
 page_shell_exported_too_widely, consumed_module_without_binding,
-page_shell_has_no_app, and with --env: not_rendered_for_environment,
-module_envelope_not_rendered, module_envelope_unreadable,
-module_envelope_omits_binding, module_envelope_admits_every_binding.`,
+page_shell_has_no_app, installer_role_missing, backend_contract_missing,
+operation_policies_unread, role_grants_unreached_scope, and with --env:
+not_rendered_for_environment, module_envelope_not_rendered,
+module_envelope_unreadable, module_envelope_omits_binding,
+module_envelope_admits_every_binding.`,
 	Example: `  # Judge every solution in the workspace.
   codefly doctor solution
 
