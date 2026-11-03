@@ -2621,8 +2621,15 @@ which refuses a role granting a scope no binding backs and no ceiling covers
 ("role X grants documents:read, which is neither within the module's own scope
 ceilings nor a scope one of its bindings spells out"). That is the
 missing-permission class, caught before install rather than at the first
-refused call. What a composition's values resolve each binding to is NOT
-judged here: that needs the composition, not the directory.
+refused call. What a composition's values resolve each binding to needs
+the composition and not the directory, and --env <environment> judges the
+rendered one: it compares every rendered module manifest's operation bindings
+against that environment's rendered module envelope — the ceiling the host
+enforces — and names each binding the ceiling does not admit. The host drops
+such a binding one line at a time on its own stdout, so nothing else says it:
+in a portal it reads as "tool exposure is unavailable", and an installation
+refuses with "module ... changed since review". Read-only, with no cluster and
+no credential.
 
 Exit codes:
   0  every judged solution conforms (warnings allowed)
@@ -2641,7 +2648,9 @@ module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
 page_shell_exported_too_widely, consumed_module_without_binding,
-page_shell_has_no_app.
+page_shell_has_no_app, and with --env: not_rendered_for_environment,
+module_envelope_not_rendered, module_envelope_unreadable,
+module_envelope_omits_binding, module_envelope_admits_every_binding.
 ```
 
 ```
@@ -2652,6 +2661,7 @@ Flags:
 
 ```
       --dir string         Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace
+      --env string         Also judge what this environment's RENDERED tree would enforce: every rendered manifest's operation bindings against the rendered module envelope, naming each binding the ceiling does not admit
       --json               Print a versioned report per module to stdout
       --require-solution   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
 ```

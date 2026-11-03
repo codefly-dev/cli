@@ -149,7 +149,9 @@ func (r *Report) InspectDelivered(root, environment string) {
 	// they disagree, because that is what the host enforces.
 	delivered, _ := filepath.Glob(filepath.Join(root, "deployments", "environments", environment, "modules", "*", "module-manifests", "overlays", environment, "*.yaml"))
 	rendered, _ := filepath.Glob(filepath.Join(root, "deployments", "modules", "*", "module-manifests", "overlays", environment, "*.yaml"))
-	overlays := append(rendered, delivered...)
+	overlays := make([]string, 0, len(rendered)+len(delivered))
+	overlays = append(overlays, rendered...)
+	overlays = append(overlays, delivered...)
 	if len(overlays) == 0 {
 		r.fail(CodeNotRenderedForEnvironment,
 			fmt.Sprintf("no module manifest is rendered for environment %q, so nothing can be said about what that cell would enforce", environment),
