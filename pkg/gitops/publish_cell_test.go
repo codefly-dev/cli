@@ -220,6 +220,55 @@ func TestPublishHoldsTheCellFileItCarriesToTheBaseBranch(t *testing.T) {
 	}
 }
 
+// TestAPromotionOwnsItsCellPathWhetherOrNotItCarriesIt holds the one place the
+// two path sets are decided (publicationCellPaths) to the reason they differ:
+// what a publication WRITES is staged, and a pathspec matching nothing fails
+// the staging of everything with it, so the cell file joins that list only
+// when there is one to carry; what a promotion of the module OWNS includes the
+// cell path either way, or a rollback on the branch an earlier forward
+// publication left would be refused as someone else's change.
+func TestAPromotionOwnsItsCellPathWhetherOrNotItCarriesIt(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	if _, err := RenderCell(ctx, workspace, env); err != nil {
+		t.Fatal(err)
+	}
+	tree := deliveryModulePath("", "shop")
+	delivered := deliveryCellPath("", "staging")
+
+	cell, owned, published, carried, err := publicationCellPaths(workspace, env, "", tree, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cell == nil || carried != delivered || !slices.Equal(published, []string{tree, delivered}) || !slices.Equal(owned, []string{tree, delivered}) {
+		t.Fatalf("a forward publication writes owned=%v published=%v carried=%q", owned, published, carried)
+	}
+
+	_, owned, published, carried, err = publicationCellPaths(workspace, env, "", tree, "0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carried != "" || !slices.Equal(published, []string{tree}) {
+		t.Fatalf("a rollback carries a cell file: published=%v carried=%q", published, carried)
+	}
+	if !slices.Equal(owned, []string{tree, delivered}) {
+		t.Fatalf("a rollback does not own its module's cell path: %v", owned)
+	}
+
+	// An environment with no host has no cell at all: no file is read, and the
+	// promotion owns nothing but its module's tree.
+	cell, owned, published, carried, err = publicationCellPaths(workspace, &environments.Environment{Name: "unhosted"}, "", tree, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cell != nil || carried != "" || !slices.Equal(owned, []string{tree}) || !slices.Equal(published, []string{tree}) {
+		t.Fatalf("an unhosted environment contributes a cell path: owned=%v published=%v", owned, published)
+	}
+}
+
 // TestOnlyAPromotionThatDerivedTheCellFileCarriesIt: the two publications that
 // move no approved-build list say so instead of looking complete. A rollback
 // restores a module tree from a revision while the workspace's cell file names
