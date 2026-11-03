@@ -216,35 +216,12 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
-	// The environment's cell file — the approved-build list this module's
-	// workloads are admitted by — which a forward publication carries into the
-	// delivery repository beside the trees it is derived from
-	// (publish_cell.go).
-	cell, err := publicationCellFile(workspace, env, pathRoot)
+	cell, owned, publishedPaths, carriedCell, err := publicationCellPaths(workspace, env, pathRoot, targetPath, restoreRevision)
 	if err != nil {
 		return fail(err)
 	}
-	// A stale branch about to be replaced is held to the module path too: one
-	// carrying someone else's change is refused, never overwritten. The
-	// environment's cell file is one of the paths a promotion of this module
-	// writes whether or not THIS publication carries one — a rollback does
-	// not — so a branch carrying it is the module's earlier promotion and
-	// never someone else's work.
-	owned := []string{targetPath}
-	if env.Host != nil {
-		owned = append(owned, deliveryCellPath(pathRoot, env.Name))
-	}
 	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, owned, branchRevision, replacesRevision); err != nil {
 		return fail(err)
-	}
-	// What this publication itself writes: the module's tree, and the cell file
-	// when it has one to carry. A path is staged only when it is written, since
-	// a pathspec matching nothing fails the staging of everything.
-	publishedPaths := []string{targetPath}
-	carriedCell := ""
-	if cell != nil && restoreRevision == "" {
-		carriedCell = cell.delivered
-		publishedPaths = append(publishedPaths, carriedCell)
 	}
 	startRevision := baseRevision
 	if branchRevision != "" {
@@ -284,19 +261,7 @@ func preparePublish(
 			return fail(err)
 		}
 	}
-	if _, addErr := gitCommand(ctx, repo, append([]string{gitAddVerb, "-A", "--"}, publishedPaths...)...); addErr != nil {
-		return fail(addErr)
-	}
-	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
-	if err != nil {
-		return fail(err)
-	}
-	if len(changed) == 0 {
-		if branchRevision == "" {
-			return fail(fmt.Errorf("promotion has no changes"))
-		}
-	}
-	diff, err := gitCommand(ctx, repo, append([]string{"diff", "--cached", "--binary", startRevision, "--"}, publishedPaths...)...)
+	changed, diff, err := stagePublication(ctx, repo, startRevision, branchRevision, publishedPaths)
 	if err != nil {
 		return fail(err)
 	}
@@ -2152,6 +2117,59 @@ func replaceCloneTree(source, root, destinationPath string) error {
 		return err
 	}
 	return copyTree(source, destination)
+}
+
+// publicationCellPaths answers, for one publication, everything the
+// environment's cell file contributes to it: the file itself (nil where the
+// environment is not hosted or has none), the paths a promotion of this module
+// OWNS on the branch, and the paths this publication WRITES.
+//
+// The two path sets differ, and that difference is the point. A promotion of
+// this module writes the cell file whether or not this publication carries one
+// — a rollback does not — so a stale branch carrying it is the module's own
+// earlier promotion and never someone else's work, and must not be refused as
+// unrelated. What is WRITTEN is staged, and a pathspec matching nothing fails
+// the staging of everything, so the carried file joins that list only when
+// there is one to carry.
+func publicationCellPaths(
+	workspace *resources.Workspace,
+	env *environments.Environment,
+	gitopsPath, targetPath, restoreRevision string,
+) (cell *publicationCell, owned, published []string, carried string, err error) {
+	if cell, err = publicationCellFile(workspace, env, gitopsPath); err != nil {
+		return nil, nil, nil, "", err
+	}
+	owned, published = []string{targetPath}, []string{targetPath}
+	if env.Host != nil {
+		owned = append(owned, deliveryCellPath(gitopsPath, env.Name))
+	}
+	if cell != nil && restoreRevision == "" {
+		carried = cell.delivered
+		published = append(published, carried)
+	}
+	return cell, owned, published, carried, nil
+}
+
+// stagePublication stages exactly the paths this publication writes and reports
+// what moved against startRevision, with the diff that is signed and reviewed.
+// A publication that changes nothing is refused, unless it is continuing a
+// branch that already carries the change.
+func stagePublication(ctx context.Context, repo, startRevision, branchRevision string, publishedPaths []string) ([]string, string, error) {
+	if _, err := gitCommand(ctx, repo, append([]string{gitAddVerb, "-A", "--"}, publishedPaths...)...); err != nil {
+		return nil, "", err
+	}
+	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(changed) == 0 && branchRevision == "" {
+		return nil, "", fmt.Errorf("promotion has no changes")
+	}
+	diff, err := gitCommand(ctx, repo, append([]string{"diff", "--cached", "--binary", startRevision, "--"}, publishedPaths...)...)
+	if err != nil {
+		return nil, "", err
+	}
+	return changed, diff, nil
 }
 
 func stagedPathsSince(ctx context.Context, repo, revision string, paths ...string) ([]string, error) {
