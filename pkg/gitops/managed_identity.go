@@ -63,13 +63,28 @@ func workloadAccount(service string) string {
 }
 
 // holdsMeshPrincipal reports whether the composition hands out a service's
-// mesh principal: the host's gateway (every edge names it), a service that
-// declares module-authority (its PRINCIPAL is that identity), and a service
-// that presents its module's identity to the host (module-identity: true) —
-// the module manifest lists that workload by the account it runs as, and
-// refuses one running as the namespace's default, so it must have its own.
-func holdsMeshPrincipal(service *resources.Service, env *environments.Environment, module string) bool {
-	if env.Host != nil && env.Host.Gateway == resources.ServiceUnique(module, service.Name) {
+// mesh principal.
+//
+// ON A MESHED ENVIRONMENT, EVERY SERVICE DOES. A workload's mesh principal is
+// its ServiceAccount's SPIFFE ID, so a pod template naming no account runs as
+// the namespace's `default` — an identity every such pod of the namespace
+// SHARES. A mesh rule admitting it admits all of them, and that is not a
+// principal any policy can mean: the cell's own derived manifests carried 109
+// AuthorizationPolicy objects allowing `cluster.local/ns/*/sa/default`
+// (codefly-dev/cli#1277). So where the environment declares a host — where
+// there is a mesh at all, and the render delivers edges naming principals
+// (mesh_edges.go) — every service is projected the account named after it, and
+// cellNamespace refuses a workload still running as `default` the way it
+// refuses one running as the delivery Job's account.
+//
+// Off a mesh there is no principal to protect, and the projection stays what
+// it was: the host's gateway (every edge names it), a service that declares
+// module-authority (its PRINCIPAL is that identity), and a service that
+// presents its module's identity to the host (module-identity: true) — the
+// module manifest lists that workload by the account it runs as, and refuses
+// one running as the namespace's default, so it must have its own.
+func holdsMeshPrincipal(service *resources.Service, env *environments.Environment) bool {
+	if env.Host != nil {
 		return true
 	}
 	if service.ModuleIdentity {
@@ -113,11 +128,11 @@ func projectManagedIdentityInTree(
 		return err
 	}
 	if identity == nil {
-		// A workload whose mesh principal the composition hands out — the
-		// host's gateway, and a service that declares module-authority —
-		// runs as the account that principal names, never as the
-		// namespace's default. Nothing else is projected an account for.
-		if !holdsMeshPrincipal(service, env, scope.Module) {
+		// A workload whose mesh principal the composition hands out runs as
+		// the account that principal names, never as the namespace's default.
+		// On a meshed environment that is every service; off one, only the
+		// gateway and the services declaring an identity.
+		if !holdsMeshPrincipal(service, env) {
 			return nil
 		}
 		identity = &environments.EnvironmentWorkloadIdentity{}

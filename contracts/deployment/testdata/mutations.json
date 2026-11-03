@@ -1603,11 +1603,162 @@
     }
   },
   {
-    "name": "ingress-unsupported",
-    "outcome": "invalid",
-    "rule_id": "INGRESS_UNSUPPORTED",
+    "name": "ingress-entrance",
+    "outcome": "valid",
+    "rule_id": null,
     "mutation": {
       "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "/",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-unknown-endpoint",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "absent",
+            "host": "route.example",
+            "path": "/",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-unknown-workload",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "absent",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "/",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-wildcard-host",
+    "outcome": "invalid",
+    "rule_id": "INGRESS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "*.route.example",
+            "path": "/",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-unclean-path",
+    "outcome": "invalid",
+    "rule_id": "INGRESS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "/api/../admin",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-relative-path",
+    "outcome": "invalid",
+    "rule_id": "INGRESS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "api",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-not-public",
+    "outcome": "invalid",
+    "rule_id": "INGRESS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "/",
+            "exposure": "none"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-duplicate",
+    "outcome": "invalid",
+    "rule_id": "INGRESS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "/",
+            "exposure": "public"
+          }
+        },
         {
           "op": "replace",
           "path": "/ingress/-",
@@ -1968,7 +2119,7 @@
           "op": "replace",
           "path": "/workloads/0/template/metadata/annotations",
           "value": {
-            "example.test/text": "<>&  😀é\n"
+            "example.test/text": "<>&\u2028\u2029\ud83d\ude00\u00e9\n"
           }
         }
       ]

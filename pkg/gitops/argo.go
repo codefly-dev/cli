@@ -299,6 +299,17 @@ func generateArgoBootstrap(
 			Wave:      deliveryWaveFor(inventory),
 		})
 	}
+	// The namespace's STRICT mTLS policy syncs in the module-resources wave,
+	// before the workloads whose principals it makes meaningful: a pod that
+	// comes up before it would be reachable in plaintext, and the mesh edges
+	// delivered beside it would admit whatever could reach its port.
+	if inventory.MeshPath != "" {
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, meshPostureDir),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.MeshPath, "overlays", environment)),
+			Wave:      moduleResourcesWave,
+		})
+	}
 
 	// The tenant registry is operator-owned content that lives outside every
 	// module's publication path, so the driver never wipes it and `git add -A` on
@@ -383,6 +394,9 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	}
 	if inventory.ModuleManifestPath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.ModuleManifestPath), "overlays", environment))
+	}
+	if inventory.MeshPath != "" {
+		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.MeshPath), "overlays", environment))
 	}
 	cluster := make(map[string]argoResourceAuthority)
 	namespaced := make(map[string]argoResourceAuthority)

@@ -1095,12 +1095,140 @@ once and nowhere else:
   the `runnable-bindings` workspace-configuration group. An executor such as
   the runtime calls owners it does not and must not declare; the composition
   prepares those calls (`codefly generate runnable-bindings`), so the
-  composition is where the edge comes from. The owner endpoint is the one the
-  prepared call targets: the published endpoint for a REST publication, the
-  service's connect endpoint for a gRPC or Connect one. Without this source
-  the owner's connect endpoint had no consumer at all, and every fan-out
-  operation on a cell settled `OWNER_UNAVAILABLE` at the mesh
-  (codefly-dev/cli#1072).
+  composition is where the edge comes from. The endpoint admitted is the one
+  the prepared call is actually sent to: the environment's
+  `runnable-call-endpoint` where it declares one — the composition's hop, in a
+  composition that stands one — and otherwise each owner's own, the published
+  endpoint for a REST publication and the service's connect endpoint for a
+  gRPC or Connect one. Admitting the executors at the owner's listener while
+  the environment sends their calls somewhere else was both a reach nothing
+  uses and a denial of the one it does. Without this source at all the owner's
+  connect endpoint had no consumer, and every fan-out operation on a cell
+  settled `OWNER_UNAVAILABLE` at the mesh (codefly-dev/cli#1072).
+
+### A module service is reachable only from its hop
+
+The hop is the proxy a composition stands in front of its modules: every
+consumed module is reached **through** it, and the hop decides each call
+against the policy table the authority holds for that listener. The point of
+standing one is that a module's own code never has to install the check — so
+its listeners must have no other way to receive traffic. One mesh rule
+admitting a caller straight to a module's listener undoes the hop for every
+call that caller makes, and nothing in the module would say so.
+
+The composition states the hop in three places, and the render joins them
+(`pkg/gitops/hop.go`), inferring none of them:
+
+- **which modules are behind it** — the `hop` workspace-configuration group's
+  `MODULES`, the same list the hop's route table is generated from;
+- **which service is the hop** — the service declaring `hop-routes`. That
+  group is generated, never authored, so the declaration *is* the hop's
+  identity. Two services declaring it is refused by name: a module endpoint
+  would have two admitted principals with nothing saying which checks the call;
+- **which listeners it reaches** — the generated table itself,
+  `hop-routes`/`ROUTES`, one entry per published listener of every fronted
+  module. This is the only statement of the hop's reach: the hop declares no
+  service dependency (it is handed addresses through a configuration group),
+  so nothing derived from the dependency graph carries it, and the derived
+  allow-list is at module granularity besides.
+
+On a non-local environment, each endpoint of a fronted module's service then
+admits exactly:
+
+- **the hop's principal**, where the hop's route table names the endpoint. A
+  listener the hop does not route admits nobody, and default deny is the
+  declaration;
+- **the callers the service's own manifest admits by name** (below);
+- **itself**, when its render holds a non-serving workload — one workload of
+  the service reaching another, as above.
+
+A principal of the hop's own module that the allow-list derived is not a route
+around: a sibling service's ask arrives as every principal of the hop's module
+and no derivation can tell it from the hop's. Those are replaced by the hop
+service's own principal, which removes the sibling's reach rather than refusing
+a render over a distinction the composition cannot make.
+
+Every other declared reach **refuses the render**, naming the principal, what
+declared it, and what to change: a dependency on a module service, a host route
+onto a module listener, prepared runnable bindings sent to an owner instead of
+through the hop. An environment's `runnable-call-endpoint` is how the last one
+is fixed — it sends every prepared call to that endpoint, and the executors are
+then admitted there rather than at each owner's listener.
+
+Inside `local` the reach is recorded exactly as declared and nothing is
+refused: a developer's own cluster is where calling a module directly is the
+point, and this is the deployed rule.
+
+An **ingress** route onto a fronted module's endpoint is untouched by all of
+this. It is not a principal at all — it is the cell's own edge, which the
+environment declares (`ingress:`) and whose principal the cell names, onto an
+endpoint the module declares `public`. A browser reaching a product's portal is
+not an API call through the hop.
+
+**A service admits another source by name.** Some listeners are legitimately
+not called through the hop: a worker pulling from a store, a webhook receiver,
+a scrape port. The declaration is the **service's**, on the endpoint it serves,
+in `service.codefly.yaml`:
+
+```yaml
+admitted-sources:
+  - endpoint: ingest
+    from: [relay/webhook]
+```
+
+It is never implied from a dependency graph — a consumer declaring an edge is
+exactly what the rule refuses, so an edge that admitted itself would admit
+everything. Core does not model the key: a service manifest is an open schema
+and keeps it in its inline extra fields, round-tripping through a save. It is
+read where the reach is derived and refused by name: an endpoint the service
+does not declare, a caller this environment runs no workload for (absent,
+managed or excluded), a repeated endpoint or caller, an entry admitting nobody,
+and the service naming itself — a service reaches its own endpoints under its
+own principal, which the *render* declares when it renders a non-serving
+workload.
+
+### No workload runs as the default ServiceAccount
+
+A workload's mesh principal is its ServiceAccount's SPIFFE ID, so a pod
+template naming no account runs as the namespace's `default` — an identity
+every such pod of the namespace **shares**. A rule admitting it admits all of
+them, which is not a principal any policy can mean. In one cell's derived
+manifests, 394 compiled `AuthorizationPolicy` objects included 109 allowing
+`cluster.local/ns/*/sa/default`.
+
+So on an environment that declares a host — where there is a mesh at all, and
+the render delivers edges naming principals — **every service is projected the
+ServiceAccount named after it**, not only the gateway and the services
+declaring an identity, and the cell file refuses a workload still running as
+`default`, naming it, exactly as it refuses one running as the delivery Job's
+account.
+
+### STRICT mTLS is a layer of the render
+
+A principal is a fact about a connection only where the peer presented a mesh
+certificate. Under `PERMISSIVE` mTLS the sidecar also accepts plaintext, and a
+plaintext connection carries no principal at all: the compiled policy still
+reads "only the hop" while anything that can reach the port is not held to it.
+The edges are therefore only enforceable where the namespace is STRICT, and the
+render has no business delivering one without the other.
+
+A meshed render writes the namespace-wide `PeerAuthentication` — no selector,
+so every workload of the namespace, including pods the render never saw — as
+its own promotable layer, `mesh/overlays/<environment>/`, recorded in the
+inventory as `meshPath` and promoted as its own Argo Application in the
+module-resources wave, before the workloads whose principals it makes
+meaningful. It is a layer rather than a file inside a unit for the reason a
+`Namespace` object is not one either: the policy is namespace-scoped and
+singular, so two units shipping it would be two Applications claiming it. It is
+its own layer rather than the module's bootstrap or manifest overlay because
+neither is always present — a module with no kustomize tree stages no
+bootstrap, a render with no instance writes no manifest — and a guarantee
+present only sometimes is not one.
+
+The render then reads its own **effective** manifests back and refuses to
+deliver a meshed tree that does not carry that policy at `mode: STRICT`, and
+refuses any `PeerAuthentication` in the tree at another mode — an agent's own,
+or one an overlay patch relaxed — naming the file and the object.
 
 One source is not in the composition at all. A service whose render includes a
 workload that does **not** serve its endpoints — an agent's bootstrap Job,

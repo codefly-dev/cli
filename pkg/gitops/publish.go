@@ -1116,6 +1116,7 @@ func prepareServicePublication(
 		Promotable:                    true,
 		CheckUnitDirectories:          true,
 		ModuleManifestPath:            renderedInventory.ModuleManifestPath,
+		MeshPath:                      renderedInventory.MeshPath,
 		HostsDelivery:                 renderedInventory.HostsDelivery,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
@@ -1186,6 +1187,19 @@ func prepareServiceSnapshot(
 			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered module resources: %w", err)
 		}
 	}
+	// The namespace's mesh posture is part of the immutable snapshot: its own
+	// Argo Application reads it at the snapshot revision like a unit's, and
+	// the STRICT mTLS it requires is what makes the delivered mesh edges
+	// enforceable (mesh_posture.go). Staged like a unit, and held to the
+	// snapshot like one.
+	if renderedInventory.MeshPath != "" {
+		renderedMesh := filepath.Join(rendered, filepath.FromSlash(renderedInventory.MeshPath))
+		meshPath := filepath.ToSlash(filepath.Join(targetPath, renderedInventory.MeshPath))
+		if err := replaceCloneTree(renderedMesh, repo, meshPath); err != nil {
+			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered mesh posture: %w", err)
+		}
+		servicePaths = append(servicePaths, meshPath)
+	}
 	if _, err := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
@@ -1220,6 +1234,7 @@ func prepareServiceSnapshot(
 		AppProject:         renderedInventory.AppProject,
 		Promotable:         true,
 		ModuleManifestPath: renderedInventory.ModuleManifestPath,
+		MeshPath:           renderedInventory.MeshPath,
 		HostsDelivery:      renderedInventory.HostsDelivery,
 		Delivered:          delivery,
 		MeshEdges:          renderedInventory.MeshEdges,
@@ -1462,7 +1477,7 @@ func serviceSnapshotBranch(module, environment string) string {
 func removePublicationRemainder(target string, unitDirs []string) error {
 	// The delivery directories are kept whole: they hold every environment's
 	// delivered overlay, and a publish stages its own environment's only.
-	keep := map[string]struct{}{moduleBundleDir: {}, moduleManifestDir: {}}
+	keep := map[string]struct{}{moduleBundleDir: {}, moduleManifestDir: {}, meshPostureDir: {}}
 	for _, directory := range unitDirs {
 		keep[directory] = struct{}{}
 	}
@@ -1521,6 +1536,9 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 	}
 	if inventory.ModuleManifestPath != "" {
 		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.ModuleManifestPath, "overlays", environment))] = struct{}{}
+	}
+	if inventory.MeshPath != "" {
+		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.MeshPath, "overlays", environment))] = struct{}{}
 	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {

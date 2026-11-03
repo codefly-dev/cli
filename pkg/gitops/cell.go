@@ -270,6 +270,35 @@ func cellSource(ctx context.Context, workspace *resources.Workspace, env *enviro
 	return source
 }
 
+// refuseReservedIdentity refuses a rendered workload whose identity is not its
+// own to claim: the delivery Job's account or label, and the namespace's
+// `default` account.
+//
+// The default account is the one of the three that is not reserved for
+// something else — it is reserved from EVERY workload. Its SPIFFE ID is shared
+// by every pod of the namespace that names no account, so a mesh rule naming
+// it admits all of them: the workload's principal in this file, in the module
+// manifest and in every mesh edge would be an identity that is nobody's. A
+// meshed render projects the account named after each service
+// (managed_identity.go holdsMeshPrincipal), so a workload still running as
+// `default` came from a tree this render did not project; it is refused by
+// name rather than inventoried under a shared identity.
+func refuseReservedIdentity(module, unit string, rendered *renderedWorkload, selector map[string]string) error {
+	switch rendered.ServiceAccount {
+	case deliveryServiceAccount:
+		return fmt.Errorf("unit %s/%s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job", module, unit, rendered.Name, deliveryServiceAccount)
+	case defaultServiceAccount:
+		return fmt.Errorf("unit %s/%s workload %s runs as the namespace's %q ServiceAccount, whose identity every pod of the namespace that names no account shares; a cell admits callers by principal, so each workload names an account of its own (spec.template.spec.serviceAccountName, which the render projects as %q)",
+			module, unit, rendered.Name, defaultServiceAccount, workloadAccount(unit))
+	}
+	// The carrier is declared by its labels; a workload selected by the same
+	// label would be admitted as the carrier.
+	if _, carrier := selector[deliveryLabel]; carrier {
+		return fmt.Errorf("unit %s/%s workload %s selects its pods by the %q label, which is reserved for the delivery Job", module, unit, rendered.Name, deliveryLabel)
+	}
+	return nil
+}
+
 // cellNamespace derives one module's namespace entry from its rendered tree
 // and the composition's declarations for it.
 func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory, consumers map[string][]string, paired bool) (cellfile.Namespace, error) {
@@ -330,13 +359,8 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			if err != nil {
 				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s: %w", inventory.Module, unit.Name, err)
 			}
-			if rendered.ServiceAccount == deliveryServiceAccount {
-				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job", inventory.Module, unit.Name, rendered.Name, deliveryServiceAccount)
-			}
-			// The carrier is declared by its labels; a workload selected by
-			// the same label would be admitted as the carrier.
-			if _, carrier := selector[deliveryLabel]; carrier {
-				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s selects its pods by the %q label, which is reserved for the delivery Job", inventory.Module, unit.Name, rendered.Name, deliveryLabel)
+			if reserved := refuseReservedIdentity(inventory.Module, unit.Name, rendered, selector); reserved != nil {
+				return cellfile.Namespace{}, reserved
 			}
 			authenticating, err := authenticatingContainer(unit.Name, rendered)
 			if err != nil {

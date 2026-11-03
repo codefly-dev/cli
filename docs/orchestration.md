@@ -1258,6 +1258,20 @@ references. Run and render feed those references through the same Core loader,
 dependency graph, visibility checks and address resolver. Only the declaring
 consumer receives the generated group; it is not a composition-root group.
 
+**A module receives traffic only from its hop.** The route table is also what a
+render admits at the mesh. On a non-local environment, each endpoint of a module
+named by `hop/MODULES` admits the hop's principal — where the table routes that
+listener — plus whatever the service's own manifest admits by name
+(`admitted-sources`), and nothing else; every other declared reach refuses the
+render, naming the caller and what to change. The reason is the reason the hop
+exists: a module's code must have no way to receive traffic except through the
+proxy that checks the call, or requiring client code to install the verifier
+correctly is what the composition rests on. See
+[module-manifests.md](module-manifests.md#a-module-service-is-reachable-only-from-its-hop)
+for the whole rule, the `runnable-call-endpoint` that routes prepared calls
+through the hop, and the STRICT mTLS without which a principal is not a fact
+about a connection.
+
 This requires published catalogs from `codefly generate contracts`. A source
 file that has not been exported does not create a route. Unknown principals,
 stale contract artifacts, conflicting destinations, and unreachable exact

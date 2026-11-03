@@ -767,11 +767,74 @@
       "digest": null
     },
     {
-      "name": "ingress-unsupported",
-      "input": "generated/ingress-unsupported.input.json",
+      "name": "ingress-entrance",
+      "input": "generated/ingress-entrance.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/ingress-entrance.canonical.json",
+      "digest": "sha256:58fc05424cbbe1f7765db996f58dd67075ace36d3f892c12ff3b7120be28f698"
+    },
+    {
+      "name": "ingress-unknown-endpoint",
+      "input": "generated/ingress-unknown-endpoint.input.json",
       "context": "base-context.json",
       "outcome": "invalid",
-      "rule_id": "INGRESS_UNSUPPORTED",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-unknown-workload",
+      "input": "generated/ingress-unknown-workload.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-wildcard-host",
+      "input": "generated/ingress-wildcard-host.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "INGRESS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-unclean-path",
+      "input": "generated/ingress-unclean-path.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "INGRESS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-relative-path",
+      "input": "generated/ingress-relative-path.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "INGRESS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-not-public",
+      "input": "generated/ingress-not-public.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "INGRESS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-duplicate",
+      "input": "generated/ingress-duplicate.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "INGRESS",
       "canonical": null,
       "digest": null
     },

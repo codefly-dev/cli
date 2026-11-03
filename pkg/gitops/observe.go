@@ -112,6 +112,9 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	if inventory.ModulePath != "" {
 		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.ModulePath, "overlays", request.Environment))] = struct{}{}
 	}
+	if inventory.MeshPath != "" {
+		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.MeshPath, "overlays", request.Environment))] = struct{}{}
+	}
 	for idx := range inventory.Units {
 		unit := &inventory.Units[idx]
 		if unit.Path == "" {
@@ -667,6 +670,7 @@ func verifyImmutableServiceSnapshot(ctx context.Context, repo, target, targetPat
 		snapshotInventory.AppProject != inventory.AppProject ||
 		snapshotInventory.OwnedPath != inventory.OwnedPath ||
 		snapshotInventory.ModulePath != inventory.ModulePath ||
+		snapshotInventory.MeshPath != inventory.MeshPath ||
 		!reflect.DeepEqual(snapshotInventory.Units, inventory.Units) {
 		return fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}

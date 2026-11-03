@@ -63,6 +63,37 @@ import (
 // (selfConsuming below). Without it the Postgres bootstrap Job is denied by
 // the cell's default-deny mesh on the database it exists to initialize.
 //
+// A MODULE SERVICE IS REACHABLE ONLY FROM ITS HOP. Where the composition
+// stands a hop in front of its modules (hop.go derives it from the
+// composition's own three statements: the modules the `hop` group names, the
+// service declaring `hop-routes`, and the listeners that generated route table
+// names), the sources above are not the last word on a fronted module's
+// endpoints. The whole reason to stand a hop is that a module's own code never
+// has to install the check, so its listeners must have no other way to receive
+// traffic. On a non-local environment, then, each endpoint of a fronted
+// module's service admits:
+//
+//   - the HOP's principal, and only it, on the listeners the hop's route table
+//     names — the one statement of the hop's reach, since the hop declares no
+//     service dependency. An endpoint the table does not name is not given it:
+//     this narrows, it never widens. A principal of the hop's own MODULE that
+//     the allow-list derived is replaced by the hop service's own, because
+//     that list is at module granularity and no derivation can tell a sibling
+//     service's ask from the hop's.
+//   - the callers the SERVICE's manifest admits by name
+//     (admitted_sources.go): a worker pulling from a store, a webhook
+//     receiver. Never implied from a dependency graph — an edge that admitted
+//     itself would admit exactly what this rule refuses.
+//   - itself, when its own render holds a non-serving workload (selfConsuming
+//     below), which is one workload of the service reaching another.
+//
+// Every other declared reach is a route AROUND the hop — a dependency on a
+// module service, a host route onto a module listener, prepared runnable
+// bindings sent to an owner rather than through the hop — and the render is
+// refused, naming the reach and what to change. Inside `local` the reach is
+// recorded as declared: a developer's own cluster is where calling a module
+// directly is the point, and the refusal is the deployed rule.
+//
 // An endpoint nobody is declared to reach has no edge: default deny is what
 // the applier compiles, and the absence is the declaration.
 
@@ -129,9 +160,15 @@ type MeshRenderedService struct {
 }
 
 // meshComposition is what the composition says about every workload: the
-// principals by module, every principal, the gateway's, and the endpoints
-// the gateway forwards to.
+// principals by module, every principal, the gateway's, the endpoints the
+// gateway forwards to, and the hop every fronted module is reached through.
 type meshComposition struct {
+	// workspace is the composition every name below is resolved against.
+	workspace *resources.Workspace
+	// workloads are the services this environment runs a workload for: a
+	// managed or excluded service is not one, so it holds no principal and
+	// cannot be admitted to anything.
+	workloads        []*resources.ServiceWithModule
 	byModule         map[string][]string
 	every            []string
 	gateway          string
@@ -142,6 +179,25 @@ type meshComposition struct {
 	// runnable bindings; owners are the endpoints their prepared calls target.
 	executors []string
 	reach     *runnableReach
+	// callEndpoint is the `<module>/<service>/<endpoint>` the environment
+	// declares every prepared runnable call is sent to instead of the owner's
+	// listener (runnable-call-endpoint: the hop, in a composition that stands
+	// one). Empty sends each call to its owner, and the executors are then
+	// admitted to the owners' endpoints as before.
+	callEndpoint string
+	// hop is the composition's hop, nil where it stands none.
+	hop *compositionHop
+	// hopPrincipal is the hop service's own mesh principal, the one a fronted
+	// module's endpoints admit.
+	hopPrincipal string
+}
+
+// meshSource is one admitted principal and WHAT the composition declared it
+// by, so a reach refused as a route around the hop can be acted on rather
+// than looked for.
+type meshSource struct {
+	principal string
+	declared  string
 }
 
 // indexMeshComposition derives the composition's side of every edge once.
@@ -160,7 +216,7 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	if err != nil {
 		return nil, err
 	}
-	index := &meshComposition{byModule: map[string][]string{}, gateway: host.Gateway, allow: allow, targets: targets}
+	index := &meshComposition{workspace: workspace, byModule: map[string][]string{}, gateway: host.Gateway, allow: allow, targets: targets}
 	// Every composed workload's principal, by module: a managed or an
 	// excluded service has no workload of its own in the cell, so it holds no
 	// principal.
@@ -175,6 +231,7 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 		principal := meshPrincipal(host, namespace, ref.Name)
 		index.byModule[ref.Module] = append(index.byModule[ref.Module], principal)
 		index.every = append(index.every, principal)
+		index.workloads = append(index.workloads, ref)
 	}
 	if host.Gateway != "" {
 		index.gatewayPrincipal = meshPrincipal(host, env.ModuleNamespace(workspace, gatewayModule), gatewayService)
@@ -188,6 +245,24 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 		return nil, err
 	}
 	index.reach = reach
+	index.callEndpoint = env.RunnableCallEndpoint
+	// The composition's hop, and the one principal a fronted module's
+	// endpoints admit. A hop the environment does not run is refused here: the
+	// modules named behind it would have no door at all.
+	if index.hop, err = derivedCompositionHop(ctx, workspace, env); err != nil {
+		return nil, err
+	}
+	if index.hop != nil {
+		if _, managed := env.ManagedService(index.hop.Module, index.hop.Service); managed || env.Excludes(index.hop.Module, index.hop.Service) {
+			return nil, fmt.Errorf("%s stands the composition's hop for modules %s, but environment %s does not run it (managed or exclude-services), so those modules are published through nothing",
+				index.hop.unique(), strings.Join(index.hop.Fronted, ", "), env.Name)
+		}
+		namespace := env.ModuleNamespace(workspace, index.hop.Module)
+		if namespace == "" {
+			return nil, fmt.Errorf("%s stands the composition's hop but its module has no resolved namespace, so its mesh principal cannot be named", index.hop.unique())
+		}
+		index.hopPrincipal = meshPrincipal(host, namespace, index.hop.Service)
+	}
 	for _, executor := range reach.executors {
 		if _, managed := env.ManagedService(executor.Module, executor.Service); managed {
 			continue
@@ -202,34 +277,141 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	return index, nil
 }
 
-// sources is who the composition admits to one endpoint, sorted and each
-// once: the consumer modules' workloads, the gateway when it forwards to the
-// endpoint, and every workload on the gateway's workload port.
-func (index *meshComposition) sources(module, service, endpoint string) []string {
-	admitted := map[string]bool{}
+// sources is who the composition admits to one endpoint, sorted by principal
+// and each once, with what declared it: the consumer modules' workloads, the
+// gateway when it forwards to the endpoint, every workload on the gateway's
+// workload port, and the executors of prepared runnable bindings — at the
+// owner's endpoint, or at the one endpoint the environment declares every
+// prepared call is sent to instead.
+func (index *meshComposition) sources(module, service, endpoint string) []meshSource {
+	unique := resources.ServiceUnique(module, service)
+	admitted := map[string]string{}
+	declare := func(principal, why string) {
+		if principal == "" {
+			return
+		}
+		if _, already := admitted[principal]; !already {
+			admitted[principal] = why
+		}
+	}
 	if list, declared := index.allow.Of(module, service, endpoint); declared {
 		for _, consumer := range list.Modules {
 			for _, principal := range index.byModule[consumer] {
-				admitted[principal] = true
+				declare(principal, fmt.Sprintf("module %s declares a run-stage dependency, or a configuration reference, reaching it", consumer))
 			}
 		}
 	}
 	for _, target := range index.targets {
-		if target.Module == module && target.Service == service && target.Endpoint == endpoint && index.gatewayPrincipal != "" {
-			admitted[index.gatewayPrincipal] = true
+		if target.Module == module && target.Service == service && target.Endpoint == endpoint {
+			declare(index.gatewayPrincipal, fmt.Sprintf("the host routes it through the gateway %s", index.gateway))
 		}
 	}
-	if resources.ServiceUnique(module, service) == index.gateway && endpoint == gatewayWorkloadEndpoint {
+	if unique == index.gateway && endpoint == gatewayWorkloadEndpoint {
 		for _, principal := range index.every {
-			admitted[principal] = true
+			declare(principal, "every composed workload mints on the gateway's workload endpoint")
 		}
 	}
-	if index.reach.reaches(module, service, endpoint) {
+	if index.callsThrough(unique, endpoint) {
 		for _, principal := range index.executors {
-			admitted[principal] = true
+			declare(principal, "it installs prepared runnable bindings whose calls are sent here (codefly generate runnable-bindings)")
 		}
 	}
-	return slices.Sorted(maps.Keys(admitted))
+	sources := make([]meshSource, 0, len(admitted))
+	for _, principal := range slices.Sorted(maps.Keys(admitted)) {
+		sources = append(sources, meshSource{principal: principal, declared: admitted[principal]})
+	}
+	return sources
+}
+
+// callsThrough reports whether the prepared runnable calls of this
+// composition land on one endpoint: the declared call endpoint when the
+// environment names one, each owner's own otherwise.
+func (index *meshComposition) callsThrough(unique, endpoint string) bool {
+	if index.callEndpoint != "" {
+		return index.callEndpoint == unique+"/"+endpoint
+	}
+	module, service, _ := strings.Cut(unique, "/")
+	return index.reach.reaches(module, service, endpoint)
+}
+
+// manifestPrincipals resolves a service's `admitted-sources` into the mesh
+// principals of the callers it names, by endpoint. A named caller the
+// composition does not carry, or one this environment does not run — a
+// managed service has no workload and an excluded one none here — is refused
+// by name: it would otherwise read as an admission that admits nobody, with
+// nothing said.
+func (index *meshComposition) manifestPrincipals(env *environments.Environment, module string, service *resources.Service) (map[string][]string, error) {
+	declared, err := declaredAdmittedSources(module, service)
+	if err != nil {
+		return nil, err
+	}
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	unique := resources.ServiceUnique(module, service.Name)
+	principals := make(map[string][]string, len(declared))
+	for _, endpoint := range slices.Sorted(maps.Keys(declared)) {
+		for _, caller := range declared[endpoint] {
+			callerModule, callerService, _ := strings.Cut(caller, "/")
+			if !slices.ContainsFunc(index.workloads, func(ref *resources.ServiceWithModule) bool {
+				return ref.Module == callerModule && ref.Name == callerService
+			}) {
+				return nil, fmt.Errorf("%s of %s admits %s on endpoint %s, which environment %s runs no workload for (the composition does not carry it, or it is managed or excluded here), so the admission admits nobody",
+					admittedSourcesKey, unique, caller, endpoint, env.Name)
+			}
+			namespace := env.ModuleNamespace(index.workspace, callerModule)
+			if namespace == "" {
+				return nil, fmt.Errorf("%s of %s admits %s on endpoint %s, whose module has no resolved namespace, so its mesh principal cannot be named",
+					admittedSourcesKey, unique, caller, endpoint)
+			}
+			principals[endpoint] = append(principals[endpoint], meshPrincipal(env.Host, namespace, callerService))
+		}
+		slices.Sort(principals[endpoint])
+	}
+	return principals, nil
+}
+
+// hopAdmission is what one endpoint of a fronted module's service admits, and
+// what of the composition's declared reach routes around the hop.
+//
+// routed is whether the hop's route table names this endpoint, which is the
+// only statement of the hop's reach (hop.go): the hop declares no service
+// dependency, so nothing derived from the dependency graph carries it.
+//
+// A derived principal of the HOP's OWN MODULE is not a route around either:
+// the allow-list is at module granularity, so a sibling service's ask arrives
+// as every principal of the hop's module and no derivation can tell it from
+// the hop's. Those principals are replaced by the hop service's own, which
+// removes the sibling's reach rather than refusing a render over a distinction
+// the composition cannot make.
+func (index *meshComposition) hopAdmission(derived []meshSource, declared []string, self string, selfConsuming, routed bool) (admitted []string, around []string) {
+	admit := map[string]bool{}
+	// The hop reaches exactly the listeners its own route table names.
+	if routed {
+		admit[index.hopPrincipal] = true
+	}
+	hopModule := map[string]bool{}
+	for _, principal := range index.byModule[index.hop.Module] {
+		hopModule[principal] = true
+	}
+	for _, source := range derived {
+		if hopModule[source.principal] {
+			admit[index.hopPrincipal] = true
+			continue
+		}
+		if slices.Contains(declared, source.principal) || (selfConsuming && source.principal == self) {
+			admit[source.principal] = true
+			continue
+		}
+		around = append(around, fmt.Sprintf("%s: %s", source.principal, source.declared))
+	}
+	for _, principal := range declared {
+		admit[principal] = true
+	}
+	if selfConsuming {
+		admit[self] = true
+	}
+	return slices.Sorted(maps.Keys(admit)), around
 }
 
 // renderTreeSelfConsumes reads, off one unit's rendered overlay, whether the
@@ -275,6 +457,9 @@ func deriveMeshEdges(
 		return nil, fmt.Errorf("derive the mesh edges of %s: %w", module.Name, err)
 	}
 	namespace := env.ModuleNamespace(workspace, module.Name)
+	// Behind a hop, each endpoint of this module's services admits the hop and
+	// the callers the service's own manifest names, and nothing else.
+	behindTheHop := index.hop.fronts(module.Name)
 	record := &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: env.Host.TrustDomain, Gateway: env.Host.Gateway}
 	for _, service := range services {
 		if service == nil {
@@ -284,6 +469,14 @@ func deriveMeshEdges(
 			continue
 		}
 		unique := resources.ServiceUnique(module.Name, service.Name)
+		// The manifest's own admissions are read and checked for every
+		// service of every environment, hop or none: a declaration that names
+		// an endpoint or a caller the composition does not have is a mistake
+		// wherever it renders.
+		admittedByManifest, err := index.manifestPrincipals(env, module.Name, service)
+		if err != nil {
+			return nil, err
+		}
 		for _, endpoint := range service.Endpoints {
 			if endpoint == nil {
 				continue
@@ -295,13 +488,27 @@ func deriveMeshEdges(
 				continue
 			}
 			principal := meshPrincipal(env.Host, namespace, service.Name)
-			principals := index.sources(module.Name, service.Name, endpoint.Name)
-			// A non-serving workload of this service runs as this service and
-			// reaches this endpoint; the composition never declares it, so the
-			// render is where it enters.
-			if selfConsuming[unique] && !slices.Contains(principals, principal) {
-				principals = append(principals, principal)
-				slices.Sort(principals)
+			derived := index.sources(module.Name, service.Name, endpoint.Name)
+			var principals []string
+			if behindTheHop && !env.Local() {
+				var around []string
+				principals, around = index.hopAdmission(derived, admittedByManifest[endpoint.Name], principal,
+					selfConsuming[unique], index.hop.reaches(module.Name, service.Name, endpoint.Name))
+				if len(around) > 0 {
+					return nil, fmt.Errorf("%s/%s is published through the hop %s, so only the hop reaches it, but the composition routes %d caller(s) straight to its listener on environment %s — %s. Route the call through the hop (an environment's runnable-call-endpoint sends every prepared call there; a consumer declares no dependency on a module service), or, where the port is not an API call, admit the caller on the endpoint it serves (%s in %s)",
+						unique, endpoint.Name, index.hop.unique(), len(around), env.Name, strings.Join(around, "; "), admittedSourcesKey, resources.ServiceConfigurationName)
+				}
+			} else {
+				for _, source := range derived {
+					principals = append(principals, source.principal)
+				}
+				// A non-serving workload of this service runs as this service
+				// and reaches this endpoint; the composition never declares
+				// it, so the render is where it enters.
+				if selfConsuming[unique] && !slices.Contains(principals, principal) {
+					principals = append(principals, principal)
+					slices.Sort(principals)
+				}
 			}
 			// The cell's ingress gateway reaches exactly the endpoints the
 			// environment routes (`ingress:`): the composition decides its
