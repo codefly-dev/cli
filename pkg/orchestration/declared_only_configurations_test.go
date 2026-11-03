@@ -28,9 +28,9 @@ func TestRunnableBindingsReachOnlyTheServicesThatDeclareThem(t *testing.T) {
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" + agent +
 			"workspace-configuration-dependencies:\n    - " + runnablespkg.RunnableBindingsGroup + "\n",
 		"modules/payments/services/web/service.codefly.yaml": "kind: service\nname: web\nversion: 0.0.0\nmodule: payments\n" + agent,
-		"modules/payments/services/api/service.codefly.yaml":  "kind: service\nname: api\nversion: 0.0.0\nmodule: payments\n" + agent,
-		"configurations/local/platform.env":                    "REGION=local\n",
-		"configurations/local/runnable-bindings.env":           "PAYMENTS__WORKER_CONNECT_SETTLE={}\nPAYMENTS__WORKER_CONNECT_REFUND={}\n",
+		"modules/payments/services/api/service.codefly.yaml": "kind: service\nname: api\nversion: 0.0.0\nmodule: payments\n" + agent,
+		"configurations/local/platform.env":                  "REGION=local\n",
+		"configurations/local/runnable-bindings.env":         "PAYMENTS__WORKER_CONNECT_SETTLE={}\nPAYMENTS__WORKER_CONNECT_REFUND={}\n",
 	})
 	world, _ := referenceValidityWorld(t, workspace, func(world *World) { world.Mode = RunMode })
 	ctx := context.Background()

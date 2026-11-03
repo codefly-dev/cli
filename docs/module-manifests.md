@@ -1165,8 +1165,9 @@ the base already holds. So the publish starts again from the base and replaces
 the branch with a push leased on the stale tip it reviewed
 (`--force-with-lease`), recorded in the plan as `replacesBranchRevision` and
 part of its ID: a branch that moved after review refuses the publish. A stale
-branch carrying anything outside the module's own path is someone else's work
-and is refused by name, never overwritten.
+branch carrying anything outside what this publication writes — the module's
+own path and the environment's cell file — is someone else's work and is
+refused by name, never overwritten.
 
 **How a local pod's identity reaches the host.** Not through anything the run
 projects: there is no `MODULE_IDENTITY_PREFIX`, no secret and no

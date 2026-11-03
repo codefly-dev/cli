@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
+	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,6 +24,17 @@ func cellBase(t *testing.T, data []byte) (string, string) {
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-m", "base")
 	return repo, runGit(t, repo, "rev-parse", "HEAD")
+}
+
+// publicationCellOf is the cell file a publication of this workspace carries,
+// read as the publication reads it: the one the hold is made against and the
+// one carried into the promotion are the same bytes.
+func publicationCellOf(t *testing.T, workspace *resources.Workspace, env *environments.Environment) *publicationCell {
+	t.Helper()
+	cell, err := publicationCellFile(workspace, env, "")
+	require.NoError(t, err)
+	require.NotNil(t, cell, "the workspace renders a cell file for %s", env.Name)
+	return cell
 }
 
 // A publication holds the workspace's cell file to the one its delivery base
@@ -42,7 +55,7 @@ func TestPublishRefusesACellFileThatRemovesWhatTheBaseAdmits(t *testing.T) {
 	require.NoError(t, err)
 	repo, base := cellBase(t, complete)
 
-	removals, err := holdCellToBase(ctx, workspace, env, repo, "main", base, "", nil)
+	removals, err := holdCellToBase(ctx, publicationCellOf(t, workspace, env), env, repo, "main", base, nil)
 	require.NoError(t, err, "a full render removes nothing")
 	require.Empty(t, removals)
 
@@ -59,17 +72,18 @@ func TestPublishRefusesACellFileThatRemovesWhatTheBaseAdmits(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(full.Path, dropped, 0o600))
 
-	_, err = holdCellToBase(ctx, workspace, env, repo, "main", base, "", nil)
+	dropping := publicationCellOf(t, workspace, env)
+	_, err = holdCellToBase(ctx, dropping, env, repo, "main", base, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "namespace acme-billing (module billing, 2 workload(s))")
 	require.Contains(t, err.Error(), "consumer billing/ledger of acme-shop/api/grpc")
 	require.Contains(t, err.Error(), "--allow-cell-removal (billing)")
 
-	_, err = holdCellToBase(ctx, workspace, env, repo, "main", base, "", []string{"shop"})
+	_, err = holdCellToBase(ctx, dropping, env, repo, "main", base, []string{"shop"})
 	require.Error(t, err, "naming the endpoint's module covers its consumer edge, but not billing's namespace")
 	require.NotContains(t, err.Error(), "consumer billing/ledger")
 	require.Contains(t, err.Error(), "namespace acme-billing")
-	removals, err = holdCellToBase(ctx, workspace, env, repo, "main", base, "", []string{"billing"})
+	removals, err = holdCellToBase(ctx, dropping, env, repo, "main", base, []string{"billing"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"namespace acme-billing (module billing, 2 workload(s))", "consumer billing/ledger of acme-shop/api/grpc"}, removals)
 
@@ -77,7 +91,7 @@ func TestPublishRefusesACellFileThatRemovesWhatTheBaseAdmits(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(empty, filepath.FromSlash(deliveryCellPath("", "staging")))))
 	runGit(t, empty, "commit", "-am", "no cell file")
 	emptyBase := runGit(t, empty, "rev-parse", "HEAD")
-	removals, err = holdCellToBase(ctx, workspace, env, empty, "main", emptyBase, "", nil)
+	removals, err = holdCellToBase(ctx, dropping, env, empty, "main", emptyBase, nil)
 	require.NoError(t, err, "a base with no cell file has nothing to hold the workspace's to")
 	require.Empty(t, removals)
 }

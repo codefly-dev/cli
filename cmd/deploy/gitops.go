@@ -582,6 +582,12 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 		cli.Info("Contract checks:")
 		cli.Info("%s", formatContractChecks(plan.ContractChecks))
 	}
+	if plan.CellFile != "" {
+		cli.Info("Cell file %s is carried with this promotion: the cell admits only the builds it names", plan.CellFile)
+	}
+	if plan.CellNotice != "" {
+		cli.Warning("%s", plan.CellNotice)
+	}
 	for _, removal := range plan.CellRemovals {
 		cli.Warning("The cell file removes %s, as --allow-cell-removal names", removal)
 	}
