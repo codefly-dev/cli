@@ -219,6 +219,22 @@ relative paths.
   with no composition is refused (`resources.ErrUnjudgedProvenance`), never assumed.
   Judge a producer's manifest endpoint whole (`Endpoint.Declaration()`), never the
   mapping an agent reported. See [docs/orchestration.md](docs/orchestration.md).
+- **A module service is reachable only from its hop.** Where the composition stands a
+  hop in front of its modules (`hop/MODULES` names them, the service declaring
+  `hop-routes` is the hop, and that generated table names the listeners it reaches),
+  every endpoint of a fronted module admits the HOP's principal and the callers the
+  service's own manifest admits by name (`admitted-sources` in
+  `service.codefly.yaml`) — never a caller implied from a dependency graph, which is
+  exactly what the rule refuses. Any other declared reach refuses a non-local render,
+  naming the caller; `local` keeps the declared reach. A workload may not run as the
+  namespace's `default` ServiceAccount (its principal is shared by every such pod, so
+  no policy can mean it): a meshed render projects the account named after each
+  service, and the cell file refuses one that still names none. And the render writes
+  the namespace-wide STRICT-mTLS `PeerAuthentication` as its own promoted layer
+  (`mesh/`), refusing to deliver a meshed tree without it — under `PERMISSIVE` a
+  plaintext peer carries no principal, so the delivered edges are not rules. Derived
+  once in `pkg/gitops/hop.go`, `mesh_edges.go` and `mesh_posture.go`; see
+  [docs/module-manifests.md](docs/module-manifests.md#mesh-edges).
 - **A deployed service receives the same workspace configuration groups it receives
   under `run`.** The set is declared ∪ the composition root's, resolved once in
   `pkg/orchestration/workspace_configurations.go`; the render is the source of truth and

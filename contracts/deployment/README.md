@@ -124,9 +124,22 @@ Future supported subsets require explicit schema/profile revisions.
 
 Dependencies resolve named endpoints in the aggregate or independently scoped
 catalogue. Egress supports exact DNS host/protocol/port/consumer sets; CIDRs refuse
-until an enforcement profile is qualified. Nonempty ingress and resource-binding
-requests also refuse in this initial profile. Their wire fields are explicit so
-unsupported restrictions cannot silently survive a partial compiler.
+until an enforcement profile is qualified. Resource-binding requests also refuse in
+this profile. Their wire fields are explicit so unsupported restrictions cannot
+silently survive a partial compiler.
+
+Ingress is qualified (`INGRESS`). An entrance names one workload of this
+inventory and one of its own named container ports — the same join a
+dependency's provider endpoint goes through — one exact DNS host, one exact
+absolute path, and `exposure: public`. There is no wildcard host and no path
+prefix, and each (workload, endpoint, host, path) appears once. What qualifies
+it is the rest of the compiled posture rather than a new mechanism here: the
+mesh admits a caller by its principal and requires STRICT mTLS, so a listener
+is reached from exactly the principals the inventory names, and an entrance
+from outside the mesh — which carries no principal — is a statement the
+inventory has to make rather than a gap a compiler fills in. An entrance named
+for an endpoint whose declaration is not public is refused: both cannot be
+true.
 
 ## Context and retained content
 

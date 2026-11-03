@@ -43,7 +43,7 @@ has a negative case in the shared data corpus. Unknown features fail closed.
 | `IMAGE_MANIFEST` | [images.go](images.go) |
 | `IMAGE_PLATFORM` | [images.go](images.go) |
 | `IMAGE_REFERENCE` | [validate.go](validate.go) |
-| `INGRESS_UNSUPPORTED` | [references.go](references.go) |
+| `INGRESS` | [references.go](references.go) |
 | `JSON_DUPLICATE` | [json.go](json.go) |
 | `JSON_LIMIT` | [json.go](json.go) |
 | `JSON_NUMBER` | [json.go](json.go) |

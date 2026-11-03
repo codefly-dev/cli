@@ -206,10 +206,48 @@ func validateReferences(inv Inventory, p profiles) error {
 			}
 		}
 	}
-	// No qualified ingress/CIDR/resource enforcement profile ships with v1. Refuse
-	// requests rather than carrying constraints that a compiler could omit.
-	if len(inv.Ingress) > 0 {
-		return refuse("INGRESS_UNSUPPORTED", "$/ingress", "ingress enforcement is not qualified by explicit-v1")
+	// INGRESS IS QUALIFIED. It was refused outright while nothing in the
+	// profile said what an entry could mean; what qualifies it is the rest of
+	// the compiled posture, not a new mechanism here. A cell's mesh admits a
+	// caller by its principal and requires STRICT mTLS, so a workload's
+	// listener is reached from exactly the principals the inventory names —
+	// and an entrance from outside the mesh, which carries no principal, is
+	// then a statement an inventory has to make rather than a gap the
+	// compiler fills in. So an entry is validated here, exactly, and names
+	// one workload's own named container port, one host, one path and the
+	// exposure that endpoint was declared with:
+	//
+	//   - the workload is one this inventory carries, and the endpoint is a
+	//     named container port of it — the same join a dependency's provider
+	//     endpoint goes through, so an entrance cannot name a port no
+	//     container opens;
+	//   - the host is an exact DNS subdomain and the path an exact absolute
+	//     path. There is no wildcard: a catch-all host or a prefix would be
+	//     an entrance whose reach the inventory does not state, which is what
+	//     refusing ingress outright was protecting against;
+	//   - the exposure is `public`. An entrance exists for an endpoint
+	//     declared to be reached from outside the cell; anything else named
+	//     here would be an entrance onto a listener whose declaration says it
+	//     has none, and the two cannot both be true;
+	//   - each (workload, endpoint, host, path) once. A repeated entrance is
+	//     a count a reader would trust.
+	//
+	// CIDR and resource-binding enforcement stay unqualified below: nothing in
+	// the profile says what either would restrict.
+	entrances := map[string]bool{}
+	for _, i := range inv.Ingress {
+		w, ok := workloads[i.Workload]
+		if !ok || !containerPort(w, i.Endpoint) {
+			return referenceError("$/ingress", "workload endpoint")
+		}
+		if !dnsSubdomain(i.Host) || !absolutePath(i.Path) || i.Exposure != "public" {
+			return refuse("INGRESS", "$/ingress", "invalid ingress host, path or exposure")
+		}
+		key := strings.Join([]string{i.Workload, i.Endpoint, i.Host, i.Path}, "\x00")
+		if entrances[key] {
+			return refuse("INGRESS", "$/ingress", "duplicate ingress entrance")
+		}
+		entrances[key] = true
 	}
 	for _, e := range inv.Egress {
 		if len(e.CIDRs) > 0 {
@@ -236,6 +274,29 @@ func catalogEntry(catalog map[string]CatalogEntry, id, kind string, w Workload) 
 	}
 	return e, nil
 }
+
+// containerPort reports whether a workload opens a container port by this
+// name. An ingress entrance names a port rather than a protocol and number:
+// what it states is which listener the entrance reaches, and the listener's
+// protocol and port are the workload's own declaration of it.
+func containerPort(w Workload, name string) bool {
+	for _, c := range w.Template.Spec.Containers {
+		for _, p := range c.Ports {
+			if p.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// absolutePath reports whether a path is one exact absolute path: no relative
+// segment, no traversal, no wildcard, and already in its cleaned form, so the
+// entrance an inventory states is the entrance a compiler emits.
+func absolutePath(s string) bool {
+	return strings.HasPrefix(s, "/") && path.Clean(s) == s && !strings.ContainsAny(s, "*?\\%\x00")
+}
+
 func endpoint(w Workload, name, protocol string, number int64) bool {
 	for _, c := range w.Template.Spec.Containers {
 		for _, p := range c.Ports {

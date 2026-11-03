@@ -94,6 +94,12 @@ type Inventory struct {
 	// Application at its environment overlay and derives the promotion's
 	// authority from it, exactly as it does for a unit.
 	ModuleManifestPath string `json:"moduleManifestPath,omitempty"`
+	// MeshPath is the render subdirectory holding the namespace's mesh
+	// posture: the namespace-wide STRICT mTLS PeerAuthentication without
+	// which the delivered mesh edges are not enforceable (mesh_posture.go).
+	// Set for every render of an environment that declares a host, and
+	// promoted as its own Application like the module resources layer.
+	MeshPath string `json:"meshPath,omitempty"`
 	// HostsDelivery is true for the module that serves the environment's
 	// delivery API: its own delivery cannot precede the API it posts to, so
 	// it is ordered after the module's units where every other module's
@@ -291,8 +297,12 @@ type RenderOptions struct {
 	CheckUnitDirectories bool
 	OwnedPath            string
 	ModulePath           string
-	Units                []InventoryUnit
-	Package              *InventoryPackage
+	// MeshPath is set by the render once it has written the namespace's mesh
+	// posture layer, so the inventory records the delivered path rather than
+	// the intent to write one.
+	MeshPath string
+	Units    []InventoryUnit
+	Package  *InventoryPackage
 	// Pin is how the composition pinned the module, recorded in the inventory.
 	Pin *InventoryPin
 	// ReleaseArtifacts is what the module's package manifest declares the
