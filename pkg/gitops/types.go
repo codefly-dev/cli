@@ -502,6 +502,17 @@ type PublishPlan struct {
 	// CellRemovals are the removals from the base branch's cell file the
 	// request named (AllowCellRemovals), for the reviewer to see.
 	CellRemovals []string `json:"cellRemovals,omitempty"`
+	// CellFile is the environment's cell file this publication carries into
+	// the delivery repository, at the path the cell's infrastructure reads it
+	// from. A cell admits only the builds that file names, so a promotion of
+	// a new build carries it or the build it delivers is refused by the
+	// cluster (publish_cell.go). Empty when there is none to carry, which
+	// CellNotice then says.
+	CellFile string `json:"cellFile,omitempty"`
+	// CellNotice says why a publication to a hosted environment moves no
+	// approved-build list: a rollback, which restores a module tree and not
+	// the cell, or a checkout with no cell file rendered.
+	CellNotice string `json:"cellNotice,omitempty"`
 	// Carriers are the carriers this plan signed, keyed by kind, ID and
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.

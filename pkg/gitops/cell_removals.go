@@ -10,17 +10,13 @@ package gitops
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
-	"github.com/codefly-dev/core/resources"
 )
 
 // cellRemoval is one thing the base cell file admits that the next one does
@@ -91,41 +87,30 @@ func deliveryCellPath(gitopsPath, environment string) string {
 	return filepath.ToSlash(filepath.Join(gitopsPath, cellsDir, environment, cellfile.FileName))
 }
 
-// holdCellToBase refuses the publication when the workspace's cell file for a
+// holdCellToBase refuses the publication when the cell file it carries for a
 // hosted environment removes anything the delivery base revision's file
 // carries, unless every removal concerns a module allowed names. It returns
-// the removals allowed, for the plan to show. A workspace with no cell file,
-// or a base with none, has nothing to hold.
-func holdCellToBase(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, repo, baseBranch, baseRevision, gitopsPath string, allowed []string) ([]string, error) {
-	if env.Host == nil {
+// the removals allowed, for the plan to show. A publication carrying no cell
+// file (publicationCellFile), or a base with none, has nothing to hold.
+//
+// It is the cell file the publication CARRIES that is held — the same bytes,
+// read once — so the file delivered and the file held can never be two
+// different files, and the hold runs before anything is carried.
+func holdCellToBase(ctx context.Context, cell *publicationCell, env *environments.Environment, repo, baseBranch, baseRevision string, allowed []string) ([]string, error) {
+	if cell == nil {
 		return nil, nil
 	}
-	path, err := CellPath(workspace, env)
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read environment %s's cell file: %w", env.Name, err)
-	}
-	next, err := cellfile.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("environment %s's cell file %s cannot be read, so it cannot be held to %s's: %w", env.Name, path, baseBranch, err)
-	}
-	basePath := deliveryCellPath(gitopsPath, env.Name)
-	baseData, err := gitCommandBytes(ctx, repo, "show", baseRevision+":"+basePath)
+	path, next := cell.source, cell.file
+	baseData, err := gitCommandBytes(ctx, repo, "show", baseRevision+":"+cell.delivered)
 	if err != nil {
 		if gitSaysAbsent(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read %s's cell file %s: %w", baseBranch, basePath, err)
+		return nil, fmt.Errorf("read %s's cell file %s: %w", baseBranch, cell.delivered, err)
 	}
 	base, err := cellfile.Parse(baseData)
 	if err != nil {
-		return nil, fmt.Errorf("%s's cell file %s cannot be read: %w", baseBranch, basePath, err)
+		return nil, fmt.Errorf("%s's cell file %s cannot be read: %w", baseBranch, cell.delivered, err)
 	}
 	var refused, admitted []string
 	unnamed := map[string]bool{}

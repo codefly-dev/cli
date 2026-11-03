@@ -1150,6 +1150,38 @@ and egress the environment's), so an entry carried over is a claim about a
 composition that may no longer exist, and no digest is invented for a module
 that was not rendered.
 
+**A publish carries the cell file.** A cell admits only the builds its cell
+file names, so a promotion that delivered a module's tree and left the file
+behind would deliver builds the cluster refuses — every refused workload
+looking like a fault of its own. `publish` therefore carries the workspace's
+cell file into the promotion, at `<gitops path>/cells/<environment>/cell.yaml`
+in the delivery repository, beside the module trees it is derived from and in
+the same signed commit: it is among the plan's changed files and its diff, and
+the plan names it (`cellFile`). **Every** module's publish carries it, not the
+host module's alone: the file is derived from the whole composition and a
+render refuses to write it while a composed module has no render for the
+environment, so the file a publish finds describes every module, and a module's
+own build is approved by its own promotion rather than by someone else
+remembering to publish first. Every module of one `render --all` carries the
+one file that render derived, so their promotions agree and merge; a module
+re-rendered mid-round carries a different file and git reports the conflict
+rather than merging two approved-build lists.
+
+It is delivered **unsigned**, and belongs in no signed set: the module
+manifests and the envelope are carriers a host verifies against the release key
+before admitting a generation, while the cell file is regenerated whole and
+read by the cell's infrastructure as values straight from the reviewed branch,
+by a consumer that takes no envelope. Its custody is the signed promotion
+commit that carries it and the review that merges it, like every rendered
+manifest beside it.
+
+Two publications to a hosted environment carry none, and say so in the plan
+(`cellNotice`) rather than looking complete: a `rollback`, which restores a
+module's delivered tree from a revision while the workspace's file names the
+builds rendered now — if the file on the base branch does not name the restored
+build, render the module at the restored source and publish it forward — and a
+checkout with no cell file rendered at all.
+
 **A publish holds the cell file to the base branch's.** The cell file is
 committed with the rendered trees, and a cell admits only what it names, so
 `plan` and `publish` read the workspace's cell file for a hosted environment
@@ -1161,7 +1193,9 @@ is intended (a module the workspace no longer composes, a dependency dropped)
 is named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
 covered by naming either the endpoint's module or the consumer's, and the plan
 lists every removal it lets through. A base with no cell file has nothing to
-hold the workspace's to.
+hold the workspace's to. The file held is the file carried — the same bytes,
+read once — and the hold runs first, so a cell file whose removals nobody named
+never reaches the promotion.
 
 For a complete module promotion, use the GitOps lifecycle:
 
