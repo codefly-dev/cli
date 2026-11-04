@@ -2857,13 +2857,15 @@ decides per environment, from an authored product file:
         may-be-empty: [<stored key>] # keys whose correct value here is empty
 
 The intent owns exclude-services, service-secrets.generate and
-service-secrets.may-be-empty: a contract declaring one of them too is refused,
-and an entry the intent no longer carries is withdrawn on re-import. The
-contract keeps the rest of service-secrets (secret-store, defaults, services),
-which names the cell's store. Each entry is checked against the secret
-configurations the environment's profile declares; an unknown service,
-configuration or key is refused by name. Any other field is refused; the legacy
-full delivery.intent.yaml is not interpreted.
+service-secrets.may-be-empty: a contract declaring one of them too is refused.
+A key the intent declares replaces the workspace's, an empty one (generate: [],
+may-be-empty: []) withdraws it, and a key the intent does not mention is left
+as the workspace holds it, like every other omitted field. The contract keeps
+the rest of service-secrets (secret-store, defaults, services), which names
+the cell's store. Each entry is checked against the secret configurations the
+environment's profile declares; an unknown service, configuration or key is
+refused by name. Any other field is refused; the legacy full
+delivery.intent.yaml is not interpreted.
 ```
 
 ```

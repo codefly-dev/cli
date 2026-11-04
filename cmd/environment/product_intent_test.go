@@ -150,21 +150,39 @@ func TestProductIntentImportsAndWithdrawsSecretPolicy(t *testing.T) {
 	doImport(t, dir, importOptions{contractData: []byte(contract)})
 	require.Len(t, loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets.Generate, 1)
 
-	// An intent that drops may-be-empty withdraws it and keeps generate.
+	// An intent that no longer mentions may-be-empty leaves it as the
+	// workspace holds it, and keeps generate.
 	withoutEmpty := strings.Replace(productSecretsIntent, "      may-be-empty: [CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN]\n", "", 1)
 	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte(withoutEmpty)})
+	secrets = loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
+	require.Equal(t, []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN"}, secrets.MayBeEmpty)
+	require.Len(t, secrets.Generate, 1)
+
+	// An intent that declares may-be-empty EMPTY withdraws it, and keeps generate.
+	emptied := strings.Replace(productSecretsIntent, "      may-be-empty: [CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN]\n", "      may-be-empty: []\n", 1)
+	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte(emptied)})
 	secrets = loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
 	require.Empty(t, secrets.MayBeEmpty)
 	require.Len(t, secrets.Generate, 1)
 
-	// An intent with no service-secrets withdraws the rest; the contract's
-	// fields stay.
+	// An intent with no service-secrets at all — one authored for
+	// exclude-services — leaves the policy as the workspace holds it; the
+	// contract's fields stay. This is the import that dropped fourteen
+	// generators and five may-be-empty entries from a cell's declaration.
+	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte(productSecretsIntent)})
 	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte("environments:\n  azure:\n    exclude-services: []\n")})
+	secrets = loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
+	require.Len(t, secrets.Generate, 1, "a generator the intent does not mention survives the import")
+	require.Equal(t, []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN"}, secrets.MayBeEmpty, "a may-be-empty entry the intent does not mention survives the import")
+	require.Equal(t, "cell-secrets", secrets.SecretStore.Name)
+	require.Equal(t, "api/k", secrets.Services["shop/api"].RemoteKeys["K"].Key)
+
+	// Both declared empty withdraws both.
+	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte("environments:\n  azure:\n    exclude-services: []\n    service-secrets: {generate: [], may-be-empty: []}\n")})
 	secrets = loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
 	require.Empty(t, secrets.Generate)
 	require.Empty(t, secrets.MayBeEmpty)
 	require.Equal(t, "cell-secrets", secrets.SecretStore.Name)
-	require.Equal(t, "api/k", secrets.Services["shop/api"].RemoteKeys["K"].Key)
 }
 
 func TestProductIntentSecretPolicyRefusalsDoNotWrite(t *testing.T) {
