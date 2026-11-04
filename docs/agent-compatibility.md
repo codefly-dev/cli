@@ -124,13 +124,13 @@ the one documented exemption from restricted-rendering evidence, because it
 produces no promotable artifact and nothing persists it.
 
 **An agent reads the interface binding the host supplies.** An agent loads
-the service it serves by directory, and before core v0.19.8 it bound the
+the service it serves by directory, and before core v0.19.7 it bound the
 service's interface dependencies itself, against the workspace at the
 identity's `workspace_path`. It cannot compose that workspace when it imports
 another by `source:` and `version:`: only the host registers a workspace
 resolver (every command context does), and the agent is another process, so it
 fails with core's `requires host resolution` — a sentence about the host, from
-a process that is not the host. Since core v0.19.8 the host hands the agent
+a process that is not the host. Since core v0.19.7 the host hands the agent
 the binding its composition made (`ServiceIdentity.interface_bindings`, filled
 by core's `services.Load` from `Service.InterfaceBindingsProto` for every
 service loaded through its workspace, in `run` and in a render alike), and the

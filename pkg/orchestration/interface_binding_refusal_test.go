@@ -52,7 +52,7 @@ func TestExplainHostResolutionRefusalNamesTheAgentBehindTheBinding(t *testing.T)
 	explained := explainHostResolutionRefusal(agentErr, instance)
 	require.ErrorIs(t, explained, agentErr, "the agent's own error stays underneath")
 	require.ErrorContains(t, explained, "agent codefly.dev/go:0.0.67 binds apps/web's interface dependencies against the workspace on disk")
-	require.ErrorContains(t, explained, "core v0.19.8 or newer")
+	require.ErrorContains(t, explained, "core v0.19.7 or newer")
 	require.ErrorContains(t, explained, "path: override on the import hides this")
 
 	// The running agent, when the selection resolved one, is the one named.

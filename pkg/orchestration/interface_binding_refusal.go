@@ -7,12 +7,12 @@ import (
 	"github.com/codefly-dev/core/services"
 )
 
-// An agent loads the service it serves by directory. Before core v0.19.8 it
+// An agent loads the service it serves by directory. Before core v0.19.7 it
 // bound the service's interface dependencies itself, against the workspace at
 // the identity's WorkspacePath — which it cannot compose when that workspace
 // imports another by source and version: only the host registers a workspace
 // resolver (cmd/common/context.go), and the agent is another process. Since
-// core v0.19.8 the host hands the agent the binding its composition made
+// core v0.19.7 the host hands the agent the binding its composition made
 // (ServiceIdentity.interface_bindings, filled by core's services.Load from
 // Service.InterfaceBindingsProto) and the agent never loads the workspace.
 //
@@ -47,5 +47,5 @@ func explainHostResolutionRefusal(err error, instance *services.Instance) error 
 	case instance.Service.Agent != nil:
 		agent = "agent " + instance.Service.Agent.Identifier()
 	}
-	return fmt.Errorf("%s binds %s's interface dependencies against the workspace on disk instead of reading the binding this host supplied (ServiceIdentity.interface_bindings), so it cannot compose a workspace imported by source and version; the agent was built on a core older than v0.19.8, which reads the binding. Upgrade the agent to a release built on core v0.19.8 or newer; a path: override on the import hides this without fixing it: %w", agent, instance.Unique(), err)
+	return fmt.Errorf("%s binds %s's interface dependencies against the workspace on disk instead of reading the binding this host supplied (ServiceIdentity.interface_bindings), so it cannot compose a workspace imported by source and version; the agent was built on a core older than v0.19.7, which reads the binding. Upgrade the agent to a release built on core v0.19.7 or newer; a path: override on the import hides this without fixing it: %w", agent, instance.Unique(), err)
 }
