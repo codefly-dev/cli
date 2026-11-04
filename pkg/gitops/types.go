@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"io"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
@@ -616,6 +617,16 @@ type ObserveRequest struct {
 	Local         bool
 	Timeout       time.Duration
 	PollInterval  time.Duration
+	// Kubeconfig and KubeContext are the cluster the environment declares,
+	// through which the delivered workloads' controller events are read
+	// while Argo CD reports an application Progressing or Degraded. Empty,
+	// kubectl's current context is read.
+	Kubeconfig  string
+	KubeContext string
+	// Output is where each refusal the cluster records against a delivered
+	// workload is printed, verbatim and once, as it is first seen. Nil
+	// discards them; the error returned still names them.
+	Output io.Writer
 }
 
 type ReviewEvidence struct {
