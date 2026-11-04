@@ -1676,6 +1676,11 @@ func inventoryHead(opts *RenderOptions) Inventory {
 	sort.Slice(inventory.Units, func(i, j int) bool {
 		return inventory.Units[i].Name < inventory.Units[j].Name
 	})
+	// Stamped once the units are known, over the same service names a
+	// publish reads back out of this inventory.
+	if opts.Target != nil {
+		inventory.EnvironmentDeclarationDigest = environmentDeclarationDigest(opts.Target, inventory.Module, serviceUnitNames(inventory.Units))
+	}
 	return inventory
 }
 

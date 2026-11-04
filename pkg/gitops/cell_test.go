@@ -694,3 +694,113 @@ func TestTheCellNamesTheDeliveryEndpointAndNotOnlyItsWorkload(t *testing.T) {
 		})
 	}
 }
+
+// A container declaring an exec probe or an exec lifecycle hook is refused by
+// name and field before the cell file approves it: the cell's execution
+// admission refuses such a pod (a command of the delivering party's choosing
+// runs inside the pod that holds the workload identity), so a cell file that
+// described it would approve a workload with zero running replicas. An HTTP
+// probe on the same container is admitted.
+func TestCellFileRefusesAnExecProbeTheCellWouldRefuse(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	result := renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	rendered := filepath.Join(result.Path, "services", "api", "overlays", "staging", "deployment.yaml")
+	data, err := os.ReadFile(rendered)
+	require.NoError(t, err)
+	const image = "image: registry.example.test/acme/api:1.2.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	require.Contains(t, string(data), image)
+
+	for _, probe := range []struct{ field, yaml string }{
+		{"livenessProbe.exec", "livenessProbe:\n            exec:\n              command: [python3, -m, api.server, --health]"},
+		{"startupProbe.exec", "startupProbe:\n            exec:\n              command: [true]"},
+		{"lifecycle.postStart.exec", "lifecycle:\n            postStart:\n              exec:\n                command: [true]"},
+	} {
+		require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), image, image+"\n          "+probe.yaml, 1)), 0o644))
+		_, err = RenderCell(context.Background(), workspace, env)
+		require.Error(t, err, probe.field)
+		require.Contains(t, err.Error(), "unit shop/api workload api: container api declares "+probe.field)
+		require.Contains(t, err.Error(), "Use an HTTP, TCP or gRPC probe")
+	}
+
+	httpProbe := "livenessProbe:\n            httpGet:\n              path: /healthz\n              port: http"
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), image, image+"\n          "+httpProbe, 1)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err, "an HTTP probe is admitted")
+}
+
+// A pod template that opts out of the mesh is refused: the cell enrols the
+// namespace and its admission refuses a pod that overrides it, so the file
+// does not approve one.
+func TestCellFileRefusesAPodThatOptsOutOfTheMesh(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	result := renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	rendered := filepath.Join(result.Path, "services", "api", "overlays", "staging", "deployment.yaml")
+	data, err := os.ReadFile(rendered)
+	require.NoError(t, err)
+	const templateLabels = "      labels:\n        app.kubernetes.io/name: api\n"
+	require.Contains(t, string(data), templateLabels)
+
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), templateLabels, templateLabels+"        istio.io/dataplane-mode: none\n", 1)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "unit shop/api workload api: its pod template carries the istio.io/dataplane-mode label, which opts the pod out of the mesh")
+
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), templateLabels, templateLabels+"      annotations:\n        ambient.istio.io/bypass-inbound-capture: \"true\"\n", 1)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "carries the ambient.istio.io/bypass-inbound-capture annotation")
+
+	// A CronJob's pod template stands under spec.jobTemplate.spec.template;
+	// an opt-out there is read where it stands.
+	cronJob := `---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: api-sweep
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            codefly.dev/bootstrap-service: api
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: api
+          restartPolicy: OnFailure
+          containers:
+            - name: api
+              image: registry.example.test/acme/api-sweep@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+`
+	require.NoError(t, os.WriteFile(rendered, append([]byte(data), []byte(cronJob)...), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "workload api-sweep: its pod template carries the sidecar.istio.io/inject label")
+}
+
+// A tree rendered for the environment whose module the workspace no longer
+// composes — a solution withdrawn from the composition, a module nothing pins
+// — refuses the cell file by name, with the tree to remove: described, it
+// would approve a workload the composition does not declare; skipped, its
+// pods would be refused by the cell while the delivery still runs them.
+// Removed, the file is written as before.
+func TestCellFileRefusesATreeOfAModuleTheWorkspaceDoesNotCompose(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	withdrawn := renderCellTree(t, workspace, "proposals", "api", "acme-proposals", "staging")
+
+	_, err := RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cell file is not written")
+	require.Contains(t, err.Error(), withdrawn.Path+" holds a render of module proposals for staging, but the workspace composes no module of that name")
+	require.Contains(t, err.Error(), "remove that render and the module's delivered tree")
+
+	require.NoError(t, os.RemoveAll(withdrawn.Path))
+	again, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "shop"}, again.Modules)
+}

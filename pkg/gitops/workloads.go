@@ -35,8 +35,10 @@ type renderedWorkload struct {
 	volumes        []string
 	// mounts are every container's volume mounts, by container name.
 	mounts map[string][]containerMount
-	// templateAnnotations are the pod template's annotations.
+	// templateAnnotations are the pod template's annotations, and
+	// templateLabels its labels.
 	templateAnnotations map[string]any
+	templateLabels      map[string]any
 }
 
 // renderedContainer is one container of a pod template. Its image is pinned
@@ -48,6 +50,13 @@ type renderedContainer struct {
 	// the two halves so no reader parses them back out of one string.
 	Repository string
 	Digest     string
+	// execs are the fields of this container that run a command of the
+	// delivering party's choosing inside the pod — an exec lifecycle hook or
+	// an exec probe — named as the pod spec spells them. A cell admits a pod
+	// by the digest of what runs in it, and an exec field says what the
+	// approved bytes do, so the cell's admission refuses such a pod; the
+	// render refuses it first (refuseUnadmittedExecution).
+	execs []string
 }
 
 // tokenMount is one projected ServiceAccount token volume carrying an
@@ -109,8 +118,12 @@ func workloadsFromManifests(manifests []manifest) ([]renderedWorkload, error) {
 		}
 		workload := renderedWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, tokenMounts: map[string][]tokenMount{}, mounts: map[string][]containerMount{}}
 		workload.ServiceAccount, _ = spec["serviceAccountName"].(string)
-		workload.templateAnnotations = mapField(mapField(mapField(item.value, "spec"), "template"), "metadata")
-		workload.templateAnnotations = mapField(workload.templateAnnotations, "annotations")
+		// podTemplate, not spec.template: a CronJob's template stands under
+		// spec.jobTemplate.spec.template, and a label read at the wrong
+		// path is a mesh opt-out the render would never see.
+		templateMetadata := mapField(podTemplate(item), "metadata")
+		workload.templateAnnotations = mapField(templateMetadata, "annotations")
+		workload.templateLabels = mapField(templateMetadata, "labels")
 		if workload.ServiceAccount == "" {
 			workload.ServiceAccount = defaultServiceAccount
 		}
@@ -191,7 +204,7 @@ func renderedContainers(workload string, raw []any, tokens map[string][]tokenSou
 		if err != nil {
 			return nil, fmt.Errorf("workload %s container %s: %w", workload, name, err)
 		}
-		rendered := renderedContainer{Name: name, Repository: repository, Digest: digest}
+		rendered := renderedContainer{Name: name, Repository: repository, Digest: digest, execs: execFields(container)}
 		for _, raw := range sliceField(container, "volumeMounts") {
 			mount, _ := raw.(map[string]any)
 			volume, _ := mount["name"].(string)
@@ -216,6 +229,26 @@ func renderedContainers(workload string, raw []any, tokens map[string][]tokenSou
 		containers = append(containers, rendered)
 	}
 	return containers, nil
+}
+
+// execFields names the exec hooks and probes a container declares, as the pod
+// spec spells them: lifecycle.postStart.exec, lifecycle.preStop.exec,
+// livenessProbe.exec, readinessProbe.exec, startupProbe.exec. The list is the
+// one the cell's execution-admission policy judges, in its order.
+func execFields(container map[string]any) []string {
+	var fields []string
+	lifecycle := mapField(container, "lifecycle")
+	for _, hook := range []string{"postStart", "preStop"} {
+		if _, declared := mapField(lifecycle, hook)["exec"]; declared {
+			fields = append(fields, "lifecycle."+hook+".exec")
+		}
+	}
+	for _, probe := range []string{"livenessProbe", "readinessProbe", "startupProbe"} {
+		if _, declared := mapField(container, probe)["exec"]; declared {
+			fields = append(fields, probe+".exec")
+		}
+	}
+	return fields
 }
 
 // Keep the staged root while selecting a unit. Libraries see a checked tree,
