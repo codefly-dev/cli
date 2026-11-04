@@ -1936,3 +1936,78 @@ environments:
 		t.Fatalf("distinct paths were refused: %v", err)
 	}
 }
+
+// A hosted runner's git has no signing identity. The release custody is the
+// delivered document's signature, so the promotion commit is made unsigned
+// rather than failing on `gpg failed to sign the data`, and the result says so.
+func TestPublishWithoutAGitSigningIdentityCommitsUnsigned(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureNoGitSigning(t)
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Signed || result.Commit == "" || result.PullRequest == "" {
+		t.Fatalf("unsigned publication = %+v", result)
+	}
+	raw := gitOutput(t, "", "--git-dir", remote, "cat-file", "-p", result.Commit)
+	if strings.Contains(raw, "\ngpgsig ") {
+		t.Fatalf("commit %s is signed with no signing identity configured", result.Commit)
+	}
+	branch := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/"+request.PromotionBranch+"^{commit}")
+	if branch != result.Commit {
+		t.Fatalf("promotion branch = %s, want %s", branch, result.Commit)
+	}
+}
+
+// A git that holds a signing identity but cannot sign with it still refuses:
+// the configured choice is honoured, never silently downgraded.
+func TestPublishRefusesWhenTheConfiguredSigningIdentityCannotSign(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspace(t, remote)
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	configureNoGitSigning(t)
+	t.Setenv("GIT_CONFIG_COUNT", "2")
+	t.Setenv("GIT_CONFIG_KEY_0", "gpg.format")
+	t.Setenv("GIT_CONFIG_VALUE_0", "ssh")
+	t.Setenv("GIT_CONFIG_KEY_1", "user.signingKey")
+	t.Setenv("GIT_CONFIG_VALUE_1", filepath.Join(t.TempDir(), "absent-key"))
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit); err == nil || !strings.Contains(err.Error(), "create promotion commit") {
+		t.Fatalf("publish with an unusable signing identity error = %v", err)
+	}
+}
+
+// configureNoGitSigning gives the test's git the identity of a hosted runner:
+// an author, and no signing configuration from any level.
+func configureNoGitSigning(t *testing.T) {
+	t.Helper()
+	t.Setenv("GIT_AUTHOR_NAME", "Codefly Test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "codefly@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "Codefly Test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "codefly@example.com")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+}

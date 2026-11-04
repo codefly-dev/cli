@@ -1939,12 +1939,26 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if message == "" {
 		message = fmt.Sprintf("Promote %s to %s", request.Module, request.Environment)
 	}
+	// The release custody this command enforces is the delivered document's
+	// signature, made above and verified by the release policy. Git's own
+	// commit signature is a second statement about the same promotion, made by
+	// whatever identity the shell's git holds: a workstation with one signs,
+	// a hosted runner with none commits unsigned rather than failing, and the
+	// result says which.
+	signing, err := gitSigningConfigured(ctx, prepared.dir)
+	if err != nil {
+		return PublishResult{}, err
+	}
 	commit := prepared.plan.ExistingCommit
 	if len(prepared.plan.Changed) > 0 {
-		if _, err := gitCommand(ctx, prepared.dir, "commit", "--allow-empty", "-S", "-m", message); err != nil {
-			return PublishResult{}, fmt.Errorf("create signed promotion commit: %w", err)
+		args := []string{"commit", "--allow-empty"}
+		if signing {
+			args = append(args, "-S")
 		}
-		var err error
+		args = append(args, "-m", message)
+		if _, err = gitCommand(ctx, prepared.dir, args...); err != nil {
+			return PublishResult{}, fmt.Errorf("create promotion commit: %w", err)
+		}
 		commit, err = gitCommand(ctx, prepared.dir, "rev-parse", "HEAD^{commit}")
 		if err != nil {
 			return PublishResult{}, err
@@ -1958,8 +1972,9 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if err != nil {
 		return PublishResult{}, err
 	}
-	if !strings.Contains(rawCommit, "\ngpgsig ") {
-		return PublishResult{}, fmt.Errorf("promotion commit %s is not signed", commit)
+	signed := strings.Contains(rawCommit, "\ngpgsig ")
+	if signing && !signed {
+		return PublishResult{}, fmt.Errorf("promotion commit %s is not signed although git has a signing identity", commit)
 	}
 	// A local promotion also pushes an unchanged branch: one the base had
 	// moved past restarts from the base, and the remote branch must follow
@@ -2005,7 +2020,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		PlanID: prepared.plan.ID, Repository: prepared.plan.Repository, Path: prepared.plan.Path,
 		BaseBranch: prepared.plan.BaseBranch, PromotionBranch: prepared.plan.PromotionBranch,
 		RenderDigest: prepared.plan.RenderDigest, SnapshotRevision: prepared.plan.SnapshotRevision,
-		Commit: commit, Tree: tree, Signed: true,
+		Commit: commit, Tree: tree, Signed: signed,
 		PullRequest: prURL, PullRequestID: prID,
 		ContractChecks: prepared.plan.ContractChecks,
 		Delivery:       prepared.plan.Delivery,
@@ -2626,6 +2641,26 @@ func LoadPublishResult(root, module, environment string) (PublishResult, error) 
 		return PublishResult{}, fmt.Errorf("publication receipt is incomplete")
 	}
 	return result, nil
+}
+
+// gitSigningConfigured reports whether the shell's git has a signing identity
+// for commits: commit.gpgsign asks for one on every commit, and a
+// user.signingkey names one even where gpgsign is off. Either answers git's
+// own configuration, including the GIT_CONFIG_* environment, so an operator
+// expresses the choice where git reads it rather than through a flag here.
+func gitSigningConfigured(ctx context.Context, dir string) (bool, error) {
+	gpgsign, err := gitCommand(ctx, dir, "config", "--type=bool", "--default", "false", "commit.gpgsign")
+	if err != nil {
+		return false, fmt.Errorf("read git signing configuration: %w", err)
+	}
+	if gpgsign == "true" {
+		return true, nil
+	}
+	key, err := gitCommand(ctx, dir, "config", "--default", "", "user.signingkey")
+	if err != nil {
+		return false, fmt.Errorf("read git signing configuration: %w", err)
+	}
+	return key != "", nil
 }
 
 func gitCommand(ctx context.Context, dir string, args ...string) (string, error) {

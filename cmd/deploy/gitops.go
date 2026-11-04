@@ -186,7 +186,7 @@ var gitOpsPlanCmd = &cobra.Command{
 
 var gitOpsPublishCmd = &cobra.Command{
 	Use:   "publish [module]",
-	Short: "Create a signed promotion commit and open or update its pull request",
+	Short: "Create a promotion commit (signed when git has a signing identity) and open or update its pull request",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -215,7 +215,11 @@ var gitOpsPublishCmd = &cobra.Command{
 			return err
 		}
 		cli.Info("Service snapshot %s", result.SnapshotRevision)
-		cli.Info("Signed commit %s", result.Commit)
+		if result.Signed {
+			cli.Info("Signed commit %s", result.Commit)
+		} else {
+			cli.Info("Commit %s (unsigned: this git has no signing identity; the delivered documents carry the release signature)", result.Commit)
+		}
 		cli.Info("Tree %s", result.Tree)
 		printDelivery(result.Delivery)
 		cli.Info("Pull request %s", result.PullRequest)
@@ -333,7 +337,11 @@ var gitOpsRollbackCmd = &cobra.Command{
 			return fmt.Errorf("rollback returned no result")
 		}
 		result := *mutationResult.GitOpsPublish
-		cli.Info("Signed rollback commit %s", result.Commit)
+		if result.Signed {
+			cli.Info("Signed rollback commit %s", result.Commit)
+		} else {
+			cli.Info("Rollback commit %s (unsigned: this git has no signing identity)", result.Commit)
+		}
 		cli.Info("Pull request %s", result.PullRequest)
 		return nil
 	},
