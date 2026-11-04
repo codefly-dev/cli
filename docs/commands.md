@@ -1201,15 +1201,26 @@ removes a namespace, a workload, an endpoint or a consumer of an endpoint the
 base admits — naming each removal and the modules it concerns. A removal the
 composition explains needs no naming: when the module it concerns is no
 longer in `modules:` (the namespace of a module removed from the composition,
-or its consumer edge on another module's endpoint), the hold lets it through
-and the plan reports it (`undeclaredCellRemovals`), and the publication also
-removes that module's delivered tree from `<gitops path>/modules/` with
-everything else it writes (`removedModules`): the cell no longer admits
-anything of it, and the ApplicationSet that tree carries would keep stamping
-Applications whose every pod the cell refuses. A rollback removes none, and a
-directory under the modules path with no render record is not a delivery and
-is left alone. Any other removal — a module still composed whose render is
-missing from the checkout, a dependency dropped, a service withdrawn — is
+or its consumer edge on another module's endpoint), **and the checkout has
+seen the composition the base's file was rendered from**, the hold lets it
+through and the plan reports it (`undeclaredCellRemovals`), and the
+publication also removes that module's delivered tree from
+`<gitops path>/modules/` with everything else it writes (`removedModules`):
+the cell no longer admits anything of it, and the ApplicationSet that tree
+carries would keep stamping Applications whose every pod the cell refuses. A
+checkout that never had a module and one that dropped it derive the same cell
+file, so the history decides: the checkout must contain the delivery base
+commit when the workspace repository holds it (the workspace is the delivery
+repository), or else the `source.revision` the base's cell file names; a
+checkout that contains neither — a branch behind the base, a base file naming
+no source — is held as before, the refusal says which revision it lacks, and
+naming the module confirms the removal without pruning the tree. A promotion
+of a module owns, on its own branch, the removal of such trees, so continuing
+or retrying the publication that removed one is not refused as someone else's
+change. A rollback removes none, and a directory under the modules path with
+no render record is not a delivery and is left alone. Any other removal — a
+module still composed whose render is missing from the checkout, a dependency
+dropped, a service withdrawn — is
 named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
 covered by naming either the endpoint's module or the consumer's, and the plan
 lists every removal it lets through. A base with no cell file has nothing to

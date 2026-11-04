@@ -220,14 +220,15 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
-	declared := composedModules(workspace)
-	removedModules, err := removeUndeclaredDeliveries(repo, pathRoot, request.Module, env, restoreRevision, declared)
+	baseCell, claim, removedModules, err := judgeCompositionRemovals(ctx, workspace, env, cell, &compositionBase{
+		repo: repo, gitopsPath: pathRoot, branch: baseBranch, revision: baseRevision,
+		module: request.Module, restoreRevision: restoreRevision,
+	})
 	if err != nil {
 		return fail(err)
 	}
-	owned = append(owned, removedModules...)
 	publishedPaths = append(publishedPaths, removedModules...)
-	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, owned, branchRevision, replacesRevision); err != nil {
+	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, owned, claim.owns(pathRoot), branchRevision, replacesRevision); err != nil {
 		return fail(err)
 	}
 	startRevision := baseRevision
@@ -256,7 +257,7 @@ func preparePublish(
 		return fail(err)
 	}
 	staleConsumers := describeStaleConsumers(staleOnBase)
-	allowedRemovals, undeclaredRemovals, err := holdCellToBase(ctx, cell, env, repo, baseBranch, baseRevision, request.AllowCellRemovals, declared)
+	allowedRemovals, undeclaredRemovals, err := holdCellToBase(cell, env, baseBranch, baseCell, request.AllowCellRemovals, claim)
 	if err != nil {
 		return fail(err)
 	}
@@ -574,14 +575,14 @@ func refuseSharedDeliveryPath(workspace *resources.Workspace, environment string
 // tip a publish continues, or the stale tip it replaces — to the module's own
 // path and its cell: anything else on it is someone else's work, which this
 // publish must neither carry nor overwrite. An empty revision is no branch.
-func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, promotionBranch string, published []string, branchRevisions ...string) error {
+func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, promotionBranch string, published []string, alsoOwns func(string) bool, branchRevisions ...string) error {
 	owned := func(changed string) bool {
 		for _, path := range published {
 			if changed == path || strings.HasPrefix(changed, path+"/") {
 				return true
 			}
 		}
-		return false
+		return alsoOwns != nil && alsoOwns(changed)
 	}
 	for _, branchRevision := range branchRevisions {
 		if branchRevision == "" {

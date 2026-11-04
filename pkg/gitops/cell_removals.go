@@ -24,6 +24,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
+	"github.com/codefly-dev/core/resources"
 )
 
 // cellRemoval is one thing the base cell file admits that the next one does
@@ -94,14 +95,147 @@ func deliveryCellPath(gitopsPath, environment string) string {
 	return filepath.ToSlash(filepath.Join(gitopsPath, cellsDir, environment, cellfile.FileName))
 }
 
+// compositionClaim is what a publication may remove from the cell and the
+// delivery on the composition's word alone: the modules the composition no
+// longer declares — provided this checkout's composition has moved FORWARD
+// from the one that rendered the delivery base's cell file (advanced). A
+// checkout that never had a module and one that dropped it derive the same
+// cell file, and only the history tells them apart: a checkout that contains
+// the commit the base's file came from has seen the composition that named
+// the module, so its absence is a removal; one that does not is stale, and
+// its publication keeps needing --allow-cell-removal, as every withdrawal
+// nobody stated does.
+type compositionClaim struct {
+	// module is the one being published: never a removal of its own.
+	module string
+	// declared is the composition's module set (composedModules).
+	declared map[string]bool
+	// advanced is whether the checkout descends from revision; revision is the
+	// commit it had to contain, empty when the base names none.
+	advanced bool
+	revision string
+}
+
+// newCompositionClaim judges the checkout against the delivery base: the base
+// revision itself when the workspace repository holds that commit (the
+// workspace IS the delivery repository, and the file's render was committed
+// there), or else the workspace revision the base's cell file says it was
+// rendered from (cellSource). The base commit is preferred because it is
+// exact: the source revision is the render's parent, and a `modules:` edit
+// may ride in the render's own commit. A base with no cell file, or one
+// naming no source, leaves nothing to descend from, and the claim is not
+// advanced.
+func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, module, baseRevision string, base *cellfile.File) *compositionClaim {
+	claim := &compositionClaim{module: module, declared: composedModules(workspace)}
+	if base == nil {
+		return claim
+	}
+	dir := workspace.Dir()
+	head, err := gitCommand(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return claim
+	}
+	switch {
+	case gitHasCommit(ctx, dir, baseRevision):
+		claim.revision = baseRevision
+	case base.Source != nil && base.Source.Revision != "":
+		claim.revision = base.Source.Revision
+	default:
+		return claim
+	}
+	claim.advanced = gitIsAncestor(ctx, dir, claim.revision, head)
+	return claim
+}
+
+// gitHasCommit reports whether the repository holds the commit.
+func gitHasCommit(ctx context.Context, repo, revision string) bool {
+	_, err := gitCommand(ctx, repo, "cat-file", "-e", revision+"^{commit}")
+	return err == nil
+}
+
+// undeclared reports a module the composition does not declare, other than
+// the one being published.
+func (claim *compositionClaim) undeclared(module string) bool {
+	return module != claim.module && !claim.declared[module]
+}
+
+// explains reports a removal the composition accounts for: the module is no
+// longer declared, by a checkout that has seen it declared.
+func (claim *compositionClaim) explains(module string) bool {
+	return claim.advanced && claim.undeclared(module)
+}
+
+// owns answers, for the promotion-branch guard, whether a delivery-repository
+// path lies in the delivered tree of a module the composition no longer
+// declares. A promotion of this module owns those trees whether or not the
+// clone still holds them: the branch it continues, or the stale tip it
+// replaces, carries this module's own earlier removal of such a tree, and the
+// base may since have taken it, so neither tree says what the branch removed.
+func (claim *compositionClaim) owns(gitopsPath string) func(path string) bool {
+	prefix := deliveryModulesPath(gitopsPath) + "/"
+	return func(path string) bool {
+		rest, under := strings.CutPrefix(path, prefix)
+		if !under {
+			return false
+		}
+		name, _, _ := strings.Cut(rest, "/")
+		return name != "" && claim.undeclared(name)
+	}
+}
+
+// compositionBase is where a publication's composition claim is judged: the
+// promotion clone, the delivery base it was cut from, and the publication.
+type compositionBase struct {
+	repo, gitopsPath, branch, revision string
+	module, restoreRevision            string
+}
+
+// judgeCompositionRemovals is the one step a publication takes on the
+// composition's word: it reads the base's cell file, judges the checkout's
+// claim against it and removes from the clone the delivered trees that claim
+// explains, answering all three for the hold, the branch guard and the plan.
+func judgeCompositionRemovals(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, cell *publicationCell, base *compositionBase) (*cellfile.File, *compositionClaim, []string, error) {
+	baseCell, err := baseCellFile(ctx, cell, base.repo, base.branch, base.revision)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	claim := newCompositionClaim(ctx, workspace, base.module, base.revision, baseCell)
+	removed, err := removeUndeclaredDeliveries(base.repo, base.gitopsPath, env, base.restoreRevision, claim)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return baseCell, claim, removed, nil
+}
+
+// baseCellFile reads the cell file the delivery base revision carries at the
+// path the publication delivers to, nil when the base has none. A publication
+// carrying no cell file is held to nothing, and reads none.
+func baseCellFile(ctx context.Context, cell *publicationCell, repo, baseBranch, baseRevision string) (*cellfile.File, error) {
+	if cell == nil {
+		return nil, nil
+	}
+	baseData, err := gitCommandBytes(ctx, repo, "show", baseRevision+":"+cell.delivered)
+	if err != nil {
+		if gitSaysAbsent(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s's cell file %s: %w", baseBranch, cell.delivered, err)
+	}
+	base, err := cellfile.Parse(baseData)
+	if err != nil {
+		return nil, fmt.Errorf("%s's cell file %s cannot be read: %w", baseBranch, cell.delivered, err)
+	}
+	return base, nil
+}
+
 // holdCellToBase refuses the publication when the cell file it carries for a
-// hosted environment removes anything the delivery base revision's file
-// carries, unless the removal is explained: it concerns a module the
-// composition no longer declares (declared is the composition's module set),
-// or a module allowed names. It returns the removals allowed by name, and the
-// removals the composition explains, for the plan to show. A publication
-// carrying no cell file (publicationCellFile), or a base with none, has
-// nothing to hold.
+// hosted environment removes anything the delivery base revision's file (base)
+// carries, unless the removal is explained: the composition no longer
+// declares the module it concerns and the checkout has seen it declared
+// (compositionClaim), or a module allowed names. It returns the removals
+// allowed by name, and the removals the composition explains, for the plan to
+// show. A publication carrying no cell file, or a base with none, has nothing
+// to hold.
 //
 // A removal the composition explains needs no naming: the flag confirms a
 // removal nothing else accounts for — a module still composed whose render is
@@ -113,26 +247,15 @@ func deliveryCellPath(gitopsPath, environment string) string {
 // It is the cell file the publication CARRIES that is held — the same bytes,
 // read once — so the file delivered and the file held can never be two
 // different files, and the hold runs before anything is carried.
-func holdCellToBase(ctx context.Context, cell *publicationCell, env *environments.Environment, repo, baseBranch, baseRevision string, allowed []string, declared map[string]bool) (named, undeclared []string, err error) {
-	if cell == nil {
+func holdCellToBase(cell *publicationCell, env *environments.Environment, baseBranch string, base *cellfile.File, allowed []string, claim *compositionClaim) (named, undeclared []string, err error) {
+	if cell == nil || base == nil {
 		return nil, nil, nil
 	}
 	path, next := cell.source, cell.file
-	baseData, err := gitCommandBytes(ctx, repo, "show", baseRevision+":"+cell.delivered)
-	if err != nil {
-		if gitSaysAbsent(err) {
-			return nil, nil, nil
-		}
-		return nil, nil, fmt.Errorf("read %s's cell file %s: %w", baseBranch, cell.delivered, err)
-	}
-	base, err := cellfile.Parse(baseData)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s's cell file %s cannot be read: %w", baseBranch, cell.delivered, err)
-	}
-	var refused []string
+	var refused, stale []string
 	unnamed := map[string]bool{}
 	for _, removal := range cellRemovals(base, next) {
-		if gone := slices.IndexFunc(removal.modules, func(module string) bool { return !declared[module] }); gone >= 0 {
+		if gone := slices.IndexFunc(removal.modules, claim.explains); gone >= 0 {
 			undeclared = append(undeclared, fmt.Sprintf("%s: the composition no longer declares module %s", removal.what, removal.modules[gone]))
 			continue
 		}
@@ -142,28 +265,39 @@ func holdCellToBase(ctx context.Context, cell *publicationCell, env *environment
 		}
 		refused = append(refused, removal.what)
 		unnamed[removal.modules[len(removal.modules)-1]] = true
-	}
-	if len(refused) > 0 {
-		modules := make([]string, 0, len(unnamed))
-		for module := range unnamed {
-			modules = append(modules, module)
+		if gone := slices.IndexFunc(removal.modules, claim.undeclared); gone >= 0 && !slices.Contains(stale, removal.modules[gone]) {
+			stale = append(stale, removal.modules[gone])
 		}
-		slices.Sort(modules)
-		return nil, nil, fmt.Errorf("environment %s's cell file %s removes from the cell what %s's admits, and says nothing of it: %s. Publishing it would withdraw those from the cell's admission set. If a module's render is missing from this checkout, render it (`codefly deploy gitops render --all --env %s`); if the removal is intended — a dependency dropped, a service withdrawn — name each module it concerns with --allow-cell-removal (%s)",
-			env.Name, path, baseBranch, strings.Join(refused, "; "), env.Name, strings.Join(modules, ", "))
 	}
-	return named, undeclared, nil
+	if len(refused) == 0 {
+		return named, undeclared, nil
+	}
+	modules := make([]string, 0, len(unnamed))
+	for module := range unnamed {
+		modules = append(modules, module)
+	}
+	slices.Sort(modules)
+	message := fmt.Sprintf("environment %s's cell file %s removes from the cell what %s's admits, and says nothing of it: %s. Publishing it would withdraw those from the cell's admission set. If a module's render is missing from this checkout, render it (`codefly deploy gitops render --all --env %s`); if the removal is intended — a dependency dropped, a service withdrawn — name each module it concerns with --allow-cell-removal (%s)",
+		env.Name, path, baseBranch, strings.Join(refused, "; "), env.Name, strings.Join(modules, ", "))
+	if len(stale) > 0 {
+		slices.Sort(stale)
+		if claim.revision == "" {
+			message += fmt.Sprintf(". This checkout's composition does not declare %s, but %s's cell file names no revision it was rendered from, so whether the composition removed %s or never had it cannot be told from here", strings.Join(stale, ", "), baseBranch, strings.Join(stale, ", "))
+		} else {
+			message += fmt.Sprintf(". This checkout's composition does not declare %s, but the checkout does not contain %s, which %s's cell file was rendered from, so the removal may be a stale checkout's rather than the composition's: bring the checkout up to date and render again, or name it", strings.Join(stale, ", "), claim.revision, baseBranch)
+		}
+	}
+	return nil, nil, errors.New(message)
 }
 
 // undeclaredDeliveries names the module trees the delivery repository holds
 // under the environment's modules path, as the promotion clone stands, whose
-// module the composition no longer declares: delivered once, and left behind
-// when the module left `modules:`. A tree is a delivery when it carries a
-// render record (InventoryFilename); anything else under that path is not this
-// package's to judge. The module being published is never among them: a
-// publish of a module the composition does not compose is refused long before
-// this. Paths are relative to the repository, slash-separated.
-func undeclaredDeliveries(repo, gitopsPath, module string, declared map[string]bool) ([]string, error) {
+// removal the composition explains (compositionClaim): delivered once, and
+// left behind when the module left `modules:`. A tree is a delivery when it
+// carries a render record (InventoryFilename); anything else under that path
+// is not this package's to judge. Paths are relative to the repository,
+// slash-separated.
+func undeclaredDeliveries(repo, gitopsPath string, claim *compositionClaim) ([]string, error) {
 	modulesPath := deliveryModulesPath(gitopsPath)
 	modulesDir, err := confinedJoin(repo, modulesPath)
 	if err != nil {
@@ -178,7 +312,7 @@ func undeclaredDeliveries(repo, gitopsPath, module string, declared map[string]b
 	}
 	var stale []string
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == module || declared[entry.Name()] {
+		if !entry.IsDir() || !claim.explains(entry.Name()) {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(modulesDir, entry.Name(), InventoryFilename)); err != nil {
@@ -191,18 +325,18 @@ func undeclaredDeliveries(repo, gitopsPath, module string, declared map[string]b
 
 // removeUndeclaredDeliveries deletes from the promotion clone the delivered
 // trees of modules the composition no longer declares (undeclaredDeliveries),
-// and answers their paths for the publication to own, stage and show. A
-// forward publication to a hosted environment carries the composition's claim
-// whole — the cell file it carries no longer admits those modules — so it is
-// the one that removes them; a rollback restores one module's tree and claims
-// nothing about the rest, and an environment with no host has no cell whose
-// claim the trees contradict. Nothing is staged here: the removal reaches the
-// promotion only with everything else the publication writes, after the hold.
-func removeUndeclaredDeliveries(repo, gitopsPath, module string, env *environments.Environment, restoreRevision string, declared map[string]bool) ([]string, error) {
+// and answers their paths for the publication to stage and show. A forward
+// publication to a hosted environment carries the composition's claim whole —
+// the cell file it carries no longer admits those modules — so it is the one
+// that removes them; a rollback restores one module's tree and claims nothing
+// about the rest, and an environment with no host has no cell whose claim the
+// trees contradict. Nothing is staged here: the removal reaches the promotion
+// only with everything else the publication writes, after the hold.
+func removeUndeclaredDeliveries(repo, gitopsPath string, env *environments.Environment, restoreRevision string, claim *compositionClaim) ([]string, error) {
 	if env == nil || env.Host == nil || restoreRevision != "" {
 		return nil, nil
 	}
-	deliveries, err := undeclaredDeliveries(repo, gitopsPath, module, declared)
+	deliveries, err := undeclaredDeliveries(repo, gitopsPath, claim)
 	if err != nil {
 		return nil, err
 	}

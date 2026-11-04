@@ -38,6 +38,22 @@ func publicationCellOf(t *testing.T, workspace *resources.Workspace, env *enviro
 	return cell
 }
 
+// holdAgainst holds the publication's cell file to the base revision's, as a
+// publication does: the base file read from the delivery repository, the
+// claim given.
+func holdAgainst(t *testing.T, ctx context.Context, cell *publicationCell, env *environments.Environment, repo, baseRevision string, allowed []string, claim *compositionClaim) (named, explained []string, err error) {
+	t.Helper()
+	base, err := baseCellFile(ctx, cell, repo, "main", baseRevision)
+	require.NoError(t, err)
+	return holdCellToBase(cell, env, "main", base, allowed, claim)
+}
+
+// advancedClaim is the claim of a checkout that has seen the base's
+// composition: every module it does not declare was removed.
+func advancedClaim(workspace *resources.Workspace) *compositionClaim {
+	return &compositionClaim{declared: composedModules(workspace), advanced: true, revision: strings.Repeat("b", 40)}
+}
+
 // A publication holds the workspace's cell file to the one its delivery base
 // branch carries: a file that drops a module's namespace (and with it that
 // module's consumer edges on another's endpoints) is refused, naming each
@@ -56,8 +72,8 @@ func TestPublishRefusesACellFileThatRemovesWhatTheBaseAdmits(t *testing.T) {
 	require.NoError(t, err)
 	repo, base := cellBase(t, complete)
 
-	declared := composedModules(workspace)
-	removals, explained, err := holdCellToBase(ctx, publicationCellOf(t, workspace, env), env, repo, "main", base, nil, declared)
+	claim := advancedClaim(workspace)
+	removals, explained, err := holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, claim)
 	require.NoError(t, err, "a full render removes nothing")
 	require.Empty(t, removals)
 	require.Empty(t, explained)
@@ -76,17 +92,17 @@ func TestPublishRefusesACellFileThatRemovesWhatTheBaseAdmits(t *testing.T) {
 	require.NoError(t, os.WriteFile(full.Path, dropped, 0o600))
 
 	dropping := publicationCellOf(t, workspace, env)
-	_, _, err = holdCellToBase(ctx, dropping, env, repo, "main", base, nil, declared)
+	_, _, err = holdAgainst(t, ctx, dropping, env, repo, base, nil, claim)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "namespace acme-billing (module billing, 2 workload(s))")
 	require.Contains(t, err.Error(), "consumer billing/ledger of acme-shop/api/grpc")
 	require.Contains(t, err.Error(), "--allow-cell-removal (billing)")
 
-	_, _, err = holdCellToBase(ctx, dropping, env, repo, "main", base, []string{"shop"}, declared)
+	_, _, err = holdAgainst(t, ctx, dropping, env, repo, base, []string{"shop"}, claim)
 	require.Error(t, err, "naming the endpoint's module covers its consumer edge, but not billing's namespace")
 	require.NotContains(t, err.Error(), "consumer billing/ledger")
 	require.Contains(t, err.Error(), "namespace acme-billing")
-	removals, explained, err = holdCellToBase(ctx, dropping, env, repo, "main", base, []string{"billing"}, declared)
+	removals, explained, err = holdAgainst(t, ctx, dropping, env, repo, base, []string{"billing"}, claim)
 	require.NoError(t, err)
 	require.Equal(t, []string{"namespace acme-billing (module billing, 2 workload(s))", "consumer billing/ledger of acme-shop/api/grpc"}, removals)
 	require.Empty(t, explained, "billing is still composed: its removal is the flag's to confirm")
@@ -95,7 +111,7 @@ func TestPublishRefusesACellFileThatRemovesWhatTheBaseAdmits(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(empty, filepath.FromSlash(deliveryCellPath("", "staging")))))
 	runGit(t, empty, "commit", "-am", "no cell file")
 	emptyBase := runGit(t, empty, "rev-parse", "HEAD")
-	removals, _, err = holdCellToBase(ctx, dropping, env, empty, "main", emptyBase, nil, declared)
+	removals, _, err = holdAgainst(t, ctx, dropping, env, empty, emptyBase, nil, claim)
 	require.NoError(t, err, "a base with no cell file has nothing to hold the workspace's to")
 	require.Empty(t, removals)
 }
@@ -132,13 +148,75 @@ func TestARemovalTheCompositionExplainsNeedsNoNaming(t *testing.T) {
 	require.Equal(t, []string{"deployments/modules/legacy"}, rendered.Removed)
 	require.NoDirExists(t, moduleRenderDestination(workspace, "legacy"))
 
-	named, explained, err := holdCellToBase(ctx, publicationCellOf(t, workspace, env), env, repo, "main", base, nil, composedModules(workspace))
+	named, explained, err := holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, advancedClaim(workspace))
 	require.NoError(t, err, "a removal the composition explains needs no --allow-cell-removal")
 	require.Empty(t, named)
 	require.Equal(t, []string{
 		"namespace acme-legacy (module legacy, 2 workload(s)): the composition no longer declares module legacy",
 		"consumer legacy/worker of acme-shop/api/grpc: the composition no longer declares module legacy",
 	}, explained)
+
+	// The same cell file from a checkout that has not seen the base's
+	// composition derives the same absence, and the composition explains
+	// nothing: the removal is the flag's to confirm, and the refusal says why.
+	stale := &compositionClaim{declared: composedModules(workspace), revision: strings.Repeat("c", 40)}
+	_, _, err = holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, stale)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--allow-cell-removal (legacy)")
+	require.Contains(t, err.Error(), "does not contain "+strings.Repeat("c", 40))
+	require.Contains(t, err.Error(), "may be a stale checkout's")
+	_, _, err = holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, &compositionClaim{declared: composedModules(workspace)})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "names no revision it was rendered from")
+	named, explained, err = holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, []string{"legacy"}, stale)
+	require.NoError(t, err, "naming the module confirms the removal as before")
+	require.Len(t, named, 2)
+	require.Empty(t, explained)
+}
+
+// The composition's claim is advanced only from a checkout that has seen the
+// composition the base's cell file was rendered from. The workspace
+// repository holding the delivery base commit is the exact test (the file's
+// render was committed there); otherwise the revision the base file names is
+// what the checkout must descend from; a base naming none advances nothing.
+func TestTheCompositionClaimIsAdvancedOnlyFromACheckoutThatSawTheBase(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeCellWorkspace(t)
+	dir := workspace.Dir()
+	runGit(t, dir, "init", "--initial-branch=main")
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-q", "-m", "the composition that named legacy")
+	first := runGit(t, dir, "rev-parse", "HEAD")
+	elsewhere := strings.Repeat("d", 40)
+
+	base := &cellfile.File{Source: &cellfile.Source{Revision: first}}
+	claim := newCompositionClaim(ctx, workspace, "shop", elsewhere, base)
+	require.True(t, claim.advanced, "a checkout at the revision the base was rendered from has seen its composition")
+	require.Equal(t, first, claim.revision)
+	require.True(t, claim.explains("legacy"))
+	require.False(t, claim.explains("shop"), "a composed module is never explained away")
+	require.False(t, claim.explains("billing"))
+	require.False(t, newCompositionClaim(ctx, workspace, "shop", elsewhere, nil).advanced, "a base with no cell file advances nothing")
+	require.False(t, newCompositionClaim(ctx, workspace, "shop", elsewhere, &cellfile.File{}).advanced, "a base naming no source advances nothing")
+
+	// The workspace is the delivery repository: the base commit is the one
+	// that committed the render, a child of the revision the file names. A
+	// checkout at that revision has NOT seen it.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rendered.txt"), []byte("the render, and the modules: edit that rode with it\n"), 0o644))
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-q", "-m", "render")
+	second := runGit(t, dir, "rev-parse", "HEAD")
+	runGit(t, dir, "checkout", "-q", "--detach", first)
+	claim = newCompositionClaim(ctx, workspace, "shop", second, base)
+	require.False(t, claim.advanced, "the checkout does not contain the delivery base commit the workspace repository holds")
+	require.Equal(t, second, claim.revision, "the base commit is judged, not the parent the file names")
+	runGit(t, dir, "checkout", "-q", "main")
+	require.True(t, newCompositionClaim(ctx, workspace, "shop", second, base).advanced)
+
+	// A checkout whose history does not contain the named revision at all.
+	runGit(t, dir, "checkout", "-q", "--orphan", "stale")
+	runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "a branch that never saw it")
+	require.False(t, newCompositionClaim(ctx, workspace, "shop", elsewhere, base).advanced)
 }
 
 // composeLegacyModule adds a third module, legacy, to the cell fixture: one

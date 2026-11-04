@@ -46,23 +46,68 @@ func seedDelivered(t *testing.T, remote, message string, files map[string][]byte
 	gitRun(t, work, "push", "origin", "main")
 }
 
+// committedWorkspace makes the fixture workspace a git checkout with its
+// composition committed, so the cell file it renders names the revision it
+// was rendered from and a later publication can be judged against it.
+func committedWorkspace(t *testing.T, workspace *resources.Workspace) string {
+	t.Helper()
+	dir := workspace.Dir()
+	if exec.Command("git", "-C", dir, "rev-parse", "HEAD").Run() != nil {
+		gitRun(t, dir, "init", "-q", "--initial-branch=main")
+		gitRun(t, dir, "config", "user.name", "Codefly Test")
+		gitRun(t, dir, "config", "user.email", "codefly@example.com")
+		gitRun(t, dir, "config", "commit.gpgsign", "false")
+		gitRun(t, dir, "add", "-A")
+		gitRun(t, dir, "commit", "-q", "-m", "the composition")
+	}
+	return gitOutput(t, dir, "rev-parse", "HEAD")
+}
+
+// renderedFrom is the cell file data as the base carries it after a render
+// from revision: the base's provenance, stated as the render that produced it
+// states it (cellSource), whatever this fixture's own render recorded.
+func renderedFrom(t *testing.T, data []byte, revision string) []byte {
+	t.Helper()
+	file, err := cellfile.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Source = &cellfile.Source{Repo: "https://example.test/delivery.git", Revision: revision, Branch: "main"}
+	encoded, err := file.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// legacyDelivery is a delivered tree of a module the fixture's composition
+// does not declare, plus a directory under the modules path that is not a
+// delivery, as files to seed on the delivery base.
+func legacyDelivery() (string, map[string][]byte) {
+	legacy := deliveryModulePath("environments", "legacy")
+	return legacy, map[string][]byte{
+		legacy + "/" + InventoryFilename:                         []byte(`{"module":"legacy","environment":"production"}`),
+		legacy + "/services/worker/kustomization.yaml":           []byte("resources: []\n"),
+		deliveryModulesPath("environments") + "/notes/README.md": []byte("not a delivery\n"),
+	}
+}
+
 // TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares: a module
 // removed from `modules:` left its delivered tree in the delivery repository,
 // and with it the ApplicationSet that kept stamping Applications whose every
 // pod the cell — which no longer named the module — refused. A forward
-// publication to a hosted environment now removes such a tree with the rest
-// of what it writes, shows it in the plan, and leaves alone a directory under
-// the modules path that is not a delivery (no render record).
+// publication to a hosted environment, from a checkout that has seen the
+// base's composition, now removes such a tree with the rest of what it
+// writes, shows it in the plan, and leaves alone a directory under the
+// modules path that is not a delivery (no render record).
 func TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
+	head := committedWorkspace(t, workspace)
 	env := selectedEnvironment(t, workspace, "production")
-	renderedCell(t, ctx, workspace, env)
-	legacy := deliveryModulePath("environments", "legacy")
-	seedDelivered(t, remote, "a module since removed from the composition", map[string][]byte{
-		legacy + "/" + InventoryFilename:                         []byte(`{"module":"legacy","environment":"production"}`),
-		legacy + "/services/worker/kustomization.yaml":           []byte("resources: []\n"),
-		deliveryModulesPath("environments") + "/notes/README.md": []byte("not a delivery\n"),
-	})
+	_, data := renderedCell(t, ctx, workspace, env)
+	legacy, files := legacyDelivery()
+	files[deliveryCellPath("environments", "production")] = renderedFrom(t, data, head)
+	seedDelivered(t, remote, "a module since removed from the composition", files)
 
 	request := PublishRequest{
 		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
@@ -93,6 +138,90 @@ func TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares(t *testing
 	}
 	if exec.Command("git", "--git-dir", remote, "cat-file", "-e", result.Commit+":"+deliveryModulesPath("environments")+"/notes/README.md").Run() != nil {
 		t.Fatal("the published commit removed a directory that is not a delivery")
+	}
+}
+
+// TestAPromotionOwnsTheRemovalItsOwnBranchCarries: the branch guard holds a
+// promotion branch to what this module's publication writes, and a removed
+// tree is no longer in the clone to be listed — the branch's earlier commit
+// deleted it — so a second publish on the module's own branch (its promotion
+// still open, or a retry) must own the removal by rule rather than by what it
+// finds on disk, or it refuses its own earlier work as someone else's.
+func TestAPromotionOwnsTheRemovalItsOwnBranchCarries(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	head := committedWorkspace(t, workspace)
+	env := selectedEnvironment(t, workspace, "production")
+	_, data := renderedCell(t, ctx, workspace, env)
+	legacy, files := legacyDelivery()
+	files[deliveryCellPath("environments", "production")] = renderedFrom(t, data, head)
+	seedDelivered(t, remote, "a module since removed from the composition", files)
+
+	// The module's earlier promotion: the cell file carried, legacy removed.
+	work := t.TempDir()
+	gitRun(t, "", "clone", "-q", remote, work)
+	gitRun(t, work, "config", "user.name", "Codefly Test")
+	gitRun(t, work, "config", "user.email", "codefly@example.com")
+	gitRun(t, work, "config", "commit.gpgsign", "false")
+	gitRun(t, work, "checkout", "-q", "-b", "codefly/promote-payments-production")
+	gitRun(t, work, "rm", "-r", "-q", legacy)
+	gitRun(t, work, "commit", "-q", "-m", "an earlier promotion of payments, removing legacy")
+	gitRun(t, work, "push", "-q", "origin", "codefly/promote-payments-production")
+
+	plan, err := PlanPublish(ctx, workspace, &PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	})
+	if err != nil {
+		t.Fatalf("a promotion branch carrying the module's own removal was refused: %v", err)
+	}
+	if len(plan.RemovedModules) != 0 {
+		t.Fatalf("the continued branch already removed %s; the plan removes %v again", legacy, plan.RemovedModules)
+	}
+}
+
+// TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule: a checkout that never
+// had a module and one that dropped it derive the same cell file. Only a
+// checkout that has seen the composition the base's file was rendered from
+// may remove on the composition's word; from any other the removal is still
+// the flag's to confirm, and even named, the delivered tree is not pruned.
+func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	committedWorkspace(t, workspace)
+	env := selectedEnvironment(t, workspace, "production")
+	_, data := renderedCell(t, ctx, workspace, env)
+	// The base's file: rendered from a composition this checkout never saw,
+	// which named a module legacy this checkout does not declare.
+	file, err := cellfile.Parse(renderedFrom(t, data, strings.Repeat("e", 40)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
+	base, err := file.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, files := legacyDelivery()
+	files[deliveryCellPath("environments", "production")] = base
+	seedDelivered(t, remote, "a composition this checkout never saw", files)
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "--allow-cell-removal (legacy)") || !strings.Contains(err.Error(), "may be a stale checkout's") {
+		t.Fatalf("a stale checkout withdrew a module on the composition's word: %v", err)
+	}
+	request.AllowCellRemovals = []string{"legacy"}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.RemovedModules) != 0 || slices.ContainsFunc(plan.Changed, func(path string) bool { return strings.HasPrefix(path, legacy) }) {
+		t.Fatalf("a removal the flag confirms pruned the delivered tree: %v %v", plan.RemovedModules, plan.Changed)
+	}
+	if len(plan.CellRemovals) != 1 || len(plan.UndeclaredCellRemovals) != 0 {
+		t.Fatalf("the plan reports %v named and %v explained; want one named", plan.CellRemovals, plan.UndeclaredCellRemovals)
 	}
 }
 
