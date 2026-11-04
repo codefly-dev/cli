@@ -1173,6 +1173,16 @@ and egress the environment's), so an entry carried over is a claim about a
 composition that may no longer exist, and no digest is invented for a module
 that was not rendered.
 
+The file is derived from the **composition**, not from whatever records the
+checkout holds. A module removed from `modules:` leaves its render record
+behind, and so does one that was never composed here; such a record is left
+out of the file and deleted by the render that derives it — nothing could
+render that module again — and the render says so, one line per record
+(`removed deployments/modules/<module>: the composition no longer declares
+it`). Every render that re-derives the cell file prunes this way, a single
+module's and `--all` alike, because that is where the claim about the cell is
+made; an environment with no `host:` has no cell file and nothing is pruned.
+
 **A publish carries the cell file.** A cell admits only the builds its cell
 file names, so a promotion that delivered a module's tree and left the file
 behind would deliver builds the cluster refuses — every refused workload
@@ -1211,9 +1221,39 @@ committed with the rendered trees, and a cell admits only what it names, so
 and the one the delivery base branch carries at
 `<gitops path>/cells/<environment>/cell.yaml`, and refuse when the workspace's
 removes a namespace, a workload, an endpoint or a consumer of an endpoint the
-base admits — naming each removal and the modules it concerns. A removal that
-is intended (a module the workspace no longer composes, a dependency dropped)
-is named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
+base admits — naming each removal and the modules it concerns. A removal the
+composition explains needs no naming: when the module it concerns is no
+longer in `modules:` (the namespace of a module removed from the composition,
+or its consumer edge on another module's endpoint), **and the checkout has
+seen the composition the base's file was rendered from**, the hold lets it
+through and the plan reports it (`undeclaredCellRemovals`), and the
+publication also removes that module's delivered tree from
+`<gitops path>/modules/` with everything else it writes (`removedModules`):
+the cell no longer admits anything of it, and the ApplicationSet that tree
+carries would keep stamping Applications whose every pod the cell refuses. A
+checkout that never had a module and one that dropped it derive the same cell
+file, so the history decides: when the workspace repository is the delivery
+repository (it holds the base commit, or the delivery holds the workspace
+revision the base's file names as its `source.revision`), the checkout must
+contain the delivery base commit itself — the file's source revision is the
+render's parent, and a `modules:` edit rides in the render's own commit, so an
+unfetched checkout at that parent has not seen it; when the two repositories
+are separate, the checkout must contain that source revision, and the
+workspace's own configuration **as committed at that revision** must have
+declared the module (a render may run on an uncommitted `modules:` edit, and
+a module of an imported workspace is another repository's history), or
+nothing in this history vouches the module was removed rather than never
+composed. A checkout that fails either test — a branch behind the base, an
+unfetched one, a base file naming no source, a composition never committed —
+is held as before, the refusal says what the history lacked, and naming the
+module confirms the removal without pruning the tree. A promotion
+of a module owns, on its own branch, the removal of such trees, so continuing
+or retrying the publication that removed one is not refused as someone else's
+change. A rollback removes none, and a directory under the modules path with
+no render record is not a delivery and is left alone. Any other removal — a
+module still composed whose render is missing from the checkout, a dependency
+dropped, a service withdrawn — is
+named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
 covered by naming either the endpoint's module or the consumer's, and the plan
 lists every removal it lets through. A base with no cell file has nothing to
 hold the workspace's to. The file held is the file carried — the same bytes,

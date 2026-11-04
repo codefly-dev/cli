@@ -52,6 +52,10 @@ type CellResult struct {
 	// Skipped names module trees rendered for another environment, which
 	// describe another cell.
 	Skipped []string
+	// Removed are the render records of modules the composition no longer
+	// declares, deleted by this render (pruneUndeclaredRecords), as paths
+	// relative to the workspace.
+	Removed []string
 	// Source reports whether the file names its repository, branch and base
 	// revision. It does not when the environment declares no gitops
 	// repository or the workspace is not a git checkout.
@@ -90,14 +94,76 @@ func CellPath(workspace *resources.Workspace, env *environments.Environment) (st
 // composition that produced them, and writes it. It runs after a module
 // render, so the file always describes the trees as they stand.
 func RenderCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (CellResult, error) {
+	removed, err := pruneUndeclaredRecords(workspace)
+	if err != nil {
+		return CellResult{}, err
+	}
 	file, result, err := deriveCell(ctx, workspace, env)
 	if err != nil {
 		return CellResult{}, err
 	}
-	if err := writeCell(&file, result.Path); err != nil {
+	if err = writeCell(&file, result.Path); err != nil {
 		return CellResult{}, err
 	}
+	result.Removed = removed
 	return result, nil
+}
+
+// pruneUndeclaredRecords deletes, before the cell file is derived, the render
+// records of modules the composition no longer declares, for any environment.
+// Nothing could render such a module again (a render refuses a module the
+// workspace does not compose), so its record describes a composition that no
+// longer exists; left in place it was read back into every cell file derived
+// here, and a module removed from `modules:` kept its namespace, workloads and
+// consumer edges in the cell. The derivation's own hold on such a tree
+// (refuseUncomposedRender) stays what it is: a render satisfies it by removing
+// the tree, which is what that refusal asks for, and answers the paths it
+// removed, relative to the workspace, for the render to print. A record that
+// cannot be read is left for the derivation to name.
+func pruneUndeclaredRecords(workspace *resources.Workspace) ([]string, error) {
+	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
+	entries, err := os.ReadDir(modulesDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list rendered modules: %w", err)
+	}
+	declared := composedModules(workspace)
+	var removed []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		tree := filepath.Join(modulesDir, entry.Name())
+		inventory, loadErr := LoadInventory(tree)
+		if loadErr != nil || declared[inventory.Module] {
+			continue
+		}
+		if err = os.RemoveAll(tree); err != nil {
+			return nil, fmt.Errorf("remove the render record of module %s, which the composition no longer declares: %w", inventory.Module, err)
+		}
+		relative, relErr := filepath.Rel(workspace.Dir(), tree)
+		if relErr != nil {
+			relative = tree
+		}
+		removed = append(removed, filepath.ToSlash(relative))
+	}
+	sort.Strings(removed)
+	return removed, nil
+}
+
+// composedModules names every module the composition declares, in this
+// workspace or one it imports: the set a cell file describes and the set a
+// removal from it is judged against.
+func composedModules(workspace *resources.Workspace) map[string]bool {
+	declared := make(map[string]bool, len(workspace.Modules))
+	for _, reference := range workspace.Modules {
+		if reference != nil {
+			declared[reference.Name] = true
+		}
+	}
+	return declared
 }
 
 // deriveCell is RenderCell without the write: the cell file the rendered
@@ -156,7 +222,7 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
 		}
-		if err := refuseUncomposedRender(workspace, env, tree, &inventory); err != nil {
+		if err = refuseUncomposedRender(workspace, env, tree, &inventory); err != nil {
 			return cellfile.File{}, CellResult{}, err
 		}
 		// A tree rendered before the environment excluded one of its services

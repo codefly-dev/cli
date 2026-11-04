@@ -479,7 +479,9 @@ type PublishRequest struct {
 	// AllowCellRemovals names the modules whose removal from the hosted
 	// environment's cell file this publish intends: a namespace, workload,
 	// endpoint or consumer the delivery base branch's cell file carries and
-	// the workspace's does not. Any other removal refuses the publish.
+	// the workspace's does not. A removal of a module the composition no
+	// longer declares needs no naming; any other unnamed removal refuses the
+	// publish.
 	AllowCellRemovals []string `json:"allowCellRemovals,omitempty"`
 }
 
@@ -518,6 +520,14 @@ type PublishPlan struct {
 	// CellRemovals are the removals from the base branch's cell file the
 	// request named (AllowCellRemovals), for the reviewer to see.
 	CellRemovals []string `json:"cellRemovals,omitempty"`
+	// UndeclaredCellRemovals are the removals from the base branch's cell
+	// file the composition explains — their module is no longer declared —
+	// which no request needs to name.
+	UndeclaredCellRemovals []string `json:"undeclaredCellRemovals,omitempty"`
+	// RemovedModules are the delivered module trees this publication removes,
+	// relative to the delivery repository: modules the composition no longer
+	// declares, which the cell file it carries no longer admits.
+	RemovedModules []string `json:"removedModules,omitempty"`
 	// CellFile is the environment's cell file this publication carries into
 	// the delivery repository, at the path the cell's infrastructure reads it
 	// from. A cell admits only the builds that file names, so a promotion of
