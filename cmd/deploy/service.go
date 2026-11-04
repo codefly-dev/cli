@@ -42,7 +42,7 @@ var ServiceCmd = &cobra.Command{
 			if envErr != nil {
 				return envErr
 			}
-			result, resultErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, resultErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 				Workspace: workspace, Module: module, Service: service, Environment: env,
 				AppProject: appProject, StandAlone: standAlone, Sink: cli.NewOutputSink(),
 			})

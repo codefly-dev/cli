@@ -1230,6 +1230,17 @@ nothing; `--rebuild` builds every image regardless. A service that declares
 module identity runs as its own ServiceAccount, and a rendered Job without pod
 labels is labelled so the cell file can select it.
 
+The images of one render build several at a time, and each build's own
+output is captured rather than streamed (it is replayed if the build fails),
+so the render says on stdout what the phase is doing: one line when each
+image build starts and one when it finishes (`building 7/40 saas/accounts
+recipe=app`, `built 7/40 saas/accounts 42s digest=sha256:…`), the same for
+a push (`pushing 1/40 …`, `pushed 1/40 … 12s`), and once the phase is over how
+many images it kept because no input changed (`25 images unchanged, kept`).
+The index is given when a build actually starts, so the indices reached and
+the kept count add up to the total. The log lines each build writes are
+unchanged; these are for the person watching.
+
 `render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
 verdict for the target environment **before** they do any expensive work, and
 refuse with the `codefly doctor workspace` diagnostics and fix hints when it is

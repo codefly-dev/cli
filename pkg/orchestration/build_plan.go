@@ -466,6 +466,7 @@ func (b *Builder) buildRecipe(
 			wool.Field("image", reuse.entry.Image), wool.Field("digest", reuse.entry.Digest),
 			wool.Field("recipe", recipe.GetName()), wool.Field("identity", reuse.identity.Key))
 		b.adoptCachedImage(recipe, reuse.entry, captureDigest, resolveEvidence)
+		b.world.buildProgress().keptImage()
 		return nil
 	}
 	identity := reuse.identity
@@ -536,7 +537,10 @@ func (b *Builder) buildRecipe(
 	}
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
 		wool.Field("goprivate", private.GoPrivate), wool.Field("prefetched_contexts", len(private.Proxies)))
-	if err = b.runImageBuild(ctx, w, recipe, args); err != nil {
+	progress := b.world.buildProgress()
+	ordinal := progress.building(b.instance.Unique(), recipe.GetName())
+	took, err := b.runImageBuild(ctx, w, recipe, args)
+	if err != nil {
 		return err
 	}
 
@@ -544,6 +548,7 @@ func (b *Builder) buildRecipe(
 	if err != nil {
 		return err
 	}
+	progress.built(ordinal, b.instance.Unique(), took, pushedDigest)
 	loadedImageID, err := b.resolveLoadedImage(ctx, w, recipe, shouldPush, resolveEvidence, recordable)
 	if err != nil {
 		return err
@@ -555,7 +560,7 @@ func (b *Builder) buildRecipe(
 	return nil
 }
 
-// runImageBuild runs one recipe's buildx invocation and reports how long it
+// runImageBuild runs one recipe's buildx invocation and returns how long it
 // took, naming the service whichever way it ends.
 //
 // Where its progress goes depends on whether this build has the terminal to
@@ -566,7 +571,7 @@ func (b *Builder) buildRecipe(
 // build that succeeded is already described by the completion line below.
 func (b *Builder) runImageBuild(
 	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, args []string,
-) error {
+) (time.Duration, error) {
 	command := exec.CommandContext(ctx, "docker", args...)
 	var transcript *buildTranscript
 	if b.world.buildsConcurrently() {
@@ -585,7 +590,7 @@ func (b *Builder) runImageBuild(
 				fmt.Fprint(os.Stderr, report)
 			}
 		}
-		return w.Wrapf(err, "cannot build %s of %s", recipe.GetImage(), b.instance.Unique())
+		return 0, w.Wrapf(err, "cannot build %s of %s", recipe.GetImage(), b.instance.Unique())
 	}
 	took := time.Since(started)
 	w.Info("image build completed", wool.Field("image", recipe.GetImage()),
@@ -601,7 +606,7 @@ func (b *Builder) runImageBuild(
 	if err := b.world.buildDurations().record(ctx, b.instance.Unique(), took); err != nil {
 		w.Debug("cannot record how long this build took", wool.ErrField(err))
 	}
-	return nil
+	return took, nil
 }
 
 // selectImageBuilder decides which buildx builder this recipe's build runs on,

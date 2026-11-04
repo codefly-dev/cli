@@ -247,6 +247,9 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 				playbook.actions.send(ctx, plan.actions...)
 				continue
 			}
+			// A build phase run one service at a time is still a phase to
+			// the operator watching: its images are counted the same way.
+			endPhase := playbook.world.buildProgress().beginPhase(buildPhaseSize(group.actions))
 			for _, action := range group.actions {
 				if playbook.pause.Handle(ctx, action) {
 					w.Trace("discarding action", wool.Field("action", action))
@@ -296,12 +299,14 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 
 				if playbook.stopAfter(ctx, action) {
 					w.Trace("stopping", wool.Field("action", action))
+					endPhase()
 					return nil
 				}
 				w.Trace("done with action", wool.Field("action", action))
 
 			}
 			// Done looping on actions
+			endPhase()
 			playbook.actions.send(ctx, plan.actions...)
 		}
 	}
@@ -370,6 +375,9 @@ func (playbook *Playbook) workConcurrently(ctx context.Context, actions []Action
 	// each build knows (buildsConcurrently).
 	restore := playbook.world.withConcurrentBuilds(len(admitted))
 	defer restore()
+	// What the operator sees of the phase: one line per build starting and
+	// finishing, and once the phase is over, how many images it kept.
+	defer playbook.world.buildProgress().beginPhase(len(admitted))()
 
 	next := make([][]Action, len(admitted))
 	failures := make([]error, len(admitted))
@@ -426,6 +434,19 @@ func (playbook *Playbook) admit(ctx context.Context, actions []Action) []Action 
 		}
 	}
 	return admitted
+}
+
+// buildPhaseSize is how many image builds a group holds: the size of the build
+// phase it is, or 0 for a group of anything else, which opens no phase worth
+// reporting.
+func buildPhaseSize(actions []Action) int {
+	size := 0
+	for _, action := range actions {
+		if action.Type == BuilderBuild {
+			size++
+		}
+	}
+	return size
 }
 
 // recordConcurrentFailures attributes the group's failures in the group's order

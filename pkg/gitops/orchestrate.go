@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -24,9 +25,13 @@ import (
 type renderBuild struct {
 	standAlone      bool
 	validateCluster bool
-	rebuild         bool // withoutCell leaves the environment's cell file to the caller: a
+	rebuild         bool
+	// withoutCell leaves the environment's cell file to the caller: a
 	// whole-composition render derives it once, after every module.
 	withoutCell bool
+	// progress is the operator's stdout, where each build phase reports its
+	// image builds and pushes starting and finishing; nil reports nothing.
+	progress io.Writer
 }
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -798,6 +803,7 @@ func renderServiceFlow(
 	if sink != nil {
 		flow.WithOutputSink(sink)
 	}
+	flow.WithBuildProgress(build.progress)
 	flow.WithStandAlone(build.standAlone)
 	flow.WithClusterValidation(build.validateCluster)
 	flow.WithRebuild(build.rebuild)

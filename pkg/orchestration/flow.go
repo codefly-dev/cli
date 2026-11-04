@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/url"
@@ -443,6 +444,12 @@ type World struct {
 	// reaches a service through the same carrier a declared one does rather
 	// than through a raw process variable the service has no contract to read.
 	workspaceConfigurationValues map[string]map[string]string
+
+	// BuildProgress is where a build phase reports each image build and push
+	// starting and finishing, and the images it kept, for the operator
+	// watching the render (build_progress.go). Nil reports nothing, which is
+	// what every command but a render wants.
+	BuildProgress *BuildProgress
 
 	// OutputSink receives narration otherwise printed directly via pkg/cli.
 	// Always non-nil: NewFlow defaults it to a no-op sink.
@@ -1438,6 +1445,16 @@ func (flow *Flow) WithStateListener(l StateListener) *Flow {
 func (flow *Flow) WithOutputSink(sink OutputSink) *Flow {
 	if flow != nil && flow.world != nil && sink != nil {
 		flow.world.OutputSink = sink
+	}
+	return flow
+}
+
+// WithBuildProgress reports this flow's build phases — each image build and
+// push starting and finishing, and the images kept — to out, the operator's
+// stdout. A nil out leaves the flow silent, as every flow is by default.
+func (flow *Flow) WithBuildProgress(out io.Writer) *Flow {
+	if flow != nil && flow.world != nil {
+		flow.world.BuildProgress = NewBuildProgress(out)
 	}
 	return flow
 }

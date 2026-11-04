@@ -61,7 +61,7 @@ var ModuleCmd = &cobra.Command{
 		}
 		if renderOnly {
 			cli.Header(2, "render-only mode — manifests written to disk, no kubectl apply")
-			result, resultErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, resultErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 				Workspace: workspace, Module: module, Environment: env,
 				AppProject: appProject, Sink: cli.NewOutputSink(),
 			})

@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"io"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
@@ -38,6 +39,10 @@ type ProduceRequest struct {
 	// whole-composition render derives it once, after every module.
 	WithoutCell bool
 	Sink        orchestration.OutputSink
+	// Progress is the operator's stdout, where each build phase reports its
+	// image builds and pushes starting and finishing, and the images it kept.
+	// Nil reports nothing.
+	Progress io.Writer
 }
 
 // ManifestProducer renders a validated, transport-neutral manifest bundle.
@@ -48,7 +53,7 @@ type ProduceRequest struct {
 // lets the coordinator accept a bundle from any conforming plugin without
 // plugin-specific GitOps logic.
 type ManifestProducer interface {
-	Produce(ctx context.Context, request ProduceRequest) (RenderResult, error)
+	Produce(ctx context.Context, request *ProduceRequest) (RenderResult, error)
 }
 
 // RepositoryPublisher clones the promotion repository, inventories the reviewed
@@ -88,7 +93,7 @@ func NewCoordinator() *Coordinator {
 }
 
 // Render produces the manifest bundle for a module or single service.
-func (c *Coordinator) Render(ctx context.Context, request ProduceRequest) (RenderResult, error) {
+func (c *Coordinator) Render(ctx context.Context, request *ProduceRequest) (RenderResult, error) {
 	return c.Producer.Produce(ctx, request)
 }
 
@@ -120,8 +125,8 @@ func (c *Coordinator) Observe(ctx context.Context, request *ObserveRequest) (Obs
 
 type flowProducer struct{}
 
-func (flowProducer) Produce(ctx context.Context, request ProduceRequest) (RenderResult, error) {
-	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild, withoutCell: request.WithoutCell}
+func (flowProducer) Produce(ctx context.Context, request *ProduceRequest) (RenderResult, error) {
+	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild, withoutCell: request.WithoutCell, progress: request.Progress}
 	if request.Service == nil {
 		return renderModuleTree(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, !request.Snapshot, build)
 	}
