@@ -839,14 +839,17 @@ func TestCellFileRefusesATreeOfAModuleTheWorkspaceDoesNotCompose(t *testing.T) {
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
 	withdrawn := renderCellTree(t, workspace, "proposals", "api", "acme-proposals", "staging")
 
-	_, err := RenderCell(context.Background(), workspace, env)
+	// The derivation holds the tree; a render satisfies the hold by removing
+	// it (TestRenderCellPrunesTheRecordOfAModuleTheCompositionNoLongerDeclares).
+	_, _, err := deriveCell(context.Background(), workspace, env)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cell file is not written")
 	require.Contains(t, err.Error(), withdrawn.Path+" holds a render of module proposals for staging, but the workspace composes no module of that name")
 	require.Contains(t, err.Error(), "remove that render and the module's delivered tree")
 
-	require.NoError(t, os.RemoveAll(withdrawn.Path))
 	again, err := RenderCell(context.Background(), workspace, env)
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "shop"}, again.Modules)
+	require.Equal(t, []string{"deployments/modules/proposals"}, again.Removed)
+	require.NoDirExists(t, withdrawn.Path)
 }
