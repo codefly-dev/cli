@@ -22,6 +22,7 @@ type recordingExecutor struct {
 	mu       sync.Mutex
 	inFlight int
 	peak     int
+	started  []string
 	finished []string
 
 	// delay is how long one action takes, which is how a test chooses the
@@ -35,7 +36,7 @@ func (r *recordingExecutor) GetExecutor(_ context.Context, action orchestration.
 	return func(_ context.Context) (*orchestration.OutputProperty, error) {
 		building := action.Type == orchestration.BuilderBuild
 		if building {
-			r.enter()
+			r.enter(action.Service)
 			defer r.leave()
 		}
 		if r.delay != nil {
@@ -51,9 +52,10 @@ func (r *recordingExecutor) GetExecutor(_ context.Context, action orchestration.
 	}, nil
 }
 
-func (r *recordingExecutor) enter() {
+func (r *recordingExecutor) enter(service string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.started = append(r.started, service)
 	r.inFlight++
 	if r.inFlight > r.peak {
 		r.peak = r.inFlight
@@ -78,6 +80,14 @@ func (r *recordingExecutor) completionOrder() []string {
 	return append([]string(nil), r.finished...)
 }
 
+// startOrder is the order the phase's builds were started in, which is what a
+// dispatch order changes and the one thing it is allowed to change.
+func (r *recordingExecutor) startOrder() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.started...)
+}
+
 // snapshotClosure is the number of services a snapshot rooted at unique
 // carries, which is how many actions each of its phases has.
 func snapshotClosure(t *testing.T, dependencies *architecture.ServiceDependencies, unique string) int {
@@ -95,8 +105,28 @@ func snapshotClosure(t *testing.T, dependencies *architecture.ServiceDependencie
 // executed, with the executor that watched it.
 func runSnapshot(t *testing.T, root string, delay func(orchestration.Action) time.Duration, failures map[string]bool) ([]orchestration.Action, *recordingExecutor, error) {
 	t.Helper()
+	return runSnapshotWithHistory(t, root, delay, failures, nil)
+}
+
+// runSnapshotWithHistory drives the same snapshot on a machine that has already
+// timed some of its builds, which is what decides the order the build phase is
+// dispatched in.
+func runSnapshotWithHistory(
+	t *testing.T, root string, delay func(orchestration.Action) time.Duration,
+	failures map[string]bool, history map[string]time.Duration,
+) ([]orchestration.Action, *recordingExecutor, error) {
+	t.Helper()
 	ctx := context.Background()
 	data := setup(t, orchestration.BuilderSync, execOnInit())
+	if len(history) > 0 {
+		// A temporary workspace, so seeding a history writes nothing into
+		// testdata; the records go through the same writer a completed build
+		// uses.
+		world := orchestration.WorldWithBuildHistoryForTest(t, data.world)
+		for service, took := range history {
+			orchestration.SeedBuildDurationForTest(t, world, service, took)
+		}
+	}
 	services := snapshotClosure(t, data.world.Dependencies, root)
 	require.Greater(t, services, 1, "this test needs a root with dependencies to have anything to parallelize")
 
@@ -210,6 +240,71 @@ func TestConcurrentBuildsDoNotChangeWhatTheFlowRecords(t *testing.T) {
 		require.NoError(t, againErr)
 		require.Equal(t, together, again, "concurrent run %d disagreed with the first", attempt)
 	}
+
+	// The same, on a machine that has timed its builds and therefore starts
+	// them in an order of its own. This is the part a dispatch order could
+	// break: the phase's builds are started longest-recorded first, so the
+	// group is entered in an order no plan produced, and what the flow records
+	// must still be the plan's.
+	//
+	// The longest build is the root, which the plan builds LAST, so the
+	// dispatch order is not the plan order on any host.
+	history := map[string]time.Duration{
+		"management/organization": 10 * time.Second,
+		"billing/accounts":        20 * time.Second,
+		"web/gateway":             30 * time.Second,
+		concurrentRoot:            17 * time.Minute,
+	}
+	reordered, _, err := runSnapshotWithHistory(t, concurrentRoot, reversed(), nil, history)
+	require.NoError(t, err)
+	require.Equal(t, oneAtATime, reordered,
+		"reordering which build starts first changed what the snapshot records")
+
+	// And a machine with history agrees with a machine without one, which is
+	// the property a signed publish rests on: two operators rendering the same
+	// plan produce the same record whatever either has built before.
+	require.Equal(t, together, reordered)
+	for attempt := range 3 {
+		again, _, againErr := runSnapshotWithHistory(t, concurrentRoot, reversed(), nil, history)
+		require.NoError(t, againErr)
+		require.Equal(t, reordered, again, "reordered run %d disagreed with the first", attempt)
+	}
+
+	// And the dispatch really was reordered, or none of the above proves
+	// anything. Observed at a bound of two, where the group admits two builds
+	// and the third waits: both of the first two are in flight before either
+	// finishes, so the builds that entered first are the builds that were
+	// dispatched first. At bound eight every goroutine is launched at once and
+	// which one reaches the executor first is the host scheduler's business,
+	// which is exactly the thing this test exists to be independent of.
+	t.Setenv("CODEFLY_BUILD_CONCURRENCY", "2")
+	atTwo, executor, err := runSnapshotWithHistory(t, concurrentRoot, reversed(), nil, history)
+	require.NoError(t, err)
+	require.Equal(t, 2, executor.peakInFlight())
+	require.Contains(t, executor.startOrder()[:2], concurrentRoot,
+		"the longest recorded build was not among the first started, so the dispatch order did not move")
+	require.Equal(t, oneAtATime, atTwo)
+}
+
+// A machine with no history dispatches the phase in the plan's order, which is
+// the order it has always been dispatched in. This is the cold-machine floor:
+// the first render on a new machine is no worse than before.
+func TestWithNoBuildHistoryTheBuildPhaseStartsInPlanOrder(t *testing.T) {
+	t.Setenv("CODEFLY_BUILD_CONCURRENCY", "1")
+	executed, executor, err := runSnapshot(t, concurrentRoot, nil, nil)
+	require.NoError(t, err)
+
+	// At bound 1 each build is started only after the previous one finished, so
+	// the start order is the plan's build phase, read off what was executed.
+	var planned []string
+	for _, action := range executed {
+		if action.Type == orchestration.BuilderBuild {
+			planned = append(planned, action.Service)
+		}
+	}
+	require.Equal(t, planned, executor.startOrder())
+	require.Equal(t, concurrentRoot, planned[len(planned)-1],
+		"this workspace's plan must build the root last for the reordering tests to mean anything")
 }
 
 func TestConcurrentBuildFailureNamesEveryServiceThatFailed(t *testing.T) {
