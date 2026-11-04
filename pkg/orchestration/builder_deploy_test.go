@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -63,6 +64,78 @@ func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.
 		require.Equal(t, "accounts-secrets", references[key].GetName())
 		require.Equal(t, key, references[key].GetKey())
 	}
+}
+
+// A composition that pins a module reads the module's own tree and never writes
+// into it, so a service whose module ships no *.secret.env declares no secret
+// key to the render — and the postgres agent refuses the deployment for the
+// first primitive without a typed reference. The environment's
+// service-secrets.generate is the declaration that the keys exist and that the
+// cell's store holds them, so the render promotes them from it.
+func TestEnvironmentDeclaredSecretsPromoteToReferencesWhenTheServiceShipsNoFile(t *testing.T) {
+	ctx := context.Background()
+	identity := &resources.ServiceIdentity{Module: "model", Name: "store"}
+	env := &environments.Environment{ServiceSecrets: &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Kind: "ClusterSecretStore", Name: "cell-secrets"},
+		Generate: []environments.EnvironmentSecretGenerator{
+			{Scope: environments.SecretGeneratorScopeService, Configuration: "postgres", Format: "identifier",
+				Services: []string{"model/store", "robin/store"}, Keys: []string{"POSTGRES_USER"}},
+			{Scope: environments.SecretGeneratorScopeService, Configuration: "postgres",
+				Services: []string{"model/store", "robin/store"}, Keys: []string{"POSTGRES_USER", "POSTGRES_PASSWORD"}},
+			// Another service's keys and a workspace group are not this service's.
+			{Scope: environments.SecretGeneratorScopeService, Configuration: "postgres",
+				Services: []string{"robin/store"}, Keys: []string{"POSTGRES_READER_PASSWORD"}},
+			{Scope: environments.SecretGeneratorScopeWorkspace, Configuration: "internal-auth", Keys: []string{"CODEFLY_INTERNAL_TOKEN"}},
+		},
+	}}
+
+	// No configuration at all: the module ships no file for the service.
+	declared := withEnvironmentDeclaredSecrets(ctx, nil, identity, env)
+	_, _, references, err := promotableDeploymentConfigurations(declared, nil, "secret-store")
+	require.NoError(t, err)
+	keys := make([]string, 0, len(references))
+	for key := range references {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	require.Equal(t, []string{
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODEL__STORE__POSTGRES__POSTGRES_PASSWORD",
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__MODEL__STORE__POSTGRES__POSTGRES_USER",
+	}, keys)
+	for _, key := range keys {
+		require.Equal(t, "secret-store", references[key].GetName())
+		require.Equal(t, key, references[key].GetKey())
+	}
+
+	// A key the service declares itself stays its own; only the missing one is added,
+	// and the manager's configuration is left as it was.
+	own := &basev0.Configuration{
+		Origin: "model/store",
+		Infos: []*basev0.ConfigurationInformation{{
+			Name: "postgres",
+			ConfigurationValues: []*basev0.ConfigurationValue{
+				{Key: "POSTGRES_USER", Value: "user", Secret: true},
+				{Key: "POSTGRES_HOST", Value: "store.model.svc"},
+			},
+		}},
+	}
+	original := proto.CloneOf(own)
+	declared = withEnvironmentDeclaredSecrets(ctx, own, identity, env)
+	require.True(t, proto.Equal(original, own))
+	require.Len(t, declared.GetInfos(), 1)
+	values := declared.GetInfos()[0].GetConfigurationValues()
+	require.Len(t, values, 3)
+	require.Equal(t, "POSTGRES_USER", values[0].GetKey())
+	require.Equal(t, "user", values[0].GetValue())
+	require.Equal(t, "POSTGRES_PASSWORD", values[2].GetKey())
+	require.True(t, values[2].GetSecret())
+	require.Empty(t, values[2].GetValue())
+
+	// A service no generator names, and an environment with no secrets block,
+	// get back exactly what they had.
+	other := &resources.ServiceIdentity{Module: "model", Name: "model"}
+	require.Same(t, own, withEnvironmentDeclaredSecrets(ctx, own, other, env))
+	require.Nil(t, withEnvironmentDeclaredSecrets(ctx, nil, identity, &environments.Environment{}))
 }
 
 func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.T) {

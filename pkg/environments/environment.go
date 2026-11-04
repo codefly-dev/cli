@@ -840,7 +840,11 @@ type EnvironmentServiceSecrets struct {
 	// holds as values minted at random rather than supplied from outside — the
 	// only thing `codefly deploy secrets` generates. A key no generator names
 	// and no stored secret already holds is reported as one the operator must
-	// supply; it is never guessed.
+	// supply; it is never guessed. A restricted render also reads it as a
+	// declaration: a service generator's keys that the named service's own
+	// configuration does not declare (a module shipping no *.secret.env) are
+	// promoted to typed Secret references all the same
+	// (orchestration.withEnvironmentDeclaredSecrets).
 	Generate []EnvironmentSecretGenerator `yaml:"generate,omitempty"`
 	// MayBeEmpty names secret configuration keys whose correct value in this
 	// environment is the empty string. A stored property is otherwise refused
