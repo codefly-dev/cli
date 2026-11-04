@@ -324,6 +324,30 @@ func TestTheCompositionsHopIsRefusedWhenItsHalvesDisagree(t *testing.T) {
 	}
 }
 
+// A service the environment WITHDRAWS stands nothing. blue withdraws
+// authority/hop — on a cell saas is the host and its gateway plays the hop
+// role — and counting the withdrawn service made the cell refuse its own
+// render with "authority/hop and saas/auth-gateway both declare hop-routes",
+// naming a service the same render had already skipped.
+func TestAWithdrawnServiceDoesNotStandTheHop(t *testing.T) {
+	second := map[string]string{
+		"modules/authority/services/local/" + resources.ServiceConfigurationName: "kind: service\nname: local\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\nworkspace-configuration-dependencies:\n  - hop-routes\nendpoints:\n  - name: http\n    api: http\n    visibility: internal\n",
+	}
+
+	// Without the withdrawal the two collide: that is the refusal this test
+	// exists beside, and asserting it here keeps the fixture honest.
+	workspace, env := hopCell(t, second)
+	_, err := hopCellEdges(t, workspace, env, "platform")
+	require.ErrorContains(t, err, "both declare hop-routes")
+
+	// Withdrawing the second leaves exactly one standing, and the render runs.
+	workspace, env = hopCell(t, second)
+	env.ExcludeServices = append(env.ExcludeServices,
+		environments.EnvironmentExcludedService{Service: "authority/local"})
+	_, err = hopCellEdges(t, workspace, env, "platform")
+	require.NoError(t, err)
+}
+
 // A composition with no hop is unchanged: nothing is narrowed and nothing is
 // refused, because there is no door to route around.
 func TestACompositionWithNoHopIsUnchanged(t *testing.T) {
