@@ -650,7 +650,7 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 			if err != nil {
 				return "", nil, err
 			}
-			return gitops.InstallationDeclaration(dir)
+			return gitops.InstallationDeclaration(dir, cluster.env.Class)
 		})
 }
 

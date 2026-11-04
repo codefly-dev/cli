@@ -187,7 +187,7 @@ func WorkspaceAuthoritySources(workspace *resources.Workspace, env *environments
 			if err != nil {
 				return "", nil, err
 			}
-			return InstallationDeclaration(at)
+			return InstallationDeclaration(at, env.Class)
 		},
 	}
 }

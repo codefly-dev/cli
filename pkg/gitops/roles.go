@@ -61,26 +61,39 @@ func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 
 // InstallationDeclaration reads a module's installation declaration from its
 // own contract: the agent's standing role selector and the modules it reaches
-// with the person's Work Context.
+// with the person's Work Context, for delivery to an environment of class
+// class (an empty class is an environment that declares none).
 //
-// Both are carried VERBATIM. Core validated them already (contracts/module
-// rules.go: strict literal selector, no trim or case-fold, a named selector
-// held to a declared role), and the paired agreement rule compares this
-// document against the Core signed manifest byte-for-byte — empty and "none"
-// differ, nil and [] are equivalent zero edges. So nothing here trims,
-// defaults, sorts, deduplicates or resolves: an edge's Module is the signed
-// principal the host resolves through its catalogue, never a name, a binding
-// id or a release.
+// The selector is carried VERBATIM. Core validated it already
+// (contracts/module rules.go: strict literal selector, no trim or case-fold, a
+// named selector held to a declared role), and the paired agreement rule
+// compares this document against the Core signed manifest byte-for-byte —
+// empty and "none" differ, nil and [] are equivalent zero edges. So nothing
+// here trims, defaults, sorts or deduplicates, and an edge's Module stays the
+// signed principal the host resolves through its catalogue, never a name, a
+// binding id or a release.
+//
+// An edge's PRESENCE is resolved, through core's one resolution
+// (ResolveEdgeDependencies), for exactly the reason the rest is verbatim: the
+// Core signed manifest carries the presence this environment's class gives it
+// (gitops.moduleAuthority resolves the contract with the same class), and an
+// agreement rule compares the two carriers. Carrying the declaration verbatim
+// in this half would make every contract whose presence differs by class
+// disagree with itself at install.
 //
 // No contract means no declaration, which is distinct from a contract
 // declaring none.
-func InstallationDeclaration(dir string) (string, []*compositionv1.EdgeDependencyV1, error) {
+func InstallationDeclaration(dir, class string) (string, []*compositionv1.EdgeDependencyV1, error) {
 	contract, err := ownContract(dir)
 	if err != nil || contract == nil {
 		return "", nil, err
 	}
-	edges := make([]*compositionv1.EdgeDependencyV1, 0, len(contract.EdgeDependencies))
-	for _, edge := range contract.EdgeDependencies {
+	resolved, err := contract.ResolveEdgeDependencies(class)
+	if err != nil {
+		return "", nil, fmt.Errorf("module %s: %w", contract.Principal, err)
+	}
+	edges := make([]*compositionv1.EdgeDependencyV1, 0, len(resolved))
+	for _, edge := range resolved {
 		edges = append(edges, &compositionv1.EdgeDependencyV1{Module: edge.Module, Presence: edge.Presence})
 	}
 	if len(edges) == 0 {
@@ -92,7 +105,7 @@ func InstallationDeclaration(dir string) (string, []*compositionv1.EdgeDependenc
 	return contract.InstallationRole, edges, nil
 }
 
-// OwnerAware reads the module's explicit declaration that it checks resource// OwnerAware reads the module's explicit declaration that it checks resource
+// OwnerAware reads the module's explicit declaration that it checks resource
 // owners. No contract or an omitted declaration means false, never an inference
 // from the presence of roles or installation-owned scopes.
 func OwnerAware(dir string) (bool, error) {

@@ -103,6 +103,9 @@ func (env *Environment) Validate() error {
 	if err := env.admitCarried(); err != nil {
 		return err
 	}
+	if err := env.validateClass(); err != nil {
+		return err
+	}
 	if err := env.validateExcludedServices(); err != nil {
 		return err
 	}

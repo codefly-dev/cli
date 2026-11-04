@@ -69,6 +69,13 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	module, err := workspace.LoadModuleFromName(ctx, "assistant")
 	require.NoError(t, err)
 	env := selectedEnvironment(t, workspace, "staging")
+	// The kit ships an accepted document whose edge presence differs by
+	// environment class (edge-presence-by-class), so driving the kit through a
+	// render means declaring the class of the environment rendered for — which
+	// is the adoption requirement, not a detail of this test: a deliverer that
+	// has not said where it is delivering cannot resolve such a document, and
+	// core refuses it by name rather than defaulting it.
+	env.Class = modulecontract.ClassStaging
 	services := loadServices(t, workspace, "assistant", "api")
 	fixtures, err := modulecontract.Fixtures()
 	require.NoError(t, err)
