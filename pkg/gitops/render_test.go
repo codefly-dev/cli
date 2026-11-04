@@ -401,6 +401,38 @@ func TestValidateInventoryUnitsRejectsUnknownKind(t *testing.T) {
 	}
 }
 
+// A UNIT MAY NOT BE NAMED AFTER ONE OF THE RENDER'S OWN LAYERS. The module's
+// resources layer, its manifest layer and the namespace's mesh posture layer
+// are each promoted as the Argo component `argoBoundedName(module, <name>)`,
+// exactly as a unit is — so a unit called `mesh` produces a second
+// Application with the posture layer's name, two claims on one set of objects
+// with whichever synced last winning. A unit named `mesh` would silently
+// replace the namespace-wide STRICT mTLS Application with its own.
+func TestValidateInventoryUnitsRejectsALayerName(t *testing.T) {
+	for _, name := range layerComponentNames() {
+		inventory := &Inventory{
+			Module: "platform",
+			Units: []InventoryUnit{
+				{Kind: UnitKindService, Module: "platform", Name: name, Path: "services/" + name},
+			},
+		}
+		err := validateInventoryUnits(inventory)
+		if err == nil || !strings.Contains(err.Error(), "named after one of the render's own promotable layers") {
+			t.Fatalf("unit %q error = %v, want a layer-name refusal", name, err)
+		}
+	}
+	// And a name that merely contains one is fine: the collision is exact.
+	inventory := &Inventory{
+		Module: "platform",
+		Units: []InventoryUnit{
+			{Kind: UnitKindService, Module: "platform", Name: "mesh-gateway", Path: "services/mesh-gateway"},
+		},
+	}
+	if err := validateInventoryUnits(inventory); err != nil {
+		t.Fatalf("validateInventoryUnits rejected mesh-gateway: %v", err)
+	}
+}
+
 func TestValidateInventoryUnitsAcceptsSolutionKind(t *testing.T) {
 	output := &InventoryKubernetesOutput{
 		Kind:            "KUSTOMIZE",

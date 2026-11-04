@@ -1117,6 +1117,7 @@ func prepareServicePublication(
 		CheckUnitDirectories:          true,
 		ModuleManifestPath:            renderedInventory.ModuleManifestPath,
 		MeshPath:                      renderedInventory.MeshPath,
+		MeshPosture:                   renderedInventory.MeshPosture,
 		HostsDelivery:                 renderedInventory.HostsDelivery,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
@@ -1207,7 +1208,7 @@ func prepareServiceSnapshot(
 	if err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
-	if err = removePublicationRemainder(target, unitDirs); err != nil {
+	if err = removePublicationRemainder(target, unitDirs, renderedInventory.MeshPath != ""); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
 	// The delivery documents are part of the snapshot: every Application the
@@ -1235,6 +1236,7 @@ func prepareServiceSnapshot(
 		Promotable:         true,
 		ModuleManifestPath: renderedInventory.ModuleManifestPath,
 		MeshPath:           renderedInventory.MeshPath,
+		MeshPosture:        renderedInventory.MeshPosture,
 		HostsDelivery:      renderedInventory.HostsDelivery,
 		Delivered:          delivery,
 		MeshEdges:          renderedInventory.MeshEdges,
@@ -1474,10 +1476,21 @@ func serviceSnapshotBranch(module, environment string) string {
 	return "codefly/snapshot-" + sanitizeRef(module) + "-" + sanitizeRef(environment)
 }
 
-func removePublicationRemainder(target string, unitDirs []string) error {
-	// The delivery directories are kept whole: they hold every environment's
-	// delivered overlay, and a publish stages its own environment's only.
-	keep := map[string]struct{}{moduleBundleDir: {}, moduleManifestDir: {}, meshPostureDir: {}}
+// removePublicationRemainder clears everything the publication did not stage.
+//
+// keepMesh is whether THIS publication delivers the namespace's mesh posture
+// layer. It is a parameter rather than an unconditional keep because the layer
+// has to be retirable: a cell taken off the mesh — the environment's host
+// block removed — renders no mesh/ directory, and a kept one would leave the
+// namespace-wide STRICT policy applied by an Argo Application the bootstrap no
+// longer stamps, with nothing in the publication able to remove it. The
+// delivery directories above are kept whole for the opposite reason: they hold
+// every environment's delivered overlay and a publish stages its own only.
+func removePublicationRemainder(target string, unitDirs []string, keepMesh bool) error {
+	keep := map[string]struct{}{moduleBundleDir: {}, moduleManifestDir: {}}
+	if keepMesh {
+		keep[meshPostureDir] = struct{}{}
+	}
 	for _, directory := range unitDirs {
 		keep[directory] = struct{}{}
 	}

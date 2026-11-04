@@ -94,8 +94,12 @@ type argoBootstrapComponent struct {
 // position of a unit in the inventory carries no ordering meaning.
 const (
 	moduleResourcesWave = "-1"
-	bootstrapUnitWave   = "0"
-	consumerUnitWave    = "1"
+	// moduleResourcesComponent is the component name the module's resources
+	// layer is stamped under. It is a LAYER name, not a unit's: see
+	// layerComponentNames for why a unit may not be called this.
+	moduleResourcesComponent = "resources"
+	bootstrapUnitWave        = "0"
+	consumerUnitWave         = "1"
 	// Delivery goes BESIDE a module's consumers, in their wave, not after
 	// them: the delivery Application carries a Sync hook that POSTs the
 	// module's declarations to the host's delivery API, and a consumer whose
@@ -275,7 +279,7 @@ func generateArgoBootstrap(
 	var components []argoBootstrapComponent
 	if inventory.ModulePath != "" {
 		components = append(components, argoBootstrapComponent{
-			Component: argoBoundedName(componentNameBudget, inventory.Module, "resources"),
+			Component: argoBoundedName(componentNameBudget, inventory.Module, moduleResourcesComponent),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment)),
 			Wave:      moduleResourcesWave,
 		})

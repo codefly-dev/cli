@@ -1570,6 +1570,12 @@ type Environment struct {
 	// on that service's Service (its waypoint attachment). The render stamps
 	// them in the unit's environment overlay. Only a presenter may carry one.
 	ServiceMesh *EnvironmentServiceMesh `yaml:"service-mesh,omitempty"`
+	// AdmittedSources is the OPERATOR's half of every admission a service's
+	// manifest proposes: the callers this environment admits straight to a
+	// module endpoint, besides the hop. A manifest admission this does not
+	// co-declare is a render error, never a granted waiver — see
+	// EnvironmentAdmittedSource for why an admission takes two signatures.
+	AdmittedSources []EnvironmentAdmittedSource `yaml:"admitted-sources,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of

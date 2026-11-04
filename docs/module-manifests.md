@@ -1064,13 +1064,13 @@ applier compiles that into default-deny `AuthorizationPolicy` objects. **The
 CLI never writes an AuthorizationPolicy.** What it writes is the data the
 applier compiles: every edge the composition declares, delivered with the
 rendered tree in the render record at the tree root, `.codefly-render.json`,
-under `meshEdges`, versioned by its own `schemaVersion` (1). Each module's
+under `meshEdges`, versioned by its own `schemaVersion` (2). Each module's
 tree carries the edges INTO that module's workloads; the applier reads every
 tree it applies.
 
 ```json
 "meshEdges": {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "trustDomain": "cluster.example",
   "gateway": "saas/auth-gateway",
   "edges": [
@@ -1089,9 +1089,25 @@ tree it applies.
         "portName": "rest", "protocol": "TCP", "appProtocol": "http"
       }
     }
+  ],
+  "admissions": [
+    {
+      "module": "relay", "service": "ingest", "endpoint": "ingest",
+      "caller": "other/webhook", "principal": "spiffe://cluster.example/ns/cell-other/sa/webhook"
+    }
   ]
 }
 ```
+
+`admissions` is the waiver set: every caller admitted straight to a module
+endpoint besides the hop, as the service's manifest proposed it and the
+environment co-declared it (below). The principals are already in the edge
+above; this says which of them is a waiver rather than the hop, so a reviewer
+or an applier reads the whole set of exceptions in a cell off the records it
+already reads. `schemaVersion` went to 2 with it, rather than the field being
+added quietly, because the MEANING of the edges changed: a manifest admission
+now takes the environment's co-signature, so a version-1 record's principals
+could include a waiver no operator accepted.
 
 The `gateway` reference is the composition's explicit host gateway. Each edge
 carries both `port` (the Service port) and `targetPort` (the resolved container
@@ -1171,21 +1187,30 @@ The composition states the hop in three places, and the render joins them
   so nothing derived from the dependency graph carries it, and the derived
   allow-list is at module granularity besides.
 
-On a non-local environment, each endpoint of a fronted module's service then
-admits exactly:
+Outside a developer's own cluster, each endpoint of a fronted module's service
+then admits exactly:
 
 - **the hop's principal**, where the hop's route table names the endpoint. A
-  listener the hop does not route admits nobody, and default deny is the
-  declaration;
-- **the callers the service's own manifest admits by name** (below);
+  listener the hop does not route admits nobody — not even the hop, since the
+  authority holds no policy table for a call the hop does not route — and
+  default deny is the declaration;
+- **the callers the service's manifest admits by name and the environment
+  co-declares** (below);
 - **itself**, when its render holds a non-serving workload — one workload of
   the service reaching another, as above.
 
-A principal of the hop's own module that the allow-list derived is not a route
-around: a sibling service's ask arrives as every principal of the hop's module
-and no derivation can tell it from the hop's. Those are replaced by the hop
-service's own principal, which removes the sibling's reach rather than refusing
-a render over a distinction the composition cannot make.
+A principal of the hop's **own module** is no exception. The derived allow-list
+is at module granularity, so a sibling service of the hop that declares a
+dependency on a fronted listener arrives as a principal of the hop's module —
+and it is refused by name like any other route around, naming the declarer that
+asked (the hop's module's own dependency declarers say which service did). It
+was once collapsed into the hop's principal instead, on the reasoning that no
+derivation can tell a sibling's ask from the hop's. The reasoning does not
+hold — the hop declares no service dependency at all, so every derived
+principal of its module *is* a sibling's ask — and the collapse did two wrong
+things at once: it admitted the hop to listeners its route table does not name,
+and it deleted the sibling's declared reach, leaving a module that fails at
+runtime with nothing said at render time.
 
 Every other declared reach **refuses the render**, naming the principal, what
 declared it, and what to change: a dependency on a module service, a host route
@@ -1194,9 +1219,15 @@ through the hop. An environment's `runnable-call-endpoint` is how the last one
 is fixed — it sends every prepared call to that endpoint, and the executors are
 then admitted there rather than at each owner's listener.
 
-Inside `local` the reach is recorded exactly as declared and nothing is
-refused: a developer's own cluster is where calling a module directly is the
-point, and this is the deployed rule.
+**The one environment the rule is lifted for is a developer's own cluster**,
+where calling a module directly is the point — and that is a *declared* local
+k3d cluster (`cluster.kind: k3d` with a `k3d-…` context), the same gate that
+decides whether a host may admit a developer identity or mount a local trust
+anchor. It was keyed on the environment NAME beginning with `local`, so an
+environment called `local-eu`, `local-shared` or `localization`, with a host
+declared and edges delivered to a real cell, recorded every declared reach and
+skipped the refusal entirely. Omitting a field must narrow what an environment
+may do, never widen it.
 
 An **ingress** route onto a fronted module's endpoint is untouched by all of
 this. It is not a principal at all — it is the cell's own edge, which the
@@ -1204,10 +1235,19 @@ environment declares (`ingress:`) and whose principal the cell names, onto an
 endpoint the module declares `public`. A browser reaching a product's portal is
 not an API call through the hop.
 
-**A service admits another source by name.** Some listeners are legitimately
-not called through the hop: a worker pulling from a store, a webhook receiver,
-a scrape port. The declaration is the **service's**, on the endpoint it serves,
-in `service.codefly.yaml`:
+It may not land on a listener **the hop routes**, though, and that is refused
+by name. The edge is reachable from inside the cell too, so a route onto a
+hop-routed listener is a hairpin around the hop that needs only a `Host`
+header, and the module declaring that listener `public` does not make the calls
+on it a browser's — the composition already said that listener is published
+through the hop. Route the edge at the hop, or at an endpoint the hop does not
+route.
+
+**An admission takes two signatures.** Some listeners are legitimately not
+called through the hop: a worker pulling from a store, a webhook receiver, a
+scrape port. The service **proposes** the admission, on the endpoint it serves,
+in `service.codefly.yaml` — it is the only side that knows a port is not an API
+call:
 
 ```yaml
 admitted-sources:
@@ -1215,16 +1255,61 @@ admitted-sources:
     from: [relay/webhook]
 ```
 
+and the **environment accepts** it, because the operator owns the environment
+and the module's authors do not:
+
+```yaml
+environments:
+  - name: production
+    admitted-sources:
+      - service: relay/ingest
+        endpoint: ingest
+        from: [relay/webhook]
+```
+
+Both halves are required. An admission is a waiver of the permission layer, and
+a waiver written in the repository that layer protects is one anyone able to
+land a commit there can grant themselves — which is the property standing a hop
+exists to hold: *a client has no way to reach a module except through the
+accepted permission layer, and nothing depends on module code doing auth
+correctly*. So a manifest admission the environment does not co-declare
+**refuses the render**, naming the entry to add, and an environment entry no
+manifest proposes refuses it too, as an operator believing they admitted a
+caller the render admits nobody for. Neither is a warning.
+
+**Never on a listener the hop routes.** The composition already said that
+listener is published through the hop, so an admission on it is not "this port
+is not an API call" but a second door onto the call the hop checks. Refused by
+name, naming the route table entry.
+
+**And every effective admission is in the render record**, as `admissions`
+beside the edges: the module, service, endpoint, caller and the principal
+admitted. The whole waiver set of a cell is readable off the records the
+applier already reads, without opening a manifest — including a co-declared
+admission that is not in force here, with `omitted` saying why.
+
+An admission applies **wherever both halves declare it**, hop or none. It was
+read and validated for every service but *applied* only behind a hop on a
+non-local environment, so a module outside `hop`/`MODULES` — or one taken out
+of it — silently lost its admitted callers and was denied at the mesh with
+every declaration in the composition saying it was allowed. A security
+declaration is never validate-and-drop.
+
 It is never implied from a dependency graph — a consumer declaring an edge is
 exactly what the rule refuses, so an edge that admitted itself would admit
-everything. Core does not model the key: a service manifest is an open schema
-and keeps it in its inline extra fields, round-tripping through a save. It is
-read where the reach is derived and refused by name: an endpoint the service
-does not declare, a caller this environment runs no workload for (absent,
-managed or excluded), a repeated endpoint or caller, an entry admitting nobody,
-and the service naming itself — a service reaches its own endpoints under its
-own principal, which the *render* declares when it renders a non-serving
-workload.
+everything. Core does not model the service-side key: a service manifest is an
+open schema and keeps it in its inline extra fields, round-tripping through a
+save. The proposal is refused by name for an endpoint the service does not
+declare, a caller **the composition does not carry**, a repeated endpoint or
+caller, an entry admitting nobody, and the service naming itself — a service
+reaches its own endpoints under its own principal, which the *render* declares
+when it renders a non-serving workload.
+
+A caller the composition carries but **this environment does not run** (managed
+here, or withdrawn by `exclude-services`) is not a defect: the edge is omitted
+and the record says so. Refusing it meant `exclude-services` on a dev
+environment failed the render of an unrelated module that admitted the excluded
+service, while a derived source in exactly that state was skipped silently.
 
 ### No workload runs as the default ServiceAccount
 
@@ -1241,6 +1326,39 @@ ServiceAccount named after it**, not only the gateway and the services
 declaring an identity, and the cell file refuses a workload still running as
 `default`, naming it, exactly as it refuses one running as the delivery Job's
 account.
+
+#### Migrating a running cell
+
+Two things change cell-wide on the first render of an already-running meshed
+namespace, and neither is reversible by editing a flag — STRICT is a layer of
+the render, not an option on it:
+
+1. **Every workload gets its own ServiceAccount.** That is a rolling restart of
+   each one, and — the part nothing in the tree shows — any RBAC `RoleBinding`
+   or cloud workload-identity binding made against the namespace's `default`
+   account stops applying to it. The render **prints the set of workloads whose
+   account changes** (`meshServiceAccounts` in the render result) so those
+   bindings are moved onto the named accounts before the promotion syncs; a
+   service whose base has no pod template fails the render by name rather than
+   shipping a workload with no identity.
+2. **The namespace becomes STRICT**, in Argo wave `-1`, ahead of the workloads.
+   Any caller without a sidecar — something outside the mesh, a probe, a
+   one-off job — loses the port at that moment. Enrol or retire those callers
+   first.
+
+Order for a cell already running: move the bindings, enrol or retire the
+non-sidecar callers, then render and promote. **To come back off the mesh**,
+remove the environment's `host` block: the render then writes no `mesh/` layer,
+and the publication *retires* the one in the delivery repository — which it
+could not do while the layer was kept unconditionally, leaving a
+namespace-wide STRICT policy applied by an Application the bootstrap no longer
+stamps.
+
+A unit may not be **named after one of these layers** (`resources`,
+`module-manifests`, `mesh`). Each layer is promoted as the Argo component
+`<module>-<name>`, exactly as a unit is, so a unit called `mesh` would produce
+a second Application with the posture layer's name — two claims on one set of
+objects, whichever synced last winning. The inventory refuses the name.
 
 ### STRICT mTLS is a layer of the render
 
@@ -1268,6 +1386,36 @@ The render then reads its own **effective** manifests back and refuses to
 deliver a meshed tree that does not carry that policy at `mode: STRICT`, and
 refuses any `PeerAuthentication` in the tree at another mode — an agent's own,
 or one an overlay patch relaxed — naming the file and the object.
+
+**Per port, too.** Istio takes `spec.portLevelMtls`, a mode per workload port,
+and a port-level setting *overrides* the namespace-wide STRICT for that port.
+A policy reading `STRICT` at `spec.mtls.mode` while carrying
+
+```yaml
+portLevelMtls:
+  8081:
+    mode: DISABLE
+```
+
+leaves 8081 accepting plaintext — with no peer principal — while the edges
+compiled for that port still read "only the hop". Every entry of every policy
+must be STRICT as well, which makes a redundant entry harmless and an exception
+impossible. A port key is a *number*, so the check reads both the quoted and
+the unquoted spelling, and refuses a `portLevelMtls` whose shape it cannot
+read rather than waving it through.
+
+**The requirement travels with the tree.** The posture was projected and
+checked by the producing render alone, so every other reader of a promotable
+tree — `ValidateRenderedTree`, the service-snapshot check, an observation of
+the reconciled Git tree — trusted the producer for the one guarantee that makes
+the delivered edges mean anything: a tree whose policy was edited to
+`PERMISSIVE` after the render, or one rendered by a CLI that wrote no mesh
+layer at all, verified, snapshotted and promoted without complaint. So the
+render records the posture it delivered in the inventory as `meshPosture`, the
+check runs on **every promotable `validateTree` pass**, and a record carrying
+`meshEdges` with no posture is refused by name. The mesh layer is also one of
+the service snapshot's applied roots, which it was not: built without it, the
+overlay was validated as a directory nothing applies.
 
 One source is not in the composition at all. A service whose render includes a
 workload that does **not** serve its endpoints — an agent's bootstrap Job,

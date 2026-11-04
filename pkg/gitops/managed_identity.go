@@ -93,6 +93,50 @@ func holdsMeshPrincipal(service *resources.Service, env *environments.Environmen
 	return slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration)
 }
 
+// meshNamedAccounts are the services of this module whose pods get a
+// ServiceAccount of their own BECAUSE the environment is meshed: the ones
+// holdsMeshPrincipal answers for on the strength of env.Host alone, with no
+// identity of their own and no declaration that already gave them an account.
+//
+// It exists because this is a cell-wide behaviour change on the next render of
+// an already-running namespace, and a render must not flip one silently. Each
+// name is a workload whose `serviceAccountName` changes from the namespace's
+// `default` to its own: a rolling restart, and — the part nothing in the tree
+// shows — any RBAC RoleBinding or cloud workload-identity binding made against
+// the namespace's `default` account stops applying to it. The render reports
+// the set so an operator moves those bindings; see the migration note in
+// docs/module-manifests.md.
+//
+// A conflicting identity is not reported here: the projection refuses it by
+// name, and reporting it as a changed account would be a second, vaguer
+// message about the same manifest.
+func meshNamedAccounts(module string, services []*resources.Service, env *environments.Environment) []string {
+	if env == nil || env.Host == nil {
+		return nil
+	}
+	var changed []string
+	for _, service := range services {
+		if service == nil {
+			continue
+		}
+		if _, managed := env.ManagedService(module, service.Name); managed {
+			continue
+		}
+		// A service that holds a principal off a mesh already had its own
+		// account, so this render changes nothing for it.
+		if service.ModuleIdentity || slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration) {
+			continue
+		}
+		identity, err := soleWorkloadIdentity(module, service.Name, consumedManagedServices(service, module, env), env)
+		if err != nil || identity != nil {
+			continue
+		}
+		changed = append(changed, resources.ServiceUnique(module, service.Name))
+	}
+	sort.Strings(changed)
+	return changed
+}
+
 // projectManagedIdentity attaches the declared runtime identity and gives the
 // workloads whose mesh principal the composition hands out Core's resolved
 // ServiceAccount. Endpoint addresses and container choices remain owned by

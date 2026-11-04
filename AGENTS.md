@@ -222,11 +222,17 @@ relative paths.
 - **A module service is reachable only from its hop.** Where the composition stands a
   hop in front of its modules (`hop/MODULES` names them, the service declaring
   `hop-routes` is the hop, and that generated table names the listeners it reaches),
-  every endpoint of a fronted module admits the HOP's principal and the callers the
-  service's own manifest admits by name (`admitted-sources` in
-  `service.codefly.yaml`) — never a caller implied from a dependency graph, which is
-  exactly what the rule refuses. Any other declared reach refuses a non-local render,
-  naming the caller; `local` keeps the declared reach. A workload may not run as the
+  every endpoint of a fronted module admits the HOP's principal — on the listeners
+  that table names, and nowhere else, a principal of the hop's OWN module included
+  (a sibling's ask is refused by name, never collapsed into the hop's) — and the
+  callers the service's manifest admits by name (`admitted-sources` in
+  `service.codefly.yaml`) AND the environment co-declares (`admitted-sources:` on the
+  environment): an admission is a waiver of the hop, so the module proposes and the
+  OPERATOR accepts, never a caller implied from a dependency graph, and never on a
+  listener the hop routes. Every effective admission is in the render record
+  (`meshEdges.admissions`). Any other declared reach refuses the render, naming the
+  caller; the one exception is a DECLARED local k3d cluster (never a name beginning
+  `local`), which keeps the declared reach. A workload may not run as the
   namespace's `default` ServiceAccount (its principal is shared by every such pod, so
   no policy can mean it): a meshed render projects the account named after each
   service, and the cell file refuses one that still names none. And the render writes

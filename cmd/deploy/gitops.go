@@ -94,6 +94,7 @@ var gitOpsRenderCmd = &cobra.Command{
 			cli.Info("Digest %s", result.Inventory.Digest)
 			printSizingReport(result.Sizing)
 			printElidedNamespaces(result.ElidedNamespaces)
+			printMeshServiceAccounts(result.MeshServiceAccounts)
 			// Its stale readers render next in this run, so they are not
 			// reported as owed.
 			printed := result
@@ -149,6 +150,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printMeshServiceAccounts(result.MeshServiceAccounts)
 		printModuleManifest(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
@@ -510,6 +512,25 @@ func printElidedNamespaces(elided []string) {
 	}
 }
 
+// printMeshServiceAccounts reports the workloads this render gives a
+// ServiceAccount of their own because the environment is meshed. A mesh
+// principal is a ServiceAccount's SPIFFE ID, so on a meshed environment every
+// service runs as the account named after it rather than the namespace's
+// shared `default` — and for a namespace already running, that is a rolling
+// restart of each named workload AND the end of any RBAC or cloud
+// workload-identity binding made against the `default` account for it. The
+// render reports the set rather than changing cell-wide behaviour quietly; the
+// operator moves those bindings onto the named accounts.
+func printMeshServiceAccounts(changed []string) {
+	if len(changed) == 0 {
+		return
+	}
+	cli.Warning("%d workload(s) now run as a ServiceAccount of their own (the mesh principal is that account's SPIFFE ID, and the namespace's shared \"default\" is an identity no policy can mean)", len(changed))
+	for _, unique := range changed {
+		cli.Warning("  %s — a rolling restart; move any RoleBinding or workload-identity binding made against the namespace's \"default\" account onto this one", unique)
+	}
+}
+
 // printModuleManifest reports what this render DECLARED should be present on
 // the host, and why it declared nothing when the reason is the module's own.
 func printModuleManifest(result *gitops.RenderResult) {
@@ -772,6 +793,7 @@ func renderComposition(ctx context.Context) error {
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printMeshServiceAccounts(result.MeshServiceAccounts)
 		printModuleManifest(&result)
 		printClearedDev(result.ClearedDev)
 	}

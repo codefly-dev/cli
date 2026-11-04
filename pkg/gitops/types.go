@@ -100,6 +100,13 @@ type Inventory struct {
 	// Set for every render of an environment that declares a host, and
 	// promoted as its own Application like the module resources layer.
 	MeshPath string `json:"meshPath,omitempty"`
+	// MeshPosture is the mTLS posture this render delivered for the namespace
+	// — STRICT, the only one it delivers. It is recorded so the REQUIREMENT
+	// travels with the tree: every verifier of a promotable tree checks the
+	// effective manifests still carry it, instead of trusting the producing
+	// CLI for the guarantee that makes MeshEdges mean anything. A tree
+	// carrying edges without it is refused (mesh_posture.go).
+	MeshPosture string `json:"meshPosture,omitempty"`
 	// HostsDelivery is true for the module that serves the environment's
 	// delivery API: its own delivery cannot precede the API it posts to, so
 	// it is ordered after the module's units where every other module's
@@ -301,8 +308,13 @@ type RenderOptions struct {
 	// posture layer, so the inventory records the delivered path rather than
 	// the intent to write one.
 	MeshPath string
-	Units    []InventoryUnit
-	Package  *InventoryPackage
+	// MeshPosture is the posture the tree carries, recorded in the inventory.
+	// A render sets it when it projects the layer; a verifier sets it from the
+	// inventory it is checking, which is what makes the posture check run on
+	// a tree whose environment block this process never saw.
+	MeshPosture string
+	Units       []InventoryUnit
+	Package     *InventoryPackage
 	// Pin is how the composition pinned the module, recorded in the inventory.
 	Pin *InventoryPin
 	// ReleaseArtifacts is what the module's package manifest declares the
@@ -402,6 +414,16 @@ type RenderResult struct {
 	// reason is the module's own: no package manifest to name a release from,
 	// or no service that runs as the module.
 	UndeclaredManifest string `json:"undeclaredManifest,omitempty"`
+	// MeshServiceAccounts are the workloads this render gave a ServiceAccount
+	// of their own BECAUSE the environment is meshed: a mesh principal is a
+	// ServiceAccount's SPIFFE ID, so on a meshed environment every service
+	// gets the account named after it rather than the namespace's `default`.
+	// Each is a workload whose account CHANGES on this render — a rolling
+	// restart, and any RBAC or workload-identity binding made against the
+	// namespace's default account stops applying to it. The render reports the
+	// set rather than flipping a cell-wide behaviour silently; see the
+	// migration note in docs/module-manifests.md.
+	MeshServiceAccounts []string `json:"meshServiceAccounts,omitempty"`
 	// StaleGroupConsumers maps a workspace configuration group this render
 	// consumes to the sibling modules whose rendered trees bake in another
 	// value of it: rendered before the group changed, to be rendered next.

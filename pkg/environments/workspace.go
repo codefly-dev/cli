@@ -165,6 +165,9 @@ func (env *Environment) Validate() error {
 	if err := env.validateServiceMesh(); err != nil {
 		return err
 	}
+	if err := env.validateAdmittedSources(); err != nil {
+		return err
+	}
 	for name, managed := range env.ManagedServices {
 		if err := validateManagedServiceKey(name); err != nil {
 			return err

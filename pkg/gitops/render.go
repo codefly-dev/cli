@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -136,17 +137,15 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	// before buildInventory hashes it: on a meshed environment the delivered
 	// edges are only enforceable under STRICT mTLS, so the policy is part of
 	// what this render delivers, not something a cell is trusted to hold.
-	if opts.MeshPath, err = projectMeshPosture(tree, owned, opts); err != nil {
+	if opts.MeshPath, opts.MeshPosture, err = projectMeshPosture(tree, owned, opts); err != nil {
 		return RenderResult{}, err
 	}
+	// validateTree holds the tree to the mesh posture as part of its
+	// promotable pass, on the effective manifests it builds: the projection
+	// above and the check are deliberately separate halves, and the check is
+	// in the pass every reader of a promotable tree makes.
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
-		return RenderResult{}, err
-	}
-	// Whatever reached the tree — this projection, an agent's own policy, an
-	// overlay patch that relaxed the mode — is held to the posture here, on
-	// the effective manifests validateTree built.
-	if err = checkMeshPosture(manifests, opts); err != nil {
 		return RenderResult{}, err
 	}
 	sizing := computeSizing(manifests)
@@ -266,7 +265,11 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		renderRoot:         tree,
 		ModuleManifestPath: inventory.ModuleManifestPath,
 		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
-		MeshPath:    inventory.MeshPath,
+		MeshPath: inventory.MeshPath,
+		// The posture and the edges come from the record being verified, so
+		// the posture check runs against a tree whose environment block this
+		// process never read (mesh_posture.go).
+		MeshPosture: inventory.MeshPosture, MeshEdges: inventory.MeshEdges,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: project, Promotable: promotable, Package: inventory.Package, Pin: inventory.Pin,
 		CheckUnitDirectories: inventory.Unit == "",
@@ -352,6 +355,13 @@ func ValidateServiceSnapshot(root string) error {
 		renderRoot:         tree,
 		ModuleManifestPath: inventory.ModuleManifestPath,
 		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		// The mesh layer is one of the snapshot's applied roots, as the
+		// allow-list above already treats it: built without it, the overlay
+		// was validated as a directory nothing applies, so the policy that
+		// makes the snapshot's edges enforceable was never held to the
+		// promotable ruleset here (inventoryAppliedRoots reads MeshPath).
+		MeshPath:    inventory.MeshPath,
+		MeshPosture: inventory.MeshPosture, MeshEdges: inventory.MeshEdges,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package, Pin: inventory.Pin,
 	}
@@ -419,6 +429,22 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	return nil
 }
 
+// layerComponentNames are the component names the render's own promotable
+// LAYERS are stamped under in the Argo bootstrap: the module's resources
+// layer, its manifest layer and the namespace's mesh posture layer. Each is
+// `argoBoundedName(module, <name>)`, exactly as a unit's component is, so a
+// unit carrying one of these names produces two Applications with one name —
+// two claims on one set of objects, the layer's and the unit's, with whichever
+// synced last winning. A unit named `mesh` would silently replace the
+// namespace's STRICT mTLS Application with its own.
+//
+// It is refused where every reader already validates the unit graph rather
+// than where the names are generated: a name this cannot render is a name the
+// inventory must not carry.
+func layerComponentNames() []string {
+	return []string{moduleResourcesComponent, moduleManifestDir, meshPostureDir}
+}
+
 func validateInventoryUnits(inventory *Inventory) error {
 	if inventory.Unit != "" {
 		if len(inventory.Units) != 0 {
@@ -431,6 +457,10 @@ func validateInventoryUnits(inventory *Inventory) error {
 		unit := &inventory.Units[idx]
 		if unit.Name == "" || unit.Module != inventory.Module {
 			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
+		}
+		if slices.Contains(layerComponentNames(), unit.Name) {
+			return fmt.Errorf("render inventory unit %s is named after one of the render's own promotable layers (%s): both are promoted as the Argo component %s of module %s, so one Application name would claim two sets of objects; rename the unit",
+				unit.Name, strings.Join(layerComponentNames(), ", "), argoBoundedName(componentNameBudget, inventory.Module, unit.Name), inventory.Module)
 		}
 		if err := validateInventoryContracts(unit); err != nil {
 			return err
@@ -626,6 +656,15 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 		return nil, err
 	}
 	if err = validateObjectIdentities(effective, opts.Namespace); err != nil {
+		return nil, err
+	}
+	// Whatever reached the tree — the render's own projection, an agent's own
+	// policy, an overlay patch that relaxed the mode — is held to the mesh
+	// posture HERE, on the effective manifests, so every promotable pass
+	// checks it and not only the producing render: a verifier, a snapshot
+	// check and an observation each read a tree they did not write
+	// (mesh_posture.go).
+	if err = checkMeshPosture(effective, opts); err != nil {
 		return nil, err
 	}
 	return effective, nil
@@ -1652,6 +1691,7 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package, Pin: opts.Pin,
 		ModuleManifestPath: filepath.ToSlash(opts.ModuleManifestPath),
 		MeshPath:           filepath.ToSlash(opts.MeshPath),
+		MeshPosture:        opts.MeshPosture,
 		HostsDelivery:      opts.HostsDelivery || hostsDeliveryAPI(opts),
 		Units:              append([]InventoryUnit(nil), opts.Units...),
 	}
