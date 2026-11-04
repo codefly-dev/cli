@@ -1209,11 +1209,15 @@ publication also removes that module's delivered tree from
 the cell no longer admits anything of it, and the ApplicationSet that tree
 carries would keep stamping Applications whose every pod the cell refuses. A
 checkout that never had a module and one that dropped it derive the same cell
-file, so the history decides: the checkout must contain the delivery base
-commit when the workspace repository holds it (the workspace is the delivery
-repository), or else the `source.revision` the base's cell file names; a
-checkout that contains neither — a branch behind the base, a base file naming
-no source — is held as before, the refusal says which revision it lacks, and
+file, so the history decides: when the workspace repository is the delivery
+repository (it holds the base commit, or the delivery holds the workspace
+revision the base's file names as its `source.revision`), the checkout must
+contain the delivery base commit itself — the file's source revision is the
+render's parent, and a `modules:` edit rides in the render's own commit, so an
+unfetched checkout at that parent has not seen it; when the two repositories
+are separate, the checkout must contain that source revision. A checkout that
+does not — a branch behind the base, an unfetched one, a base file naming no
+source — is held as before, the refusal says which revision it lacks, and
 naming the module confirms the removal without pruning the tree. A promotion
 of a module owns, on its own branch, the removal of such trees, so continuing
 or retrying the publication that removed one is not refused as someone else's

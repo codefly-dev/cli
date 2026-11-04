@@ -225,6 +225,51 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 	}
 }
 
+// TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag: when the
+// workspace repository is the delivery repository, the base's cell file names
+// the render's parent as its source, and a checkout at that parent that has
+// not fetched the base commit descends from it — yet never saw the `modules:`
+// edit that rode in the render's commit. The delivery clone holding that
+// workspace revision is what tells one repository from two, so the base
+// commit stays the one to contain, and the removal is the flag's to confirm.
+func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	head := committedWorkspace(t, workspace)
+	// One repository: the delivery remote holds the workspace's history.
+	gitRun(t, workspace.Dir(), "push", "-q", remote, "HEAD:refs/heads/workspace-history")
+	env := selectedEnvironment(t, workspace, "production")
+	_, data := renderedCell(t, ctx, workspace, env)
+	file, err := cellfile.Parse(renderedFrom(t, data, head))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
+	base, err := file.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, files := legacyDelivery()
+	files[deliveryCellPath("environments", "production")] = base
+	seedDelivered(t, remote, "the render that named legacy, committed past this checkout", files)
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "--allow-cell-removal (legacy)") || !strings.Contains(err.Error(), "may be a stale checkout's") {
+		t.Fatalf("an unfetched checkout of the delivery repository withdrew a module on the composition's word: %v", err)
+	}
+	request.AllowCellRemovals = []string{"legacy"}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.RemovedModules) != 0 || slices.ContainsFunc(plan.Changed, func(path string) bool { return strings.HasPrefix(path, legacy) }) {
+		t.Fatalf("a removal the flag confirms pruned the delivered tree: %v %v", plan.RemovedModules, plan.Changed)
+	}
+}
+
 // renderedCell renders the environment's cell file from the workspace's module
 // trees and answers it with its bytes.
 func renderedCell(t *testing.T, ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (CellResult, []byte) {

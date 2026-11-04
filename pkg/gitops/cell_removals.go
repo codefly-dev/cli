@@ -116,16 +116,19 @@ type compositionClaim struct {
 	revision string
 }
 
-// newCompositionClaim judges the checkout against the delivery base: the base
-// revision itself when the workspace repository holds that commit (the
-// workspace IS the delivery repository, and the file's render was committed
-// there), or else the workspace revision the base's cell file says it was
-// rendered from (cellSource). The base commit is preferred because it is
-// exact: the source revision is the render's parent, and a `modules:` edit
-// may ride in the render's own commit. A base with no cell file, or one
-// naming no source, leaves nothing to descend from, and the claim is not
-// advanced.
-func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, module, baseRevision string, base *cellfile.File) *compositionClaim {
+// newCompositionClaim judges the checkout against the delivery base. The
+// commit the checkout must contain is the base revision itself whenever the
+// workspace repository and the delivery repository are one — the workspace
+// holds the base commit, or the delivery clone holds the workspace revision
+// the base's cell file says it was rendered from (cellSource) — because that
+// revision is the render's PARENT and a `modules:` edit rides in the render's
+// own commit, so a checkout forked at the parent has not seen it; an unfetched
+// checkout of one repository is therefore not advanced, and the hold says
+// which commit it lacks. Only when the two repositories are separate (the
+// clone does not hold the source revision) is the source revision what the
+// checkout must contain. A base with no cell file, or one naming no source
+// while the workspace lacks the base commit, leaves nothing to descend from.
+func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, clone, module, baseRevision string, base *cellfile.File) *compositionClaim {
 	claim := &compositionClaim{module: module, declared: composedModules(workspace)}
 	if base == nil {
 		return claim
@@ -135,11 +138,15 @@ func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, mo
 	if err != nil {
 		return claim
 	}
+	source := ""
+	if base.Source != nil {
+		source = base.Source.Revision
+	}
 	switch {
-	case gitHasCommit(ctx, dir, baseRevision):
+	case gitHasCommit(ctx, dir, baseRevision), source != "" && gitHasCommit(ctx, clone, source):
 		claim.revision = baseRevision
-	case base.Source != nil && base.Source.Revision != "":
-		claim.revision = base.Source.Revision
+	case source != "":
+		claim.revision = source
 	default:
 		return claim
 	}
@@ -199,7 +206,7 @@ func judgeCompositionRemovals(ctx context.Context, workspace *resources.Workspac
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	claim := newCompositionClaim(ctx, workspace, base.module, base.revision, baseCell)
+	claim := newCompositionClaim(ctx, workspace, base.repo, base.module, base.revision, baseCell)
 	removed, err := removeUndeclaredDeliveries(base.repo, base.gitopsPath, env, base.restoreRevision, claim)
 	if err != nil {
 		return nil, nil, nil, err
@@ -284,7 +291,7 @@ func holdCellToBase(cell *publicationCell, env *environments.Environment, baseBr
 		if claim.revision == "" {
 			message += fmt.Sprintf(". This checkout's composition does not declare %s, but %s's cell file names no revision it was rendered from, so whether the composition removed %s or never had it cannot be told from here", strings.Join(stale, ", "), baseBranch, strings.Join(stale, ", "))
 		} else {
-			message += fmt.Sprintf(". This checkout's composition does not declare %s, but the checkout does not contain %s, which %s's cell file was rendered from, so the removal may be a stale checkout's rather than the composition's: bring the checkout up to date and render again, or name it", strings.Join(stale, ", "), claim.revision, baseBranch)
+			message += fmt.Sprintf(". This checkout's composition does not declare %s, but the checkout does not contain %s, which %s's cell file comes from, so the removal may be a stale checkout's rather than the composition's: bring the checkout up to date and render again, or name it", strings.Join(stale, ", "), claim.revision, baseBranch)
 		}
 	}
 	return nil, nil, errors.New(message)

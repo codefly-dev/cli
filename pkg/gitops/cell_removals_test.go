@@ -188,16 +188,20 @@ func TestTheCompositionClaimIsAdvancedOnlyFromACheckoutThatSawTheBase(t *testing
 	runGit(t, dir, "commit", "-q", "-m", "the composition that named legacy")
 	first := runGit(t, dir, "rev-parse", "HEAD")
 	elsewhere := strings.Repeat("d", 40)
+	// A delivery repository of its own, holding none of the workspace's history.
+	separate := t.TempDir()
+	runGit(t, separate, "init", "--initial-branch=main")
+	runGit(t, separate, "commit", "-q", "--allow-empty", "-m", "delivery")
 
 	base := &cellfile.File{Source: &cellfile.Source{Revision: first}}
-	claim := newCompositionClaim(ctx, workspace, "shop", elsewhere, base)
+	claim := newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, base)
 	require.True(t, claim.advanced, "a checkout at the revision the base was rendered from has seen its composition")
 	require.Equal(t, first, claim.revision)
 	require.True(t, claim.explains("legacy"))
 	require.False(t, claim.explains("shop"), "a composed module is never explained away")
 	require.False(t, claim.explains("billing"))
-	require.False(t, newCompositionClaim(ctx, workspace, "shop", elsewhere, nil).advanced, "a base with no cell file advances nothing")
-	require.False(t, newCompositionClaim(ctx, workspace, "shop", elsewhere, &cellfile.File{}).advanced, "a base naming no source advances nothing")
+	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, nil).advanced, "a base with no cell file advances nothing")
+	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, &cellfile.File{}).advanced, "a base naming no source advances nothing")
 
 	// The workspace is the delivery repository: the base commit is the one
 	// that committed the render, a child of the revision the file names. A
@@ -207,16 +211,29 @@ func TestTheCompositionClaimIsAdvancedOnlyFromACheckoutThatSawTheBase(t *testing
 	runGit(t, dir, "commit", "-q", "-m", "render")
 	second := runGit(t, dir, "rev-parse", "HEAD")
 	runGit(t, dir, "checkout", "-q", "--detach", first)
-	claim = newCompositionClaim(ctx, workspace, "shop", second, base)
+	claim = newCompositionClaim(ctx, workspace, separate, "shop", second, base)
 	require.False(t, claim.advanced, "the checkout does not contain the delivery base commit the workspace repository holds")
 	require.Equal(t, second, claim.revision, "the base commit is judged, not the parent the file names")
 	runGit(t, dir, "checkout", "-q", "main")
-	require.True(t, newCompositionClaim(ctx, workspace, "shop", second, base).advanced)
+	require.True(t, newCompositionClaim(ctx, workspace, separate, "shop", second, base).advanced)
+
+	// The same one repository, from a checkout that has not fetched the base
+	// commit: the delivery clone holds the workspace revision the file names,
+	// which is what tells one repository from two, so the base commit is still
+	// the one to contain, and the checkout at the render's parent lacks it.
+	clone := t.TempDir()
+	runGit(t, "", "clone", "-q", dir, clone)
+	runGit(t, dir, "checkout", "-q", "--detach", first)
+	unfetched := strings.Repeat("f", 40)
+	claim = newCompositionClaim(ctx, workspace, clone, "shop", unfetched, base)
+	require.False(t, claim.advanced, "an unfetched checkout of the delivery repository is at the render's parent, not past it")
+	require.Equal(t, unfetched, claim.revision)
+	runGit(t, dir, "checkout", "-q", "main")
 
 	// A checkout whose history does not contain the named revision at all.
 	runGit(t, dir, "checkout", "-q", "--orphan", "stale")
 	runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "a branch that never saw it")
-	require.False(t, newCompositionClaim(ctx, workspace, "shop", elsewhere, base).advanced)
+	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, base).advanced)
 }
 
 // composeLegacyModule adds a third module, legacy, to the cell fixture: one
