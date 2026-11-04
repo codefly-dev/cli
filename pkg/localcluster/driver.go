@@ -117,7 +117,7 @@ func (d *ClusterDriver) Render(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	_, err = gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+	_, err = gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 		Workspace: d.Workspace, Module: module, Environment: d.Environment,
 		AppProject: d.AppProject, Rebuild: d.Rebuild, Sink: d.Sink,
 	})

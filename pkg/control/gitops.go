@@ -29,7 +29,7 @@ func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderReques
 	if err != nil {
 		return gitops.RenderResult{}, fmt.Errorf("load module %s: %w", request.Module, err)
 	}
-	produce := gitops.ProduceRequest{
+	produce := &gitops.ProduceRequest{
 		Workspace: workspace, Module: module, Environment: env, AppProject: request.AppProject,
 	}
 	if request.Service != "" {

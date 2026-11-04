@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -82,10 +83,11 @@ var gitOpsRenderCmd = &cobra.Command{
 					return gitops.RenderResult{}, readyErr
 				}
 			}
-			result, renderErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, renderErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 				Workspace: workspace, Module: target, Environment: env,
 				AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 				Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
+				Progress: os.Stdout,
 			})
 			if renderErr != nil {
 				return result, renderErr
@@ -137,10 +139,11 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+		result, err := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, Snapshot: true,
 			Rebuild: gitOpsRebuild, Sink: cli.NewOutputSink(),
+			Progress: os.Stdout,
 		})
 		if err != nil {
 			return err
@@ -760,10 +763,11 @@ func renderComposition(ctx context.Context) error {
 		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
-		result, renderErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+		result, renderErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 			Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
+			Progress: os.Stdout,
 		})
 		if renderErr != nil {
 			return fmt.Errorf("render %s: %w", module.Name, renderErr)
