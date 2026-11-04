@@ -33,7 +33,8 @@ import (
 // digests the same at both ends. Solution units are not among them.
 func serviceUnitNames(units []InventoryUnit) []string {
 	var names []string
-	for _, unit := range units {
+	for i := range units {
+		unit := &units[i]
 		if unit.Kind == UnitKindService && unit.Name != "" {
 			names = append(names, unit.Name)
 		}
