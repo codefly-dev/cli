@@ -491,6 +491,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
 		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
 		Resign:                   gitOpsResign,
+		Advance:                  gitOpsAdvance,
 		AllowCellRemovals:        gitOpsAllowCellRemovals,
 	}
 }
@@ -624,6 +625,7 @@ var (
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
 	gitOpsResign                   bool
+	gitOpsAdvance                  []string
 	gitOpsAllowCellRemovals        []string
 	gitOpsValidateCluster          bool
 	gitOpsRebuild                  bool
@@ -663,6 +665,8 @@ func init() {
 			"Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied")
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
+		command.Flags().StringSliceVar(&gitOpsAdvance, "advance", nil,
+			"Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied")
 		command.Flags().StringSliceVar(&gitOpsAllowCellRemovals, "allow-cell-removal", nil,
 			"Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses")
 	}

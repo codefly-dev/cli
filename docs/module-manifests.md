@@ -536,7 +536,9 @@ branch. An unchanged manifest keeps its generation (decided by core's
 canonical digest, the encoding the host tells a replay from a rewrite by); a
 changed one is prior + 1; a binding delivered for the first time is 1. The
 render reports a provisional generation; the settled one is in the inventory's
-`delivery` record.
+`delivery` record. Toward a composition host the generation's content is the
+**pair** — see [the paired delivery](#the-paired-delivery) — exactly as the
+native run keys it.
 
 **Removal.** Within this module's own delivery, a binding delivered before and
 absent from this render is withdrawn — and a withdrawal is a generation, never
@@ -567,6 +569,15 @@ bytes, and on a release publish it still passes the self-check a host will
 run; one the release policy no longer admits is signed again only with
 `--resign`. The plan signs and hands its exact carriers to the publish that
 executes it; execution never produces a signature its plan did not contain.
+
+**`--advance <binding>` moves a generation the host has refused.** A generation
+is a number the host keeps, and the delivered tree is publish's only record of
+it; when the two disagree — the host refuses a delivered generation as a
+history conflict naming the binding, and the tree carries nothing that says
+why — the named binding is settled at the next generation although unchanged,
+signed again, and keeps that generation after. Deliberate, never implied, like
+`--resign`; a name the base branch delivers nothing under is refused rather
+than ignored.
 
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their manifests anew against the base branch, never the
@@ -804,6 +815,26 @@ same composed workspace a native run reads (`WorkspaceAuthoritySources`):
 
 A publish toward such a host that has no way to read module declarations is
 refused by name: it does not deliver the Core half alone.
+
+**The pair is the generation's content.** The host holds one immutable pair per
+generation and refuses the same number offered with other authority bytes as a
+history conflict (`authority document digest stored=… offered=…`), the way it
+refuses a rewritten manifest. So publish settles a binding whose manifest is
+unchanged against the pair the base branch delivered, exactly as the native run
+keys its record: the declaration read now is compared, as a message, with the
+authority document delivered beside the carrier — a method gained or lost, a
+role, a ceiling, the half itself appearing or vanishing — and a difference is
+the next generation, signed again. A module's interface moves without its
+release stamp moving, and the authority half is what carries that move to the
+host. A manifest the base branch delivered Core-only, with no pair beside it,
+enters paired settlement at the next generation for the same reason: the host
+holds that generation with no authority document.
+
+What the tree cannot say is whether the host TOOK a generation Core-only before
+a pair was written at it — a publish from before paired settlement advanced on
+entering left such pairs, and two bindings with one history went each way. The
+host's refusal says it, and `--advance <binding>` is the answer
+([what publish settles](#what-publish-settles)).
 
 **The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
 the codefly companion tag `0.0.7`, whose `/bin/codefly` is a static binary that
