@@ -20,21 +20,80 @@ import (
 // held to.
 func seedCellFile(t *testing.T, remote, gitopsPath, environment string, data []byte) {
 	t.Helper()
+	seedDelivered(t, remote, "seed the cell file", map[string][]byte{deliveryCellPath(gitopsPath, environment): data})
+}
+
+// seedDelivered commits files directly onto main of the bare delivery
+// repository, at the repository-relative paths given.
+func seedDelivered(t *testing.T, remote, message string, files map[string][]byte) {
+	t.Helper()
 	work := t.TempDir()
 	gitRun(t, "", "clone", remote, work)
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
 	gitRun(t, work, "config", "commit.gpgsign", "false")
-	path := filepath.Join(work, filepath.FromSlash(deliveryCellPath(gitopsPath, environment)))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
+	for relative, data := range files {
+		path := filepath.Join(work, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	gitRun(t, work, "add", "-A")
-	gitRun(t, work, "commit", "-m", "seed the cell file")
+	gitRun(t, work, "commit", "-m", message)
 	gitRun(t, work, "push", "origin", "main")
+}
+
+// TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares: a module
+// removed from `modules:` left its delivered tree in the delivery repository,
+// and with it the ApplicationSet that kept stamping Applications whose every
+// pod the cell — which no longer named the module — refused. A forward
+// publication to a hosted environment now removes such a tree with the rest
+// of what it writes, shows it in the plan, and leaves alone a directory under
+// the modules path that is not a delivery (no render record).
+func TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	env := selectedEnvironment(t, workspace, "production")
+	renderedCell(t, ctx, workspace, env)
+	legacy := deliveryModulePath("environments", "legacy")
+	seedDelivered(t, remote, "a module since removed from the composition", map[string][]byte{
+		legacy + "/" + InventoryFilename:                         []byte(`{"module":"legacy","environment":"production"}`),
+		legacy + "/services/worker/kustomization.yaml":           []byte("resources: []\n"),
+		deliveryModulesPath("environments") + "/notes/README.md": []byte("not a delivery\n"),
+	})
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(plan.RemovedModules, []string{legacy}) {
+		t.Fatalf("the plan removes %v, want %v", plan.RemovedModules, []string{legacy})
+	}
+	for _, path := range []string{legacy + "/" + InventoryFilename, legacy + "/services/worker/kustomization.yaml"} {
+		if !slices.Contains(plan.Changed, path) {
+			t.Fatalf("the plan's changed files %v do not carry the removal of %s", plan.Changed, path)
+		}
+	}
+	if slices.ContainsFunc(plan.Changed, func(path string) bool { return strings.Contains(path, "/notes/") }) {
+		t.Fatalf("a directory that is not a delivery was removed: %v", plan.Changed)
+	}
+
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Command("git", "--git-dir", remote, "cat-file", "-e", result.Commit+":"+legacy+"/"+InventoryFilename).Run() == nil {
+		t.Fatalf("the published commit still delivers %s", legacy)
+	}
+	if exec.Command("git", "--git-dir", remote, "cat-file", "-e", result.Commit+":"+deliveryModulesPath("environments")+"/notes/README.md").Run() != nil {
+		t.Fatal("the published commit removed a directory that is not a delivery")
+	}
 }
 
 // renderedCell renders the environment's cell file from the workspace's module

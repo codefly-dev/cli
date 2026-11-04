@@ -327,6 +327,52 @@ func TestCellFileRefusesToDropAComposedModuleWithNoRender(t *testing.T) {
 	require.Equal(t, []string{"billing", "shop"}, again.Modules)
 }
 
+// The cell file is derived from the composition, not from whatever records
+// the checkout holds. A module removed from `modules:` leaves its render
+// record behind (and so does one that was never composed here), and the file
+// used to read it back: the module kept its namespace, workloads and consumer
+// edges in the cell after the composition dropped it. The render now leaves
+// such records out of the file, deletes them — nothing could render them again
+// — and says so.
+func TestRenderCellPrunesTheRecordOfAModuleTheCompositionNoLongerDeclares(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	// Records left by modules the composition does not declare: one for this
+	// environment, one rendered for another. Neither can be rendered again.
+	renderCellTreeWith(t, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "proposals"),
+		Module:      "proposals", Environment: "staging", Namespace: "acme-proposals", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/proposals", Units: unitsWithPorts("proposals", "web"),
+	}, "web", "staging")
+	renderCellTreeWith(t, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "compute"),
+		Module:      "compute", Environment: "production", Namespace: "acme-compute", AppProject: "acme-production",
+		Promotable: true, OwnedPath: "deployments/modules/compute", Units: unitsWithPorts("compute", "worker"),
+	}, "worker", "production")
+
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "shop"}, result.Modules)
+	require.Empty(t, result.Skipped, "a record of an undeclared module is pruned, not reported as another environment's")
+	require.Equal(t, []string{"deployments/modules/compute", "deployments/modules/proposals"}, result.Removed)
+	require.NoDirExists(t, moduleRenderDestination(workspace, "proposals"))
+	require.NoDirExists(t, moduleRenderDestination(workspace, "compute"))
+	require.DirExists(t, moduleRenderDestination(workspace, "shop"))
+
+	data, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	file, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	names := make([]string, 0, len(file.Namespaces))
+	for _, namespace := range file.Namespaces {
+		names = append(names, namespace.Name)
+	}
+	require.Equal(t, []string{"acme-billing", "acme-shop"}, names)
+	require.NotContains(t, string(data), "proposals")
+}
+
 // A workload whose authenticating container cannot be told from a sidecar is
 // refused by name rather than guessed.
 func TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *testing.T) {

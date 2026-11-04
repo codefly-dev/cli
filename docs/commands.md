@@ -1150,6 +1150,16 @@ and egress the environment's), so an entry carried over is a claim about a
 composition that may no longer exist, and no digest is invented for a module
 that was not rendered.
 
+The file is derived from the **composition**, not from whatever records the
+checkout holds. A module removed from `modules:` leaves its render record
+behind, and so does one that was never composed here; such a record is left
+out of the file and deleted by the render that derives it — nothing could
+render that module again — and the render says so, one line per record
+(`removed deployments/modules/<module>: the composition no longer declares
+it`). Every render that re-derives the cell file prunes this way, a single
+module's and `--all` alike, because that is where the claim about the cell is
+made; an environment with no `host:` has no cell file and nothing is pruned.
+
 **A publish carries the cell file.** A cell admits only the builds its cell
 file names, so a promotion that delivered a module's tree and left the file
 behind would deliver builds the cluster refuses — every refused workload
@@ -1188,9 +1198,19 @@ committed with the rendered trees, and a cell admits only what it names, so
 and the one the delivery base branch carries at
 `<gitops path>/cells/<environment>/cell.yaml`, and refuse when the workspace's
 removes a namespace, a workload, an endpoint or a consumer of an endpoint the
-base admits — naming each removal and the modules it concerns. A removal that
-is intended (a module the workspace no longer composes, a dependency dropped)
-is named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
+base admits — naming each removal and the modules it concerns. A removal the
+composition explains needs no naming: when the module it concerns is no
+longer in `modules:` (the namespace of a module removed from the composition,
+or its consumer edge on another module's endpoint), the hold lets it through
+and the plan reports it (`undeclaredCellRemovals`), and the publication also
+removes that module's delivered tree from `<gitops path>/modules/` with
+everything else it writes (`removedModules`): the cell no longer admits
+anything of it, and the ApplicationSet that tree carries would keep stamping
+Applications whose every pod the cell refuses. A rollback removes none, and a
+directory under the modules path with no render record is not a delivery and
+is left alone. Any other removal — a module still composed whose render is
+missing from the checkout, a dependency dropped, a service withdrawn — is
+named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
 covered by naming either the endpoint's module or the consumer's, and the plan
 lists every removal it lets through. A base with no cell file has nothing to
 hold the workspace's to. The file held is the file carried — the same bytes,

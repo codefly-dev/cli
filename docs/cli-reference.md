@@ -2274,7 +2274,7 @@ codefly deploy gitops plan [module]
 Flags:
 
 ```
-      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote for k3d qualification
@@ -2294,7 +2294,7 @@ codefly deploy gitops publish [module]
 Flags:
 
 ```
-      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                                                                       Promotion pull request body
       --env string                                                                        Environment to promote (default "local")

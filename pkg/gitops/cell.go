@@ -52,6 +52,13 @@ type CellResult struct {
 	// Skipped names module trees rendered for another environment, which
 	// describe another cell.
 	Skipped []string
+	// Removed are the render records of modules the composition no longer
+	// declares, deleted by this render (pruneUndeclaredRecords), as paths
+	// relative to the workspace.
+	Removed []string
+	// undeclared are those records before they are removed: deriveCell
+	// finds them, RenderCell deletes them once the cell file is written.
+	undeclared []string
 	// Source reports whether the file names its repository, branch and base
 	// revision. It does not when the environment declares no gitops
 	// repository or the workspace is not a git checkout.
@@ -94,10 +101,50 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if err != nil {
 		return CellResult{}, err
 	}
-	if err := writeCell(&file, result.Path); err != nil {
+	if err = writeCell(&file, result.Path); err != nil {
+		return CellResult{}, err
+	}
+	if result.Removed, err = pruneUndeclaredRecords(workspace, result.undeclared); err != nil {
 		return CellResult{}, err
 	}
 	return result, nil
+}
+
+// pruneUndeclaredRecords deletes the render records of modules the composition
+// no longer declares, once the cell file they were left out of is written.
+// Nothing could render such a module again (a render refuses a module the
+// workspace does not compose), so its record describes a composition that no
+// longer exists; left in place it was read back into every cell file derived
+// here, and a module removed from `modules:` kept its namespace, workloads and
+// consumer edges in the cell. It answers the paths removed, relative to the
+// workspace, for the render to print.
+func pruneUndeclaredRecords(workspace *resources.Workspace, records []string) ([]string, error) {
+	var removed []string
+	for _, tree := range records {
+		if err := os.RemoveAll(tree); err != nil {
+			return nil, fmt.Errorf("remove the render record of a module the composition no longer declares: %w", err)
+		}
+		relative, err := filepath.Rel(workspace.Dir(), tree)
+		if err != nil {
+			relative = tree
+		}
+		removed = append(removed, filepath.ToSlash(relative))
+	}
+	sort.Strings(removed)
+	return removed, nil
+}
+
+// composedModules names every module the composition declares, in this
+// workspace or one it imports: the set a cell file describes and the set a
+// removal from it is judged against.
+func composedModules(workspace *resources.Workspace) map[string]bool {
+	declared := make(map[string]bool, len(workspace.Modules))
+	for _, reference := range workspace.Modules {
+		if reference != nil {
+			declared[reference.Name] = true
+		}
+	}
+	return declared
 }
 
 // deriveCell is RenderCell without the write: the cell file the rendered
@@ -140,6 +187,7 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		Source:         cellSource(ctx, workspace, env),
 	}
 	result := CellResult{Source: file.Source != nil, ConfiguredEdges: configured}
+	declared := composedModules(workspace)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -151,6 +199,14 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		}
 		if loadErr != nil {
 			return cellfile.File{}, CellResult{}, fmt.Errorf("the render of module %s cannot be read, so the cell file cannot describe what it delivers; render %s again for %s: %w", entry.Name(), entry.Name(), env.Name, loadErr)
+		}
+		// The cell file is derived from the composition, not from whatever
+		// records the checkout holds: a record of a module no longer in
+		// `modules:` describes nothing the composition delivers, for this
+		// environment or any other, and is removed once the file is written.
+		if !declared[inventory.Module] {
+			result.undeclared = append(result.undeclared, tree)
+			continue
 		}
 		if inventory.Environment != env.Name {
 			result.Skipped = append(result.Skipped, inventory.Module)

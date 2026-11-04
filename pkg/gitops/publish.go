@@ -220,6 +220,13 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
+	declared := composedModules(workspace)
+	removedModules, err := removeUndeclaredDeliveries(repo, pathRoot, request.Module, env, restoreRevision, declared)
+	if err != nil {
+		return fail(err)
+	}
+	owned = append(owned, removedModules...)
+	publishedPaths = append(publishedPaths, removedModules...)
 	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, owned, branchRevision, replacesRevision); err != nil {
 		return fail(err)
 	}
@@ -249,7 +256,7 @@ func preparePublish(
 		return fail(err)
 	}
 	staleConsumers := describeStaleConsumers(staleOnBase)
-	allowedRemovals, err := holdCellToBase(ctx, cell, env, repo, baseBranch, baseRevision, request.AllowCellRemovals)
+	allowedRemovals, undeclaredRemovals, err := holdCellToBase(ctx, cell, env, repo, baseBranch, baseRevision, request.AllowCellRemovals, declared)
 	if err != nil {
 		return fail(err)
 	}
@@ -273,14 +280,16 @@ func preparePublish(
 		Module: request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
-		Delivery:        inventory.Delivery,
-		StaleConsumers:  staleConsumers,
-		CellRemovals:    allowedRemovals,
-		CellFile:        carriedCell,
-		CellNotice:      cellNotice(env, cell, restoreRevision, request.Module),
-		Carriers:        publication.options.Carriers,
-		SelfPromotes:    selfPromotes,
-		LocalRepository: bound,
+		Delivery:               inventory.Delivery,
+		StaleConsumers:         staleConsumers,
+		CellRemovals:           allowedRemovals,
+		UndeclaredCellRemovals: undeclaredRemovals,
+		RemovedModules:         removedModules,
+		CellFile:               carriedCell,
+		CellNotice:             cellNotice(env, cell, restoreRevision, request.Module),
+		Carriers:               publication.options.Carriers,
+		SelfPromotes:           selfPromotes,
+		LocalRepository:        bound,
 	}
 	if bound != nil {
 		if err = bound.verify(ctx, config.RepoURL); err != nil {

@@ -594,6 +594,12 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	for _, removal := range plan.CellRemovals {
 		cli.Warning("The cell file removes %s, as --allow-cell-removal names", removal)
 	}
+	for _, removal := range plan.UndeclaredCellRemovals {
+		cli.Warning("The cell file removes %s", removal)
+	}
+	for _, removed := range plan.RemovedModules {
+		cli.Warning("Removed %s from the delivery: the composition no longer declares it", removed)
+	}
 	for _, stale := range plan.StaleConsumers {
 		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
 	}
@@ -657,7 +663,7 @@ func init() {
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
 		command.Flags().StringSliceVar(&gitOpsAllowCellRemovals, "allow-cell-removal", nil,
-			"Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses")
+			"Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")
@@ -695,6 +701,9 @@ func printCell(cell *gitops.CellResult) {
 	}
 	if len(cell.Skipped) > 0 {
 		cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(cell.Skipped, ", "))
+	}
+	for _, removed := range cell.Removed {
+		cli.Info("removed %s: the composition no longer declares it", removed)
 	}
 	if !cell.Source {
 		cli.Info("Cell file names no source commit: the environment declares no gitops repository and branch, or the workspace is not a git checkout")
