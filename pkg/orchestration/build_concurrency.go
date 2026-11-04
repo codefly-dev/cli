@@ -32,14 +32,17 @@ import (
 // a machine the CLI knows nothing about. An operator who knows theirs raises
 // it.
 //
-// Two things that bound does NOT fix, said here so the next person does not
-// read the numbers as the end of the story. Real concurrent builds contend:
-// eight real Go-compile image builds measured 94s one at a time and 35s four at
-// a time, so 2.69x where the schedule alone predicted 3.9x. And the phase is
-// dispatched in the plan's topological order, which starts that 17-minute build
-// last; starting the longest builds first would take the same render from 25.7
-// minutes to its 17-minute floor, which is a larger win than raising the bound
-// and needs per-build duration history to do.
+// One thing that bound does NOT fix, said here so the next person does not
+// read the numbers as the end of the story: real concurrent builds contend.
+// Eight real Go-compile image builds measured 94s one at a time and 35s four at
+// a time, so 2.69x where the schedule alone predicted 3.9x.
+//
+// The numbers above are also the makespan of a phase dispatched in the plan's
+// topological order, which starts that 17-minute build last. A phase dispatched
+// longest-recorded-build first reaches 17.0 minutes at four at once — the floor
+// — which is more than raising the bound to eight buys. That is where the
+// render's time went and build_dispatch.go is how it is taken back; the bound
+// here only decides how many builds may be in flight, not which ones start.
 const (
 	// buildConcurrencyEnv pins the number of image builds a build phase runs at
 	// once. It is read per build phase, so it needs no plumbing through every

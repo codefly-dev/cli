@@ -379,7 +379,14 @@ func (playbook *Playbook) workConcurrently(ctx context.Context, actions []Action
 	// their own goroutine because they read results while later probes are
 	// still blocked on SetLimit. Nothing here is read until every action is
 	// done, so blocking on the bound is exactly the wanted behaviour.
-	for index := range admitted {
+	//
+	// Started longest-recorded-build first rather than in the group's order,
+	// because a bounded phase ends when its last build ends and the plan's
+	// topological order starts the longest one last (build_dispatch.go). Only
+	// the starts move: every result stays at its own action's index, so what
+	// follows reads the group in the group's order whatever this permutation
+	// was.
+	for _, index := range playbook.dispatchOrder(ctx, admitted) {
 		group.Go(func() error {
 			outcome, execErr := playbook.policy.Execute(ctx, admitted[index])
 			next[index], failures[index] = outcome, execErr

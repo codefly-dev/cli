@@ -587,8 +587,20 @@ func (b *Builder) runImageBuild(
 		}
 		return w.Wrapf(err, "cannot build %s of %s", recipe.GetImage(), b.instance.Unique())
 	}
+	took := time.Since(started)
 	w.Info("image build completed", wool.Field("image", recipe.GetImage()),
-		wool.Field("duration", time.Since(started)))
+		wool.Field("duration", took))
+	// Recorded here and not around the action in the playbook, which is the
+	// quantity actually being scheduled, because a build the reuse cache stood
+	// in for never reaches this line: measuring the action would write the
+	// seconds a skipped build took over the minutes the real one takes, and the
+	// next phase would dispatch it last (build_dispatch.go). A build that
+	// failed records nothing either — its wall clock is not what building it
+	// costs. Failing to record is not failing to build: the record is a
+	// dispatch hint, so it is said and dropped.
+	if err := b.world.buildDurations().record(ctx, b.instance.Unique(), took); err != nil {
+		w.Debug("cannot record how long this build took", wool.ErrField(err))
+	}
 	return nil
 }
 
