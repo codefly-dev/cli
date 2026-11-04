@@ -240,6 +240,34 @@ func SignedAuthorityDocument(manifest *solutionhost.ModuleManifest, core, declar
 	return &compositionv1.SignedManifestV1{Document: document, Envelope: envelope}, nil
 }
 
+// SamePolicy reports whether a delivered authority document says what a
+// module's captured declaration says now: the policy a host would hold if the
+// declaration were signed at that document's generation. The three fields
+// SignedAuthorityDocument stamps — module, generation, Core digest — name the
+// pair and are not policy, so they are set aside; everything else is compared
+// as the message, not as bytes, so a re-encoding is not a change. nil against
+// nil is the same (a withdrawal, or a module that declares nothing); a half
+// that appears or vanishes is a change, because the host refuses either
+// ("cannot strip policy on replay") at a held generation.
+func SamePolicy(delivered, declaration []byte) (bool, error) {
+	if (delivered == nil) != (declaration == nil) {
+		return false, nil
+	}
+	if delivered == nil {
+		return true, nil
+	}
+	var stored, declared compositionv1.AuthorityManifestV1
+	if err := proto.Unmarshal(delivered, &stored); err != nil {
+		return false, fmt.Errorf("the delivered authority document does not read: %w", err)
+	}
+	if err := proto.Unmarshal(declaration, &declared); err != nil {
+		return false, fmt.Errorf("the declaration does not read: %w", err)
+	}
+	stored.Module, stored.Generation, stored.CoreManifestDigest = "", 0, ""
+	declared.Module, declared.Generation, declared.CoreManifestDigest = "", 0, ""
+	return proto.Equal(&stored, &declared), nil
+}
+
 // Applied is NativeDeliverer.Applied over the interface: ApplyManifest applies
 // synchronously. Retain the acknowledged request identity for completion in
 // this delivery attempt; this is not a remote state query across host restarts.

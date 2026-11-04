@@ -320,6 +320,7 @@ func newDeliveryPublication(request *PublishRequest, baseBranch string) (*delive
 	publication.options.Reuse = request.Carriers
 	publication.options.Executing = request.Carriers != nil
 	publication.options.Resign = request.Resign
+	publication.options.Advance = request.Advance
 	return publication, nil
 }
 

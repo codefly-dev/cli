@@ -476,6 +476,11 @@ type PublishRequest struct {
 	// release policy no longer admits — after a signing identity rotated.
 	// Deliberate: without it such a carrier refuses the publish by name.
 	Resign bool `json:"resign,omitempty"`
+	// Advance names the bindings this publish settles at the next generation
+	// although their content is unchanged — the answer to a host refusing a
+	// delivered generation as a history conflict naming the binding, which
+	// the delivered tree cannot see. Deliberate: nothing advances unnamed.
+	Advance []string `json:"advance,omitempty"`
 	// AllowCellRemovals names the modules whose removal from the hosted
 	// environment's cell file this publish intends: a namespace, workload,
 	// endpoint or consumer the delivery base branch's cell file carries and

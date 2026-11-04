@@ -96,6 +96,14 @@ type deliveryPublishOptions struct {
 	// publish that may not deliver unsigned gives when its signer had no
 	// identity. Empty means the release workflow.
 	Signs string
+	// Advance names the bindings this publish settles at the next generation
+	// although their content is unchanged: for when the host's record and the
+	// delivered tree disagree about a generation — the host refuses it as a
+	// history conflict naming the binding, as a pair delivered at a generation
+	// the host already held Core-only is — and the tree alone cannot tell.
+	// Deliberate, never implied, like Resign: the generation is a number the
+	// host keeps, and only the host's refusal says the tree's is spent.
+	Advance []string
 	// Declarations reads a module's own declaration — the authority half of a
 	// paired delivery. It is read only where the host's delivery endpoint
 	// declares codefly.dev/composition (Target.Composition), because that is
@@ -123,6 +131,12 @@ func unsignedRefusal(unsigned, environment string, cause error, opts *deliveryPu
 type deliveredManifest struct {
 	manifest *solutionhost.ModuleManifest
 	carrier  []byte
+	// paired reports that the base branch delivers this binding with a paired
+	// document beside its carrier, and authority is the authority document
+	// that pair carries — nil for a withdrawal, which is paired Core-only.
+	// Both are read only from the base branch (priorDeliveredManifests).
+	paired    bool
+	authority []byte
 }
 
 // settleManifestDelivery settles the delivery documents of the tree staged at
@@ -212,12 +226,13 @@ func settleManifests(
 	if err != nil {
 		return nil, nil, err
 	}
+	if err = advanceNamed(settled, prior, opts.Advance, environment); err != nil {
+		return nil, nil, err
+	}
 	if opts.Target != nil && opts.Target.Composition {
-		delivered, filesErr := deliveredOverlayFiles(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
-		if filesErr != nil {
-			return nil, nil, filesErr
+		if err = settlePairedGenerations(ctx, settled, prior, opts); err != nil {
+			return nil, nil, err
 		}
-		advanceIntoPairedSettlement(settled, prior, delivered)
 	}
 	names := sortedBindings(settled)
 	// Each manifest at its settled generation is held against what the base
@@ -348,32 +363,88 @@ func settledManifestSet(rendered, prior map[string]deliveredManifest) (map[strin
 	return settled, nil
 }
 
-// advanceIntoPairedSettlement moves a binding into paired settlement: a
-// manifest the base branch delivered Core-only — no paired document beside
-// its carrier — that this publish delivers paired keeps nothing of that
-// generation, because the host holds the generation with no authority
-// document and refuses the same generation offered with one as a history
-// conflict ("authority document digest stored=… (present=false)"), and the
-// old record cannot establish policy equality either way. It advances once,
-// as the native run's record does on the same transition, and is signed
-// again. A withdrawal keeps its Core-only identity.
-func advanceIntoPairedSettlement(settled, prior map[string]deliveredManifest, deliveredFiles []string) {
-	paired := map[string]bool{}
-	for _, name := range deliveredFiles {
-		paired[name] = true
-	}
+// settlePairedGenerations settles, toward a composition host, the bindings
+// whose manifest is unchanged: there the generation's content is the PAIR —
+// the Core manifest and the authority document signed beside it — exactly as
+// the native run's record keys a generation on the Core payload and the
+// prepared declaration together (settle in native_delivery.go), and as the
+// host holds it: one generation is one immutable pair, and the same number
+// offered with other authority bytes is a history conflict, not a change.
+// So a binding keeps its generation only when the whole pair is unchanged,
+// and otherwise advances once and is signed again. A withdrawal keeps its
+// Core-only identity.
+//
+// Two things move a kept manifest to the next generation:
+//
+//   - The base branch delivered it Core-only, with no paired document beside
+//     its carrier: the host holds the generation with no authority document
+//     and refuses it offered with one ("authority document digest stored=…
+//     (present=false)"), and the old record cannot establish policy equality
+//     either way.
+//   - The module's declaration no longer says what the delivered authority
+//     document says — an operation gained or lost, a role, a ceiling, or the
+//     half itself appearing or vanishing — while its manifest is unchanged. A
+//     module's interface moves without its release stamp moving, and the
+//     authority half is what carries that move to the host.
+//
+// What it cannot decide is a pair the tree holds at a generation the host
+// took Core-only: a publish from before paired settlement advanced on
+// entering paired a binding at the generation it had, and whether the host
+// had taken that generation Core-only first, or never, is written nowhere in
+// the tree — two bindings with one history went each way on Blue. The host's
+// refusal says it, and the person answers it with Advance (advanceNamed).
+func settlePairedGenerations(ctx context.Context, settled, prior map[string]deliveredManifest, opts *deliveryPublishOptions) error {
 	for binding, entry := range settled {
 		previous, delivered := prior[binding]
 		if !delivered || entry.manifest.Removed || entry.manifest.Generation != previous.manifest.Generation {
 			continue
 		}
-		if paired[pairedDocumentFile(binding)] {
+		advance := !previous.paired
+		if !advance && opts.Declarations != nil {
+			declaration, err := opts.Declarations.Declaration(ctx, entry.manifest.Alias)
+			if err != nil {
+				return fmt.Errorf("read the declaration of module %s: %w", entry.manifest.Alias, err)
+			}
+			same, err := SamePolicy(previous.authority, declaration)
+			if err != nil {
+				return fmt.Errorf("compare the declaration of module %s with the authority document delivered for %s: %w", entry.manifest.Alias, binding, err)
+			}
+			advance = !same
+		}
+		if !advance {
 			continue
 		}
 		entry.manifest.Generation = previous.manifest.Generation + 1
 		entry.carrier = nil
 		settled[binding] = entry
 	}
+	return nil
+}
+
+// advanceNamed settles each binding Advance names at the next generation
+// although its content is unchanged, and refuses by name one the base branch
+// does not deliver or that is withdrawn: an advance is a deliberate answer to
+// a host's refusal of a generation, and a name that matches nothing delivered
+// is a typo the person would otherwise never see. A binding already moving to
+// the next generation moves no further.
+func advanceNamed(settled, prior map[string]deliveredManifest, advance []string, environment string) error {
+	for _, binding := range advance {
+		previous, delivered := prior[binding]
+		entry, present := settled[binding]
+		if !delivered || !present {
+			return fmt.Errorf("--advance names binding %s, which the base branch delivers no manifest of under %s; the bindings delivered are %s", binding, environment, strings.Join(sortedBindings(prior), ", "))
+		}
+		if entry.manifest.Removed {
+			return fmt.Errorf("--advance names binding %s, which this publish withdraws; a withdrawal is its own generation and is not advanced", binding)
+		}
+		if entry.manifest.Generation != previous.manifest.Generation {
+			continue
+		}
+		entry.manifest.Generation = previous.manifest.Generation + 1
+		entry.carrier = nil
+		settled[binding] = entry
+	}
+	return nil
 }
 
 // settledGeneration is the generation of a candidate against the manifest
@@ -638,7 +709,8 @@ func renderedManifests(directory string) (map[string]deliveredManifest, error) {
 
 // priorDeliveredManifests reads the manifests the base branch delivers under
 // the overlay path, keyed by binding, each with the carrier it was delivered
-// as.
+// as and, when the base branch delivers it paired, the authority document
+// beside it.
 func priorDeliveredManifests(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]deliveredManifest, error) {
 	ref := "refs/remotes/origin/" + baseBranch
 	files, err := deliveredOverlayFiles(ctx, repo, baseBranch, overlayPath)
@@ -646,7 +718,12 @@ func priorDeliveredManifests(ctx context.Context, repo, baseBranch, overlayPath 
 		return nil, err
 	}
 	prior := map[string]deliveredManifest{}
+	var pairs []string
 	for _, name := range files {
+		if strings.HasSuffix(name, pairedDocumentFile("")) {
+			pairs = append(pairs, name)
+			continue
+		}
 		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
 		if err != nil {
 			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
@@ -658,6 +735,26 @@ func priorDeliveredManifests(ctx context.Context, repo, baseBranch, overlayPath 
 		if held {
 			prior[manifest.Binding] = deliveredManifest{manifest: manifest, carrier: carrier}
 		}
+	}
+	for _, name := range pairs {
+		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
+		if err != nil {
+			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
+		}
+		pair, held, err := pairedDocumentFromConfigMap(name, data)
+		if err != nil {
+			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
+		}
+		if !held {
+			continue
+		}
+		entry, delivered := prior[pair.binding]
+		if !delivered || entry.manifest.Generation != pair.generation {
+			return nil, fmt.Errorf("the delivered %s on %s pairs binding %s at generation %d and the branch delivers no manifest of it at that generation; the delivered tree and its pair disagree, so no generation can be settled against it", name, baseBranch, pair.binding, pair.generation)
+		}
+		entry.paired = true
+		entry.authority = pair.request.GetAuthority().GetDocument()
+		prior[pair.binding] = entry
 	}
 	return prior, nil
 }

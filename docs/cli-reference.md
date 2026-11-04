@@ -2274,6 +2274,7 @@ codefly deploy gitops plan [module]
 Flags:
 
 ```
+      --advance strings                                                                   Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
       --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --env string                                                                        Environment to promote (default "local")
@@ -2294,6 +2295,7 @@ codefly deploy gitops publish [module]
 Flags:
 
 ```
+      --advance strings                                                                   Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
       --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                                                                       Promotion pull request body
