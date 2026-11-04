@@ -634,6 +634,7 @@ func verifyImmutableServiceSnapshot(ctx context.Context, repo, target, targetPat
 		snapshotInventory.OwnedPath != inventory.OwnedPath ||
 		snapshotInventory.ModulePath != inventory.ModulePath ||
 		snapshotInventory.MeshPath != inventory.MeshPath ||
+		snapshotInventory.MeshPosture != inventory.MeshPosture ||
 		!reflect.DeepEqual(snapshotInventory.Units, inventory.Units) {
 		return fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}

@@ -104,15 +104,15 @@ func TestInventoryUnitDirectoriesAreDistinctAndKindChecked(t *testing.T) {
 
 func TestRemovePublicationRemainderPreservesEveryUnitDirectory(t *testing.T) {
 	target := t.TempDir()
-	for _, name := range []string{"services", "solutions", "module", "bootstrap", "stray"} {
+	for _, name := range []string{"services", "solutions", "module", meshPostureDir, "bootstrap", "stray"} {
 		if err := os.MkdirAll(filepath.Join(target, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := removePublicationRemainder(target, []string{"services", "solutions"}); err != nil {
+	if err := removePublicationRemainder(target, []string{"services", "solutions"}, true); err != nil {
 		t.Fatal(err)
 	}
-	for _, kept := range []string{"services", "solutions", "module"} {
+	for _, kept := range []string{"services", "solutions", "module", meshPostureDir} {
 		if _, err := os.Stat(filepath.Join(target, kept)); err != nil {
 			t.Fatalf("directory %s was removed: %v", kept, err)
 		}
@@ -121,6 +121,30 @@ func TestRemovePublicationRemainderPreservesEveryUnitDirectory(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(target, removed)); !os.IsNotExist(err) {
 			t.Fatalf("directory %s survived pruning: %v", removed, err)
 		}
+	}
+}
+
+// AND THE MESH LAYER IS RETIRED WHEN THE PUBLICATION NO LONGER DELIVERS ONE.
+// The layer was kept unconditionally, so a cell taken off the mesh — its
+// environment's host block removed, nothing rendering mesh/ any more — kept a
+// namespace-wide STRICT mTLS policy applied by an Argo Application the
+// bootstrap no longer stamps, with nothing in the publication able to remove
+// it. The downgrade has to be expressible.
+func TestRemovePublicationRemainderRetiresTheMeshLayerOnDowngrade(t *testing.T) {
+	target := t.TempDir()
+	for _, name := range []string{"services", meshPostureDir} {
+		if err := os.MkdirAll(filepath.Join(target, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removePublicationRemainder(target, []string{"services"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, meshPostureDir)); !os.IsNotExist(err) {
+		t.Fatalf("the mesh layer survived a publication that delivers none: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "services")); err != nil {
+		t.Fatalf("the unit directory was removed: %v", err)
 	}
 }
 

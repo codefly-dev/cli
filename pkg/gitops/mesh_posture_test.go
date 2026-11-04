@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/routing"
+	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,9 +36,11 @@ func TestAMeshedRenderProjectsNamespaceWideSTRICT(t *testing.T) {
 	root := t.TempDir()
 	tree := testRenderRoot(t, root)
 	opts := meshedRenderOptions(t, root)
-	path, err := projectMeshPosture(tree, root, opts)
+	path, posture, err := projectMeshPosture(tree, root, opts)
 	require.NoError(t, err)
 	require.Equal(t, meshPostureDir, path)
+	require.Equal(t, routing.MeshModeSTRICT, posture, "the posture the tree carries is recorded, so a verifier requires it")
+	opts.MeshPosture = posture
 
 	overlay := filepath.Join(root, meshPostureDir, "overlays", "production")
 	manifests, err := overlayManifests(overlay)
@@ -62,9 +65,10 @@ func TestAnUnmeshedRenderProjectsNoPosture(t *testing.T) {
 	root := t.TempDir()
 	opts := meshedRenderOptions(t, root)
 	opts.Host = nil
-	path, err := projectMeshPosture(testRenderRoot(t, root), root, opts)
+	path, posture, err := projectMeshPosture(testRenderRoot(t, root), root, opts)
 	require.NoError(t, err)
 	require.Empty(t, path)
+	require.Empty(t, posture)
 	require.NoError(t, checkMeshPosture(nil, opts))
 }
 
@@ -73,7 +77,7 @@ func TestAMeshedRenderWithoutANamespaceIsRefused(t *testing.T) {
 	root := t.TempDir()
 	opts := meshedRenderOptions(t, root)
 	opts.Namespace = ""
-	_, err := projectMeshPosture(testRenderRoot(t, root), root, opts)
+	_, _, err := projectMeshPosture(testRenderRoot(t, root), root, opts)
 	require.ErrorContains(t, err, "no resolved namespace to require STRICT mTLS in")
 }
 
@@ -126,6 +130,89 @@ spec:
 	})
 }
 
+// A PORT-LEVEL MODE OVERRIDES THE NAMESPACE'S STRICT, so the check reads
+// those entries too. Istio takes spec.portLevelMtls, a mode per workload port,
+// and a policy that reads STRICT at spec.mtls.mode while carrying
+// `portLevelMtls: {8081: {mode: DISABLE}}` leaves 8081 accepting plaintext —
+// with no peer principal — while the edges delivered for that port still read
+// "only the hop".
+//
+// The port key is a NUMBER, and written unquoted the mapping decodes with
+// non-string keys, so a reader that looks only at map[string]any finds nothing
+// and passes the policy. Both spellings are exercised here for that reason.
+func TestThePostureCheckRefusesAPerPortRelaxation(t *testing.T) {
+	root := t.TempDir()
+	opts := meshedRenderOptions(t, root)
+	policy := func(ports string) []manifest {
+		decoded, _, err := decodeYAML("ported.yaml", []byte(`apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: `+routing.MeshNamespacePolicyName+`
+  namespace: cell-platform
+spec:
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+`+ports))
+		require.NoError(t, err)
+		return decoded
+	}
+
+	for _, tc := range []struct{ name, ports, contains string }{
+		{"an unquoted port number", "    8081:\n      mode: DISABLE\n", "portLevelMtls port 8081 at mtls.mode \"DISABLE\""},
+		{"a quoted port", "    \"8081\":\n      mode: PERMISSIVE\n", "portLevelMtls port 8081 at mtls.mode \"PERMISSIVE\""},
+		{"a port with no mode at all", "    8081: {}\n", "portLevelMtls port 8081 at mtls.mode \"\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkMeshPosture(policy(tc.ports), opts)
+			require.ErrorContains(t, err, tc.contains)
+			require.ErrorContains(t, err, "a port-level mode overrides the namespace-wide STRICT")
+		})
+	}
+
+	// What this check cannot read it must not wave through: an unreadable
+	// shape is the one case where skipping would be indistinguishable from
+	// passing.
+	t.Run("a shape this check cannot read is refused rather than skipped", func(t *testing.T) {
+		require.ErrorContains(t, checkMeshPosture(policy("    - 8081\n"), opts), "is not a mapping of port to mode")
+		require.ErrorContains(t, checkMeshPosture(policy("    8081: DISABLE\n"), opts), "is not a mode setting")
+	})
+
+	t.Run("a redundant STRICT entry is harmless", func(t *testing.T) {
+		require.NoError(t, checkMeshPosture(policy("    8081:\n      mode: STRICT\n"), opts))
+	})
+}
+
+// THE REQUIREMENT TRAVELS WITH THE TREE. The posture was projected and checked
+// by the producing render alone, so every reader of a promotable tree —
+// ValidateRenderedTree, the service-snapshot check, an observation — accepted
+// one rendered by a CLI that wrote no mesh layer, or one whose policy was
+// edited to PERMISSIVE after the render. The render records the posture it
+// delivered, and a verifier requires it whenever the record carries mesh edges.
+func TestAVerifierRequiresThePostureTheRecordDeclares(t *testing.T) {
+	root := t.TempDir()
+	opts := meshedRenderOptions(t, root)
+	opts.Host = nil
+
+	t.Run("a recorded posture is required with no environment host in hand", func(t *testing.T) {
+		verifying := *opts
+		verifying.MeshPosture = routing.MeshModeSTRICT
+		require.ErrorContains(t, checkMeshPosture(nil, &verifying), "carries no namespace-wide PeerAuthentication")
+	})
+
+	t.Run("edges with no recorded posture are refused", func(t *testing.T) {
+		verifying := *opts
+		verifying.MeshEdges = &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion}
+		err := checkMeshPosture(nil, &verifying)
+		require.ErrorContains(t, err, "carries mesh edges but no delivered mesh posture")
+		require.ErrorContains(t, err, "re-render it with a CLI that writes the mesh/ layer")
+	})
+
+	t.Run("a tree that is not meshed at all requires nothing", func(t *testing.T) {
+		require.NoError(t, checkMeshPosture(nil, opts))
+	})
+}
+
 // A workload running as the namespace's default ServiceAccount has an identity
 // every such pod of the namespace shares, so a cell cannot admit callers by
 // principal at all — and the compiled policies of a real cell allowed
@@ -146,6 +233,44 @@ func TestTheCellRefusesAWorkloadRunningAsTheDefaultAccount(t *testing.T) {
 	_, err = RenderCell(context.Background(), workspace, env)
 	require.ErrorContains(t, err, `workload api runs as the namespace's "default" ServiceAccount`)
 	require.ErrorContains(t, err, "every pod of the namespace that names no account shares")
+}
+
+// AND THE RENDER SAYS WHOSE ACCOUNT CHANGES. Giving every service of a meshed
+// namespace its own ServiceAccount is a cell-wide behaviour change on the next
+// render of an already-running namespace: a rolling restart of each workload,
+// and — the part nothing in the tree shows — the end of any RBAC or cloud
+// workload-identity binding made against the namespace's `default` account for
+// it. The render reports the set so an operator can move those bindings; a
+// service that already held an account of its own is not in it, because
+// nothing changes for it.
+func TestTheRenderNamesTheWorkloadsWhoseAccountChanges(t *testing.T) {
+	meshed := &environments.Environment{
+		Name: "production",
+		Host: &environments.EnvironmentHost{TrustDomain: "prod.cell"},
+		ServiceIdentity: &environments.EnvironmentServiceIdentity{
+			Services: map[string]environments.EnvironmentWorkloadIdentity{
+				"platform/declared": {Annotations: map[string]string{"iam.gke.io/gcp-service-account": "declared@project.iam"}},
+			},
+		},
+		ManagedServices: map[string]environments.EnvironmentManagedService{"platform/redis": {}},
+	}
+	services := []*resources.Service{
+		{Name: "api"},
+		{Name: "worker"},
+		{Name: "declared"},
+		{Name: "gateway", ModuleIdentity: true},
+		{Name: "authority", WorkspaceConfigurationDependencies: []string{environments.ModuleAuthorityConfiguration}},
+		{Name: "redis"},
+		nil,
+	}
+	require.Equal(t, []string{"platform/api", "platform/worker"}, meshNamedAccounts("platform", services, meshed),
+		"only the services the mesh alone gives an account: not one with a declared identity, not one that presents its module's, not one the environment manages")
+
+	t.Run("off a mesh nothing changes", func(t *testing.T) {
+		unmeshed := *meshed
+		unmeshed.Host = nil
+		require.Empty(t, meshNamedAccounts("platform", services, &unmeshed))
+	})
 }
 
 // The guarantee has to reach the cell, not just the staged tree: the layer is
@@ -181,6 +306,56 @@ func TestThePostureLayerIsPromotedAsItsOwnApplication(t *testing.T) {
 	tree := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", result.Commit)
 	require.Contains(t, tree, result.Path+"/"+meshPostureDir+"/overlays/production/"+meshPostureFile,
 		"the promoted commit carries the layer the cell applies")
+}
+
+// A VERIFIER READS A TREE IT DID NOT WRITE, AND HOLDS IT TO THE POSTURE.
+//
+// The projection and the check were both the producing render's: every other
+// reader of a promotable tree — ValidateRenderedTree, the service-snapshot
+// check, an observation of the reconciled Git tree — trusted the producer for
+// the one guarantee that makes the delivered edges mean anything. So a tree
+// whose policy was relaxed to PERMISSIVE after the render, or one rendered by
+// a CLI that wrote no mesh layer at all, verified and promoted without
+// complaint. The posture travels with the tree in its own record, and the
+// check runs on every promotable pass.
+func TestAVerifierHoldsARenderedTreeToItsRecordedPosture(t *testing.T) {
+	_, workspace, _ := developerPublishWorkspace(t)
+	tree := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	require.NoError(t, ValidateRenderedTree(tree, "", true), "the render's own tree verifies")
+
+	inventory, err := LoadInventory(tree)
+	require.NoError(t, err)
+	require.Equal(t, routing.MeshModeSTRICT, inventory.MeshPosture, "the render records the posture it delivered")
+
+	t.Run("a policy relaxed after the render is refused", func(t *testing.T) {
+		policy := filepath.Join(tree, meshPostureDir, "overlays", "production", meshPostureFile)
+		data, readErr := os.ReadFile(policy)
+		require.NoError(t, readErr)
+		relaxed := strings.Replace(string(data), "mode: "+routing.MeshModeSTRICT, "mode: PERMISSIVE", 1)
+		require.NotEqual(t, string(data), relaxed, "the fixture's policy was not found")
+		require.NoError(t, os.WriteFile(policy, []byte(relaxed), 0o644))
+		defer func() { require.NoError(t, os.WriteFile(policy, data, 0o644)) }()
+
+		err := ValidateRenderedTree(tree, "", true)
+		require.ErrorContains(t, err, `mtls.mode "PERMISSIVE"`)
+		require.ErrorContains(t, err, "a principal is only a fact about a connection the peer authenticated")
+	})
+
+	t.Run("a tree that delivers edges and no posture is refused", func(t *testing.T) {
+		// The record of a render that delivered edges and no posture layer:
+		// what a pre-#1280 CLI produced, and what dropping the layer from a
+		// current one would produce.
+		stripped := inventory
+		stripped.MeshPath = ""
+		stripped.MeshPosture = ""
+		stripped.MeshEdges = &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: "prod.cell"}
+		require.NoError(t, os.RemoveAll(filepath.Join(tree, meshPostureDir)))
+		require.NoError(t, writeCanonicalInventory(filepath.Join(tree, InventoryFilename), &stripped))
+
+		err := ValidateRenderedTree(tree, "", true)
+		require.ErrorContains(t, err, "carries mesh edges but no delivered mesh posture",
+			"this is the pre-#1280 render: the edges arrive with nothing making them enforceable")
+	})
 }
 
 // The layer reaches the cluster through an Application of its own, in the

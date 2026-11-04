@@ -593,7 +593,7 @@ func TestPublishKeepsAnotherEnvironmentsDeliveredHistory(t *testing.T) {
 	})
 	require.NoError(t, err)
 	inventory := result.Inventory
-	require.NoError(t, removePublicationRemainder(repository.target, []string{"services"}))
+	require.NoError(t, removePublicationRemainder(repository.target, []string{"services"}, inventory.MeshPath != ""))
 	_, err = stageAndSettleDelivery(ctx, repository.repo, repository.target, repository.targetPath, rendered, &inventory, "staging", publication)
 	require.NoError(t, err)
 	require.True(t, deliveredModuleManifest(t, repository.target, "example.prod.crm").Removed, "prod's withdrawal survives staging's publish")

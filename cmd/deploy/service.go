@@ -53,6 +53,7 @@ var ServiceCmd = &cobra.Command{
 			cli.Info("Digest %s", result.Inventory.Digest)
 			printSizingReport(result.Sizing)
 			printElidedNamespaces(result.ElidedNamespaces)
+			printMeshServiceAccounts(result.MeshServiceAccounts)
 			cli.Header(1, "Service render done!")
 			return nil
 		}

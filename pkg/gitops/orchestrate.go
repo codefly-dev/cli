@@ -101,6 +101,7 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	result.StaleGroupConsumers = render.staleConsumers
+	result.MeshServiceAccounts = render.meshAccounts
 	// A hosted environment's cell file describes every module tree rendered
 	// for it; this render moved one, so the file is derived again from all
 	// of them as they stand now.
@@ -190,6 +191,9 @@ type moduleRender struct {
 	options          *RenderOptions
 	// staleConsumers are the sibling group consumers the render found stale.
 	staleConsumers map[string][]string
+	// meshAccounts are the workloads this render gives a ServiceAccount of
+	// their own because the environment is meshed (meshNamedAccounts).
+	meshAccounts []string
 }
 
 // stage fills the staged owned tree: every root service rendered through its
@@ -213,6 +217,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 		return err
 	}
 	r.options.WorkspaceConfigurationDigests = digests
+	// On a meshed environment every service runs as the account its principal
+	// names; the ones that did not before are reported, not flipped silently.
+	r.meshAccounts = meshNamedAccounts(r.module.Name, services, r.env)
 	catalog, roots, err := r.resolveInputs(ctx, services)
 	if err != nil {
 		return err
