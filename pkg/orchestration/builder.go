@@ -138,7 +138,7 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	}
 	resp, err := b.instance.Builder.Load(ctx, options...)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load builder instance")
+		return nil, w.Wrapf(explainHostResolutionRefusal(err, b.instance), "cannot load builder instance")
 	}
 
 	w.Debug("loaded", wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))

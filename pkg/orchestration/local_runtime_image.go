@@ -72,7 +72,7 @@ func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
 	// not overwrite those runtime declarations in shared state.
 	runner.instance.Builder.Workspace = runner.world.Workspace
 	if _, err := runner.instance.Builder.Load(ctx); err != nil {
-		return "", err
+		return "", explainHostResolutionRefusal(err, runner.instance)
 	}
 	b, err := NewBuilder(ctx, runner.instance, runner.world)
 	if err != nil {
