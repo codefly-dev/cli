@@ -1956,7 +1956,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 			args = append(args, "-S")
 		}
 		args = append(args, "-m", message)
-		if _, err := gitCommand(ctx, prepared.dir, args...); err != nil {
+		if _, err = gitCommand(ctx, prepared.dir, args...); err != nil {
 			return PublishResult{}, fmt.Errorf("create promotion commit: %w", err)
 		}
 		commit, err = gitCommand(ctx, prepared.dir, "rev-parse", "HEAD^{commit}")
