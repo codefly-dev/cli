@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -73,6 +74,19 @@ func (p *planeImpl) ObserveGitOps(ctx context.Context, request *gitops.ObserveRe
 		return gitops.ObserveResult{}, fmt.Errorf("select environment %q: %w", normalized.Environment, err)
 	}
 	normalized.Local = env.IsK3d()
+	// The refusals a cell records against a delivered workload are read
+	// through the cluster the environment declares, the same resolution
+	// every other cluster call of the environment uses.
+	if normalized.Kubeconfig == "" {
+		kubeconfig, err := deployments.GetK8sConfig(ctx, env)
+		if err != nil {
+			return gitops.ObserveResult{}, fmt.Errorf("resolve the kubeconfig of environment %q: %w", normalized.Environment, err)
+		}
+		normalized.Kubeconfig = kubeconfig
+	}
+	if normalized.KubeContext == "" && env.Cluster != nil {
+		normalized.KubeContext = env.Cluster.Context
+	}
 	return gitops.NewCoordinator().Observe(ctx, &normalized)
 }
 

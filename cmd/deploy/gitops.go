@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -270,6 +271,7 @@ var gitOpsObserveCmd = &cobra.Command{
 			Commit: publication.Commit, Tree: publication.Tree, RenderDigest: publication.RenderDigest,
 			Repository: publication.Repository, Path: publication.Path,
 			PullRequest: publication.PullRequest, Local: gitOpsLocal, Timeout: gitOpsTimeout,
+			Output: os.Stdout,
 		})
 		if err != nil {
 			return err

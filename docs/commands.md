@@ -1215,6 +1215,32 @@ codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
 
+`observe` waits, bounded by `--timeout`, for Argo CD to report every selected
+application Synced and Healthy at the reviewed revision — which is each
+delivered workload rolled out. While an application is still Progressing or
+Degraded, Argo CD says nothing of why, so `observe` reads the events of the
+delivered workloads' controllers (a Deployment's ReplicaSets, a StatefulSet, a
+DaemonSet, a Job) through the cluster the environment declares (`cluster:
+kubeconfig` and `context`; kubectl's current context when it declares none)
+and prints every `FailedCreate` recorded since the application's sync began
+verbatim, once, as it is first seen, naming the workload — an event older
+than the sync belongs to a previous rollout (a ReplicaSet the Deployment keeps
+in its history) and is not this one's:
+
+```
+payments/Deployment/api FailedCreate: Error creating: pods "api-5d9f6c7b8-" is forbidden: ValidatingAdmissionPolicy 'cell-admission' with binding 'cell-admission' denied request: no approved execution matches this pod
+```
+
+An admission denial — the cell's policy or a webhook, whose message says it
+`denied request` — ends the observation at once with a non-zero exit, because
+no retry of the controller creates that pod. Any other `FailedCreate` (a quota
+exceeded, a service account the admission cache has not seen yet — forbidden
+too, but retried past) is printed and the wait goes on; the timeout then
+names the workloads it was still waiting on, with
+the health message Argo CD attached, and every refusal seen. A cluster that
+cannot be read is reported once and does not end the observation: Argo CD's
+health is awaited as before, and the timeout says the events were unreadable.
+
 `render --all` renders every module the workspace composes, the host first,
 and derives the environment's cell file once at the end from all of them, so
 one command renders one composition and a stale sibling tree is never a reason
