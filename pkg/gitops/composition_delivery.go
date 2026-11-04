@@ -44,9 +44,10 @@ type CompositionDelivery struct {
 // declares, read by roles from its module contract too (core's manifest
 // carries none), and its explicit owner-aware declaration, and the
 // installation declaration read by installation from that contract — the
-// selector and person-context edges, carried verbatim because the paired
-// agreement rule compares this document against the Core signed manifest
-// byte-for-byte.
+// selector and person-context edges, each carried verbatim except an edge's
+// presence, which is resolved for the environment's class on this document and
+// on the Core signed manifest alike, because the paired agreement rule
+// compares the two byte-for-byte.
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),
@@ -139,9 +140,10 @@ type AuthoritySources struct {
 	Roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
 	// OwnerAware reads the module's explicit owner-selector enforcement declaration.
 	OwnerAware func(ctx context.Context, module string) (bool, error)
-	// Installation reads the installation declaration. Carried verbatim — the
-	// paired agreement rule compares this document against the Core signed
-	// manifest byte-for-byte.
+	// Installation reads the installation declaration. Carried verbatim but
+	// for an edge's presence, which is resolved for the environment's class
+	// here and on the Core signed manifest alike — the paired agreement rule
+	// compares the two documents byte-for-byte.
 	Installation func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error)
 }
 

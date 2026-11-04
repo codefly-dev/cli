@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -958,5 +959,29 @@ environments:
 	}
 	if !(&environments.EnvironmentServiceSecrets{SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell", Kind: "ClusterSecretStore"}}).Stored() {
 		t.Fatal("a named store is stored")
+	}
+}
+
+// TestAnEnvironmentClassIsDeclaredFromTheOneVocabulary: a class is one of the
+// three release stages, and a misspelling fails at the environment that wrote
+// it rather than at the render of whichever module happens to declare an edge
+// whose presence differs by class. Omitting it stays legal — it is what every
+// environment does today.
+func TestAnEnvironmentClassIsDeclaredFromTheOneVocabulary(t *testing.T) {
+	for _, class := range append([]string{""}, modulecontract.EnvironmentClasses()...) {
+		env := &environments.Environment{Name: "blue", Class: class}
+		if err := env.Validate(); err != nil {
+			t.Errorf("class %q refused: %v", class, err)
+		}
+	}
+	env := &environments.Environment{Name: "blue", Class: "dev"}
+	err := env.Validate()
+	if err == nil {
+		t.Fatal("an environment class outside the vocabulary was accepted")
+	}
+	for _, word := range []string{"blue", `"dev"`, "development, staging, production"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal does not say %s: %v", word, err)
+		}
 	}
 }

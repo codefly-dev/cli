@@ -100,7 +100,13 @@ func moduleAuthority(
 		}
 		return HostMethodPolicies(ctx, workspace, env, callee)
 	})
-	resolved, err := request.contract.Resolve(workspaceValues{provided: provided}, modulecontract.WithCallees(callees))
+	// Resolved for the class of the environment being delivered to: an edge
+	// whose presence differs along the promotion path resolves to the one
+	// presence it has here, and the delivered manifest carries that. The
+	// authority document's half resolves with the same class
+	// (InstallationDeclaration), because an agreement rule compares them.
+	resolved, err := request.contract.Resolve(workspaceValues{provided: provided},
+		modulecontract.WithCallees(callees), modulecontract.WithEnvironmentClass(env.Class))
 	if err != nil {
 		return nil, fmt.Errorf("module %s: %w", module.Name, err)
 	}

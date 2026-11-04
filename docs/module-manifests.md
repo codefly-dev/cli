@@ -337,13 +337,52 @@ catalogue. A dependency list is never inferred from a module's bindings, which
 cover what it calls on its own behalf rather than what a person reaches at the
 edge.
 
+**A presence may differ along the promotion path, and the CLI resolves it at
+delivery.** An edge whose presence is genuinely not the same everywhere
+declares `presence_by_class` in place of `presence`:
+
+```yaml
+edge_dependencies:
+  - module: robin
+    presence: required                 # the same presence everywhere
+  - module: annotations
+    presence_by_class: {development: optional, production: required}
+```
+
+The environment being delivered to declares its ENVIRONMENT CLASS — its
+release stage, `development`, `staging` or `production`, the axis a coordinate
+already names:
+
+```yaml
+environments:
+  - name: blue
+    class: development
+```
+
+It is declared and never derived: `blue`, `green` and `dev` are all
+development cells, and a class read off an environment's name would make a
+production environment development the day someone named one `prod-2`. It
+reaches no agent and no module, and it is not a protection floor — what a cell
+must protect is a separate declaration.
+
+The render passes it to core's one resolution, which answers with the single
+presence that edge has here; both signed documents carry that one value, so a
+host keeps reading `presence: required|optional` and never learns what a class
+is. A class the contract does not name — and an environment that declares no
+class while a contract declares one per class — is refused at the render,
+naming the module, the classes the contract names and the class asked for.
+Nothing defaults. An edge declares exactly one of the two spellings, and
+`presence` alone needs no class, so a composition whose contracts all declare
+it is unaffected.
+
 The CLI carries both onto **two** signed documents and normalizes neither: the
 core manifest's `authority` block (`installation_role`, `edge_dependencies`) and
 the composition delivery's `AuthorityManifestV1` (`installation_role` field 8,
 `edge_dependencies` field 9). Declaration order is preserved — the list is a
 sequence, not a set, and sorting it would change what is signed. Nothing is
-trimmed, defaulted, deduplicated or resolved, because authority compares the two
-documents **byte for byte** and refuses a disagreement: `installation_role` must
+trimmed, defaulted or deduplicated, and a presence is resolved on BOTH
+documents with the same environment class or on neither, because authority
+compares the two documents **byte for byte** and refuses a disagreement: `installation_role` must
 match exactly (empty and `none` differ), and `edge_dependencies` must match in
 length and in each ordered `module`/`presence` pair. An absent or empty list is
 the same zero-edge declaration on either side, so the CLI delivers an empty list
