@@ -149,8 +149,10 @@ func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, cl
 	if err != nil {
 		return claim
 	}
+	// The source revision is read from the delivery branch's file and spliced
+	// into git arguments: only a full commit hash is one.
 	source := ""
-	if base.Source != nil {
+	if base.Source != nil && isCommitHash(base.Source.Revision) {
 		source = base.Source.Revision
 	}
 	switch {
@@ -209,6 +211,20 @@ func declaredAtRevision(ctx context.Context, dir, revision string) map[string]bo
 		}
 	}
 	return declared
+}
+
+// isCommitHash reports whether value is a full lowercase SHA-1 commit hash,
+// the one shape a revision read from a file may take before it reaches git.
+func isCommitHash(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // gitHasCommit reports whether the repository holds the commit.

@@ -217,6 +217,9 @@ func TestTheCompositionClaimIsAdvancedOnlyFromACheckoutThatSawTheBase(t *testing
 	require.Equal(t, map[string]bool{"shop": true, "billing": true, "legacy": true}, claim.declaredAt)
 	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, nil).advanced, "a base with no cell file advances nothing")
 	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, &cellfile.File{}).advanced, "a base naming no source advances nothing")
+	option := newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, &cellfile.File{Source: &cellfile.Source{Revision: "--output=/tmp/x"}})
+	require.False(t, option.advanced, "a source revision that is not a commit hash never reaches git")
+	require.Empty(t, option.revision)
 
 	// The workspace is the delivery repository: the base commit is the one
 	// that committed the render, a child of the revision the file names. A
