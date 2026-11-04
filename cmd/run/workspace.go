@@ -136,6 +136,7 @@ func CompositionRoots(ctx context.Context, workspace *resources.Workspace) ([]st
 }
 
 func init() {
+	WorkspaceCmd.Flags().BoolVar(&watchFrontends, "watch-frontends", false, watchFrontendsUsage)
 	WorkspaceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
 	WorkspaceCmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to run")
 	WorkspaceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")

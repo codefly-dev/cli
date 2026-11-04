@@ -161,6 +161,7 @@ func entryUnique(mod *resources.Module) string {
 }
 
 func init() {
+	SolutionCmd.Flags().BoolVar(&watchFrontends, "watch-frontends", false, watchFrontendsUsage)
 	// Solution-facing subset of the run flags, bound to the same package vars
 	// runServiceCommand reads. The advanced/testing flags (cli-server, …) stay
 	// ServiceCmd-only.

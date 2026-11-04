@@ -137,6 +137,52 @@ manifest names those exact bytes. A build failure refuses delivery with the
 component name, build command and final 40 lines of build output; it never
 falls back to a previous bundle. Headless components perform no frontend build.
 
+The local builder verifies that the staged files match the selected input digest
+before invoking npm or the container builder. It reselects and hashes the source
+after the build; concurrent edits refuse that candidate before retention rather
+than labeling old output with a new source identity. A later reconciliation uses
+the current source. This check alone does not start a watcher or publish a bundle.
+
+
+### Hosted frontend editing
+
+`codefly run service`, `run solution` and `run workspace` accept
+`--watch-frontends` (off by default). A native controller with a declared host
+watches local-source pages in its selected authority closure. Verified immutable
+module packages and the host's own page are excluded. A container-owned page
+still uses its existing container builder; a fully container controller and
+`run cluster` do not support this option. Backend agent `hot-reload` is independent.
+
+The watcher observes the enclosing repository (component directory outside Git),
+pruning only build outputs, plus the exact Git index and exclude files. Invalid
+package dependencies retain repair interest. Git configuration outside that tree
+is not a live input; restart the run after changing that environment. Growth adds
+eligible watches and full removal stops them. Browser refresh loads the delivered
+same-origin artifact; this is not browser HMR. A terminally closed filesystem
+watch stream requires a controlled run restart; recoverable registration errors
+retain their existing retry/rescan behavior.
+
+Admission, readiness, frontend edits and withdrawal share per-module gates.
+Source digests and lifecycle revisions are checked before each signed batch send;
+a batch preflight failure sends nothing, but sequential host application is not a
+transaction across modules. An in-flight request may apply before a later edit;
+the edit remains pending for reconciliation. Existing persisted reservations and
+bounded delivery retries handle uncertain responses; receipt and confirmed Applied
+remain distinct. Applied success requires the exact binding, generation, digest,
+release and live status; a superseding generation is not this delivery succeeding.
+Supersession, identity disagreement, policy refusal and explicit withholding are
+terminal. Exhaustion
+is unconfirmed, and a later legitimate event retries rather than claiming success.
+
+A failed initial page build can be repaired only while its actual bounded
+Start/Admit call remains pending. After terminal timeout/refusal, repair followed
+by a controlled owning-run restart is required; a file edit never starts a workload
+or invents admission. An already admitted module keeps its last applied page on
+build failure, and a later edit retries. Shutdown cancels and drains reconciliation
+before closing transport and staging. Delivery does not bypass installation or
+consent: adopting a changed release in an existing installation still requires
+the host's supported installation lifecycle.
+
 ## Declaring the host
 
 The environment declares the host it delivers to. Every field is required,

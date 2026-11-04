@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,7 +12,21 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/solutionhost"
+	"google.golang.org/grpc/status"
 )
+
+// AppliedUnconfirmed reports observation uncertainty, never a host refusal or
+// successful application. The caller may replay within its original deadline.
+type AppliedUnconfirmed struct{ Cause error }
+
+func (e *AppliedUnconfirmed) Error() string { return e.Cause.Error() }
+func (e *AppliedUnconfirmed) Unwrap() error { return e.Cause }
+
+func observationResult(parent context.Context, result *error) {
+	if parent.Err() == nil && errors.Is(*result, context.DeadlineExceeded) {
+		*result = &AppliedUnconfirmed{Cause: *result}
+	}
+}
 
 // withdrawalAttempts and withdrawalInterval bound the wait for a delivered
 // withdrawal to be APPLIED: a delivery receipt only confirms the inbox.
@@ -23,7 +38,8 @@ const (
 // WaitForWithdrawal observes the host's applied record of a withdrawn binding
 // through its declared Applied callback or the legacy read-only endpoint,
 // until it holds the exact withdrawal this run delivered.
-func (d *NativeDeliverer) WaitForWithdrawal(ctx context.Context, withdrawal *solutionhost.ModuleManifest) error {
+func (d *NativeDeliverer) WaitForWithdrawal(ctx context.Context, withdrawal *solutionhost.ModuleManifest) (result error) {
+	defer observationResult(ctx, &result)
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(withdrawalAttempts)*withdrawalInterval)
 	defer cancel()
 	if withdrawal == nil || !withdrawal.Removed || (d.Applied == nil && d.ObserverToken == nil) {
@@ -50,7 +66,7 @@ func (d *NativeDeliverer) WaitForWithdrawal(ctx context.Context, withdrawal *sol
 		case <-time.After(withdrawalInterval):
 		}
 	}
-	return fmt.Errorf("binding %s withdrawal generation %d is received but not applied; retained for the next composition refresh", withdrawal.Binding, withdrawal.Generation)
+	return &AppliedUnconfirmed{Cause: fmt.Errorf("binding %s withdrawal generation %d is received but not applied", withdrawal.Binding, withdrawal.Generation)}
 }
 
 // AppliedManifest is the host's applied identity of a binding, supplied by
@@ -72,9 +88,14 @@ type AppliedManifest struct {
 // WaitForApplied holds a delivery to its outcome: the host applied this
 // generation, or withheld it and said why. A receipt says the carrier was
 // accepted into the inbox; only the applied state says the module is served.
-func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solutionhost.ModuleManifest) error {
-	if manifest == nil || (d.Applied == nil && d.ObserverToken == nil) {
-		return fmt.Errorf("applied-state observation requires a manifest and an observer")
+func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solutionhost.ModuleManifest) (result error) {
+	defer observationResult(ctx, &result)
+	if manifest == nil || manifest.Removed || (d.Applied == nil && d.ObserverToken == nil) {
+		return fmt.Errorf("applied-state observation requires a live manifest and an observer")
+	}
+	digest, err := manifest.Digest()
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(withdrawalAttempts)*withdrawalInterval)
 	defer cancel()
@@ -83,16 +104,28 @@ func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solution
 		if err != nil {
 			return err
 		}
+		if found && applied == nil {
+			return fmt.Errorf("host reported applied binding %s without its record", manifest.Binding)
+		}
+		if found && applied.Binding != manifest.Binding {
+			return fmt.Errorf("applied record names binding %q, not %s", applied.Binding, manifest.Binding)
+		}
 		if found && applied.Pending != nil && applied.Pending.Generation >= manifest.Generation {
 			return fmt.Errorf("the host received binding %s generation %d and withheld it: %s",
 				manifest.Binding, applied.Pending.Generation, applied.Pending.Reason)
 		}
-		if found && applied.Generation >= manifest.Generation {
+		if found && applied.Generation > manifest.Generation {
+			return fmt.Errorf("binding %s generation %d was superseded by applied generation %d", manifest.Binding, manifest.Generation, applied.Generation)
+		}
+		if found && applied.Generation == manifest.Generation {
+			if applied.Digest != digest || applied.Release != manifest.Release.Identity() || applied.Removed {
+				return fmt.Errorf("applied record does not match binding %s generation %d", manifest.Binding, manifest.Generation)
+			}
 			return nil
 		}
 		if attempt+1 == withdrawalAttempts {
-			return fmt.Errorf("binding %s generation %d is received and not applied after %s, and the host reports no reason",
-				manifest.Binding, manifest.Generation, time.Duration(withdrawalAttempts)*withdrawalInterval)
+			return &AppliedUnconfirmed{Cause: fmt.Errorf("binding %s generation %d is received and not applied after %s, and the host reports no reason",
+				manifest.Binding, manifest.Generation, time.Duration(withdrawalAttempts)*withdrawalInterval)}
 		}
 		select {
 		case <-ctx.Done():
@@ -105,7 +138,11 @@ func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solution
 // appliedState reads the host's applied record of binding; found is false on 404.
 func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*AppliedManifest, bool, error) {
 	if d.Applied != nil {
-		return d.Applied(ctx, binding)
+		applied, found, err := d.Applied(ctx, binding)
+		if ctx.Err() == nil && err != nil && (&HostStatusError{Code: status.Code(err)}).Transient() {
+			err = &AppliedUnconfirmed{Cause: err}
+		}
+		return applied, found, err
 	}
 	token, err := d.ObserverToken()
 	if err != nil {
@@ -129,13 +166,20 @@ func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*Ap
 		return nil, false, nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("host refused applied-state observation (%s)", response.Status)
+		return nil, false, &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("host refused applied-state observation (%s)", response.Status)}
 	}
-	var applied AppliedManifest
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&applied); err != nil {
+	var record struct {
+		AppliedManifest
+		Removed *bool `json:"removed"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&record); err != nil {
 		return nil, false, fmt.Errorf("read applied state: %w", err)
 	}
-	return &applied, true, nil
+	if record.Binding == "" || record.Generation == 0 || record.Digest == "" || record.Release == "" || record.Removed == nil {
+		return nil, false, fmt.Errorf("read applied state: missing identity fields")
+	}
+	record.AppliedManifest.Removed = *record.Removed
+	return &record.AppliedManifest, true, nil
 }
 
 func (d *NativeDeliverer) withdrawalApplied(ctx context.Context, withdrawal *solutionhost.ModuleManifest, digest string) (bool, error) {
@@ -151,6 +195,9 @@ func (d *NativeDeliverer) withdrawalApplied(ctx context.Context, withdrawal *sol
 	}
 	if applied.Binding != withdrawal.Binding {
 		return false, fmt.Errorf("applied record names binding %q, not %s", applied.Binding, withdrawal.Binding)
+	}
+	if applied.Pending != nil && applied.Pending.Generation >= withdrawal.Generation {
+		return false, fmt.Errorf("the host withheld binding %s withdrawal generation %d: %s", withdrawal.Binding, applied.Pending.Generation, applied.Pending.Reason)
 	}
 	if applied.Generation < withdrawal.Generation {
 		return false, nil

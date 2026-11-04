@@ -53,6 +53,9 @@ Examples:
 	RunE: runServiceCommand,
 }
 
+// Keep command-boundary recovery observable in tests without starting a graph.
+var reapRunProcesses = processgroup.ReapStaleProcessGroupsWithEvidence
+
 // resolveRunPins materializes the workspace's composed pinned modules unless the
 // caller already did, which pinsAlreadyResolved records.
 //
@@ -101,13 +104,16 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// cleanupRun is the run once it exists, for the deferred cleanup below,
 	// which is registered before it.
 	var cleanupRun *serviceRun
+	// No automatic recovery is permitted until the composing workspace resolves.
+	var recoveryWorkspace string
 	cli.Init()
 	defer func() {
 		services.ClearAgents()
+		if recoveryWorkspace == "" {
+			return
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		// Machine-wide on purpose: this recovers records whose owner has exited,
-		// which is garbage collection and never signals a live workspace's run.
-		evidence, err := processgroup.ReapStaleProcessGroupsWithEvidence(cleanupCtx, processgroup.AllWorkspaces())
+		evidence, err := reapRunProcesses(cleanupCtx, processgroup.InWorkspace(recoveryWorkspace))
 		cleanupCancel()
 		if err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))
@@ -134,13 +140,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		cli.StartCapture()
 	}
 
-	// Reap any process groups orphaned by a prior ungraceful CLI exit
-	// (parent SIGKILL, terminal force-closed). Without this, zombie
-	// trees from a previous `codefly run` survive and hold ports,
-	// making the next run appear to fork-bomb or fail port binding.
-	if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
-		cli.Warning("stale process-group sweep failed: %v", err)
-	}
 	// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency
 	// containers under a unique naming scope that are never reused. Mark
 	// them ephemeral BEFORE provisioning so the sweep can reap them even
@@ -174,6 +173,16 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 	if err != nil {
 		return fmt.Errorf("cannot load required service: %w", err)
+	}
+	if workspace == nil || workspace.Dir() == "" {
+		return errors.New("cannot recover run processes without a resolved workspace")
+	}
+	recoveryWorkspace = workspace.Dir()
+	// Imported services can execute outside the composing checkout. Record the
+	// resolved owner, not merely the directory where this command was invoked.
+	processgroup.MarkLaunchWorkspace(recoveryWorkspace)
+	if _, err := reapRunProcesses(ctx, processgroup.InWorkspace(recoveryWorkspace)); err != nil {
+		cli.Warning("stale process-group sweep failed: %v", err)
 	}
 
 	if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
@@ -1048,7 +1057,7 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	// leaves live runners the caller must tear down via stopFresh(). Handing back
 	// a nil flow here silently orphaned them — their process groups then survived
 	// until the next run's reaper.
-	err = flow.InitManagers(ctx)
+	err = initializeRunManagers(ctx, flow)
 	if err != nil {
 		return flow, w.Wrap(err)
 	}
@@ -1057,6 +1066,18 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 		return flow, w.Wrap(err)
 	}
 	return flow, nil
+}
+
+func initializeRunManagers(ctx context.Context, flow *orchestration.Flow) error {
+	if err := flow.InitManagers(ctx); err != nil {
+		return err
+	}
+	// The flow publishes its local authority participants in InitManagers.
+	// Watching earlier silently installs no watches for the initial run.
+	if cluster := activeLauncher(); cluster != nil {
+		return cluster.refreshFrontendWatches(ctx)
+	}
+	return nil
 }
 
 // parseSetOverrides turns repeatable --set entries of the form
@@ -1155,6 +1176,7 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 }
 
 func init() {
+	ServiceCmd.Flags().BoolVar(&watchFrontends, "watch-frontends", false, watchFrontendsUsage)
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().BoolVar(&openDashboard, "open", false, "Open the dashboard in the default browser (requires --cli-server)")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")

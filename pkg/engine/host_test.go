@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/processgroup"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
@@ -50,6 +51,8 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 		}
 	}
 	t.Setenv("HOME", t.TempDir())
+	workspace := recoveryTestWorkspace(t)
+	t.Setenv(processgroup.LaunchWorkspaceEnv, workspace)
 
 	owner := exec.Command(os.Args[0], "-test.run=^TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners$")
 	owner.Env = append(os.Environ(), workspaceHostOrphanHelper+"=owner")
@@ -79,8 +82,9 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 	if err := syscall.Kill(-pid, 0); err != nil {
 		t.Fatalf("orphan process group %d was not alive before recovery: %v", pid, err)
 	}
+	foreignPID := startForeignHostOrphan(t, recoveryTestWorkspace(t))
 
-	host, err := NewWorkspaceHost(Config{Root: t.TempDir()})
+	host, err := NewWorkspaceHost(Config{Root: workspace})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,11 +92,44 @@ func TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners(t *testing.T) 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			if err := syscall.Kill(-foreignPID, 0); err != nil {
+				t.Fatalf("another workspace's orphan was signalled: %v", err)
+			}
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("WorkspaceHost did not reap orphan process group %d", pid)
+}
+
+func startForeignHostOrphan(t *testing.T, workspace string) int {
+	t.Helper()
+	owner := exec.Command(os.Args[0], "-test.run=^TestWorkspaceHostReapsProcessGroupsLeftByDeadInProcessOwners$")
+	owner.Env = append(os.Environ(), workspaceHostOrphanHelper+"=owner", processgroup.LaunchWorkspaceEnv+"="+workspace)
+	stdout, err := owner.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.Stderr = os.Stderr
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, readErr := bufio.NewReader(stdout).ReadString('\n')
+	if err := owner.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || pid <= 1 {
+		t.Fatalf("foreign orphan pid %q: %v", line, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	if err := syscall.Kill(-pid, 0); err != nil {
+		t.Fatal(err)
+	}
+	return pid
 }
 
 func TestWorkspaceHostConstructionSurvivesReaperFailure(t *testing.T) {
@@ -102,12 +139,12 @@ func TestWorkspaceHostConstructionSurvivesReaperFailure(t *testing.T) {
 	// host — and therefore the whole front door — from starting.
 	original := reapStaleProcessGroups
 	t.Cleanup(func() { reapStaleProcessGroups = original })
-	reapStaleProcessGroups = func(context.Context) error {
-		return errors.New("simulated reaper failure")
+	reapStaleProcessGroups = func(context.Context, processgroup.Scope) (processgroup.CleanupEvidence, error) {
+		return processgroup.CleanupEvidence{}, errors.New("simulated reaper failure")
 	}
 
 	var logs bytes.Buffer
-	host, err := NewWorkspaceHost(Config{Root: t.TempDir(), LogWriter: &logs})
+	host, err := NewWorkspaceHost(Config{Root: recoveryTestWorkspace(t), LogWriter: &logs})
 	if err != nil {
 		t.Fatalf("host construction must survive a reaper failure, got: %v", err)
 	}
@@ -126,9 +163,9 @@ func TestWorkspaceHostConstructionSurvivesReaperFailure(t *testing.T) {
 func TestWorkspaceHostReaperNarratesToTheLogSink(t *testing.T) {
 	original := reapStaleProcessGroups
 	t.Cleanup(func() { reapStaleProcessGroups = original })
-	reapStaleProcessGroups = func(ctx context.Context) error {
+	reapStaleProcessGroups = func(ctx context.Context, _ processgroup.Scope) (processgroup.CleanupEvidence, error) {
 		wool.Get(ctx).In("processgroup.reconcile").Info("reaped managed process group")
-		return nil
+		return processgroup.CleanupEvidence{}, nil
 	}
 
 	escaped := &recordingProcessor{}
@@ -136,7 +173,7 @@ func TestWorkspaceHostReaperNarratesToTheLogSink(t *testing.T) {
 	t.Cleanup(func() { wool.SetFallbackLogger(nil) })
 
 	var logs bytes.Buffer
-	host, err := NewWorkspaceHost(Config{Root: t.TempDir(), LogWriter: &logs})
+	host, err := NewWorkspaceHost(Config{Root: recoveryTestWorkspace(t), LogWriter: &logs})
 	if err != nil {
 		t.Fatal(err)
 	}

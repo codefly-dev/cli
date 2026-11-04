@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -90,4 +92,76 @@ func TestWithdrawalCompletionPrefersTheDeclaredAppliedInterface(t *testing.T) {
 	require.Equal(t, 1, calls)
 	d.ObserverToken = nil
 	require.NoError(t, d.WaitForWithdrawal(t.Context(), withdrawal))
+}
+
+// The observer describes the host's current identity, not a monotonic success
+// counter for this writer. A superseding release (including removal) is terminal.
+func TestLegacyHTTPAppliedRequiresTheExactDeliveredIdentity(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	manifest := renderNative(t, module, services, "api")
+	manifest.Generation = 5
+	digest, err := manifest.Digest()
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name      string
+		change    func(map[string]any)
+		malformed bool
+		previous  bool
+		wantErr   string
+	}{
+		{name: "exact"},
+		{name: "newer", change: func(v map[string]any) { v["generation"] = uint64(6) }, wantErr: "superseded"},
+		{name: "newer removed", change: func(v map[string]any) { v["generation"] = uint64(6); v["removed"] = true; v["digest"] = "another" }, wantErr: "superseded"},
+		{name: "wrong binding", change: func(v map[string]any) { v["binding"] = "other" }, wantErr: "binding"},
+		{name: "wrong digest", change: func(v map[string]any) { v["digest"] = "another" }, wantErr: "does not match"},
+		{name: "missing digest", change: func(v map[string]any) { delete(v, "digest") }, wantErr: "missing identity"},
+		{name: "missing generation", change: func(v map[string]any) { delete(v, "generation") }, wantErr: "missing identity"},
+		{name: "missing removed", change: func(v map[string]any) { delete(v, "removed") }, wantErr: "missing identity"},
+		{name: "null removed", change: func(v map[string]any) { v["removed"] = nil }, wantErr: "missing identity"},
+		{name: "wrong release", change: func(v map[string]any) { v["release"] = "another" }, wantErr: "does not match"},
+		{name: "removed", change: func(v map[string]any) { v["removed"] = true }, wantErr: "does not match"},
+		{name: "malformed", malformed: true, wantErr: "read applied state"},
+		{name: "lower then exact", previous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, http.MethodGet, r.Method)
+				require.Equal(t, "/platform/_delivery/applied/"+manifest.Binding, r.URL.Path)
+				require.Equal(t, "Bearer observer", r.Header.Get("Authorization"))
+				n := calls.Add(1)
+				if tc.malformed {
+					_, _ = w.Write([]byte(`{"generation":`))
+					return
+				}
+				value := map[string]any{"binding": manifest.Binding, "generation": manifest.Generation, "digest": digest, "release": manifest.Release.Identity(), "removed": false}
+				if tc.change != nil {
+					tc.change(value)
+				}
+				if tc.previous && n == 1 {
+					value["generation"] = manifest.Generation - 1
+					value["digest"] = "prior"
+					value["removed"] = true
+				}
+				_ = json.NewEncoder(w).Encode(value)
+			}))
+			defer server.Close()
+			d := &NativeDeliverer{DeliveryURL: server.URL, ObserverToken: func() (string, error) { return "observer", nil }}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err := d.WaitForApplied(ctx, manifest)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				var uncertain *AppliedUnconfirmed
+				require.False(t, errors.As(err, &uncertain), "identity disagreement is not observation uncertainty")
+			} else {
+				require.NoError(t, err)
+			}
+			wantCalls := int32(1)
+			if tc.previous {
+				wantCalls = 2
+			}
+			require.Equal(t, wantCalls, calls.Load())
+		})
+	}
 }

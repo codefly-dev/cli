@@ -23,7 +23,7 @@ import (
 // a package variable so tests can drive its failure path; production binds the
 // real reaper. Reaping is best-effort (see NewWorkspaceHost), never a
 // construction precondition.
-var reapStaleProcessGroups = processgroup.ReapStaleProcessGroups
+var reapStaleProcessGroups = processgroup.ReapStaleProcessGroupsWithEvidence
 
 // Config configures a WorkspaceHost.
 type Config struct {
@@ -55,17 +55,6 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 	if root == "" {
 		return nil, fmt.Errorf("workspace host root is required")
 	}
-	// RECOVERY BOUNDARY: WorkspaceHost is the shared process-owning entry point
-	// for the CLI, MCP, Gateway gRPC, and Mind's in-process Gateway. Reap PGIDs
-	// left by dead owners here so every front door self-heals after a crash; the
-	// reaper preserves groups whose owning process is still alive.
-	//
-	// Reaping is best-effort: a failure (signal permission, an unusual runs
-	// directory, a race with a concurrent host) must not stop every front door
-	// from starting. Surface it and continue rather than failing construction.
-	if err := reapStaleProcessGroups(reapContext(cfg.LogWriter)); err != nil {
-		logHostWarning(cfg.LogWriter, fmt.Sprintf("could not reap stale workspace processes: %v", err))
-	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace host root: %w", err)
@@ -77,6 +66,14 @@ func NewWorkspaceHost(cfg Config) (*WorkspaceHost, error) {
 	}
 	if info != nil && !info.IsDir() {
 		return nil, fmt.Errorf("workspace host root is not a directory: %s", absolute)
+	}
+	// A host root may be a nested source tree or a not-yet-created path. Only
+	// recover after validation, and only when it has a known containing workspace.
+	// Unknown attribution is not permission to signal another workspace's group.
+	if workspace, ok := processgroup.CurrentWorkspace(absolute); info != nil && ok {
+		if _, err := reapStaleProcessGroups(reapContext(cfg.LogWriter), processgroup.InWorkspace(workspace)); err != nil {
+			logHostWarning(cfg.LogWriter, fmt.Sprintf("could not reap stale workspace processes: %v", err))
+		}
 	}
 	supervisor := NewAgentSupervisor(AgentSupervisorConfig{
 		Root:      absolute,
