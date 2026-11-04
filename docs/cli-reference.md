@@ -2286,7 +2286,7 @@ Flags:
 
 ## `codefly deploy gitops publish`
 
-Create a signed promotion commit and open or update its pull request
+Create a promotion commit (signed when git has a signing identity) and open or update its pull request
 
 ```
 codefly deploy gitops publish [module]
