@@ -134,6 +134,17 @@ func derivedCompositionHop(ctx context.Context, workspace *resources.Workspace, 
 	var standing []string
 	hop := &compositionHop{Fronted: listed, Reached: reached}
 	for _, ref := range refs {
+		// A service this environment withdraws stands nothing: it is not
+		// delivered, so it admits no call and cannot be the second principal
+		// this refusal is about. Counting it made blue — which withdraws
+		// authority/hop because on a cell saas is the host and its gateway
+		// plays the hop role — refuse its own render with "authority/hop and
+		// saas/auth-gateway both declare hop-routes", naming a service the
+		// same render had already skipped. Every other loop over a module's
+		// services for one environment reads Excludes; this one did not.
+		if env.Excludes(ref.Module, ref.Name) {
+			continue
+		}
 		service, loadErr := workspace.LoadService(ctx, ref)
 		if loadErr != nil {
 			return nil, fmt.Errorf("load service %s/%s to find the composition's hop: %w", ref.Module, ref.Name, loadErr)
