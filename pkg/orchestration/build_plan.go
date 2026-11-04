@@ -534,17 +534,11 @@ func (b *Builder) buildRecipe(
 	if err != nil {
 		return err
 	}
-	started := time.Now()
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
 		wool.Field("goprivate", private.GoPrivate), wool.Field("prefetched_contexts", len(private.Proxies)))
-	command := exec.CommandContext(ctx, "docker", args...)
-	command.Stdout = os.Stderr
-	command.Stderr = os.Stderr
-	if buildErr := command.Run(); buildErr != nil {
-		return w.Wrapf(buildErr, "cannot build %s", recipe.GetImage())
+	if err = b.runImageBuild(ctx, w, recipe, args); err != nil {
+		return err
 	}
-
-	w.Info("image build completed", wool.Field("image", recipe.GetImage()), wool.Field("duration", time.Since(started)))
 
 	pushedDigest, err := b.resolvePushedDigest(w, metadataFile, recipe, captureDigest)
 	if err != nil {
@@ -558,6 +552,43 @@ func (b *Builder) buildRecipe(
 		return err
 	}
 	b.recordImageForReuse(ctx, w, recipe, scope, identity, imageCache, shouldPush, pushedDigest, loadedImageID, recordable)
+	return nil
+}
+
+// runImageBuild runs one recipe's buildx invocation and reports how long it
+// took, naming the service whichever way it ends.
+//
+// Where its progress goes depends on whether this build has the terminal to
+// itself. One that does streams there, as every build always has. One sharing
+// the phase with other builds writes to a transcript of its own, which is
+// replayed under its service's name if the build fails: several buildx progress
+// streams woven into one terminal name no service and read as neither, while a
+// build that succeeded is already described by the completion line below.
+func (b *Builder) runImageBuild(
+	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, args []string,
+) error {
+	command := exec.CommandContext(ctx, "docker", args...)
+	var transcript *buildTranscript
+	if b.world.buildsConcurrently() {
+		transcript = &buildTranscript{}
+		command.Stdout, command.Stderr = transcript, transcript
+	} else {
+		command.Stdout, command.Stderr = os.Stderr, os.Stderr
+	}
+	started := time.Now()
+	if err := command.Run(); err != nil {
+		if transcript != nil {
+			if report := transcript.Report(b.instance.Unique(), recipe.GetImage()); report != "" {
+				// One write, to the stream a streaming build would have used,
+				// so the transcript stays contiguous instead of being broken up
+				// by the log lines of the builds still running beside it.
+				fmt.Fprint(os.Stderr, report)
+			}
+		}
+		return w.Wrapf(err, "cannot build %s of %s", recipe.GetImage(), b.instance.Unique())
+	}
+	w.Info("image build completed", wool.Field("image", recipe.GetImage()),
+		wool.Field("duration", time.Since(started)))
 	return nil
 }
 
