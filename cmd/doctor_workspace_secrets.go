@@ -106,14 +106,11 @@ func checkServiceSecretRequirements(
 
 	judged := 0
 	for _, diagnostics := range findings {
-		if len(diagnostics) == 0 {
+		// A service is judged when its agent answered under the contract: no
+		// diagnostic at all, or missing keys, which is an answer. An agent that
+		// could not be asked, or that cannot say, judged nothing.
+		if len(diagnostics) == 0 || diagnostics[0].Code == codeSecretConfigurationRequired {
 			judged++
-		}
-		for index := range diagnostics {
-			if diagnostics[index].Code != codeSecretRequirementUndeclared {
-				judged++
-				break
-			}
 		}
 		for index := range diagnostics {
 			report.Checks = append(report.Checks, diagnostics[index])
