@@ -194,6 +194,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 		if ContextCancelled(err) {
 			return nil, nil
 		}
+		err = explainHostResolutionRefusal(err, runner.instance)
 		w.Warn(fmt.Sprintf("cannot load runtime instance for <%s> %v", runner.instance.Unique(), err))
 		if runner.outputPropertyForLoad.processed == nil {
 			return nil, w.Wrapf(err, "cannot load runtime instance for %s", runner.instance.Unique())
