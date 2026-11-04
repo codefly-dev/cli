@@ -2694,9 +2694,17 @@ The check discovers the workspace, resolves the selected environment
 (default: local), validates declared secret backends and their executables,
 verifies that required workspace and service configurations exist for the
 environment, and resolves secret provider references (op://…) in memory,
-discarding the values immediately. It is strictly read-only: it never creates
-directories or files, never starts agents, containers, or services, and never
-prints secret values or raw references.
+discarding the values immediately. It never creates directories or files in
+the workspace, never starts containers or services, and never prints secret
+values or raw references.
+
+For an environment that renders secret-free manifests it also asks each
+service's builder agent which secret configurations its render requires — the
+one step that starts a process per service, and the only place that
+requirement exists: without it a render refuses a missing credential only at
+deploy time, after every image is built and pushed. A service whose agent
+cannot be asked is a failure; one whose agent does not declare its
+requirements is named, and the verdict says how many were not judged.
 
 Designed for fresh git worktrees, where ignored *.secret.env files are absent
 and the failure would otherwise only surface mid-orchestration.
@@ -4038,7 +4046,7 @@ references. The remote, read-only half — authentication, account, observation,
 resource health, and drift — requires the host coordinator and is reported as
 unavailable until that layer is wired.
 
-For the bounded, no-agent workspace checks, use `codefly doctor workspace`.
+For the bounded workspace checks, use `codefly doctor workspace`.
 ```
 
 ```

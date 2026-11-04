@@ -23,7 +23,7 @@ func init() {
 			fmt.Println(tui.RenderError(fmt.Sprintf("Workspace is NOT ready for environment %q — fix the items marked ✗ above.", env)))
 			return fmt.Errorf("workspace is not ready for environment %q", env)
 		}
-		fmt.Println(tui.RenderInfo(fmt.Sprintf("Workspace is ready for environment %q.", env)))
+		fmt.Println(tui.RenderInfo(fmt.Sprintf("Workspace is ready for environment %q.%s", env, readinessQualifier(report))))
 		return nil
 	}
 }

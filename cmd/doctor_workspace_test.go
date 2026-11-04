@@ -94,6 +94,16 @@ func singleServiceWorkspace(t *testing.T, workspaceYAML string, workspaceDeps []
 
 func runReadiness(t *testing.T, opts workspaceReadinessOptions) *workspaceReadinessReport {
 	t.Helper()
+	// A readiness run asks every service's builder agent what its render
+	// requires of the host. A unit test has no agent process, so one that is
+	// not about that check answers for it: nothing required, under the
+	// contract. A test that IS about it installs its own probe.
+	installSecretRequirementProbe(t, probeRequiring())
+	return runReadinessWithInstalledProbe(t, opts)
+}
+
+func runReadinessWithInstalledProbe(t *testing.T, opts workspaceReadinessOptions) *workspaceReadinessReport {
+	t.Helper()
 	if opts.env == "" {
 		opts.env = "local"
 	}
