@@ -751,6 +751,33 @@ func TestCellFileRefusesAPodThatOptsOutOfTheMesh(t *testing.T) {
 	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), templateLabels, templateLabels+"      annotations:\n        ambient.istio.io/bypass-inbound-capture: \"true\"\n", 1)), 0o644))
 	_, err = RenderCell(context.Background(), workspace, env)
 	require.ErrorContains(t, err, "carries the ambient.istio.io/bypass-inbound-capture annotation")
+
+	// A CronJob's pod template stands under spec.jobTemplate.spec.template;
+	// an opt-out there is read where it stands.
+	cronJob := `---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: api-sweep
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            codefly.dev/bootstrap-service: api
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: api
+          restartPolicy: OnFailure
+          containers:
+            - name: api
+              image: registry.example.test/acme/api-sweep@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+`
+	require.NoError(t, os.WriteFile(rendered, append([]byte(data), []byte(cronJob)...), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "workload api-sweep: its pod template carries the sidecar.istio.io/inject label")
 }
 
 // A tree rendered for the environment whose module the workspace no longer

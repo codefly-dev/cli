@@ -118,7 +118,10 @@ func workloadsFromManifests(manifests []manifest) ([]renderedWorkload, error) {
 		}
 		workload := renderedWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, tokenMounts: map[string][]tokenMount{}, mounts: map[string][]containerMount{}}
 		workload.ServiceAccount, _ = spec["serviceAccountName"].(string)
-		templateMetadata := mapField(mapField(mapField(item.value, "spec"), "template"), "metadata")
+		// podTemplate, not spec.template: a CronJob's template stands under
+		// spec.jobTemplate.spec.template, and a label read at the wrong
+		// path is a mesh opt-out the render would never see.
+		templateMetadata := mapField(podTemplate(item), "metadata")
 		workload.templateAnnotations = mapField(templateMetadata, "annotations")
 		workload.templateLabels = mapField(templateMetadata, "labels")
 		if workload.ServiceAccount == "" {

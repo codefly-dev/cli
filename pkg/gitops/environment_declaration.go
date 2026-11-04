@@ -27,9 +27,10 @@ import (
 // both ends, so the two digests cover one set and a render is never refused
 // for a service the publish could not see.
 
-// serviceUnitNames is the name of every service unit an inventory records,
-// managed units included: a managed service's identity rows are declared the
-// same way, and a unit with no rows digests the same at both ends.
+// serviceUnitNames is the name of every unit of Kind service an inventory
+// records, managed ones (Kind service, Managed true) included: a managed
+// service's identity rows are declared the same way, and a unit with no rows
+// digests the same at both ends. Solution units are not among them.
 func serviceUnitNames(units []InventoryUnit) []string {
 	var names []string
 	for _, unit := range units {

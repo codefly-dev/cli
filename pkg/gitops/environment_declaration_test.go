@@ -1,7 +1,6 @@
 package gitops
 
 import (
-	"context"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -69,5 +68,4 @@ func TestAPublishRefusesATreeRenderedBeforeTheDeclarationMoved(t *testing.T) {
 	billing, err := LoadInventory(plain.Path)
 	require.NoError(t, err)
 	require.Empty(t, billing.EnvironmentDeclarationDigest)
-	_ = context.Background()
 }
