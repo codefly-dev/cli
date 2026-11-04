@@ -14,10 +14,10 @@ import (
 // recordingProducer captures the request it was handed so tests can assert the
 // coordinator forwards every field faithfully.
 type recordingProducer struct {
-	seen ProduceRequest
+	seen *ProduceRequest
 }
 
-func (r *recordingProducer) Produce(_ context.Context, request ProduceRequest) (RenderResult, error) {
+func (r *recordingProducer) Produce(_ context.Context, request *ProduceRequest) (RenderResult, error) {
 	r.seen = request
 	return RenderResult{}, nil
 }
@@ -31,7 +31,7 @@ func TestCoordinatorForwardsProduceRequestUnchanged(t *testing.T) {
 	producer := &recordingProducer{}
 	coordinator := &Coordinator{Producer: producer}
 
-	request := ProduceRequest{
+	request := &ProduceRequest{
 		Workspace: workspace, Module: module, Service: service, Environment: env,
 		AppProject: "payments", StandAlone: true,
 	}
@@ -55,7 +55,7 @@ type fakeManifestProducer struct {
 	manifests   string
 }
 
-func (f fakeManifestProducer) Produce(ctx context.Context, request ProduceRequest) (RenderResult, error) {
+func (f fakeManifestProducer) Produce(ctx context.Context, request *ProduceRequest) (RenderResult, error) {
 	defaults, err := environments.WorkspaceGitops(request.Workspace)
 	if err != nil {
 		return RenderResult{}, err
@@ -110,7 +110,7 @@ func TestCoordinatorDrivesFakeProducerThroughPublishAndObserve(t *testing.T) {
 		Observer:  argoObserver{},
 	}
 
-	rendered, err := coordinator.Render(ctx, ProduceRequest{Workspace: workspace})
+	rendered, err := coordinator.Render(ctx, &ProduceRequest{Workspace: workspace})
 	if err != nil {
 		t.Fatal(err)
 	}

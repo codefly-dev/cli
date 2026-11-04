@@ -2274,7 +2274,8 @@ codefly deploy gitops plan [module]
 Flags:
 
 ```
-      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
+      --advance strings                                                                   Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote for k3d qualification
@@ -2294,7 +2295,8 @@ codefly deploy gitops publish [module]
 Flags:
 
 ```
-      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses
+      --advance strings                                                                   Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
+      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                                                                       Promotion pull request body
       --env string                                                                        Environment to promote (default "local")
@@ -2616,13 +2618,34 @@ Every rule is one that silently broke something. The two worth knowing:
                  renders into a mesh allow rule straight to that module's
                  service, past the check.
 
+  role breadth   A role granting an action on one of the solution's OWN kinds
+                 that no route it publishes requires is checked by nothing, so
+                 holding it reaches nothing. It is reported as a warning: it
+                 refuses no call and breaks no run, and either a route is
+                 missing its policy or the role is wider than the solution.
+
 Permissions are judged by reading the contract through Core's own loader,
 which refuses a role granting a scope no binding backs and no ceiling covers
 ("role X grants documents:read, which is neither within the module's own scope
 ceilings nor a scope one of its bindings spells out"). That is the
 missing-permission class, caught before install rather than at the first
-refused call. What a composition's values resolve each binding to is NOT
-judged here: that needs the composition, not the directory.
+refused call.
+
+The opposite class — a role far wider than anything it reaches — is judged by
+comparing what each role grants on the solution's own kinds against what the
+operations in its published contracts require, read with the same reader the
+authority's own route policies are derived with. A role grant on a kind that
+comes from a BINDING is not judged: the module at the other end authorizes the
+relayed child, and its policies are not in this directory.
+
+What a composition's values resolve each binding to needs the composition and
+not the directory, and --env <environment> judges the rendered one: it compares
+every rendered module manifest's operation bindings against that environment's
+rendered module envelope — the ceiling the host enforces — and names each
+binding the ceiling does not admit. The host drops such a binding one line at a
+time on its own stdout, so nothing else says it: in a portal it reads as "tool
+exposure is unavailable", and an installation refuses with "module ... changed
+since review". Read-only, with no cluster and no credential.
 
 Exit codes:
   0  every judged solution conforms (warnings allowed)
@@ -2641,7 +2664,11 @@ module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
 page_shell_exported_too_widely, consumed_module_without_binding,
-page_shell_has_no_app.
+page_shell_has_no_app, installer_role_missing, backend_contract_missing,
+operation_policies_unread, role_grants_unreached_scope, and with --env:
+not_rendered_for_environment, module_envelope_not_rendered,
+module_envelope_unreadable, module_envelope_omits_binding,
+module_envelope_admits_every_binding.
 ```
 
 ```
@@ -2652,6 +2679,7 @@ Flags:
 
 ```
       --dir string         Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace
+      --env string         Also judge what this environment's RENDERED tree would enforce: every rendered manifest's operation bindings against the rendered module envelope, naming each binding the ceiling does not admit
       --json               Print a versioned report per module to stdout
       --require-solution   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
 ```
@@ -2679,7 +2707,8 @@ Exit codes:
   0  the workspace is ready (warnings allowed)
   1  at least one check failed, or the command itself failed
 
-With --json, a versioned report is printed to stdout:
+With --json, a versioned report is printed to stdout, and stdout carries
+nothing else: every log line goes to stderr.
   {schema_version, workspace, workspace_dir, environment, environment_declared,
    module?, service?, status: ready|not_ready, checks: [{code, name, status,
    message, remediation?}]}
@@ -2687,6 +2716,11 @@ With --json, a versioned report is printed to stdout:
 --module and --service narrow the scope to one unit's declared configuration
 dependencies, so a sibling unit's missing configuration does not fail the
 check. --service is the narrower of the two and wins when both are given.
+
+--naming-scope checks the generated runnable bindings against the addresses
+of a run in that scope, as `codefly run --naming-scope` and
+`codefly generate runnable-bindings --naming-scope` read it: omitted keeps
+the environment's declared scope, empty clears it.
 
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
@@ -2713,11 +2747,12 @@ codefly doctor workspace [flags]
 Flags:
 
 ```
-      --env string         Environment to validate against (default "local")
-      --json               Print a machine-readable report to stdout
-      --module string      Restrict validation to one module's services and their declared configuration dependencies
-      --service string     Restrict validation to one service's declared configuration dependencies
-      --timeout duration   Overall bound; secret resolution is cancelled when it expires (default 30s)
+      --env string           Environment to validate against (default "local")
+      --json                 Print a machine-readable report to stdout; log lines go to stderr
+      --module string        Restrict validation to one module's services and their declared configuration dependencies
+      --naming-scope scope   Naming scope the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
+      --service string       Restrict validation to one service's declared configuration dependencies
+      --timeout duration     Overall bound; secret resolution is cancelled when it expires (default 30s)
 ```
 
 ## `codefly endpoint`
@@ -2824,13 +2859,15 @@ decides per environment, from an authored product file:
         may-be-empty: [<stored key>] # keys whose correct value here is empty
 
 The intent owns exclude-services, service-secrets.generate and
-service-secrets.may-be-empty: a contract declaring one of them too is refused,
-and an entry the intent no longer carries is withdrawn on re-import. The
-contract keeps the rest of service-secrets (secret-store, defaults, services),
-which names the cell's store. Each entry is checked against the secret
-configurations the environment's profile declares; an unknown service,
-configuration or key is refused by name. Any other field is refused; the legacy
-full delivery.intent.yaml is not interpreted.
+service-secrets.may-be-empty: a contract declaring one of them too is refused.
+A key the intent declares replaces the workspace's, an empty one (generate: [],
+may-be-empty: []) withdraws it, and a key the intent does not mention is left
+as the workspace holds it, like every other omitted field. The contract keeps
+the rest of service-secrets (secret-store, defaults, services), which names
+the cell's store. Each entry is checked against the secret configurations the
+environment's profile declares; an unknown service, configuration or key is
+refused by name. Any other field is refused; the legacy full
+delivery.intent.yaml is not interpreted.
 ```
 
 ```

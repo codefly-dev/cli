@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -137,7 +138,7 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 	}
 	resp, err := b.instance.Builder.Load(ctx, options...)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot load builder instance")
+		return nil, w.Wrapf(explainHostResolutionRefusal(err, b.instance), "cannot load builder instance")
 	}
 
 	w.Debug("loaded", wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))
@@ -499,9 +500,12 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 				if err = verifyImageArchitecture(ctx, im); err != nil {
 					return nil, w.Wrapf(err, "refusing to push %s", im)
 				}
+				progress := b.world.buildProgress()
+				ordinal, started := progress.pushing(b.instance.Unique(), im), time.Now()
 				if pushErr := pushLegacyImage(ctx, b.world.Env, im); pushErr != nil {
 					return nil, w.Wrapf(pushErr, "cannot push docker image")
 				}
+				progress.pushed(ordinal, b.instance.Unique(), im, time.Since(started))
 			}
 		}
 		// The digest is read from the reference that was pushed: only it has a

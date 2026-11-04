@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -82,10 +83,11 @@ var gitOpsRenderCmd = &cobra.Command{
 					return gitops.RenderResult{}, readyErr
 				}
 			}
-			result, renderErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, renderErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 				Workspace: workspace, Module: target, Environment: env,
 				AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 				Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
+				Progress: os.Stdout,
 			})
 			if renderErr != nil {
 				return result, renderErr
@@ -137,10 +139,11 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+		result, err := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, Snapshot: true,
 			Rebuild: gitOpsRebuild, Sink: cli.NewOutputSink(),
+			Progress: os.Stdout,
 		})
 		if err != nil {
 			return err
@@ -270,6 +273,7 @@ var gitOpsObserveCmd = &cobra.Command{
 			Commit: publication.Commit, Tree: publication.Tree, RenderDigest: publication.RenderDigest,
 			Repository: publication.Repository, Path: publication.Path,
 			PullRequest: publication.PullRequest, Local: gitOpsLocal, Timeout: gitOpsTimeout,
+			Output: os.Stdout,
 		})
 		if err != nil {
 			return err
@@ -487,6 +491,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
 		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
 		Resign:                   gitOpsResign,
+		Advance:                  gitOpsAdvance,
 		AllowCellRemovals:        gitOpsAllowCellRemovals,
 	}
 }
@@ -582,8 +587,20 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 		cli.Info("Contract checks:")
 		cli.Info("%s", formatContractChecks(plan.ContractChecks))
 	}
+	if plan.CellFile != "" {
+		cli.Info("Cell file %s is carried with this promotion: the cell admits only the builds it names", plan.CellFile)
+	}
+	if plan.CellNotice != "" {
+		cli.Warning("%s", plan.CellNotice)
+	}
 	for _, removal := range plan.CellRemovals {
 		cli.Warning("The cell file removes %s, as --allow-cell-removal names", removal)
+	}
+	for _, removal := range plan.UndeclaredCellRemovals {
+		cli.Warning("The cell file removes %s", removal)
+	}
+	for _, removed := range plan.RemovedModules {
+		cli.Warning("Removed %s from the delivery: the composition no longer declares it", removed)
 	}
 	for _, stale := range plan.StaleConsumers {
 		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
@@ -608,6 +625,7 @@ var (
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
 	gitOpsResign                   bool
+	gitOpsAdvance                  []string
 	gitOpsAllowCellRemovals        []string
 	gitOpsValidateCluster          bool
 	gitOpsRebuild                  bool
@@ -647,8 +665,10 @@ func init() {
 			"Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied")
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
+		command.Flags().StringSliceVar(&gitOpsAdvance, "advance", nil,
+			"Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied")
 		command.Flags().StringSliceVar(&gitOpsAllowCellRemovals, "allow-cell-removal", nil,
-			"Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); any other removal refuses")
+			"Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")
@@ -686,6 +706,9 @@ func printCell(cell *gitops.CellResult) {
 	}
 	if len(cell.Skipped) > 0 {
 		cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(cell.Skipped, ", "))
+	}
+	for _, removed := range cell.Removed {
+		cli.Info("removed %s: the composition no longer declares it", removed)
 	}
 	if !cell.Source {
 		cli.Info("Cell file names no source commit: the environment declares no gitops repository and branch, or the workspace is not a git checkout")
@@ -754,10 +777,11 @@ func renderComposition(ctx context.Context) error {
 		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
-		result, renderErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+		result, renderErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 			Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
+			Progress: os.Stdout,
 		})
 		if renderErr != nil {
 			return fmt.Errorf("render %s: %w", module.Name, renderErr)

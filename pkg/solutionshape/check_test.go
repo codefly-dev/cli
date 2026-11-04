@@ -1,6 +1,8 @@
 package solutionshape
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,8 +63,31 @@ bindings: []
 `)
 	// The published contract the package carries. The manifest loader checks
 	// every artifact root exists on disk, and the authority derives each
-	// route's method policy from this document.
-	write(t, filepath.Join(dir, "contracts", "api", "backend", "http", "openapi.json"), `{"openapi":"3.0.0"}`)
+	// route's method policy from this document — so the routes carry the
+	// policies the contract's one role grants, and the package names the
+	// document's real digest, which is what the policy reader holds it to.
+	writePackagedRoutes(t, dir, conformingRoutes)
+	conformingServices(t, dir)
+	return dir
+}
+
+// conformingRoutes is the scaffold's published routes: one route per action its
+// role grants, and one relayed module route that admits any checked caller, as
+// a solution's relays do.
+const conformingRoutes = `{"swagger":"2.0","basePath":"/",` +
+	`"info":{"title":"wiki solution backend","version":"0.0.1"},"paths":{` +
+	`"/v1/wiki/pages":{` +
+	`"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"wiki.page","actions":["read"]}]}},` +
+	`"post":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"wiki.page","actions":["write"]}]}}},` +
+	`"/v1/wiki/modules/documents/{path=**}":{"post":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
+
+// writePackagedRoutes writes the published OpenAPI document and the package
+// manifest that names it, with the digest the policy reader checks. A test
+// that changes the routes calls it again.
+func writePackagedRoutes(t *testing.T, dir, routes string) {
+	t.Helper()
+	write(t, filepath.Join(dir, "contracts", "api", "backend", "http", "openapi.json"), routes)
+	sum := sha256.Sum256([]byte(routes))
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
 schema: codefly/module-package/v2
 id: obin/wiki
@@ -79,10 +104,15 @@ services:
           kind: openapi
           package: wiki solution backend
           path: contracts/api/backend/http/openapi.json
-          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+          digest: sha256:`+hex.EncodeToString(sum[:])+`
 contracts:
     composition: ">=2.0.0 <3.0.0"
 `)
+}
+
+// conformingServices writes the two services the shape names.
+func conformingServices(t *testing.T, dir string) {
+	t.Helper()
 	write(t, filepath.Join(dir, "services", "backend", "service.codefly.yaml"), `kind: service
 name: backend
 version: 0.0.0
@@ -122,7 +152,6 @@ endpoints:
       visibility: public
       exposure: none
 `)
-	return dir
 }
 
 func write(t *testing.T, path, content string) {
@@ -523,4 +552,197 @@ contracts:
 	if report.Conforms() {
 		t.Fatal("a solution that can admit no call to any route it serves was called conformant")
 	}
+}
+
+// THE SURPLUS-PERMISSION CLASS, which is the one core cannot catch: core
+// refuses a grant nothing BACKS, so every grant below is perfectly declared.
+// What none of them is, is reached.
+//
+// The worked example is obin-ai/core-solutions' wiki, whose `installer` was
+// `editor` plus a publish action: whoever installed the wiki received full
+// document read and write as a side effect, and three roles rendered as three
+// near-identical fifty-row tables nobody could read against each other.
+func TestARoleGrantingWhatNoOperationRequiresWarns(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		roles   string
+		ceiling string
+		surplus []string
+	}{
+		{
+			name:    "an action no route spells is checked by nothing",
+			ceiling: "[read, write, publish]",
+			roles: `    - name: installer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, write, publish]`,
+			// read and write are each required by a route; publish by none.
+			surplus: []string{"installer grants wiki.page:publish"},
+		},
+		{
+			name:    "every role is judged, not only the installer",
+			ceiling: "[read, write, publish]",
+			roles: `    - name: installer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read]
+    - name: editor
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, publish]`,
+			surplus: []string{"editor grants wiki.page:publish"},
+		},
+		{
+			name:    "an installation-owned scope grants just as much",
+			ceiling: "[read, write, publish]",
+			roles: `    - name: installer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read]
+      installation_owned_scopes:
+          - resource_kind: wiki.page
+            actions: [publish]`,
+			surplus: []string{"installer grants wiki.page:publish"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := conformingSolution(t)
+			writeContract(t, dir, test.ceiling, test.roles)
+			report := Inspect("wiki", dir)
+			check := checkFor(t, report, CodeRoleScopeUnreached)
+			if check.Status != StatusWarn {
+				t.Fatalf("a surplus grant was %s, want warn", check.Status)
+			}
+			for _, want := range test.surplus {
+				if !strings.Contains(check.Message, want) {
+					t.Errorf("the warning does not name %q: %q", want, check.Message)
+				}
+			}
+			if !report.Conforms() {
+				t.Fatal("surplus authority was treated as a broken solution; it refuses no call and breaks no run")
+			}
+		})
+	}
+}
+
+// A grant on a kind one of the contract's BINDINGS carries is never surplus:
+// the module at the other end authorizes the relayed child, its policies are
+// not in this directory, and the role grants the scope precisely so the child
+// carries it. This is the regression test for the mistake checkInstallerRole
+// records — a permissions check that "once shipped and failed wiki and
+// proposals, the only two solutions known to work".
+func TestABindingsKindIsNeverSurplus(t *testing.T) {
+	dir := conformingSolution(t)
+	write(t, filepath.Join(dir, "module.contract.codefly.yaml"), `schema: codefly/module-contract/v1
+principal: wiki
+owner_aware: true
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: wiki.page
+      actions: [read, write]
+roles:
+    - name: installer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, write]
+          - resource_kind: documents
+            actions: [read, write]
+          - resource_kind: documents.collection
+            actions: [read, create]
+bindings:
+    - id: documents
+      operations: [invoke]
+      audience: {from: wiki-audiences/documents-audience}
+      binding_key: {from: wiki/DOCUMENTS_BINDING}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents
+                actions: [read, write]
+              - resource_kind: documents.collection
+                actions: [create, read]
+`)
+	report := Inspect("wiki", dir)
+	check := checkFor(t, report, CodeRoleScopeUnreached)
+	if check.Status != StatusOK {
+		t.Fatalf("a binding-backed grant was reported %s: %q — the relayed child is authorized by the module at the other end, whose policies are not in this directory", check.Status, check.Message)
+	}
+}
+
+// Never a vacuous pass: a question that could not be asked must not read as a
+// question answered "nothing wrong". The published contract is a GENERATED
+// artifact, and a tree whose contract is behind its code is exactly when that
+// matters.
+func TestOperationsThatCannotBeReadAreReportedRatherThanPassed(t *testing.T) {
+	t.Run("a contract whose digest the package does not name", func(t *testing.T) {
+		dir := conformingSolution(t)
+		write(t, filepath.Join(dir, "contracts", "api", "backend", "http", "openapi.json"),
+			strings.Replace(conformingRoutes, "wiki solution backend", "edited since the package named it", 1))
+		report := Inspect("wiki", dir)
+		if check := checkFor(t, report, CodeOperationPoliciesUnread); check.Status != StatusWarn {
+			t.Fatalf("an unreadable contract was %s, want warn", check.Status)
+		}
+		for _, check := range report.Checks {
+			if check.Code == CodeRoleScopeUnreached {
+				t.Fatalf("the roles were judged against operations that could not be read: %q", check.Message)
+			}
+		}
+	})
+	t.Run("a contract carrying no operation at all", func(t *testing.T) {
+		dir := conformingSolution(t)
+		writePackagedRoutes(t, dir, `{"swagger":"2.0","basePath":"/","paths":{}}`)
+		report := Inspect("wiki", dir)
+		if check := checkFor(t, report, CodeOperationPoliciesUnread); check.Status != StatusWarn {
+			t.Fatalf("an empty contract was %s, want warn", check.Status)
+		}
+	})
+}
+
+// The package that publishes no contract at all is already failed by
+// checkBackendContract, with the remediation. Saying it a second time in
+// another vocabulary helps nobody.
+func TestNoPublishedContractIsNotReportedTwice(t *testing.T) {
+	dir := conformingSolution(t)
+	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
+schema: codefly/module-package/v2
+id: obin/wiki
+version: 0.1.0
+minimum-codefly-version: ">=0.1.220 <1.0.0"
+artifact-roots:
+    - contracts
+    - services
+services:
+    - name: backend
+      endpoints: [http]
+contracts:
+    composition: ">=2.0.0 <3.0.0"
+`)
+	report := Inspect("wiki", dir)
+	if checkFor(t, report, CodeBackendContractMissing).Status != StatusFail {
+		t.Fatal("a package carrying no contract was accepted")
+	}
+	for _, check := range report.Checks {
+		if check.Code == CodeOperationPoliciesUnread || check.Code == CodeRoleScopeUnreached {
+			t.Fatalf("the same missing contract was reported again as %s: %q", check.Code, check.Message)
+		}
+	}
+}
+
+// writeContract writes the module contract with one ceiling on wiki.page and
+// the given roles, so a case in the table above changes exactly what it is
+// about.
+func writeContract(t *testing.T, dir, actions, roles string) {
+	t.Helper()
+	write(t, filepath.Join(dir, "module.contract.codefly.yaml"), `schema: codefly/module-contract/v1
+principal: wiki
+owner_aware: true
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: wiki.page
+      actions: `+actions+`
+roles:
+`+roles+`
+bindings: []
+`)
 }

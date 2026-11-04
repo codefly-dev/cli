@@ -17,6 +17,7 @@ var (
 	doctorSolutionJSON    bool
 	doctorSolutionDir     string
 	doctorSolutionRequire bool
+	doctorSolutionEnv     string
 )
 
 // solutionManifestName is the file whose presence makes a module a solution.
@@ -55,13 +56,34 @@ Every rule is one that silently broke something. The two worth knowing:
                  renders into a mesh allow rule straight to that module's
                  service, past the check.
 
+  role breadth   A role granting an action on one of the solution's OWN kinds
+                 that no route it publishes requires is checked by nothing, so
+                 holding it reaches nothing. It is reported as a warning: it
+                 refuses no call and breaks no run, and either a route is
+                 missing its policy or the role is wider than the solution.
+
 Permissions are judged by reading the contract through Core's own loader,
 which refuses a role granting a scope no binding backs and no ceiling covers
 ("role X grants documents:read, which is neither within the module's own scope
 ceilings nor a scope one of its bindings spells out"). That is the
 missing-permission class, caught before install rather than at the first
-refused call. What a composition's values resolve each binding to is NOT
-judged here: that needs the composition, not the directory.
+refused call.
+
+The opposite class — a role far wider than anything it reaches — is judged by
+comparing what each role grants on the solution's own kinds against what the
+operations in its published contracts require, read with the same reader the
+authority's own route policies are derived with. A role grant on a kind that
+comes from a BINDING is not judged: the module at the other end authorizes the
+relayed child, and its policies are not in this directory.
+
+What a composition's values resolve each binding to needs the composition and
+not the directory, and --env <environment> judges the rendered one: it compares
+every rendered module manifest's operation bindings against that environment's
+rendered module envelope — the ceiling the host enforces — and names each
+binding the ceiling does not admit. The host drops such a binding one line at a
+time on its own stdout, so nothing else says it: in a portal it reads as "tool
+exposure is unavailable", and an installation refuses with "module ... changed
+since review". Read-only, with no cluster and no credential.
 
 Exit codes:
   0  every judged solution conforms (warnings allowed)
@@ -80,7 +102,11 @@ module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
 page_shell_exported_too_widely, consumed_module_without_binding,
-page_shell_has_no_app.`,
+page_shell_has_no_app, installer_role_missing, backend_contract_missing,
+operation_policies_unread, role_grants_unreached_scope, and with --env:
+not_rendered_for_environment, module_envelope_not_rendered,
+module_envelope_unreadable, module_envelope_omits_binding,
+module_envelope_admits_every_binding.`,
 	Example: `  # Judge every solution in the workspace.
   codefly doctor solution
 
@@ -93,7 +119,10 @@ page_shell_has_no_app.`,
   # The same gate, where every directory walked must BE a solution: this
   # catches a solution whose manifest is missing, which otherwise reads as
   # "not a solution" and passes.
-  codefly doctor solution --dir solutions/robin-builder --require-solution`,
+  codefly doctor solution --dir solutions/robin-builder --require-solution
+
+  # Judge what a cell would actually enforce, not just the directory's shape.
+  codefly doctor solution wiki --env blue`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -108,6 +137,10 @@ page_shell_has_no_app.`,
 		if doctorSolutionDir != "" {
 			if len(args) > 0 {
 				return fmt.Errorf("--dir judges the directory itself, so it takes no module name")
+			}
+			// --dir has no workspace, and a rendered tree belongs to one.
+			if doctorSolutionEnv != "" {
+				return fmt.Errorf("--env judges an environment's rendered tree, which belongs to a workspace; --dir judges a directory with no workspace, so the two cannot be combined")
 			}
 			absolute, err := filepath.Abs(doctorSolutionDir)
 			if err != nil {
@@ -147,7 +180,11 @@ page_shell_has_no_app.`,
 			if loadErr != nil {
 				return fmt.Errorf("cannot load module %s: %w", args[0], loadErr)
 			}
-			reports = append(reports, solutionshape.Inspect(module.Name, module.Dir()))
+			report := solutionshape.Inspect(module.Name, module.Dir())
+			if doctorSolutionEnv != "" && report.IsSolution {
+				report.InspectDelivered(workspace.Dir(), doctorSolutionEnv)
+			}
+			reports = append(reports, report)
 		} else {
 			names := make([]string, 0, len(workspace.Modules))
 			for _, reference := range workspace.Modules {
@@ -163,7 +200,11 @@ page_shell_has_no_app.`,
 					// problem, not the shape's; `doctor workspace` reports it.
 					continue
 				}
-				reports = append(reports, solutionshape.Inspect(module.Name, module.Dir()))
+				report := solutionshape.Inspect(module.Name, module.Dir())
+				if doctorSolutionEnv != "" && report.IsSolution {
+					report.InspectDelivered(workspace.Dir(), doctorSolutionEnv)
+				}
+				reports = append(reports, report)
 			}
 		}
 
@@ -241,6 +282,7 @@ func statusGlyph(status solutionshape.Status) string {
 func init() {
 	DoctorSolutionCmd.Flags().BoolVar(&doctorSolutionJSON, "json", false, "Print a versioned report per module to stdout")
 	DoctorSolutionCmd.Flags().BoolVar(&doctorSolutionRequire, "require-solution", false, "With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution")
+	DoctorSolutionCmd.Flags().StringVar(&doctorSolutionEnv, "env", "", "Also judge what this environment's RENDERED tree would enforce: every rendered manifest's operation bindings against the rendered module envelope, naming each binding the ceiling does not admit")
 	DoctorSolutionCmd.Flags().StringVar(&doctorSolutionDir, "dir", "", "Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace")
 	DoctorCmd.AddCommand(DoctorSolutionCmd)
 }

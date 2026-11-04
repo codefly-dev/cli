@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/secretgen"
 
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/distribution/reference"
@@ -839,7 +840,11 @@ type EnvironmentServiceSecrets struct {
 	// holds as values minted at random rather than supplied from outside — the
 	// only thing `codefly deploy secrets` generates. A key no generator names
 	// and no stored secret already holds is reported as one the operator must
-	// supply; it is never guessed.
+	// supply; it is never guessed. A restricted render also reads it as a
+	// declaration: a service generator's keys that the named service's own
+	// configuration does not declare (a module shipping no *.secret.env) are
+	// promoted to typed Secret references all the same
+	// (orchestration.withEnvironmentDeclaredSecrets).
 	Generate []EnvironmentSecretGenerator `yaml:"generate,omitempty"`
 	// MayBeEmpty names secret configuration keys whose correct value in this
 	// environment is the empty string. A stored property is otherwise refused
@@ -1236,6 +1241,24 @@ type SecretScope struct {
 	Service   string
 }
 
+// MappingFor is a service's own secrets entry. A module-qualified entry wins
+// over a bare one, and is the only way to name a service whose bare name
+// several modules declare — eleven modules of one composition each ship a
+// "store", so "store" alone cannot say which. The bare form stays for a name
+// only one module has, which is how every environment written before the
+// qualified form states its services.
+func (s *EnvironmentServiceSecrets) MappingFor(module, service string) EnvironmentServiceSecretMapping {
+	if s == nil {
+		return EnvironmentServiceSecretMapping{}
+	}
+	if module != "" {
+		if mapping, named := s.Services[resources.ServiceUnique(module, service)]; named {
+			return mapping
+		}
+	}
+	return s.Services[service]
+}
+
 // RemoteRef locates one secret key of a service in the remote store. An explicit
 // per-service RemoteKeys entry wins; else the service's own Defaults template;
 // else the environment-wide Defaults template; else the "<service>/<key>" store
@@ -1244,7 +1267,7 @@ type SecretScope struct {
 // fallback path, the same as an environment that declares nothing.
 func (s *EnvironmentServiceSecrets) RemoteRef(scope SecretScope, key string) EnvironmentSecretRemoteRef {
 	if s != nil {
-		mapping := s.Services[scope.Service]
+		mapping := s.MappingFor(scope.Module, scope.Service)
 		if remote, ok := mapping.RemoteKeys[key]; ok {
 			return remote
 		}
@@ -1446,6 +1469,28 @@ type Environment struct {
 	NamingScope string `yaml:"naming-scope,omitempty"`
 	Fixture     string `yaml:"fixture,omitempty"`
 
+	// Class is this environment's ENVIRONMENT CLASS: its release stage, how
+	// far along the promotion path it sits — development, staging or
+	// production (modulecontract.EnvironmentClasses). It is the axis a
+	// coordinate already names, the `development` segment of
+	// `hosted/gcp/us-east1/US/development/blue`, stated here because the
+	// coordinate contract carries none of it: the producer emits
+	// configuration, not a tier, exactly as it carries no host block.
+	//
+	// It is DECLARED and never derived. An environment's name is not its
+	// class: `blue`, `green` and `dev` are all development cells, and a class
+	// read off a name is the defect IsK3d's legacy reading is — it would make
+	// a production environment development the day someone named one
+	// `prod-2`. Absent is "no class declared", which resolves every contract
+	// that declares one presence for everywhere and refuses a per-class
+	// presence by name rather than defaulting it.
+	//
+	// Installation and delivery input only, like RunnableScopeSelections:
+	// Runtime deliberately does not send it to agents, and a module never
+	// learns it. What a cell must PROTECT is a separate declaration — the
+	// class decides presence and promotion, not a protection floor.
+	Class string `yaml:"class,omitempty"`
+
 	// ConfigurationProfile selects the checked-in configuration directory
 	// independently from the environment identity sent to service agents.
 	// This is useful for a production execution profile running against local
@@ -1644,6 +1689,18 @@ func (env *Environment) IsK3d() bool {
 	// as local-k3d. Preserves the old "default to k3d image import"
 	// behavior in cli/pkg/deployments/manager.go.
 	return env.Local()
+}
+
+// validateClass holds a declared class to the one vocabulary core refuses a
+// contract's per-class presence against, so a misspelling fails at the
+// environment that wrote it rather than at the render of whichever module
+// happens to declare a per-class edge.
+func (env *Environment) validateClass() error {
+	if env.Class == "" || modulecontract.KnownEnvironmentClass(env.Class) {
+		return nil
+	}
+	return fmt.Errorf("environment %s declares class %q, which is not an environment class (%s)",
+		env.Name, env.Class, strings.Join(modulecontract.EnvironmentClasses(), ", "))
 }
 
 // EnvironmentEgress is the external reach one service declares.

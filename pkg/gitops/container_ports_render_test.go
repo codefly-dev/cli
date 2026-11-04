@@ -310,7 +310,14 @@ func treeDigest(t *testing.T, root string) string {
 // place of the presence, authority and endpoint documents): the fixture
 // declares no manifest, and the digest moves with the schemaVersion alone —
 // verified by rendering it at schema 7, which reproduces the previous digest.
-const undeclaredFixtureDigest = "49cb877e08a7a2079deea3c862b33ad5e592ede4d449aebc02682ede9f60021f"
+//
+// And once more when the inventory started recording the environment
+// declaration digest (environmentDeclarationDigest: the service-config and
+// service-identity rows of the module's services, which a publish holds the
+// tree to). The fixture declares no such row, so the stamp is the digest of an
+// empty declaration; the manifests are unchanged and the two cases below still
+// agree, which is the property this digest pins.
+const undeclaredFixtureDigest = "8bb67b42d7ab8a8a9a0c05ee0023ad273e5ef32278efe8a1b6a30808d7687df8"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

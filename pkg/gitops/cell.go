@@ -52,6 +52,10 @@ type CellResult struct {
 	// Skipped names module trees rendered for another environment, which
 	// describe another cell.
 	Skipped []string
+	// Removed are the render records of modules the composition no longer
+	// declares, deleted by this render (pruneUndeclaredRecords), as paths
+	// relative to the workspace.
+	Removed []string
 	// Source reports whether the file names its repository, branch and base
 	// revision. It does not when the environment declares no gitops
 	// repository or the workspace is not a git checkout.
@@ -90,14 +94,76 @@ func CellPath(workspace *resources.Workspace, env *environments.Environment) (st
 // composition that produced them, and writes it. It runs after a module
 // render, so the file always describes the trees as they stand.
 func RenderCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (CellResult, error) {
+	removed, err := pruneUndeclaredRecords(workspace)
+	if err != nil {
+		return CellResult{}, err
+	}
 	file, result, err := deriveCell(ctx, workspace, env)
 	if err != nil {
 		return CellResult{}, err
 	}
-	if err := writeCell(&file, result.Path); err != nil {
+	if err = writeCell(&file, result.Path); err != nil {
 		return CellResult{}, err
 	}
+	result.Removed = removed
 	return result, nil
+}
+
+// pruneUndeclaredRecords deletes, before the cell file is derived, the render
+// records of modules the composition no longer declares, for any environment.
+// Nothing could render such a module again (a render refuses a module the
+// workspace does not compose), so its record describes a composition that no
+// longer exists; left in place it was read back into every cell file derived
+// here, and a module removed from `modules:` kept its namespace, workloads and
+// consumer edges in the cell. The derivation's own hold on such a tree
+// (refuseUncomposedRender) stays what it is: a render satisfies it by removing
+// the tree, which is what that refusal asks for, and answers the paths it
+// removed, relative to the workspace, for the render to print. A record that
+// cannot be read is left for the derivation to name.
+func pruneUndeclaredRecords(workspace *resources.Workspace) ([]string, error) {
+	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
+	entries, err := os.ReadDir(modulesDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list rendered modules: %w", err)
+	}
+	declared := composedModules(workspace)
+	var removed []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		tree := filepath.Join(modulesDir, entry.Name())
+		inventory, loadErr := LoadInventory(tree)
+		if loadErr != nil || declared[inventory.Module] {
+			continue
+		}
+		if err = os.RemoveAll(tree); err != nil {
+			return nil, fmt.Errorf("remove the render record of module %s, which the composition no longer declares: %w", inventory.Module, err)
+		}
+		relative, relErr := filepath.Rel(workspace.Dir(), tree)
+		if relErr != nil {
+			relative = tree
+		}
+		removed = append(removed, filepath.ToSlash(relative))
+	}
+	sort.Strings(removed)
+	return removed, nil
+}
+
+// composedModules names every module the composition declares, in this
+// workspace or one it imports: the set a cell file describes and the set a
+// removal from it is judged against.
+func composedModules(workspace *resources.Workspace) map[string]bool {
+	declared := make(map[string]bool, len(workspace.Modules))
+	for _, reference := range workspace.Modules {
+		if reference != nil {
+			declared[reference.Name] = true
+		}
+	}
+	return declared
 }
 
 // deriveCell is RenderCell without the write: the cell file the rendered
@@ -155,6 +221,9 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		if inventory.Environment != env.Name {
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
+		}
+		if err = refuseUncomposedRender(workspace, env, tree, &inventory); err != nil {
+			return cellfile.File{}, CellResult{}, err
 		}
 		// A tree rendered before the environment excluded one of its services
 		// still delivers it; describing it would put back what the
@@ -226,6 +295,72 @@ func refuseUnrenderedModules(ctx context.Context, workspace *resources.Workspace
 		env.Name, env.Name, strings.Join(missing, ", "), strings.Join(commands, "; "), env.Name)
 }
 
+// refuseUncomposedRender refuses a tree rendered for this environment whose
+// module the workspace no longer composes: a solution withdrawn from the
+// composition, or a module nothing pins any more. Its render still stands
+// under the modules directory, so without this it would be described into
+// the cell file as if it were composed — or, when the cell file is derived
+// without it, the tree's pods are refused by the cell's admission while the
+// delivery still runs them, each refusal reading as an application fault.
+// The converse hold is refuseUnrenderedModules: together they make the
+// rendered trees and the composed modules the same set. The tree is named
+// for removal rather than skipped, because a skipped tree is still delivered.
+func refuseUncomposedRender(workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory) error {
+	for _, reference := range workspace.Modules {
+		if reference != nil && reference.Name == inventory.Module {
+			return nil
+		}
+	}
+	return fmt.Errorf("environment %s's cell file is not written: %s holds a render of module %s for %s, but the workspace composes no module of that name, so nothing approves what that tree delivers (the cell refuses its pods while the delivery still runs them); remove that render and the module's delivered tree, or compose the module again",
+		env.Name, tree, inventory.Module, env.Name)
+}
+
+// meshOptOutLabels and meshOptOutAnnotations are the pod-template fields that
+// take a pod out of ambient capture: istio.io/dataplane-mode and
+// sidecar.istio.io/inject as labels; ambient.istio.io/bypass-inbound-capture
+// and sidecar.istio.io/status (which istio-cni reads as already injected) as
+// annotations. The cell's execution-admission policy refuses a pod carrying
+// any of them, because STRICT mTLS and every allow derived from the cell file
+// stop applying to a pod ztunnel does not capture.
+var (
+	meshOptOutLabels      = []string{"istio.io/dataplane-mode", "sidecar.istio.io/inject"}
+	meshOptOutAnnotations = []string{"ambient.istio.io/bypass-inbound-capture", "sidecar.istio.io/status"}
+)
+
+// refuseUnadmittedExecution refuses a rendered workload the cell's
+// execution-admission policy would refuse on its pod template alone — before
+// any digest is compared, so before the cell file approves it. Two of the
+// policy's rules read only the template: no container may declare an exec
+// lifecycle hook or an exec probe (a command of the delivering party's
+// choosing, run inside the pod that already holds the workload identity: the
+// build binding undone one field further down from the image), and no pod may
+// opt out of the mesh. The cell file this render derives is what generates
+// that policy, so a workload it would describe and the policy would refuse is
+// a workload with zero replicas and a refusal that reads as an application
+// fault; it is refused here, by container and field.
+func refuseUnadmittedExecution(module, unit string, rendered *renderedWorkload) error {
+	for _, containers := range [][]renderedContainer{rendered.Containers, rendered.InitContainers} {
+		for _, container := range containers {
+			if len(container.execs) == 0 {
+				continue
+			}
+			return fmt.Errorf("unit %s/%s workload %s: container %s declares %s, which runs a command inside the pod that holds the workload identity; the cell's execution admission refuses such a pod, so the cell file does not approve it. Use an HTTP, TCP or gRPC probe, and put start-up work in the approved image",
+				module, unit, rendered.Name, container.Name, strings.Join(container.execs, ", "))
+		}
+	}
+	for _, label := range meshOptOutLabels {
+		if _, set := rendered.templateLabels[label]; set {
+			return fmt.Errorf("unit %s/%s workload %s: its pod template carries the %s label, which opts the pod out of the mesh; the cell enrols the namespace and refuses a pod that overrides it, so the cell file does not approve it", module, unit, rendered.Name, label)
+		}
+	}
+	for _, annotation := range meshOptOutAnnotations {
+		if _, set := rendered.templateAnnotations[annotation]; set {
+			return fmt.Errorf("unit %s/%s workload %s: its pod template carries the %s annotation, which opts the pod out of the mesh; the cell enrols the namespace and refuses a pod that overrides it, so the cell file does not approve it", module, unit, rendered.Name, annotation)
+		}
+	}
+	return nil
+}
+
 // writeCell encodes the cell file and writes it at path.
 func writeCell(file *cellfile.File, path string) error {
 	body, err := file.Encode()
@@ -268,6 +403,35 @@ func cellSource(ctx context.Context, workspace *resources.Workspace, env *enviro
 		source.Path = filepath.ToSlash(path)
 	}
 	return source
+}
+
+// refuseReservedIdentity refuses a rendered workload whose identity is not its
+// own to claim: the delivery Job's account or label, and the namespace's
+// `default` account.
+//
+// The default account is the one of the three that is not reserved for
+// something else — it is reserved from EVERY workload. Its SPIFFE ID is shared
+// by every pod of the namespace that names no account, so a mesh rule naming
+// it admits all of them: the workload's principal in this file, in the module
+// manifest and in every mesh edge would be an identity that is nobody's. A
+// meshed render projects the account named after each service
+// (managed_identity.go holdsMeshPrincipal), so a workload still running as
+// `default` came from a tree this render did not project; it is refused by
+// name rather than inventoried under a shared identity.
+func refuseReservedIdentity(module, unit string, rendered *renderedWorkload, selector map[string]string) error {
+	switch rendered.ServiceAccount {
+	case deliveryServiceAccount:
+		return fmt.Errorf("unit %s/%s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job", module, unit, rendered.Name, deliveryServiceAccount)
+	case defaultServiceAccount:
+		return fmt.Errorf("unit %s/%s workload %s runs as the namespace's %q ServiceAccount, whose identity every pod of the namespace that names no account shares; a cell admits callers by principal, so each workload names an account of its own (spec.template.spec.serviceAccountName, which the render projects as %q)",
+			module, unit, rendered.Name, defaultServiceAccount, workloadAccount(unit))
+	}
+	// The carrier is declared by its labels; a workload selected by the same
+	// label would be admitted as the carrier.
+	if _, carrier := selector[deliveryLabel]; carrier {
+		return fmt.Errorf("unit %s/%s workload %s selects its pods by the %q label, which is reserved for the delivery Job", module, unit, rendered.Name, deliveryLabel)
+	}
+	return nil
 }
 
 // cellNamespace derives one module's namespace entry from its rendered tree
@@ -330,13 +494,11 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			if err != nil {
 				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s: %w", inventory.Module, unit.Name, err)
 			}
-			if rendered.ServiceAccount == deliveryServiceAccount {
-				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job", inventory.Module, unit.Name, rendered.Name, deliveryServiceAccount)
+			if reserved := refuseReservedIdentity(inventory.Module, unit.Name, rendered, selector); reserved != nil {
+				return cellfile.Namespace{}, reserved
 			}
-			// The carrier is declared by its labels; a workload selected by
-			// the same label would be admitted as the carrier.
-			if _, carrier := selector[deliveryLabel]; carrier {
-				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s selects its pods by the %q label, which is reserved for the delivery Job", inventory.Module, unit.Name, rendered.Name, deliveryLabel)
+			if unadmitted := refuseUnadmittedExecution(inventory.Module, unit.Name, rendered); unadmitted != nil {
+				return cellfile.Namespace{}, unadmitted
 			}
 			authenticating, err := authenticatingContainer(unit.Name, rendered)
 			if err != nil {

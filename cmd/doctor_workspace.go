@@ -17,6 +17,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/generate"
 	"github.com/codefly-dev/cli/cmd/publish"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -120,6 +121,10 @@ type workspaceReadinessOptions struct {
 	module  string
 	service string
 	timeout time.Duration
+	// namingScope, when set, replaces the environment's declared naming scope
+	// as `codefly run --naming-scope` does: the addresses the runnable
+	// bindings are checked against are those of a run in that scope.
+	namingScope *string
 }
 
 // workspaceReadiness runs the read-only readiness validation and always
@@ -127,7 +132,7 @@ type workspaceReadinessOptions struct {
 // must not create, modify, or delete any file, and must not start agents,
 // containers, or services. Secret references are resolved in memory through
 // the environment's configured backend and the values discarded immediately.
-func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *workspaceReadinessReport {
+func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *workspaceReadinessReport {
 	if opts.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
@@ -156,6 +161,9 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
 		return report
+	}
+	if opts.namingScope != nil {
+		env.NamingScope = *opts.namingScope
 	}
 
 	checkProviderBindings(ctx, ws, env, report)
@@ -192,7 +200,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	return report
 }
 
-func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report *workspaceReadinessReport) *resources.Workspace {
+func checkWorkspace(ctx context.Context, opts *workspaceReadinessOptions, report *workspaceReadinessReport) *resources.Workspace {
 	dir := opts.dir
 	if dir == "" {
 		found, err := resources.FindUp[resources.Workspace](ctx)
@@ -1312,7 +1320,7 @@ func checkRunnableBindingsGroup(ctx context.Context, ws *resources.Workspace, en
 			missing = append(missing, key)
 		}
 	}
-	remedy := fmt.Sprintf("run `codefly generate runnable-bindings --env %s`", env.Name)
+	remedy := fmt.Sprintf("run `%s`", generate.RunnableBindingsRegenerateCommand(env))
 	switch {
 	case len(missing) > 0 && info == nil:
 		report.add(codeConfigurationMissing, "workspace configurations", checkStatusFail,
@@ -1734,6 +1742,8 @@ var (
 	doctorWorkspaceService string
 	doctorWorkspaceJSON    bool
 	doctorWorkspaceTimeout time.Duration
+
+	doctorWorkspaceNamingScope string
 )
 
 var DoctorWorkspaceCmd = &cobra.Command{
@@ -1759,7 +1769,8 @@ Exit codes:
   0  the workspace is ready (warnings allowed)
   1  at least one check failed, or the command itself failed
 
-With --json, a versioned report is printed to stdout:
+With --json, a versioned report is printed to stdout, and stdout carries
+nothing else: every log line goes to stderr.
   {schema_version, workspace, workspace_dir, environment, environment_declared,
    module?, service?, status: ready|not_ready, checks: [{code, name, status,
    message, remediation?}]}
@@ -1767,6 +1778,11 @@ With --json, a versioned report is printed to stdout:
 --module and --service narrow the scope to one unit's declared configuration
 dependencies, so a sibling unit's missing configuration does not fail the
 check. --service is the narrower of the two and wins when both are given.
+
+--naming-scope checks the generated runnable bindings against the addresses
+of a run in that scope, as ` + "`codefly run --naming-scope`" + ` and
+` + "`codefly generate runnable-bindings --naming-scope`" + ` read it: omitted keeps
+the environment's declared scope, empty clears it.
 
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
@@ -1785,12 +1801,20 @@ timeout. External provider
 binding checks add external_provider.* codes (bindings_unreadable,
 bindings_schema_unknown, and the per-binding validation codes).`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		report := workspaceReadiness(cmd.Context(), workspaceReadinessOptions{
+		if doctorWorkspaceJSON {
+			// stdout carries the report alone; every log line goes to stderr.
+			defer cli.ProtectResultStream()()
+		}
+		opts := workspaceReadinessOptions{
 			env:     doctorWorkspaceEnv,
 			module:  doctorWorkspaceModule,
 			service: doctorWorkspaceService,
 			timeout: doctorWorkspaceTimeout,
-		})
+		}
+		if cmd.Flags().Changed("naming-scope") {
+			opts.namingScope = &doctorWorkspaceNamingScope
+		}
+		report := workspaceReadiness(cmd.Context(), &opts)
 
 		if doctorWorkspaceJSON {
 			payload, err := json.MarshalIndent(report, "", "  ")
@@ -1837,7 +1861,8 @@ func init() {
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceEnv, "env", "local", "Environment to validate against")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceModule, "module", "", "Restrict validation to one module's services and their declared configuration dependencies")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceService, "service", "", "Restrict validation to one service's declared configuration dependencies")
-	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceJSON, "json", false, "Print a machine-readable report to stdout")
+	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceJSON, "json", false, "Print a machine-readable report to stdout; log lines go to stderr")
+	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceNamingScope, "naming-scope", "", "Naming `scope` the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it")
 	DoctorWorkspaceCmd.Flags().DurationVar(&doctorWorkspaceTimeout, "timeout", 30*time.Second, "Overall bound; secret resolution is cancelled when it expires")
 	DoctorCmd.AddCommand(DoctorWorkspaceCmd)
 }

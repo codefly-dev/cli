@@ -187,7 +187,7 @@ func WorkspaceAuthoritySources(workspace *resources.Workspace, env *environments
 			if err != nil {
 				return "", nil, err
 			}
-			return InstallationDeclaration(at)
+			return InstallationDeclaration(at, env.Class)
 		},
 	}
 }
@@ -277,4 +277,27 @@ func writePairedDocumentInTree(tree *renderRoot, directory, namespace, binding s
 		return fmt.Errorf("write the paired delivery document of %s: %w", binding, err)
 	}
 	return nil
+}
+
+// pairedDocumentFromConfigMap reads the paired document a delivered overlay
+// file carries, through the sender's own reader, so what settlement compares
+// against is exactly what the Job would send. held is false for a file that
+// is not a paired ConfigMap.
+func pairedDocumentFromConfigMap(name string, data []byte) (preparedDocument, bool, error) {
+	var configMap pairedDocumentConfigMap
+	if err := yaml.Unmarshal(data, &configMap); err != nil {
+		return preparedDocument{}, false, fmt.Errorf("decode: %w", err)
+	}
+	if configMap.Kind != kindConfigMap || configMap.Metadata.Labels[documentLabel] != pairedDeliveryKind {
+		return preparedDocument{}, false, nil
+	}
+	encoded, held := configMap.Data[PairedDocumentKey]
+	if !held {
+		return preparedDocument{}, false, fmt.Errorf("the ConfigMap %s is labelled a paired delivery document and holds no %s", configMap.Metadata.Name, PairedDocumentKey)
+	}
+	document, err := parsePreparedDocument(name, []byte(encoded))
+	if err != nil {
+		return preparedDocument{}, false, err
+	}
+	return document, true, nil
 }

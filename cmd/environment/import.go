@@ -62,13 +62,15 @@ decides per environment, from an authored product file:
         may-be-empty: [<stored key>] # keys whose correct value here is empty
 
 The intent owns exclude-services, service-secrets.generate and
-service-secrets.may-be-empty: a contract declaring one of them too is refused,
-and an entry the intent no longer carries is withdrawn on re-import. The
-contract keeps the rest of service-secrets (secret-store, defaults, services),
-which names the cell's store. Each entry is checked against the secret
-configurations the environment's profile declares; an unknown service,
-configuration or key is refused by name. Any other field is refused; the legacy
-full delivery.intent.yaml is not interpreted.`,
+service-secrets.may-be-empty: a contract declaring one of them too is refused.
+A key the intent declares replaces the workspace's, an empty one (generate: [],
+may-be-empty: []) withdraws it, and a key the intent does not mention is left
+as the workspace holds it, like every other omitted field. The contract keeps
+the rest of service-secrets (secret-store, defaults, services), which names
+the cell's store. Each entry is checked against the secret configurations the
+environment's profile declares; an unknown service, configuration or key is
+refused by name. Any other field is refused; the legacy full
+delivery.intent.yaml is not interpreted.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -302,7 +304,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		applyEnvironmentContractFields(envNode, declaredEnvironment)
 		withdrawOwnedAbsences(envNode, declaredEnvironment, contractOwnedOptional, false)
 		if intent != nil {
-			withdrawOwnedAbsences(envNode, declaredEnvironment, productOwnedOptional, true)
+			withdrawOwnedAbsences(envNode, declaredEnvironment, intent.withdrawnSecretKeys(), true)
 		}
 		// Explicit operator-stated retirements, checked against the merged
 		// declaration and the workspace graph. Any refusal returns before the
@@ -550,12 +552,16 @@ func applyContractFields(target, declaration *yaml.Node) {
 // environment no longer holds.
 var contractOwnedOptional = map[string][]string{"registry": {"mirrors", "artifacts", "auth"}}
 
-// productOwnedOptional names the service-secrets keys a product intent owns
-// (environments.ProductSecretPolicyKeys). Once an import reads a product intent,
-// the intent is their only source, so a key it no longer carries is withdrawn
-// even when it declares no service-secrets at all: a generator left behind would
-// keep minting, and keep a rotation admitted for, a key the product dropped.
-var productOwnedOptional = map[string][]string{"service-secrets": environments.ProductSecretPolicyKeys}
+// A product intent owns the service-secrets keys environments.ProductSecretPolicyKeys
+// name, and says what it means for each one by declaring it: a list replaces
+// the workspace's, an empty list withdraws it, and a key it does not mention
+// is left as the workspace holds it (productIntent.withdrawnSecretKeys). The
+// import once withdrew both keys whenever an intent was read at all, even one
+// declaring no service-secrets; an intent authored for exclude-services alone
+// then silently dropped fourteen generators and five may-be-empty entries that
+// had only ever been authored in the workspace, and every store they covered
+// stopped rendering. Withdrawal is now something the intent says, never
+// something its silence is read as.
 
 // withdrawOwnedAbsences removes each owned optional key the declaration no longer
 // carries. Contract-owned keys are withdrawn only under a parent the contract
@@ -609,9 +615,12 @@ func applyProductIntent(opts *importOptions, declared, existing *yaml.Node, cont
 
 // applyProductSecretPolicy adds the intent's service-secrets policy to the
 // declaration being merged, and to the contract's environment for an
-// environment the workspace does not hold yet. The contract keeps every other
-// service-secrets field; one that also declares a product-owned key is refused,
-// as exclude-services is, rather than one owner silently winning.
+// environment the workspace does not hold yet. Only the keys the intent
+// declares with entries are added; a key it declares empty is withdrawn by the
+// caller (withdrawnSecretKeys), and one it does not mention is not touched. The
+// contract keeps every other service-secrets field; one that also declares a
+// product-owned key is refused, as exclude-services is, rather than one owner
+// silently winning.
 func applyProductSecretPolicy(declared, existing *yaml.Node, contractEnv *environments.Environment, policy *environments.ProductSecretPolicy) error {
 	secrets := yamledit.MapValue(declared, "service-secrets")
 	for _, key := range environments.ProductSecretPolicyKeys {
@@ -626,7 +635,12 @@ func applyProductSecretPolicy(declared, existing *yaml.Node, contractEnv *enviro
 		return fmt.Errorf("product intent declares service-secrets for environment %q, but neither the coordinate contract nor the workspace declares its service-secrets secret-store", contractEnv.Name)
 	}
 	if contractEnv.ServiceSecrets != nil {
-		contractEnv.ServiceSecrets.Generate, contractEnv.ServiceSecrets.MayBeEmpty = policy.Generate, policy.MayBeEmpty
+		if policy.Generate != nil {
+			contractEnv.ServiceSecrets.Generate = policy.Generate
+		}
+		if policy.MayBeEmpty != nil {
+			contractEnv.ServiceSecrets.MayBeEmpty = policy.MayBeEmpty
+		}
 	}
 	if secrets == nil {
 		secrets = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}

@@ -264,6 +264,111 @@ func TestAnUnchangedManifestEnteringPairedSettlementAdvancesOnce(t *testing.T) {
 	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "delivered paired, unchanged content keeps its generation")
 }
 
+// Toward a composition host the generation's content is the pair, as the
+// native run's record keys it: a module whose declaration changes while its
+// manifest does not — an operation gained, a role added — is signed at the
+// next generation, because the host holds one immutable pair per generation
+// and refuses the same number offered with other authority bytes as a
+// history conflict. The declaration unchanged, the generation is kept; the
+// authority half vanishing is a change like any other.
+func TestAChangedDeclarationAtAnUnchangedManifestAdvancesTheGeneration(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+	declaring := func(roles ...string) deliveryPublishOptions {
+		opts := pairedOptions(signer)
+		opts.Declarations = &AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
+			declared := make([]*compositionv1.RoleV1, 0, len(roles))
+			for _, role := range roles {
+				declared = append(declared, &compositionv1.RoleV1{Name: role})
+			}
+			return declared, nil
+		}}
+		return opts
+	}
+	first := declaring("installer", "editor", "viewer")
+	_, err := repository.settle(repository.stageRender(t, "crm"), &first)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), settledGenerationOf(t, repository, "example.prod.crm"))
+	repository.deliver(t)
+
+	grown := declaring("installer", "editor", "viewer", "auditor")
+	_, err = repository.settle(repository.stageRender(t, "crm"), &grown)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "a declaration change at an unchanged manifest is the next generation")
+	pair := pairedDocumentsIn(t, repository)["example.prod.crm"]
+	var policy compositionv1.AuthorityManifestV1
+	require.NoError(t, proto.Unmarshal(pair.GetAuthority().GetDocument(), &policy))
+	require.Equal(t, uint64(2), policy.GetGeneration(), "the authority half is signed at the new generation")
+	require.Len(t, policy.GetRoles(), 4)
+	repository.deliver(t)
+
+	same := declaring("installer", "editor", "viewer", "auditor")
+	_, err = repository.settle(repository.stageRender(t, "crm"), &same)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "the same pair keeps its generation")
+	repository.deliver(t)
+
+	silent := declaring()
+	_, err = repository.settle(repository.stageRender(t, "crm"), &silent)
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), settledGenerationOf(t, repository, "example.prod.crm"), "the authority half vanishing is a change")
+	require.Nil(t, pairedDocumentsIn(t, repository)["example.prod.crm"].GetAuthority())
+}
+
+// A tree from before paired settlement advanced on entering can pair a
+// binding at the very generation it had delivered Core-only, and whether the
+// host took that generation Core-only first is written nowhere in the tree:
+// settlement keeps the pair, and the host's refusal is what says the number
+// is spent. --advance is the deliberate answer: the named binding is signed at
+// the next generation although unchanged, and keeps it after; a name the
+// base branch delivers nothing under is refused rather than ignored.
+func TestANamedBindingAdvancesAlthoughUnchanged(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+	coreOnly := publishOptions(signer)
+	_, err := repository.settle(repository.stageRender(t, "crm"), &coreOnly)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), settledGenerationOf(t, repository, "example.prod.crm"))
+	repository.deliver(t)
+
+	// The pre-settlement publish: the pair written beside the delivered
+	// carrier at its own generation, and promoted as such.
+	paired := pairedOptions(signer)
+	carrier := settledDocuments(t, repository)["example.prod.crm"]
+	declaration, err := paired.Declarations.Declaration(context.Background(), "crm")
+	require.NoError(t, err)
+	pair, err := PreparedPairedDocument([]byte(carrier.Data[solutionhost.SignedFileName]), declaration, signer)
+	require.NoError(t, err)
+	directory := filepath.Join(repository.target, filepath.FromSlash(moduleManifestOverlay("prod")))
+	tree, err := newRenderRoot(directory)
+	require.NoError(t, err)
+	require.NoError(t, writePairedDocumentInTree(tree, directory, carrier.Metadata.Namespace, "example.prod.crm", pair))
+	require.NoError(t, tree.Close())
+	repository.deliver(t)
+
+	_, err = repository.settle(repository.stageRender(t, "crm"), &paired)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), settledGenerationOf(t, repository, "example.prod.crm"), "the tree cannot tell a spent generation from a taken one; unnamed, the pair is kept")
+
+	mistyped := pairedOptions(signer)
+	mistyped.Advance = []string{"example.prod.crn"}
+	_, err = repository.settle(repository.stageRender(t, "crm"), &mistyped)
+	require.ErrorContains(t, err, "--advance names binding example.prod.crn, which the base branch delivers no manifest of")
+
+	advanced := pairedOptions(signer)
+	advanced.Advance = []string{"example.prod.crm"}
+	_, err = repository.settle(repository.stageRender(t, "crm"), &advanced)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "named, the binding is offered at the next generation")
+	require.NotNil(t, pairedDocumentsIn(t, repository)["example.prod.crm"].GetAuthority())
+	repository.deliver(t)
+
+	again := pairedOptions(signer)
+	_, err = repository.settle(repository.stageRender(t, "crm"), &again)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "delivered paired at a clean generation, unchanged content keeps it")
+}
+
 // settledGenerationOf reads the generation the settled overlay carries for a
 // binding.
 func settledGenerationOf(t *testing.T, repository *deliveryRepository, binding string) uint64 {

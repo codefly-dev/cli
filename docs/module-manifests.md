@@ -337,13 +337,52 @@ catalogue. A dependency list is never inferred from a module's bindings, which
 cover what it calls on its own behalf rather than what a person reaches at the
 edge.
 
+**A presence may differ along the promotion path, and the CLI resolves it at
+delivery.** An edge whose presence is genuinely not the same everywhere
+declares `presence_by_class` in place of `presence`:
+
+```yaml
+edge_dependencies:
+  - module: robin
+    presence: required                 # the same presence everywhere
+  - module: annotations
+    presence_by_class: {development: optional, production: required}
+```
+
+The environment being delivered to declares its ENVIRONMENT CLASS — its
+release stage, `development`, `staging` or `production`, the axis a coordinate
+already names:
+
+```yaml
+environments:
+  - name: blue
+    class: development
+```
+
+It is declared and never derived: `blue`, `green` and `dev` are all
+development cells, and a class read off an environment's name would make a
+production environment development the day someone named one `prod-2`. It
+reaches no agent and no module, and it is not a protection floor — what a cell
+must protect is a separate declaration.
+
+The render passes it to core's one resolution, which answers with the single
+presence that edge has here; both signed documents carry that one value, so a
+host keeps reading `presence: required|optional` and never learns what a class
+is. A class the contract does not name — and an environment that declares no
+class while a contract declares one per class — is refused at the render,
+naming the module, the classes the contract names and the class asked for.
+Nothing defaults. An edge declares exactly one of the two spellings, and
+`presence` alone needs no class, so a composition whose contracts all declare
+it is unaffected.
+
 The CLI carries both onto **two** signed documents and normalizes neither: the
 core manifest's `authority` block (`installation_role`, `edge_dependencies`) and
 the composition delivery's `AuthorityManifestV1` (`installation_role` field 8,
 `edge_dependencies` field 9). Declaration order is preserved — the list is a
 sequence, not a set, and sorting it would change what is signed. Nothing is
-trimmed, defaulted, deduplicated or resolved, because authority compares the two
-documents **byte for byte** and refuses a disagreement: `installation_role` must
+trimmed, defaulted or deduplicated, and a presence is resolved on BOTH
+documents with the same environment class or on neither, because authority
+compares the two documents **byte for byte** and refuses a disagreement: `installation_role` must
 match exactly (empty and `none` differ), and `edge_dependencies` must match in
 length and in each ordered `module`/`presence` pair. An absent or empty list is
 the same zero-edge declaration on either side, so the CLI delivers an empty list
@@ -497,7 +536,9 @@ branch. An unchanged manifest keeps its generation (decided by core's
 canonical digest, the encoding the host tells a replay from a rewrite by); a
 changed one is prior + 1; a binding delivered for the first time is 1. The
 render reports a provisional generation; the settled one is in the inventory's
-`delivery` record.
+`delivery` record. Toward a composition host the generation's content is the
+**pair** — see [the paired delivery](#the-paired-delivery) — exactly as the
+native run keys it.
 
 **Removal.** Within this module's own delivery, a binding delivered before and
 absent from this render is withdrawn — and a withdrawal is a generation, never
@@ -528,6 +569,15 @@ bytes, and on a release publish it still passes the self-check a host will
 run; one the release policy no longer admits is signed again only with
 `--resign`. The plan signs and hands its exact carriers to the publish that
 executes it; execution never produces a signature its plan did not contain.
+
+**`--advance <binding>` moves a generation the host has refused.** A generation
+is a number the host keeps, and the delivered tree is publish's only record of
+it; when the two disagree — the host refuses a delivered generation as a
+history conflict naming the binding, and the tree carries nothing that says
+why — the named binding is settled at the next generation although unchanged,
+signed again, and keeps that generation after. Deliberate, never implied, like
+`--resign`; a name the base branch delivers nothing under is refused rather
+than ignored.
 
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their manifests anew against the base branch, never the
@@ -765,6 +815,26 @@ same composed workspace a native run reads (`WorkspaceAuthoritySources`):
 
 A publish toward such a host that has no way to read module declarations is
 refused by name: it does not deliver the Core half alone.
+
+**The pair is the generation's content.** The host holds one immutable pair per
+generation and refuses the same number offered with other authority bytes as a
+history conflict (`authority document digest stored=… offered=…`), the way it
+refuses a rewritten manifest. So publish settles a binding whose manifest is
+unchanged against the pair the base branch delivered, exactly as the native run
+keys its record: the declaration read now is compared, as a message, with the
+authority document delivered beside the carrier — a method gained or lost, a
+role, a ceiling, the half itself appearing or vanishing — and a difference is
+the next generation, signed again. A module's interface moves without its
+release stamp moving, and the authority half is what carries that move to the
+host. A manifest the base branch delivered Core-only, with no pair beside it,
+enters paired settlement at the next generation for the same reason: the host
+holds that generation with no authority document.
+
+What the tree cannot say is whether the host TOOK a generation Core-only before
+a pair was written at it — a publish from before paired settlement advanced on
+entering left such pairs, and two bindings with one history went each way. The
+host's refusal says it, and `--advance <binding>` is the answer
+([what publish settles](#what-publish-settles)).
 
 **The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
 the codefly companion tag `0.0.7`, whose `/bin/codefly` is a static binary that
@@ -1095,12 +1165,140 @@ once and nowhere else:
   the `runnable-bindings` workspace-configuration group. An executor such as
   the runtime calls owners it does not and must not declare; the composition
   prepares those calls (`codefly generate runnable-bindings`), so the
-  composition is where the edge comes from. The owner endpoint is the one the
-  prepared call targets: the published endpoint for a REST publication, the
-  service's connect endpoint for a gRPC or Connect one. Without this source
-  the owner's connect endpoint had no consumer at all, and every fan-out
-  operation on a cell settled `OWNER_UNAVAILABLE` at the mesh
-  (codefly-dev/cli#1072).
+  composition is where the edge comes from. The endpoint admitted is the one
+  the prepared call is actually sent to: the environment's
+  `runnable-call-endpoint` where it declares one — the composition's hop, in a
+  composition that stands one — and otherwise each owner's own, the published
+  endpoint for a REST publication and the service's connect endpoint for a
+  gRPC or Connect one. Admitting the executors at the owner's listener while
+  the environment sends their calls somewhere else was both a reach nothing
+  uses and a denial of the one it does. Without this source at all the owner's
+  connect endpoint had no consumer, and every fan-out operation on a cell
+  settled `OWNER_UNAVAILABLE` at the mesh (codefly-dev/cli#1072).
+
+### A module service is reachable only from its hop
+
+The hop is the proxy a composition stands in front of its modules: every
+consumed module is reached **through** it, and the hop decides each call
+against the policy table the authority holds for that listener. The point of
+standing one is that a module's own code never has to install the check — so
+its listeners must have no other way to receive traffic. One mesh rule
+admitting a caller straight to a module's listener undoes the hop for every
+call that caller makes, and nothing in the module would say so.
+
+The composition states the hop in three places, and the render joins them
+(`pkg/gitops/hop.go`), inferring none of them:
+
+- **which modules are behind it** — the `hop` workspace-configuration group's
+  `MODULES`, the same list the hop's route table is generated from;
+- **which service is the hop** — the service declaring `hop-routes`. That
+  group is generated, never authored, so the declaration *is* the hop's
+  identity. Two services declaring it is refused by name: a module endpoint
+  would have two admitted principals with nothing saying which checks the call;
+- **which listeners it reaches** — the generated table itself,
+  `hop-routes`/`ROUTES`, one entry per published listener of every fronted
+  module. This is the only statement of the hop's reach: the hop declares no
+  service dependency (it is handed addresses through a configuration group),
+  so nothing derived from the dependency graph carries it, and the derived
+  allow-list is at module granularity besides.
+
+On a non-local environment, each endpoint of a fronted module's service then
+admits exactly:
+
+- **the hop's principal**, where the hop's route table names the endpoint. A
+  listener the hop does not route admits nobody, and default deny is the
+  declaration;
+- **the callers the service's own manifest admits by name** (below);
+- **itself**, when its render holds a non-serving workload — one workload of
+  the service reaching another, as above.
+
+A principal of the hop's own module that the allow-list derived is not a route
+around: a sibling service's ask arrives as every principal of the hop's module
+and no derivation can tell it from the hop's. Those are replaced by the hop
+service's own principal, which removes the sibling's reach rather than refusing
+a render over a distinction the composition cannot make.
+
+Every other declared reach **refuses the render**, naming the principal, what
+declared it, and what to change: a dependency on a module service, a host route
+onto a module listener, prepared runnable bindings sent to an owner instead of
+through the hop. An environment's `runnable-call-endpoint` is how the last one
+is fixed — it sends every prepared call to that endpoint, and the executors are
+then admitted there rather than at each owner's listener.
+
+Inside `local` the reach is recorded exactly as declared and nothing is
+refused: a developer's own cluster is where calling a module directly is the
+point, and this is the deployed rule.
+
+An **ingress** route onto a fronted module's endpoint is untouched by all of
+this. It is not a principal at all — it is the cell's own edge, which the
+environment declares (`ingress:`) and whose principal the cell names, onto an
+endpoint the module declares `public`. A browser reaching a product's portal is
+not an API call through the hop.
+
+**A service admits another source by name.** Some listeners are legitimately
+not called through the hop: a worker pulling from a store, a webhook receiver,
+a scrape port. The declaration is the **service's**, on the endpoint it serves,
+in `service.codefly.yaml`:
+
+```yaml
+admitted-sources:
+  - endpoint: ingest
+    from: [relay/webhook]
+```
+
+It is never implied from a dependency graph — a consumer declaring an edge is
+exactly what the rule refuses, so an edge that admitted itself would admit
+everything. Core does not model the key: a service manifest is an open schema
+and keeps it in its inline extra fields, round-tripping through a save. It is
+read where the reach is derived and refused by name: an endpoint the service
+does not declare, a caller this environment runs no workload for (absent,
+managed or excluded), a repeated endpoint or caller, an entry admitting nobody,
+and the service naming itself — a service reaches its own endpoints under its
+own principal, which the *render* declares when it renders a non-serving
+workload.
+
+### No workload runs as the default ServiceAccount
+
+A workload's mesh principal is its ServiceAccount's SPIFFE ID, so a pod
+template naming no account runs as the namespace's `default` — an identity
+every such pod of the namespace **shares**. A rule admitting it admits all of
+them, which is not a principal any policy can mean. In one cell's derived
+manifests, 394 compiled `AuthorizationPolicy` objects included 109 allowing
+`cluster.local/ns/*/sa/default`.
+
+So on an environment that declares a host — where there is a mesh at all, and
+the render delivers edges naming principals — **every service is projected the
+ServiceAccount named after it**, not only the gateway and the services
+declaring an identity, and the cell file refuses a workload still running as
+`default`, naming it, exactly as it refuses one running as the delivery Job's
+account.
+
+### STRICT mTLS is a layer of the render
+
+A principal is a fact about a connection only where the peer presented a mesh
+certificate. Under `PERMISSIVE` mTLS the sidecar also accepts plaintext, and a
+plaintext connection carries no principal at all: the compiled policy still
+reads "only the hop" while anything that can reach the port is not held to it.
+The edges are therefore only enforceable where the namespace is STRICT, and the
+render has no business delivering one without the other.
+
+A meshed render writes the namespace-wide `PeerAuthentication` — no selector,
+so every workload of the namespace, including pods the render never saw — as
+its own promotable layer, `mesh/overlays/<environment>/`, recorded in the
+inventory as `meshPath` and promoted as its own Argo Application in the
+module-resources wave, before the workloads whose principals it makes
+meaningful. It is a layer rather than a file inside a unit for the reason a
+`Namespace` object is not one either: the policy is namespace-scoped and
+singular, so two units shipping it would be two Applications claiming it. It is
+its own layer rather than the module's bootstrap or manifest overlay because
+neither is always present — a module with no kustomize tree stages no
+bootstrap, a render with no instance writes no manifest — and a guarantee
+present only sometimes is not one.
+
+The render then reads its own **effective** manifests back and refuses to
+deliver a meshed tree that does not carry that policy at `mode: STRICT`, and
+refuses any `PeerAuthentication` in the tree at another mode — an agent's own,
+or one an overlay patch relaxed — naming the file and the object.
 
 One source is not in the composition at all. A service whose render includes a
 workload that does **not** serve its endpoints — an agent's bootstrap Job,
@@ -1165,8 +1363,9 @@ the base already holds. So the publish starts again from the base and replaces
 the branch with a push leased on the stale tip it reviewed
 (`--force-with-lease`), recorded in the plan as `replacesBranchRevision` and
 part of its ID: a branch that moved after review refuses the publish. A stale
-branch carrying anything outside the module's own path is someone else's work
-and is refused by name, never overwritten.
+branch carrying anything outside what this publication writes — the module's
+own path and the environment's cell file — is someone else's work and is
+refused by name, never overwritten.
 
 **How a local pod's identity reaches the host.** Not through anything the run
 projects: there is no `MODULE_IDENTITY_PREFIX`, no secret and no

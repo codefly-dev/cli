@@ -44,9 +44,10 @@ type CompositionDelivery struct {
 // declares, read by roles from its module contract too (core's manifest
 // carries none), and its explicit owner-aware declaration, and the
 // installation declaration read by installation from that contract — the
-// selector and person-context edges, carried verbatim because the paired
-// agreement rule compares this document against the Core signed manifest
-// byte-for-byte.
+// selector and person-context edges, each carried verbatim except an edge's
+// presence, which is resolved for the environment's class on this document and
+// on the Core signed manifest alike, because the paired agreement rule
+// compares the two byte-for-byte.
 func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.Signer,
 	methods func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error),
 	ceilings func(ctx context.Context, module string) ([]*authorityv1.WorkScopeV1, error),
@@ -139,9 +140,10 @@ type AuthoritySources struct {
 	Roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
 	// OwnerAware reads the module's explicit owner-selector enforcement declaration.
 	OwnerAware func(ctx context.Context, module string) (bool, error)
-	// Installation reads the installation declaration. Carried verbatim — the
-	// paired agreement rule compares this document against the Core signed
-	// manifest byte-for-byte.
+	// Installation reads the installation declaration. Carried verbatim but
+	// for an edge's presence, which is resolved for the environment's class
+	// here and on the Core signed manifest alike — the paired agreement rule
+	// compares the two documents byte-for-byte.
 	Installation func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error)
 }
 
@@ -236,6 +238,34 @@ func SignedAuthorityDocument(manifest *solutionhost.ModuleManifest, core, declar
 		return nil, err
 	}
 	return &compositionv1.SignedManifestV1{Document: document, Envelope: envelope}, nil
+}
+
+// SamePolicy reports whether a delivered authority document says what a
+// module's captured declaration says now: the policy a host would hold if the
+// declaration were signed at that document's generation. The three fields
+// SignedAuthorityDocument stamps — module, generation, Core digest — name the
+// pair and are not policy, so they are set aside; everything else is compared
+// as the message, not as bytes, so a re-encoding is not a change. nil against
+// nil is the same (a withdrawal, or a module that declares nothing); a half
+// that appears or vanishes is a change, because the host refuses either
+// ("cannot strip policy on replay") at a held generation.
+func SamePolicy(delivered, declaration []byte) (bool, error) {
+	if (delivered == nil) != (declaration == nil) {
+		return false, nil
+	}
+	if delivered == nil {
+		return true, nil
+	}
+	var stored, declared compositionv1.AuthorityManifestV1
+	if err := proto.Unmarshal(delivered, &stored); err != nil {
+		return false, fmt.Errorf("the delivered authority document does not read: %w", err)
+	}
+	if err := proto.Unmarshal(declaration, &declared); err != nil {
+		return false, fmt.Errorf("the declaration does not read: %w", err)
+	}
+	stored.Module, stored.Generation, stored.CoreManifestDigest = "", 0, ""
+	declared.Module, declared.Generation, declared.CoreManifestDigest = "", 0, ""
+	return proto.Equal(&stored, &declared), nil
 }
 
 // Applied is NativeDeliverer.Applied over the interface: ApplyManifest applies

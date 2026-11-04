@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,4 +91,37 @@ func TestDoctorWorkspaceStillRefusesTwoProvidersOfAnOrdinaryGroup(t *testing.T) 
 	d := requireCode(t, report, codeConfigurationDuplicate, "fail")
 	require.True(t, strings.Contains(d.Message, "engine"), d.Message)
 	require.False(t, strings.Contains(d.Message, fixturefragments.Group), d.Message)
+}
+
+// --json makes stdout the report and nothing else. Core logs the composed
+// modules' disagreement over fixture-composition while reading the
+// configurations, on a context with no logger of the CLI's, so the line takes
+// wool's fallback; it belongs on stderr, where it stays visible.
+func TestDoctorWorkspaceJSONKeepsStdoutForTheReport(t *testing.T) {
+	t.Chdir(twoFragmentWorkspace(t, nil))
+	stdout, stderr := os.Stdout, os.Stderr
+	outRead, outWrite, err := os.Pipe()
+	require.NoError(t, err)
+	errRead, errWrite, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout, os.Stderr = outWrite, errWrite
+	t.Cleanup(func() { os.Stdout, os.Stderr = stdout, stderr })
+	require.NoError(t, DoctorWorkspaceCmd.Flags().Set("json", "true"))
+	t.Cleanup(func() { doctorWorkspaceJSON = false; DoctorWorkspaceCmd.Flags().Lookup("json").Changed = false })
+	DoctorWorkspaceCmd.SetContext(context.Background())
+
+	runErr := DoctorWorkspaceCmd.RunE(DoctorWorkspaceCmd, nil)
+	require.NoError(t, outWrite.Close())
+	require.NoError(t, errWrite.Close())
+	os.Stdout, os.Stderr = stdout, stderr
+	emitted, err := io.ReadAll(outRead)
+	require.NoError(t, err)
+	logged, err := io.ReadAll(errRead)
+	require.NoError(t, err)
+
+	require.NoError(t, runErr, string(emitted))
+	require.Contains(t, string(logged), "composed modules disagree", "the fixture no longer produces the warning this test is about")
+	var report workspaceReadinessReport
+	require.NoError(t, json.Unmarshal(emitted, &report), "stdout is not the report alone:\n%s", emitted)
+	require.Equal(t, readinessStatusReady, report.Status)
 }

@@ -14,7 +14,7 @@ import (
 // cannot import cmd back to call workspaceReadiness directly.
 func init() {
 	environment.PostImportValidate = func(ctx context.Context, dir, env string) error {
-		report := workspaceReadiness(ctx, workspaceReadinessOptions{dir: dir, env: env})
+		report := workspaceReadiness(ctx, &workspaceReadinessOptions{dir: dir, env: env})
 		fmt.Println(tui.RenderHeader(1, fmt.Sprintf("codefly doctor workspace --env %s", env)))
 		for i := range report.Checks {
 			printWorkspaceDiagnostic(&report.Checks[i])

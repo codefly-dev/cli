@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/url"
@@ -319,7 +320,18 @@ type World struct {
 	// hostArchitecture reads the container engine's architecture, which a
 	// local cluster's nodes run; nil selects `docker info`.
 	hostArchitecture func() (string, error)
-	platforms        []string
+	// platformsMu guards platforms, which is resolved on first use and read by
+	// every service's build — concurrently, once a build phase runs several of
+	// them at once (see imagePlatforms).
+	platformsMu sync.Mutex
+	platforms   []string
+
+	// buildsMu guards concurrentBuilds, the number of image builds this flow's
+	// build phase currently has in flight. It is set by the playbook around a
+	// concurrent group and read by each build to decide whether it may write
+	// its progress straight to the terminal (see buildTranscript).
+	buildsMu         sync.Mutex
+	concurrentBuilds int
 
 	// CaptureImageDigest asks a pushed build to resolve the immutable manifest
 	// digest of the image it published so a caller can report or pin it. It is
@@ -432,6 +444,12 @@ type World struct {
 	// reaches a service through the same carrier a declared one does rather
 	// than through a raw process variable the service has no contract to read.
 	workspaceConfigurationValues map[string]map[string]string
+
+	// BuildProgress is where a build phase reports each image build and push
+	// starting and finishing, and the images it kept, for the operator
+	// watching the render (build_progress.go). Nil reports nothing, which is
+	// what every command but a render wants.
+	BuildProgress *BuildProgress
 
 	// OutputSink receives narration otherwise printed directly via pkg/cli.
 	// Always non-nil: NewFlow defaults it to a no-op sink.
@@ -1427,6 +1445,16 @@ func (flow *Flow) WithStateListener(l StateListener) *Flow {
 func (flow *Flow) WithOutputSink(sink OutputSink) *Flow {
 	if flow != nil && flow.world != nil && sink != nil {
 		flow.world.OutputSink = sink
+	}
+	return flow
+}
+
+// WithBuildProgress reports this flow's build phases — each image build and
+// push starting and finishing, and the images kept — to out, the operator's
+// stdout. A nil out leaves the flow silent, as every flow is by default.
+func (flow *Flow) WithBuildProgress(out io.Writer) *Flow {
+	if flow != nil && flow.world != nil {
+		flow.world.BuildProgress = NewBuildProgress(out)
 	}
 	return flow
 }
@@ -2701,7 +2729,16 @@ func (world *World) gitSources() *gitSourcePrefetch {
 }
 
 // imagePlatforms is the environment's image platforms, resolved once per flow.
+//
+// Resolution runs `docker info` and is memoized, and every service's build
+// reads it to narrow its recipe — so once a build phase builds several services
+// at once, this is read and written concurrently. It is resolved under the lock
+// rather than raced: the answer is a property of the engine and the
+// environment, identical for every caller, and resolving it twice would run
+// `docker info` twice to learn the same thing.
 func (world *World) imagePlatforms() ([]string, error) {
+	world.platformsMu.Lock()
+	defer world.platformsMu.Unlock()
 	if world.platforms != nil {
 		return world.platforms, nil
 	}
@@ -2715,6 +2752,35 @@ func (world *World) imagePlatforms() ([]string, error) {
 	}
 	world.platforms = platforms
 	return platforms, nil
+}
+
+// withConcurrentBuilds records that count image builds are about to run at the
+// same time and returns the undo. A build consults buildsConcurrently to decide
+// whether its progress output can go straight to the terminal.
+func (world *World) withConcurrentBuilds(count int) func() {
+	if world == nil {
+		return func() {}
+	}
+	world.buildsMu.Lock()
+	world.concurrentBuilds = count
+	world.buildsMu.Unlock()
+	return func() {
+		world.buildsMu.Lock()
+		world.concurrentBuilds = 0
+		world.buildsMu.Unlock()
+	}
+}
+
+// buildsConcurrently reports whether this flow has more than one image build in
+// flight, which is what makes a build's own progress stream illegible on a
+// shared terminal.
+func (world *World) buildsConcurrently() bool {
+	if world == nil {
+		return false
+	}
+	world.buildsMu.Lock()
+	defer world.buildsMu.Unlock()
+	return world.concurrentBuilds > 1
 }
 
 // dockerEngineArchitecture is the architecture of the container engine the CLI

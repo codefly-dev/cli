@@ -327,6 +327,52 @@ func TestCellFileRefusesToDropAComposedModuleWithNoRender(t *testing.T) {
 	require.Equal(t, []string{"billing", "shop"}, again.Modules)
 }
 
+// The cell file is derived from the composition, not from whatever records
+// the checkout holds. A module removed from `modules:` leaves its render
+// record behind (and so does one that was never composed here), and the file
+// used to read it back: the module kept its namespace, workloads and consumer
+// edges in the cell after the composition dropped it. The render now leaves
+// such records out of the file, deletes them — nothing could render them again
+// — and says so.
+func TestRenderCellPrunesTheRecordOfAModuleTheCompositionNoLongerDeclares(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	// Records left by modules the composition does not declare: one for this
+	// environment, one rendered for another. Neither can be rendered again.
+	renderCellTreeWith(t, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "proposals"),
+		Module:      "proposals", Environment: "staging", Namespace: "acme-proposals", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/proposals", Units: unitsWithPorts("proposals", "web"),
+	}, "web", "staging")
+	renderCellTreeWith(t, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "compute"),
+		Module:      "compute", Environment: "production", Namespace: "acme-compute", AppProject: "acme-production",
+		Promotable: true, OwnedPath: "deployments/modules/compute", Units: unitsWithPorts("compute", "worker"),
+	}, "worker", "production")
+
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "shop"}, result.Modules)
+	require.Empty(t, result.Skipped, "a record of an undeclared module is pruned, not reported as another environment's")
+	require.Equal(t, []string{"deployments/modules/compute", "deployments/modules/proposals"}, result.Removed)
+	require.NoDirExists(t, moduleRenderDestination(workspace, "proposals"))
+	require.NoDirExists(t, moduleRenderDestination(workspace, "compute"))
+	require.DirExists(t, moduleRenderDestination(workspace, "shop"))
+
+	data, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	file, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	names := make([]string, 0, len(file.Namespaces))
+	for _, namespace := range file.Namespaces {
+		names = append(names, namespace.Name)
+	}
+	require.Equal(t, []string{"acme-billing", "acme-shop"}, names)
+	require.NotContains(t, string(data), "proposals")
+}
+
 // A workload whose authenticating container cannot be told from a sidecar is
 // refused by name rather than guessed.
 func TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *testing.T) {
@@ -693,4 +739,117 @@ func TestTheCellNamesTheDeliveryEndpointAndNotOnlyItsWorkload(t *testing.T) {
 				"and both endpoints are inventoried either way, so neither is distinguishable by its presence")
 		})
 	}
+}
+
+// A container declaring an exec probe or an exec lifecycle hook is refused by
+// name and field before the cell file approves it: the cell's execution
+// admission refuses such a pod (a command of the delivering party's choosing
+// runs inside the pod that holds the workload identity), so a cell file that
+// described it would approve a workload with zero running replicas. An HTTP
+// probe on the same container is admitted.
+func TestCellFileRefusesAnExecProbeTheCellWouldRefuse(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	result := renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	rendered := filepath.Join(result.Path, "services", "api", "overlays", "staging", "deployment.yaml")
+	data, err := os.ReadFile(rendered)
+	require.NoError(t, err)
+	const image = "image: registry.example.test/acme/api:1.2.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	require.Contains(t, string(data), image)
+
+	for _, probe := range []struct{ field, yaml string }{
+		{"livenessProbe.exec", "livenessProbe:\n            exec:\n              command: [python3, -m, api.server, --health]"},
+		{"startupProbe.exec", "startupProbe:\n            exec:\n              command: [true]"},
+		{"lifecycle.postStart.exec", "lifecycle:\n            postStart:\n              exec:\n                command: [true]"},
+	} {
+		require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), image, image+"\n          "+probe.yaml, 1)), 0o644))
+		_, err = RenderCell(context.Background(), workspace, env)
+		require.Error(t, err, probe.field)
+		require.Contains(t, err.Error(), "unit shop/api workload api: container api declares "+probe.field)
+		require.Contains(t, err.Error(), "Use an HTTP, TCP or gRPC probe")
+	}
+
+	httpProbe := "livenessProbe:\n            httpGet:\n              path: /healthz\n              port: http"
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), image, image+"\n          "+httpProbe, 1)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err, "an HTTP probe is admitted")
+}
+
+// A pod template that opts out of the mesh is refused: the cell enrols the
+// namespace and its admission refuses a pod that overrides it, so the file
+// does not approve one.
+func TestCellFileRefusesAPodThatOptsOutOfTheMesh(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	result := renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	rendered := filepath.Join(result.Path, "services", "api", "overlays", "staging", "deployment.yaml")
+	data, err := os.ReadFile(rendered)
+	require.NoError(t, err)
+	const templateLabels = "      labels:\n        app.kubernetes.io/name: api\n"
+	require.Contains(t, string(data), templateLabels)
+
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), templateLabels, templateLabels+"        istio.io/dataplane-mode: none\n", 1)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "unit shop/api workload api: its pod template carries the istio.io/dataplane-mode label, which opts the pod out of the mesh")
+
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.Replace(string(data), templateLabels, templateLabels+"      annotations:\n        ambient.istio.io/bypass-inbound-capture: \"true\"\n", 1)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "carries the ambient.istio.io/bypass-inbound-capture annotation")
+
+	// A CronJob's pod template stands under spec.jobTemplate.spec.template;
+	// an opt-out there is read where it stands.
+	cronJob := `---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: api-sweep
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            codefly.dev/bootstrap-service: api
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: api
+          restartPolicy: OnFailure
+          containers:
+            - name: api
+              image: registry.example.test/acme/api-sweep@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+`
+	require.NoError(t, os.WriteFile(rendered, append([]byte(data), []byte(cronJob)...), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, "workload api-sweep: its pod template carries the sidecar.istio.io/inject label")
+}
+
+// A tree rendered for the environment whose module the workspace no longer
+// composes — a solution withdrawn from the composition, a module nothing pins
+// — refuses the cell file by name, with the tree to remove: described, it
+// would approve a workload the composition does not declare; skipped, its
+// pods would be refused by the cell while the delivery still runs them.
+// Removed, the file is written as before.
+func TestCellFileRefusesATreeOfAModuleTheWorkspaceDoesNotCompose(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	withdrawn := renderCellTree(t, workspace, "proposals", "api", "acme-proposals", "staging")
+
+	// The derivation holds the tree; a render satisfies the hold by removing
+	// it (TestRenderCellPrunesTheRecordOfAModuleTheCompositionNoLongerDeclares).
+	_, _, err := deriveCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cell file is not written")
+	require.Contains(t, err.Error(), withdrawn.Path+" holds a render of module proposals for staging, but the workspace composes no module of that name")
+	require.Contains(t, err.Error(), "remove that render and the module's delivered tree")
+
+	again, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "shop"}, again.Modules)
+	require.Equal(t, []string{"deployments/modules/proposals"}, again.Removed)
+	require.NoDirExists(t, withdrawn.Path)
 }

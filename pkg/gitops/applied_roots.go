@@ -33,6 +33,7 @@ func inventoryAppliedRoots(opts *RenderOptions) []appliedRoot {
 	}
 	add(inventory.ModulePath, opts.Namespace)
 	add(inventory.ModuleManifestPath, opts.Namespace)
+	add(inventory.MeshPath, opts.Namespace)
 	return roots
 }
 

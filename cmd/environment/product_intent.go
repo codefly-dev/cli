@@ -17,8 +17,31 @@ import (
 type productIntent struct {
 	ExcludeServices []environments.EnvironmentExcludedService
 	// ServiceSecrets is nil when the intent declares none for the environment,
-	// which withdraws every product-owned service-secrets entry on import.
+	// which leaves the workspace's product-owned service-secrets entries as
+	// they are. A key the intent declares EMPTY (generate: [], may-be-empty:
+	// []) is withdrawn on import; the decoder keeps an empty list apart from
+	// an absent key (an empty, non-nil slice against nil).
 	ServiceSecrets *environments.ProductSecretPolicy
+}
+
+// withdrawnSecretKeys names, under service-secrets, the product-owned keys the
+// intent declares empty: the ones an import withdraws from the workspace.
+// Silence is not among them.
+func (intent *productIntent) withdrawnSecretKeys() map[string][]string {
+	if intent == nil || intent.ServiceSecrets == nil {
+		return nil
+	}
+	var keys []string
+	if intent.ServiceSecrets.Generate != nil && len(intent.ServiceSecrets.Generate) == 0 {
+		keys = append(keys, "generate")
+	}
+	if intent.ServiceSecrets.MayBeEmpty != nil && len(intent.ServiceSecrets.MayBeEmpty) == 0 {
+		keys = append(keys, "may-be-empty")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return map[string][]string{"service-secrets": keys}
 }
 
 func parseProductIntent(data []byte, name string) (*productIntent, error) {

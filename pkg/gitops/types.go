@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"io"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
@@ -94,6 +95,12 @@ type Inventory struct {
 	// Application at its environment overlay and derives the promotion's
 	// authority from it, exactly as it does for a unit.
 	ModuleManifestPath string `json:"moduleManifestPath,omitempty"`
+	// MeshPath is the render subdirectory holding the namespace's mesh
+	// posture: the namespace-wide STRICT mTLS PeerAuthentication without
+	// which the delivered mesh edges are not enforceable (mesh_posture.go).
+	// Set for every render of an environment that declares a host, and
+	// promoted as its own Application like the module resources layer.
+	MeshPath string `json:"meshPath,omitempty"`
 	// HostsDelivery is true for the module that serves the environment's
 	// delivery API: its own delivery cannot precede the API it posts to, so
 	// it is ordered after the module's units where every other module's
@@ -115,6 +122,11 @@ type Inventory struct {
 	// and recording another digest was rendered against another value, and the
 	// render refuses to deliver two values of one group.
 	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
+	// EnvironmentDeclarationDigest records a digest of the environment's
+	// service-config and service-identity rows for this module's services as
+	// the render read them (environment_declaration.go). Publish re-digests
+	// the same rows and refuses a tree the declaration has moved past.
+	EnvironmentDeclarationDigest string `json:"environmentDeclarationDigest,omitempty"`
 	// MeshEdges are the L4 edges into this module's workloads, as the
 	// composition declares them: the data the cell's applier compiles into
 	// its mesh policy (mesh_edges.go). Absent when the environment declares
@@ -291,8 +303,12 @@ type RenderOptions struct {
 	CheckUnitDirectories bool
 	OwnedPath            string
 	ModulePath           string
-	Units                []InventoryUnit
-	Package              *InventoryPackage
+	// MeshPath is set by the render once it has written the namespace's mesh
+	// posture layer, so the inventory records the delivered path rather than
+	// the intent to write one.
+	MeshPath string
+	Units    []InventoryUnit
+	Package  *InventoryPackage
 	// Pin is how the composition pinned the module, recorded in the inventory.
 	Pin *InventoryPin
 	// ReleaseArtifacts is what the module's package manifest declares the
@@ -460,10 +476,17 @@ type PublishRequest struct {
 	// release policy no longer admits — after a signing identity rotated.
 	// Deliberate: without it such a carrier refuses the publish by name.
 	Resign bool `json:"resign,omitempty"`
+	// Advance names the bindings this publish settles at the next generation
+	// although their content is unchanged — the answer to a host refusing a
+	// delivered generation as a history conflict naming the binding, which
+	// the delivered tree cannot see. Deliberate: nothing advances unnamed.
+	Advance []string `json:"advance,omitempty"`
 	// AllowCellRemovals names the modules whose removal from the hosted
 	// environment's cell file this publish intends: a namespace, workload,
 	// endpoint or consumer the delivery base branch's cell file carries and
-	// the workspace's does not. Any other removal refuses the publish.
+	// the workspace's does not. A removal of a module the composition no
+	// longer declares needs no naming; any other unnamed removal refuses the
+	// publish.
 	AllowCellRemovals []string `json:"allowCellRemovals,omitempty"`
 }
 
@@ -502,6 +525,25 @@ type PublishPlan struct {
 	// CellRemovals are the removals from the base branch's cell file the
 	// request named (AllowCellRemovals), for the reviewer to see.
 	CellRemovals []string `json:"cellRemovals,omitempty"`
+	// UndeclaredCellRemovals are the removals from the base branch's cell
+	// file the composition explains — their module is no longer declared —
+	// which no request needs to name.
+	UndeclaredCellRemovals []string `json:"undeclaredCellRemovals,omitempty"`
+	// RemovedModules are the delivered module trees this publication removes,
+	// relative to the delivery repository: modules the composition no longer
+	// declares, which the cell file it carries no longer admits.
+	RemovedModules []string `json:"removedModules,omitempty"`
+	// CellFile is the environment's cell file this publication carries into
+	// the delivery repository, at the path the cell's infrastructure reads it
+	// from. A cell admits only the builds that file names, so a promotion of
+	// a new build carries it or the build it delivers is refused by the
+	// cluster (publish_cell.go). Empty when there is none to carry, which
+	// CellNotice then says.
+	CellFile string `json:"cellFile,omitempty"`
+	// CellNotice says why a publication to a hosted environment moves no
+	// approved-build list: a rollback, which restores a module tree and not
+	// the cell, or a checkout with no cell file rendered.
+	CellNotice string `json:"cellNotice,omitempty"`
 	// Carriers are the carriers this plan signed, keyed by kind, ID and
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.
@@ -590,6 +632,16 @@ type ObserveRequest struct {
 	Local         bool
 	Timeout       time.Duration
 	PollInterval  time.Duration
+	// Kubeconfig and KubeContext are the cluster the environment declares,
+	// through which the delivered workloads' controller events are read
+	// while Argo CD reports an application Progressing or Degraded. Empty,
+	// kubectl's current context is read.
+	Kubeconfig  string
+	KubeContext string
+	// Output is where each refusal the cluster records against a delivered
+	// workload is printed, verbatim and once, as it is first seen. Nil
+	// discards them; the error returned still names them.
+	Output io.Writer
 }
 
 type ReviewEvidence struct {

@@ -101,6 +101,13 @@ jobs:
           "$RUNNER_TEMP/generate-bin/buf" --version
           echo "$RUNNER_TEMP/generate-bin" >> "$GITHUB_PATH"
       - name: Run tagged and qualification tests in isolated processes
+        # The scaffolded fixtures resolve and download the go-grpc agent at
+        # "latest" through api.github.com; core reads GITHUB_TOKEN/GH_TOKEN for
+        # that call and nothing else, and without one the lookup shares the
+        # runner NAT's 60 requests/hour, 403s, and falls back to an empty
+        # per-test CODEFLY_HOME ("no such file or directory").
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/test-generate-isolated.sh "${{ matrix.shard }}" "${{ strategy.job-total }}"
       - name: Retain test output, timings and conformance receipts
         if: always()

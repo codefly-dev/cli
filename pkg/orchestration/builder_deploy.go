@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -61,6 +62,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
 	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		secretName := "secret-" + b.instance.Service.Name
+		conf = withEnvironmentDeclaredSecrets(ctx, conf, b.instance.Identity, b.world.Env)
 		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
 			conf,
 			dependenciesConfigurations,
@@ -424,6 +426,92 @@ func promotableDeploymentConfigurations(
 		safeDependencies = append(safeDependencies, safe)
 	}
 	return own, safeDependencies, references, nil
+}
+
+// withEnvironmentDeclaredSecrets adds to a service's own configuration the
+// secret keys the environment's service-secrets.generate declares for it and the
+// configuration does not declare itself. The environment has declared that its
+// store holds those keys, minted by `codefly deploy secrets`, so the render
+// promotes them into typed Secret references exactly as it promotes a key read
+// from the service's *.secret.env: the key name reaches the manifest and the
+// value never exists here. A module that ships no local secret file then
+// renders — a composition reads its module cache and never writes into it, and
+// a cell's store is seeded from the render, so nothing else could have declared
+// the keys — where before the postgres agent refused the deployment for the
+// first primitive it could not find.
+//
+// Only a generator naming the service adds anything, the rule a local run's
+// provisionGeneratedSecrets applies; a key the configuration already declares
+// stays as declared, with the value its file carries; and the result is a copy,
+// so the manager's configuration is never widened for anyone else.
+func withEnvironmentDeclaredSecrets(
+	ctx context.Context,
+	configuration *basev0.Configuration,
+	identity *resources.ServiceIdentity,
+	env *environments.Environment,
+) *basev0.Configuration {
+	if env == nil || env.ServiceSecrets == nil || identity == nil {
+		return configuration
+	}
+	w := wool.Get(ctx).In("Builder.withEnvironmentDeclaredSecrets")
+	unique := identity.Unique()
+	var declared *basev0.Configuration
+	for index := range env.ServiceSecrets.Generate {
+		generator := &env.ServiceSecrets.Generate[index]
+		if generator.Scope != environments.SecretGeneratorScopeService || !slices.Contains(generator.Services, unique) {
+			continue
+		}
+		for _, key := range generator.Keys {
+			key = strings.TrimSpace(key)
+			if declaresConfigurationKey(configuration, generator.Configuration, key) ||
+				declaresConfigurationKey(declared, generator.Configuration, key) {
+				continue
+			}
+			if declared == nil {
+				declared = &basev0.Configuration{Origin: unique}
+				if configuration != nil {
+					declared = proto.CloneOf(configuration)
+				}
+			}
+			info := configurationInformationNamed(declared, generator.Configuration)
+			info.ConfigurationValues = append(info.ConfigurationValues, &basev0.ConfigurationValue{Key: key, Secret: true})
+			w.Info("secret key declared by the environment's service-secrets.generate, not by the service's own configuration; rendering its reference",
+				wool.Field("service", unique), wool.Field("configuration", generator.Configuration), wool.Field("key", key))
+		}
+	}
+	if declared == nil {
+		return configuration
+	}
+	return declared
+}
+
+// declaresConfigurationKey reports whether the configuration carries key in the
+// named group, matched the way core matches configuration names and keys.
+func declaresConfigurationKey(configuration *basev0.Configuration, group, key string) bool {
+	for _, info := range configuration.GetInfos() {
+		if !resources.Match(info.GetName(), group) {
+			continue
+		}
+		for _, value := range info.GetConfigurationValues() {
+			if resources.Match(value.GetKey(), key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// configurationInformationNamed returns the configuration's group of that name,
+// appending an empty one when it has none.
+func configurationInformationNamed(configuration *basev0.Configuration, name string) *basev0.ConfigurationInformation {
+	for _, info := range configuration.GetInfos() {
+		if resources.Match(info.GetName(), name) {
+			return info
+		}
+	}
+	info := &basev0.ConfigurationInformation{Name: name}
+	configuration.Infos = append(configuration.Infos, info)
+	return info
 }
 
 // restrictedRenderRejects reports whether restricted render will refuse a value

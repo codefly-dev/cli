@@ -2,8 +2,12 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/codefly-dev/core/wool"
 )
@@ -226,6 +230,26 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 			return nil
 		case group := <-playbook.actions.Group():
 			plan := playbook.actions.NewActionPlan()
+			concurrent, err := playbook.runsConcurrently(group.actions)
+			if err != nil {
+				return err
+			}
+			if concurrent {
+				stop, err := playbook.workConcurrently(ctx, group.actions, plan)
+				switch {
+				case err != nil:
+					return err
+				case stop:
+					// Matching the serial path: a playbook that has reached its
+					// stopping point queues nothing further.
+					return nil
+				}
+				playbook.actions.send(ctx, plan.actions...)
+				continue
+			}
+			// A build phase run one service at a time is still a phase to
+			// the operator watching: its images are counted the same way.
+			endPhase := playbook.world.buildProgress().beginPhase(buildPhaseSize(group.actions))
 			for _, action := range group.actions {
 				if playbook.pause.Handle(ctx, action) {
 					w.Trace("discarding action", wool.Field("action", action))
@@ -275,15 +299,205 @@ func (playbook *Playbook) Work(ctx context.Context) error {
 
 				if playbook.stopAfter(ctx, action) {
 					w.Trace("stopping", wool.Field("action", action))
+					endPhase()
 					return nil
 				}
 				w.Trace("done with action", wool.Field("action", action))
 
 			}
 			// Done looping on actions
+			endPhase()
 			playbook.actions.send(ctx, plan.actions...)
 		}
 	}
+}
+
+// ConcurrentPolicy is implemented by a policy that can tell the playbook an
+// action group's members are independent of one another and may run at the same
+// time. A policy that does not implement it has every group run one action
+// after another, which is what every mode but a snapshot's build phase does.
+type ConcurrentPolicy interface {
+	ConcurrentActions(actions []Action) bool
+}
+
+// runsConcurrently reports whether this group is one the policy declares
+// independent and the host is allowed to run in parallel.
+//
+// A bound that cannot be read is an error and not a reason to fall back to one
+// action at a time: an operator who mistyped the override would otherwise get a
+// render that silently takes the time it was meant to stop taking, with nothing
+// said about why.
+func (playbook *Playbook) runsConcurrently(actions []Action) (bool, error) {
+	if len(actions) < 2 {
+		return false, nil
+	}
+	policy, ok := playbook.policy.(ConcurrentPolicy)
+	if !ok || !policy.ConcurrentActions(actions) {
+		return false, nil
+	}
+	bound, err := buildConcurrency()
+	if err != nil {
+		return false, err
+	}
+	return bound > 1, nil
+}
+
+// workConcurrently executes one group's actions at the same time, under a
+// bound, and then does the playbook's own bookkeeping for them serially in the
+// group's order. It reports whether the playbook has reached its stopping point.
+//
+// Only the actions run concurrently. Everything the rest of the flow observes —
+// which actions are recorded as executed and in what order, which failure is
+// attributed to the flow, the order signals are raised in, and the order the
+// next actions are queued in — is replayed afterwards in the order the group
+// was given, never the order the actions happened to finish in. A render feeds
+// a signed publish, so the artifact must not be able to tell whether its images
+// were built one at a time or all at once.
+func (playbook *Playbook) workConcurrently(ctx context.Context, actions []Action, plan *ActionPlan) (bool, error) {
+	w := wool.Get(ctx).In("work.concurrent")
+	bound, err := buildConcurrency()
+	if err != nil {
+		return false, err
+	}
+
+	admitted := playbook.admit(ctx, actions)
+	if len(admitted) == 0 {
+		return false, nil
+	}
+	if len(admitted) == 1 {
+		bound = 1
+	}
+	w.Info("building services at the same time", wool.Field("services", len(admitted)),
+		wool.Field("at_once", bound), wool.Field("override", buildConcurrencyEnv))
+
+	// A build is the one action whose own progress output is worth suppressing
+	// while others are running; telling the world how many are in flight is how
+	// each build knows (buildsConcurrently).
+	restore := playbook.world.withConcurrentBuilds(len(admitted))
+	defer restore()
+	// What the operator sees of the phase: one line per build starting and
+	// finishing, and once the phase is over, how many images it kept.
+	defer playbook.world.buildProgress().beginPhase(len(admitted))()
+
+	next := make([][]Action, len(admitted))
+	failures := make([]error, len(admitted))
+	var group errgroup.Group
+	group.SetLimit(bound)
+	// Launched inline, unlike the readiness probes, which must launch from
+	// their own goroutine because they read results while later probes are
+	// still blocked on SetLimit. Nothing here is read until every action is
+	// done, so blocking on the bound is exactly the wanted behaviour.
+	//
+	// Started longest-recorded-build first rather than in the group's order,
+	// because a bounded phase ends when its last build ends and the plan's
+	// topological order starts the longest one last (build_dispatch.go). Only
+	// the starts move: every result stays at its own action's index, so what
+	// follows reads the group in the group's order whatever this permutation
+	// was.
+	for _, index := range playbook.dispatchOrder(ctx, admitted) {
+		group.Go(func() error {
+			outcome, execErr := playbook.policy.Execute(ctx, admitted[index])
+			next[index], failures[index] = outcome, execErr
+			// Never non-nil: a sibling build that is already minutes in has
+			// layers pushed and a cache entry to record, and cancelling it
+			// would throw that away to report a failure the operator will see
+			// anyway. Letting the group finish costs at most the longest build
+			// still running and names every service that failed instead of
+			// whichever one failed first.
+			return nil
+		})
+	}
+	_ = group.Wait()
+
+	if err = playbook.recordConcurrentFailures(admitted, failures); err != nil {
+		return false, err
+	}
+	return playbook.settleConcurrent(ctx, w, admitted, next, plan), nil
+}
+
+// admit applies the filters the serial loop applies — a paused action, an
+// ignored one, one already executed — and records what is left, in order.
+func (playbook *Playbook) admit(ctx context.Context, actions []Action) []Action {
+	w := wool.Get(ctx).In("work.admit")
+	admitted := make([]Action, 0, len(actions))
+	for _, action := range actions {
+		switch {
+		case playbook.pause.Handle(ctx, action):
+			w.Trace("discarding action", wool.Field("action", action))
+		case playbook.ignore(ctx, action):
+			w.Trace("ignoring action", wool.Field("action", action))
+		case playbook.previouslyExecuted(ctx, action):
+			w.Trace("previously executed", wool.Field("action", action))
+		default:
+			playbook.record(action)
+			admitted = append(admitted, action)
+		}
+	}
+	return admitted
+}
+
+// buildPhaseSize is how many image builds a group holds: the size of the build
+// phase it is, or 0 for a group of anything else, which opens no phase worth
+// reporting.
+func buildPhaseSize(actions []Action) int {
+	size := 0
+	for _, action := range actions {
+		if action.Type == BuilderBuild {
+			size++
+		}
+	}
+	return size
+}
+
+// recordConcurrentFailures attributes the group's failures in the group's order
+// and returns one error naming every service that failed.
+//
+// Every failure is reported, not just the first: the whole point of running the
+// group together is that one run tells the operator everything that is wrong,
+// instead of one failing build per render.
+func (playbook *Playbook) recordConcurrentFailures(admitted []Action, failures []error) error {
+	var failed []string
+	var causes []error
+	for index, action := range admitted {
+		if failures[index] == nil {
+			continue
+		}
+		playbook.recordFailure(action)
+		failed = append(failed, action.Service)
+		causes = append(causes, fmt.Errorf("%s: %w", action.Service, failures[index]))
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("action %s failed on %d of %d services (%s): %w",
+		admitted[0].Type, len(failed), len(admitted), strings.Join(failed, ", "), errors.Join(causes...))
+}
+
+// settleConcurrent does the per-action bookkeeping of a completed group in the
+// group's order: the pause a result asks for, the next actions it queues, its
+// signal, and whether it is the playbook's stopping point.
+func (playbook *Playbook) settleConcurrent(
+	ctx context.Context, w *wool.Wool, admitted []Action, next [][]Action, plan *ActionPlan,
+) bool {
+	stop := false
+	for index, action := range admitted {
+		if p, ok := playbook.pause.IsPause(ctx, next[index]); ok {
+			w.Warn(fmt.Sprintf("service %s failing, waiting for successful re-load", action.Service))
+			playbook.record(*p)
+			playbook.signal(ctx, *p)
+			continue
+		}
+		plan.Add(ctx, next[index]...)
+		playbook.signal(ctx, action)
+		// Asked of every action rather than returned on the first: the group is
+		// already finished, so the remaining signals and queued actions are
+		// owed whatever the stopping policy says about an earlier one.
+		if playbook.stopAfter(ctx, action) {
+			w.Trace("stopping", wool.Field("action", action))
+			stop = true
+		}
+	}
+	return stop
 }
 
 type IgnoreFunc func(ctx context.Context, action Action) bool

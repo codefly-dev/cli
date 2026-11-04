@@ -132,8 +132,21 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 		return RenderResult{}, err
 	}
 	opts.ModuleManifestPath = deliveredManifestPath(declared)
+	// The namespace's mesh posture, before validateTree reads the tree and
+	// before buildInventory hashes it: on a meshed environment the delivered
+	// edges are only enforceable under STRICT mTLS, so the policy is part of
+	// what this render delivers, not something a cell is trusted to hold.
+	if opts.MeshPath, err = projectMeshPosture(tree, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
+		return RenderResult{}, err
+	}
+	// Whatever reached the tree — this projection, an agent's own policy, an
+	// overlay patch that relaxed the mode — is held to the posture here, on
+	// the effective manifests validateTree built.
+	if err = checkMeshPosture(manifests, opts); err != nil {
 		return RenderResult{}, err
 	}
 	sizing := computeSizing(manifests)
@@ -253,6 +266,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		renderRoot:         tree,
 		ModuleManifestPath: inventory.ModuleManifestPath,
 		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		MeshPath:    inventory.MeshPath,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: project, Promotable: promotable, Package: inventory.Package, Pin: inventory.Pin,
 		CheckUnitDirectories: inventory.Unit == "",
@@ -297,6 +311,12 @@ func ValidateServiceSnapshot(root string) error {
 	// the Applications that deliver them read the snapshot revision.
 	if inventory.ModuleManifestPath != "" {
 		allowed[inventory.ModuleManifestPath] = struct{}{}
+	}
+	// So is the namespace's mesh posture: its Application reads the same
+	// revision, and the STRICT mTLS it requires is what makes the delivered
+	// mesh edges enforceable (mesh_posture.go).
+	if inventory.MeshPath != "" {
+		allowed[inventory.MeshPath] = struct{}{}
 	}
 	rendered := renderedUnits(&inventory)
 	for idx := range rendered {
@@ -366,6 +386,9 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	}
 	if inventory.ModuleManifestPath != "" {
 		covered[inventory.ModuleManifestPath] = false
+	}
+	if inventory.MeshPath != "" {
+		covered[inventory.MeshPath] = false
 	}
 	for idx := range inventory.Units {
 		unit := &inventory.Units[idx]
@@ -1628,6 +1651,7 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package, Pin: opts.Pin,
 		ModuleManifestPath: filepath.ToSlash(opts.ModuleManifestPath),
+		MeshPath:           filepath.ToSlash(opts.MeshPath),
 		HostsDelivery:      opts.HostsDelivery || hostsDeliveryAPI(opts),
 		Units:              append([]InventoryUnit(nil), opts.Units...),
 	}
@@ -1652,6 +1676,11 @@ func inventoryHead(opts *RenderOptions) Inventory {
 	sort.Slice(inventory.Units, func(i, j int) bool {
 		return inventory.Units[i].Name < inventory.Units[j].Name
 	})
+	// Stamped once the units are known, over the same service names a
+	// publish reads back out of this inventory.
+	if opts.Target != nil {
+		inventory.EnvironmentDeclarationDigest = environmentDeclarationDigest(opts.Target, inventory.Module, serviceUnitNames(inventory.Units))
+	}
 	return inventory
 }
 

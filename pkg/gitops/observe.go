@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -59,6 +60,7 @@ type argoApplication struct {
 		} `json:"health"`
 		OperationState struct {
 			Phase      string `json:"phase"`
+			StartedAt  string `json:"startedAt"`
 			SyncResult struct {
 				Revision  string   `json:"revision"`
 				Revisions []string `json:"revisions"`
@@ -73,6 +75,10 @@ type argoApplication struct {
 			Kind      string `json:"kind"`
 			Namespace string `json:"namespace"`
 			Name      string `json:"name"`
+			Health    struct {
+				Status  string `json:"status"`
+				Message string `json:"message"`
+			} `json:"health"`
 		} `json:"resources"`
 	} `json:"status"`
 }
@@ -112,6 +118,9 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	if inventory.ModulePath != "" {
 		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.ModulePath, "overlays", request.Environment))] = struct{}{}
 	}
+	if inventory.MeshPath != "" {
+		servicePaths[filepath.ToSlash(filepath.Join(request.Path, inventory.MeshPath, "overlays", request.Environment))] = struct{}{}
+	}
 	for idx := range inventory.Units {
 		unit := &inventory.Units[idx]
 		if unit.Path == "" {
@@ -127,58 +136,15 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 	if err != nil {
 		return ObserveResult{}, err
 	}
-	timeout := request.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Minute
+	last, err := awaitApplications(ctx, &project, request, servicePaths)
+	if err != nil {
+		return ObserveResult{}, err
 	}
-	interval := request.PollInterval
-	if interval <= 0 {
-		interval = 5 * time.Second
+	names := make([]string, 0, len(last))
+	for name := range last {
+		names = append(names, name)
 	}
-	observeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	names := append([]string(nil), request.Applications...)
 	sort.Strings(names)
-	last := map[string]ApplicationEvidence{}
-	healthySweeps := 0
-	for {
-		current := map[string]ApplicationEvidence{}
-		allHealthy := true
-		for _, name := range names {
-			_, evidence, done, observeErr := observeApplication(observeCtx, &project, name, request, servicePaths)
-			if observeErr != nil {
-				return ObserveResult{}, observeErr
-			}
-			last[name] = evidence
-			if done {
-				current[name] = evidence
-			} else {
-				allHealthy = false
-			}
-		}
-		if allHealthy {
-			healthySweeps++
-		} else {
-			healthySweeps = 0
-		}
-		if healthySweeps == 2 {
-			last = current
-			break
-		}
-		timer := time.NewTimer(interval)
-		select {
-		case <-observeCtx.Done():
-			timer.Stop()
-			var states []string
-			for _, name := range names {
-				state := last[name]
-				states = append(states, fmt.Sprintf("%s(sync=%s health=%s operation=%s revision=%s)", name, state.Sync, state.Health, state.Operation, state.Revision))
-			}
-			return ObserveResult{}, fmt.Errorf("health observation on Argo CD timed out: %s", strings.Join(states, ", "))
-		case <-timer.C:
-		}
-	}
 
 	evidence := Evidence{
 		SchemaVersion: EvidenceSchemaVersion, Module: request.Module, Environment: request.Environment,
@@ -667,6 +633,7 @@ func verifyImmutableServiceSnapshot(ctx context.Context, repo, target, targetPat
 		snapshotInventory.AppProject != inventory.AppProject ||
 		snapshotInventory.OwnedPath != inventory.OwnedPath ||
 		snapshotInventory.ModulePath != inventory.ModulePath ||
+		snapshotInventory.MeshPath != inventory.MeshPath ||
 		!reflect.DeepEqual(snapshotInventory.Units, inventory.Units) {
 		return fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}
@@ -802,4 +769,97 @@ func observeReview(ctx context.Context, pullRequest, publishedCommit, repository
 		return ReviewEvidence{}, fmt.Errorf("promotion pull request has no approving review")
 	}
 	return evidence, nil
+}
+
+// awaitApplications polls every selected application until each has been
+// Synced, Healthy and Succeeded at the reviewed revision for two consecutive
+// sweeps, within the request's budget, and returns the evidence of the last
+// sweep. While an application is still Progressing or Degraded, the delivered
+// workloads' controllers are read for the refusals Argo CD does not report.
+func awaitApplications(ctx context.Context, project *argoProject, request *ObserveRequest, servicePaths map[string]struct{}) (map[string]ApplicationEvidence, error) {
+	timeout := request.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	interval := request.PollInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	observeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	names := append([]string(nil), request.Applications...)
+	sort.Strings(names)
+	last := map[string]ApplicationEvidence{}
+	healthySweeps := 0
+	workloads := newWorkloadObserver(request)
+	var pending []*argoApplication
+	// timedOut says what the observation was still waiting on when the
+	// budget ran out: each application's state, the workloads Argo CD
+	// reports unhealthy, and every refusal the cluster recorded against them.
+	timedOut := func() error {
+		states := make([]string, 0, len(names))
+		for _, name := range names {
+			state := last[name]
+			states = append(states, fmt.Sprintf("%s(sync=%s health=%s operation=%s revision=%s)", name, state.Sync, state.Health, state.Operation, state.Revision))
+		}
+		message := fmt.Sprintf("health observation on Argo CD timed out: %s", strings.Join(states, ", "))
+		if unhealthy := unhealthyResources(pending); len(unhealthy) > 0 {
+			message += "; still waiting on " + strings.Join(unhealthy, "; ")
+		}
+		if len(workloads.refusals) > 0 {
+			message += "; the cluster refused " + describeRefusals(workloads.refusals)
+		}
+		if workloads.readErr != nil {
+			message += fmt.Sprintf("; the delivered workloads' events could not be read (%v)", workloads.readErr)
+		}
+		return errors.New(message)
+	}
+	for {
+		current := map[string]ApplicationEvidence{}
+		allHealthy := true
+		sweep := make([]*argoApplication, 0, len(names))
+		for _, name := range names {
+			app, evidence, done, observeErr := observeApplication(observeCtx, project, name, request, servicePaths)
+			if observeErr != nil {
+				if observeCtx.Err() != nil {
+					// The budget ran out mid-call: the verdict is the
+					// timeout and what it waited on, not the killed call.
+					return nil, timedOut()
+				}
+				return nil, observeErr
+			}
+			last[name] = evidence
+			if done {
+				current[name] = evidence
+			} else {
+				allHealthy = false
+				sweep = append(sweep, &app)
+			}
+		}
+		pending = sweep
+		if allHealthy {
+			healthySweeps++
+		} else {
+			healthySweeps = 0
+			// An application still Progressing or Degraded says nothing of
+			// why; its workloads' controllers do. A denial ends the wait: the
+			// pod it refused is never created, however long Argo CD waits.
+			workloads.inspect(observeCtx, pending)
+			if denied := workloads.denied(); len(denied) > 0 {
+				return nil, fmt.Errorf("the cluster refused the pods of %d workload(s) of this publication, and no retry creates them: %s", len(denied), describeRefusals(denied))
+			}
+		}
+		if healthySweeps == 2 {
+			return current, nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-observeCtx.Done():
+			timer.Stop()
+			return nil, timedOut()
+		case <-timer.C:
+		}
+	}
+
 }

@@ -255,6 +255,12 @@ func runnableBindingsRegenerate(env *environments.Environment, callEndpoint stri
 	return command
 }
 
+// RunnableBindingsRegenerateCommand is the command that regenerates the
+// bindings env is checked against, naming its scope when it has one.
+func RunnableBindingsRegenerateCommand(env *environments.Environment) string {
+	return runnableBindingsRegenerate(env, env.RunnableCallEndpoint)
+}
+
 // preparedRunnableBindings is what one environment's preparation produced:
 // the configuration file, how many operations it binds, and the keys the
 // environment declined.

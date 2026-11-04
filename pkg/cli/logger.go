@@ -125,6 +125,11 @@ func RestoreOutput() {
 // for `| jq` and for anything reading it back. Diagnostics go to stderr
 // instead of being dropped, so a failure is still visible.
 //
+// A record logged on a context that carries no wool provider — core's
+// configuration reader logs on the command's own context — reaches wool's
+// fallback Console, which prints to stdout; the guard points that fallback at
+// stderr too.
+//
 // It is a no-op when something already owns the stream (pkg/mcp installs the
 // same guard for JSON-RPC), so a nested call cannot hand stdout back early.
 func ProtectResultStream() func() {
@@ -132,15 +137,24 @@ func ProtectResultStream() func() {
 		return func() {}
 	}
 	SetOutputSink(func(_ wool.Loglevel, message string) { fmt.Fprintln(os.Stderr, message) })
+	wool.SetFallbackLogger(stderrLogger{})
 	SuppressOutput()
 	var undo sync.Once
 	return func() {
 		undo.Do(func() {
 			RestoreOutput()
+			wool.SetFallbackLogger(nil)
 			SetOutputSink(nil)
 		})
 	}
 }
+
+// stderrLogger prints a wool record to stderr. wool has already filtered it
+// against the effective level, scope overrides included, so it does not
+// filter again.
+type stderrLogger struct{}
+
+func (stderrLogger) Process(log *wool.Log) { fmt.Fprintln(os.Stderr, log.String()) }
 
 // OutputSuppressed reports whether narration is currently held off stdout.
 func OutputSuppressed() bool {
