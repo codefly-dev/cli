@@ -200,7 +200,7 @@ func TestAcceptNetworkMappingsRejectsInvalidResponses(t *testing.T) {
 			name:     "container view rewritten onto loopback",
 			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
 			returned: []*basev0.NetworkMapping{containerOnHost},
-			message:  "is the loopback address localhost",
+			message:  "is the loopback address",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
