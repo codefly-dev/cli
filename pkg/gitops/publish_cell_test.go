@@ -46,19 +46,37 @@ func seedDelivered(t *testing.T, remote, message string, files map[string][]byte
 	gitRun(t, work, "push", "origin", "main")
 }
 
-// committedWorkspace makes the fixture workspace a git checkout with its
-// composition committed, so the cell file it renders names the revision it
-// was rendered from and a later publication can be judged against it.
-func committedWorkspace(t *testing.T, workspace *resources.Workspace) string {
+// committedWorkspace makes the fixture workspace a git checkout whose HEAD
+// commits a composition that also declares the modules named (removed), so a
+// cell file rendered there names that revision, and a later publication from
+// the working tree — which no longer declares them — can be judged against it.
+// The fixture is flat, so a declared module is a sibling `modules:` entry.
+func committedWorkspace(t *testing.T, workspace *resources.Workspace, removed ...string) string {
 	t.Helper()
 	dir := workspace.Dir()
-	if exec.Command("git", "-C", dir, "rev-parse", "HEAD").Run() != nil {
-		gitRun(t, dir, "init", "-q", "--initial-branch=main")
-		gitRun(t, dir, "config", "user.name", "Codefly Test")
-		gitRun(t, dir, "config", "user.email", "codefly@example.com")
-		gitRun(t, dir, "config", "commit.gpgsign", "false")
-		gitRun(t, dir, "add", "-A")
-		gitRun(t, dir, "commit", "-q", "-m", "the composition")
+	config := filepath.Join(dir, resources.WorkspaceConfigurationName)
+	current, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := string(current)
+	if len(removed) > 0 {
+		committed += "modules:\n"
+		for _, module := range removed {
+			committed += "  - name: " + module + "\n"
+		}
+	}
+	if err = os.WriteFile(config, []byte(committed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "init", "-q", "--initial-branch=main")
+	gitRun(t, dir, "config", "user.name", "Codefly Test")
+	gitRun(t, dir, "config", "user.email", "codefly@example.com")
+	gitRun(t, dir, "config", "commit.gpgsign", "false")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "the composition")
+	if err = os.WriteFile(config, current, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return gitOutput(t, dir, "rev-parse", "HEAD")
 }
@@ -102,7 +120,7 @@ func legacyDelivery() (string, map[string][]byte) {
 // modules path that is not a delivery (no render record).
 func TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
-	head := committedWorkspace(t, workspace)
+	head := committedWorkspace(t, workspace, "legacy")
 	env := selectedEnvironment(t, workspace, "production")
 	_, data := renderedCell(t, ctx, workspace, env)
 	legacy, files := legacyDelivery()
@@ -149,7 +167,7 @@ func TestPublishRemovesADeliveredModuleTheCompositionNoLongerDeclares(t *testing
 // finds on disk, or it refuses its own earlier work as someone else's.
 func TestAPromotionOwnsTheRemovalItsOwnBranchCarries(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
-	head := committedWorkspace(t, workspace)
+	head := committedWorkspace(t, workspace, "legacy")
 	env := selectedEnvironment(t, workspace, "production")
 	_, data := renderedCell(t, ctx, workspace, env)
 	legacy, files := legacyDelivery()
@@ -225,6 +243,48 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 	}
 }
 
+// TestACompositionThatNeverDeclaredTheModuleDoesNotRemoveIt: with a separate
+// delivery repository the base's cell file names the render's parent, and a
+// render may run on an uncommitted `modules:` edit — so a checkout at that
+// parent descends from it without ever having composed the module the render
+// named. Nothing in its history vouches the module was removed rather than
+// never composed, and the removal stays the flag's to confirm.
+func TestACompositionThatNeverDeclaredTheModuleDoesNotRemoveIt(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	head := committedWorkspace(t, workspace)
+	env := selectedEnvironment(t, workspace, "production")
+	_, data := renderedCell(t, ctx, workspace, env)
+	file, err := cellfile.Parse(renderedFrom(t, data, head))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
+	base, err := file.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, files := legacyDelivery()
+	files[deliveryCellPath("environments", "production")] = base
+	seedDelivered(t, remote, "a render on an uncommitted composition that named legacy", files)
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "--allow-cell-removal (legacy)") || !strings.Contains(err.Error(), "neither did its own configuration at "+head) {
+		t.Fatalf("a checkout whose composition never named legacy withdrew it on the composition's word: %v", err)
+	}
+	request.AllowCellRemovals = []string{"legacy"}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.RemovedModules) != 0 || slices.ContainsFunc(plan.Changed, func(path string) bool { return strings.HasPrefix(path, legacy) }) {
+		t.Fatalf("a removal the flag confirms pruned the delivered tree: %v %v", plan.RemovedModules, plan.Changed)
+	}
+}
+
 // TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag: when the
 // workspace repository is the delivery repository, the base's cell file names
 // the render's parent as its source, and a checkout at that parent that has
@@ -234,7 +294,7 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 // commit stays the one to contain, and the removal is the flag's to confirm.
 func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
-	head := committedWorkspace(t, workspace)
+	head := committedWorkspace(t, workspace, "legacy")
 	// One repository: the delivery remote holds the workspace's history.
 	gitRun(t, workspace.Dir(), "push", "-q", remote, "HEAD:refs/heads/workspace-history")
 	env := selectedEnvironment(t, workspace, "production")

@@ -1215,10 +1215,15 @@ revision the base's file names as its `source.revision`), the checkout must
 contain the delivery base commit itself — the file's source revision is the
 render's parent, and a `modules:` edit rides in the render's own commit, so an
 unfetched checkout at that parent has not seen it; when the two repositories
-are separate, the checkout must contain that source revision. A checkout that
-does not — a branch behind the base, an unfetched one, a base file naming no
-source — is held as before, the refusal says which revision it lacks, and
-naming the module confirms the removal without pruning the tree. A promotion
+are separate, the checkout must contain that source revision, and the
+workspace's own configuration **as committed at that revision** must have
+declared the module (a render may run on an uncommitted `modules:` edit, and
+a module of an imported workspace is another repository's history), or
+nothing in this history vouches the module was removed rather than never
+composed. A checkout that fails either test — a branch behind the base, an
+unfetched one, a base file naming no source, a composition never committed —
+is held as before, the refusal says what the history lacked, and naming the
+module confirms the removal without pruning the tree. A promotion
 of a module owns, on its own branch, the removal of such trees, so continuing
 or retrying the publication that removed one is not refused as someone else's
 change. A rollback removes none, and a directory under the modules path with

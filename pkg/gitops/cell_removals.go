@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/core/resources"
+	"gopkg.in/yaml.v3"
 )
 
 // cellRemoval is one thing the base cell file admits that the next one does
@@ -96,15 +98,17 @@ func deliveryCellPath(gitopsPath, environment string) string {
 }
 
 // compositionClaim is what a publication may remove from the cell and the
-// delivery on the composition's word alone: the modules the composition no
+// delivery on the composition's word alone: a module the composition no
 // longer declares — provided this checkout's composition has moved FORWARD
-// from the one that rendered the delivery base's cell file (advanced). A
-// checkout that never had a module and one that dropped it derive the same
-// cell file, and only the history tells them apart: a checkout that contains
-// the commit the base's file came from has seen the composition that named
-// the module, so its absence is a removal; one that does not is stale, and
-// its publication keeps needing --allow-cell-removal, as every withdrawal
-// nobody stated does.
+// from the one that rendered the delivery base's cell file, and that
+// composition DECLARED the module. A checkout that never had a module and one
+// that dropped it derive the same cell file, and only the history tells them
+// apart: a checkout that contains the commit the base's file came from, whose
+// composition named the module, has seen it declared, so its absence is a
+// removal; one that does not is stale, or saw a composition that named the
+// module only in an uncommitted edit or an imported workspace, and its
+// publication keeps needing --allow-cell-removal, as every withdrawal nobody
+// stated does.
 type compositionClaim struct {
 	// module is the one being published: never a removal of its own.
 	module string
@@ -114,6 +118,9 @@ type compositionClaim struct {
 	// commit it had to contain, empty when the base names none.
 	advanced bool
 	revision string
+	// declaredAt is the module set the workspace's own configuration named at
+	// revision (declaredAtRevision): what the checkout can vouch was removed.
+	declaredAt map[string]bool
 }
 
 // newCompositionClaim judges the checkout against the delivery base. The
@@ -126,8 +133,12 @@ type compositionClaim struct {
 // checkout of one repository is therefore not advanced, and the hold says
 // which commit it lacks. Only when the two repositories are separate (the
 // clone does not hold the source revision) is the source revision what the
-// checkout must contain. A base with no cell file, or one naming no source
-// while the workspace lacks the base commit, leaves nothing to descend from.
+// checkout must contain — and there a render may have run on an uncommitted
+// `modules:` edit, so the judged revision's own configuration must also have
+// declared the module (declaredAtRevision), or nothing vouches the module was
+// ever composed in this history. A base with no cell file, or one naming no
+// source while the workspace lacks the base commit, leaves nothing to descend
+// from.
 func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, clone, module, baseRevision string, base *cellfile.File) *compositionClaim {
 	claim := &compositionClaim{module: module, declared: composedModules(workspace)}
 	if base == nil {
@@ -151,7 +162,53 @@ func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, cl
 		return claim
 	}
 	claim.advanced = gitIsAncestor(ctx, dir, claim.revision, head)
+	if claim.advanced {
+		claim.declaredAt = declaredAtRevision(ctx, dir, claim.revision)
+	}
 	return claim
+}
+
+// committedComposition is the part of a workspace configuration that names the
+// modules it composes itself: a modules layout lists them, a flat layout IS
+// one module named after the workspace.
+type committedComposition struct {
+	Name      string                  `yaml:"name"`
+	Layout    string                  `yaml:"layout"`
+	Modules   []struct{ Name string } `yaml:"modules"`
+	Solutions []struct{ Name string } `yaml:"solutions"`
+}
+
+// declaredAtRevision reads the workspace's own configuration as committed at
+// revision and names the modules it declared there: its `modules:` and
+// `solutions:`, or the workspace itself when flat. A module reached only
+// through an imported workspace is not among them — that import's history is
+// another repository's — and a configuration the revision does not carry, or
+// that does not parse, declares nothing, so the claim explains nothing.
+func declaredAtRevision(ctx context.Context, dir, revision string) map[string]bool {
+	prefix, err := gitCommand(ctx, dir, "rev-parse", "--show-prefix")
+	if err != nil {
+		return nil
+	}
+	data, err := gitCommandBytes(ctx, dir, "show", revision+":"+path.Join(prefix, resources.WorkspaceConfigurationName))
+	if err != nil {
+		return nil
+	}
+	var committed committedComposition
+	if err = yaml.Unmarshal(data, &committed); err != nil {
+		return nil
+	}
+	declared := map[string]bool{}
+	if committed.Layout == string(resources.LayoutKindFlat) && committed.Name != "" {
+		declared[committed.Name] = true
+	}
+	for _, list := range [][]struct{ Name string }{committed.Modules, committed.Solutions} {
+		for _, reference := range list {
+			if reference.Name != "" {
+				declared[reference.Name] = true
+			}
+		}
+	}
+	return declared
 }
 
 // gitHasCommit reports whether the repository holds the commit.
@@ -167,9 +224,25 @@ func (claim *compositionClaim) undeclared(module string) bool {
 }
 
 // explains reports a removal the composition accounts for: the module is no
-// longer declared, by a checkout that has seen it declared.
+// longer declared, by a checkout that descends from a composition that
+// declared it.
 func (claim *compositionClaim) explains(module string) bool {
-	return claim.advanced && claim.undeclared(module)
+	return claim.advanced && claim.undeclared(module) && claim.declaredAt[module]
+}
+
+// whyNotExplained says, for the modules the checkout does not declare whose
+// removal it could not vouch for, what the history lacked: the revision to
+// contain, or a composition at it that named them.
+func (claim *compositionClaim) whyNotExplained(baseBranch string, modules []string) string {
+	names := strings.Join(modules, ", ")
+	switch {
+	case claim.revision == "":
+		return fmt.Sprintf(". This checkout's composition does not declare %s, but %s's cell file names no revision it was rendered from, so whether the composition removed %s or never had it cannot be told from here", names, baseBranch, names)
+	case !claim.advanced:
+		return fmt.Sprintf(". This checkout's composition does not declare %s, but the checkout does not contain %s, which %s's cell file comes from, so the removal may be a stale checkout's rather than the composition's: bring the checkout up to date and render again, or name it", names, claim.revision, baseBranch)
+	default:
+		return fmt.Sprintf(". This checkout's composition does not declare %s, and neither did its own configuration at %s, which %s's cell file comes from (a composition rendered before it was committed, or a module of an imported workspace), so nothing here vouches that %s was removed rather than never composed: name it", names, claim.revision, baseBranch, names)
+	}
 }
 
 // owns answers, for the promotion-branch guard, whether a delivery-repository
@@ -288,11 +361,7 @@ func holdCellToBase(cell *publicationCell, env *environments.Environment, baseBr
 		env.Name, path, baseBranch, strings.Join(refused, "; "), env.Name, strings.Join(modules, ", "))
 	if len(stale) > 0 {
 		slices.Sort(stale)
-		if claim.revision == "" {
-			message += fmt.Sprintf(". This checkout's composition does not declare %s, but %s's cell file names no revision it was rendered from, so whether the composition removed %s or never had it cannot be told from here", strings.Join(stale, ", "), baseBranch, strings.Join(stale, ", "))
-		} else {
-			message += fmt.Sprintf(". This checkout's composition does not declare %s, but the checkout does not contain %s, which %s's cell file comes from, so the removal may be a stale checkout's rather than the composition's: bring the checkout up to date and render again, or name it", strings.Join(stale, ", "), claim.revision, baseBranch)
-		}
+		message += claim.whyNotExplained(baseBranch, stale)
 	}
 	return nil, nil, errors.New(message)
 }

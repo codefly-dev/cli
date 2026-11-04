@@ -48,10 +48,14 @@ func holdAgainst(t *testing.T, ctx context.Context, cell *publicationCell, env *
 	return holdCellToBase(cell, env, "main", base, allowed, claim)
 }
 
-// advancedClaim is the claim of a checkout that has seen the base's
-// composition: every module it does not declare was removed.
-func advancedClaim(workspace *resources.Workspace) *compositionClaim {
-	return &compositionClaim{declared: composedModules(workspace), advanced: true, revision: strings.Repeat("b", 40)}
+// advancedClaim is the claim of a checkout that descends from a composition
+// that declared the modules named (removed) and no longer declares them.
+func advancedClaim(workspace *resources.Workspace, removed ...string) *compositionClaim {
+	claim := &compositionClaim{declared: composedModules(workspace), advanced: true, revision: strings.Repeat("b", 40), declaredAt: map[string]bool{}}
+	for _, module := range removed {
+		claim.declaredAt[module] = true
+	}
+	return claim
 }
 
 // A publication holds the workspace's cell file to the one its delivery base
@@ -148,7 +152,7 @@ func TestARemovalTheCompositionExplainsNeedsNoNaming(t *testing.T) {
 	require.Equal(t, []string{"deployments/modules/legacy"}, rendered.Removed)
 	require.NoDirExists(t, moduleRenderDestination(workspace, "legacy"))
 
-	named, explained, err := holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, advancedClaim(workspace))
+	named, explained, err := holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, advancedClaim(workspace, "legacy"))
 	require.NoError(t, err, "a removal the composition explains needs no --allow-cell-removal")
 	require.Empty(t, named)
 	require.Equal(t, []string{
@@ -168,6 +172,12 @@ func TestARemovalTheCompositionExplainsNeedsNoNaming(t *testing.T) {
 	_, _, err = holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, &compositionClaim{declared: composedModules(workspace)})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "names no revision it was rendered from")
+	// A checkout past the revision whose composition never named legacy
+	// either: the render that named it ran on an uncommitted edit.
+	_, _, err = holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, advancedClaim(workspace))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--allow-cell-removal (legacy)")
+	require.Contains(t, err.Error(), "neither did its own configuration at "+strings.Repeat("b", 40))
 	named, explained, err = holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, []string{"legacy"}, stale)
 	require.NoError(t, err, "naming the module confirms the removal as before")
 	require.Len(t, named, 2)
@@ -181,12 +191,15 @@ func TestARemovalTheCompositionExplainsNeedsNoNaming(t *testing.T) {
 // what the checkout must descend from; a base naming none advances nothing.
 func TestTheCompositionClaimIsAdvancedOnlyFromACheckoutThatSawTheBase(t *testing.T) {
 	ctx := context.Background()
-	workspace := writeCellWorkspace(t)
+	workspace := composeLegacyModule(t, writeCellWorkspace(t))
 	dir := workspace.Dir()
 	runGit(t, dir, "init", "--initial-branch=main")
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-q", "-m", "the composition that named legacy")
 	first := runGit(t, dir, "rev-parse", "HEAD")
+	// legacy leaves the composition, uncommitted: HEAD is the composition
+	// that named it, the working tree the one that does not.
+	workspace = editWorkspaceConfiguration(t, workspace, "  - name: legacy\n", "")
 	elsewhere := strings.Repeat("d", 40)
 	// A delivery repository of its own, holding none of the workspace's history.
 	separate := t.TempDir()
@@ -200,6 +213,8 @@ func TestTheCompositionClaimIsAdvancedOnlyFromACheckoutThatSawTheBase(t *testing
 	require.True(t, claim.explains("legacy"))
 	require.False(t, claim.explains("shop"), "a composed module is never explained away")
 	require.False(t, claim.explains("billing"))
+	require.False(t, claim.explains("compute"), "a module the judged composition never named is not vouched for")
+	require.Equal(t, map[string]bool{"shop": true, "billing": true, "legacy": true}, claim.declaredAt)
 	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, nil).advanced, "a base with no cell file advances nothing")
 	require.False(t, newCompositionClaim(ctx, workspace, separate, "shop", elsewhere, &cellfile.File{}).advanced, "a base naming no source advances nothing")
 
