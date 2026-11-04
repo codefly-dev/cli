@@ -156,6 +156,9 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
 		}
+		if err := refuseUncomposedRender(workspace, env, tree, &inventory); err != nil {
+			return cellfile.File{}, CellResult{}, err
+		}
 		// A tree rendered before the environment excluded one of its services
 		// still delivers it; describing it would put back what the
 		// composition withdrew.
@@ -224,6 +227,72 @@ func refuseUnrenderedModules(ctx context.Context, workspace *resources.Workspace
 	}
 	return fmt.Errorf("environment %s's cell file is not written: this checkout holds no render for %s of the composed module(s) %s, and a cell file without them would withdraw every workload they deliver from the cell; render them (%s), or every module at once with `codefly deploy gitops render --all --env %s`",
 		env.Name, env.Name, strings.Join(missing, ", "), strings.Join(commands, "; "), env.Name)
+}
+
+// refuseUncomposedRender refuses a tree rendered for this environment whose
+// module the workspace no longer composes: a solution withdrawn from the
+// composition, or a module nothing pins any more. Its render still stands
+// under the modules directory, so without this it would be described into
+// the cell file as if it were composed — or, when the cell file is derived
+// without it, the tree's pods are refused by the cell's admission while the
+// delivery still runs them, each refusal reading as an application fault.
+// The converse hold is refuseUnrenderedModules: together they make the
+// rendered trees and the composed modules the same set. The tree is named
+// for removal rather than skipped, because a skipped tree is still delivered.
+func refuseUncomposedRender(workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory) error {
+	for _, reference := range workspace.Modules {
+		if reference != nil && reference.Name == inventory.Module {
+			return nil
+		}
+	}
+	return fmt.Errorf("environment %s's cell file is not written: %s holds a render of module %s for %s, but the workspace composes no module of that name, so nothing approves what that tree delivers (the cell refuses its pods while the delivery still runs them); remove that render and the module's delivered tree, or compose the module again",
+		env.Name, tree, inventory.Module, env.Name)
+}
+
+// meshOptOutLabels and meshOptOutAnnotations are the pod-template fields that
+// take a pod out of ambient capture: istio.io/dataplane-mode and
+// sidecar.istio.io/inject as labels; ambient.istio.io/bypass-inbound-capture
+// and sidecar.istio.io/status (which istio-cni reads as already injected) as
+// annotations. The cell's execution-admission policy refuses a pod carrying
+// any of them, because STRICT mTLS and every allow derived from the cell file
+// stop applying to a pod ztunnel does not capture.
+var (
+	meshOptOutLabels      = []string{"istio.io/dataplane-mode", "sidecar.istio.io/inject"}
+	meshOptOutAnnotations = []string{"ambient.istio.io/bypass-inbound-capture", "sidecar.istio.io/status"}
+)
+
+// refuseUnadmittedExecution refuses a rendered workload the cell's
+// execution-admission policy would refuse on its pod template alone — before
+// any digest is compared, so before the cell file approves it. Two of the
+// policy's rules read only the template: no container may declare an exec
+// lifecycle hook or an exec probe (a command of the delivering party's
+// choosing, run inside the pod that already holds the workload identity: the
+// build binding undone one field further down from the image), and no pod may
+// opt out of the mesh. The cell file this render derives is what generates
+// that policy, so a workload it would describe and the policy would refuse is
+// a workload with zero replicas and a refusal that reads as an application
+// fault; it is refused here, by container and field.
+func refuseUnadmittedExecution(module, unit string, rendered *renderedWorkload) error {
+	for _, containers := range [][]renderedContainer{rendered.Containers, rendered.InitContainers} {
+		for _, container := range containers {
+			if len(container.execs) == 0 {
+				continue
+			}
+			return fmt.Errorf("unit %s/%s workload %s: container %s declares %s, which runs a command inside the pod that holds the workload identity; the cell's execution admission refuses such a pod, so the cell file does not approve it. Use an HTTP, TCP or gRPC probe, and put start-up work in the approved image",
+				module, unit, rendered.Name, container.Name, strings.Join(container.execs, ", "))
+		}
+	}
+	for _, label := range meshOptOutLabels {
+		if _, set := rendered.templateLabels[label]; set {
+			return fmt.Errorf("unit %s/%s workload %s: its pod template carries the %s label, which opts the pod out of the mesh; the cell enrols the namespace and refuses a pod that overrides it, so the cell file does not approve it", module, unit, rendered.Name, label)
+		}
+	}
+	for _, annotation := range meshOptOutAnnotations {
+		if _, set := rendered.templateAnnotations[annotation]; set {
+			return fmt.Errorf("unit %s/%s workload %s: its pod template carries the %s annotation, which opts the pod out of the mesh; the cell enrols the namespace and refuses a pod that overrides it, so the cell file does not approve it", module, unit, rendered.Name, annotation)
+		}
+	}
+	return nil
 }
 
 // writeCell encodes the cell file and writes it at path.
@@ -361,6 +430,9 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			}
 			if reserved := refuseReservedIdentity(inventory.Module, unit.Name, rendered, selector); reserved != nil {
 				return cellfile.Namespace{}, reserved
+			}
+			if unadmitted := refuseUnadmittedExecution(inventory.Module, unit.Name, rendered); unadmitted != nil {
+				return cellfile.Namespace{}, unadmitted
 			}
 			authenticating, err := authenticatingContainer(unit.Name, rendered)
 			if err != nil {

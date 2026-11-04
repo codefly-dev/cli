@@ -516,6 +516,9 @@ func holdRenderedGroups(ctx context.Context, workspace *resources.Workspace, req
 	if err = refuseStaleRender(request.Module, request.Environment, inventory.WorkspaceConfigurationDigests, current); err != nil {
 		return err
 	}
+	if err = refuseStaleDeclaration(env, inventory); err != nil {
+		return err
+	}
 	return refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests)
 }
 

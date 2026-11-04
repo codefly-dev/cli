@@ -121,6 +121,11 @@ type Inventory struct {
 	// and recording another digest was rendered against another value, and the
 	// render refuses to deliver two values of one group.
 	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
+	// EnvironmentDeclarationDigest records a digest of the environment's
+	// service-config and service-identity rows for this module's services as
+	// the render read them (environment_declaration.go). Publish re-digests
+	// the same rows and refuses a tree the declaration has moved past.
+	EnvironmentDeclarationDigest string `json:"environmentDeclarationDigest,omitempty"`
 	// MeshEdges are the L4 edges into this module's workloads, as the
 	// composition declares them: the data the cell's applier compiles into
 	// its mesh policy (mesh_edges.go). Absent when the environment declares
