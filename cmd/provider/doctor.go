@@ -20,7 +20,7 @@ references. The remote, read-only half — authentication, account, observation,
 resource health, and drift — requires the host coordinator and is reported as
 unavailable until that layer is wired.
 
-For the bounded, no-agent workspace checks, use ` + "`codefly doctor workspace`" + `.`,
+For the bounded workspace checks, use ` + "`codefly doctor workspace`" + `.`,
 	RunE: run(func(ctx context.Context, cmd *cobra.Command, args []string) error {
 		s, err := loadSession(ctx, "doctor", envOf(cmd), jsonOf(cmd))
 		if err != nil {
