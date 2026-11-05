@@ -320,7 +320,7 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 			return nil, fmt.Errorf("%s stands the composition's hop but its module has no resolved namespace, so its mesh principal cannot be named", index.hop.unique())
 		}
 		index.hopPrincipal = meshPrincipal(host, namespace, index.hop.Service)
-		if index.hopModuleAskers, err = hopModuleDeclarers(ctx, workspace, index.hop.Module); err != nil {
+		if index.hopModuleAskers, err = moduleDeclarers(ctx, workspace, index.hop.Module); err != nil {
 			return nil, err
 		}
 	}
@@ -395,10 +395,55 @@ func (index *meshComposition) callsThrough(unique, endpoint string) bool {
 	return index.reach.reaches(module, service, endpoint)
 }
 
-// hopModuleDeclarers loads the dependency declarers of the hop's own module,
-// the ones a refusal names when a principal of that module which is not the
-// hop's own asks for a fronted module's listener.
-func hopModuleDeclarers(ctx context.Context, workspace *resources.Workspace, module string) ([]resources.DependencyDeclarer, error) {
+// declarerKindService is the kind core gives a module's service among its
+// dependency declarers (Module.LoadDependencyDeclarers): the only declarer
+// kind that runs under a mesh principal of its own.
+const declarerKindService = "service"
+
+// ownAsks is the principals of a fronted module's OWN workloads that declare
+// a dependency on one of its listeners, read from the module's declarers at
+// service granularity. The derived allow-list is at module granularity, so one
+// sibling's ask arrives as every principal of the module — a store that never
+// asked, or the principals left when the asker itself is withdrawn by the
+// environment — and the hop rule would refuse them all as routes around the
+// hop. They are not: the hop fronts the module from the composition, and a
+// call between two of the module's own services never leaves it. A sibling
+// that declares the dependency is admitted as its own principal; one that did
+// not declare it never asked, so it is neither admitted nor refused.
+func (index *meshComposition) ownAsks(env *environments.Environment, declarers []resources.DependencyDeclarer, module, service, endpoint string) map[string]bool {
+	namespace := env.ModuleNamespace(index.workspace, module)
+	asks := map[string]bool{}
+	for _, declarer := range declarers {
+		if declarer.Kind != declarerKindService {
+			continue
+		}
+		principal := meshPrincipal(env.Host, namespace, declarer.Name)
+		if !slices.Contains(index.byModule[module], principal) {
+			continue // withdrawn or managed here: no workload, no principal
+		}
+		for _, dependency := range declarer.Dependencies {
+			if dependency == nil || dependency.Module != module || dependency.Name != service {
+				continue
+			}
+			named := len(dependency.Endpoints) == 0
+			for _, reference := range dependency.Endpoints {
+				if reference != nil && reference.Name == endpoint {
+					named = true
+				}
+			}
+			if named {
+				asks[principal] = true
+			}
+		}
+	}
+	return asks
+}
+
+// moduleDeclarers loads the dependency declarers of one module: the hop's own,
+// which a refusal names when a principal of that module that is not the
+// hop's asks for a fronted module's listener, and a fronted module's own, which
+// say which of its services ask for a sibling's listener (ownAsks).
+func moduleDeclarers(ctx context.Context, workspace *resources.Workspace, module string) ([]resources.DependencyDeclarer, error) {
 	modules, err := workspace.LoadModules(ctx)
 	if err != nil {
 		return nil, err
@@ -582,7 +627,7 @@ func (index *meshComposition) holdDeadCoDeclarations(env *environments.Environme
 // the hop to listeners its route table does not name, and it deleted the
 // sibling's declared reach, leaving a module that fails at runtime with
 // nothing said at render time.
-func (index *meshComposition) hopAdmission(module, service, endpoint string, derived []meshSource, declared []string, self string, selfConsuming, routed bool) (admitted []string, around []string) {
+func (index *meshComposition) hopAdmission(module, service, endpoint string, derived []meshSource, declared []string, self string, selfConsuming, routed bool, own map[string]bool) (admitted []string, around []string) {
 	admit := map[string]bool{}
 	// The hop reaches exactly the listeners its own route table names.
 	if routed {
@@ -597,9 +642,22 @@ func (index *meshComposition) hopAdmission(module, service, endpoint string, der
 	for _, principal := range index.byModule[index.hop.Module] {
 		hopModule[principal] = true
 	}
+	ownModule := map[string]bool{}
+	for _, principal := range index.byModule[module] {
+		ownModule[principal] = true
+	}
 	for _, source := range derived {
 		if slices.Contains(declared, source.principal) || (selfConsuming && source.principal == self) {
 			admit[source.principal] = true
+			continue
+		}
+		// A principal of the listener's own module is inside what the hop
+		// fronts (ownAsks): admitted where its service declared the
+		// dependency, and a module-granular bystander otherwise.
+		if ownModule[source.principal] {
+			if own[source.principal] {
+				admit[source.principal] = true
+			}
 			continue
 		}
 		if source.principal == index.hopPrincipal && routed {
@@ -687,6 +745,12 @@ func deriveMeshEdges(
 	// that decides whether a host may admit a developer identity or mount a
 	// local trust anchor (environments.DeclaresLocalK3d).
 	developerCluster := env.DeclaresLocalK3d()
+	var declarers []resources.DependencyDeclarer
+	if index.hop.fronts(module.Name) && !developerCluster {
+		if declarers, err = moduleDeclarers(ctx, workspace, module.Name); err != nil {
+			return nil, err
+		}
+	}
 	record := &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: env.Host.TrustDomain, Gateway: env.Host.Gateway}
 	for _, service := range services {
 		if service == nil {
@@ -722,7 +786,8 @@ func deriveMeshEdges(
 				var around []string
 				principals, around = index.hopAdmission(module.Name, service.Name, endpoint.Name, derived,
 					admittedByManifest[endpoint.Name], principal,
-					selfConsuming[unique], index.hop.reaches(module.Name, service.Name, endpoint.Name))
+					selfConsuming[unique], index.hop.reaches(module.Name, service.Name, endpoint.Name),
+					index.ownAsks(env, declarers, module.Name, service.Name, endpoint.Name))
 				if len(around) > 0 {
 					return nil, fmt.Errorf("%s/%s is published through the hop %s, so only the hop reaches it, but the composition routes %d caller(s) straight to its listener on environment %s — %s. Route the call through the hop (an environment's runnable-call-endpoint sends every prepared call there; a consumer declares no dependency on a module service), or, where the port is not an API call, admit the caller on the endpoint it serves (%s in %s, co-declared by the environment)",
 						unique, endpoint.Name, index.hop.unique(), len(around), env.Name, strings.Join(around, "; "), admittedSourcesKey, resources.ServiceConfigurationName)

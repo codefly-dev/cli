@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -153,6 +154,10 @@ func hopCell(t *testing.T, extra map[string]string) (*resources.Workspace, *envi
 // listener behind the hop. It names api's INTERNAL endpoint: a public
 // endpoint's derived allow-list is nil by design ("public is open"), so a
 // declared direct reach does not show up there at all.
+// workerReachingInternal is platform/worker, a sibling of api inside the
+// fronted module, with a declared dependency on api's internal listener.
+const workerReachingInternal = "kind: service\nname: worker\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\nservice-dependencies:\n  - name: api\n    module: platform\n    endpoints:\n      - name: internal\n"
+
 const toolReachingInternal = "kind: service\nname: tool\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\nservice-dependencies:\n  - name: api\n    module: platform\n    endpoints:\n      - name: internal\n"
 
 func hopCellPorts() map[string]map[string]uint32 {
@@ -181,10 +186,11 @@ func hopCellEdge(t *testing.T, edges *MeshEdges, service, endpoint string) *Mesh
 }
 
 const (
-	hopPrincipal   = "spiffe://prod.cell/ns/cell-authority/sa/hop"
-	localPrincipal = "spiffe://prod.cell/ns/cell-authority/sa/local"
-	toolPrincipal  = "spiffe://prod.cell/ns/cell-side/sa/tool"
-	runnerPrinc    = "spiffe://prod.cell/ns/cell-exec/sa/runner"
+	hopPrincipal    = "spiffe://prod.cell/ns/cell-authority/sa/hop"
+	localPrincipal  = "spiffe://prod.cell/ns/cell-authority/sa/local"
+	toolPrincipal   = "spiffe://prod.cell/ns/cell-side/sa/tool"
+	runnerPrinc     = "spiffe://prod.cell/ns/cell-exec/sa/runner"
+	workerPrincipal = "spiffe://prod.cell/ns/cell-platform/sa/worker"
 )
 
 // The whole point of standing a hop is that a module's code never has to
@@ -242,6 +248,42 @@ func TestTheHopIsNotAdmittedToAnUnroutedListener(t *testing.T) {
 	_, err := hopCellEdges(t, workspace, env, "platform")
 	require.ErrorContains(t, err, "the hop's route table does not name this listener",
 		"an endpoint the table does not name is not the hop's to reach: the authority holds no policy table for it")
+}
+
+// A FRONTED MODULE'S OWN SERVICES ARE INSIDE WHAT THE HOP FRONTS. The hop
+// stands between the composition and the module's listeners; a call between
+// two of the module's own services never leaves the module. The derived
+// allow-list is at module granularity, so one sibling's declared dependency
+// arrives as every principal of the module: the sibling that declared it is
+// admitted as its own principal, and the others — a store that never asked —
+// are bystanders of the derivation, neither admitted nor refused.
+func TestAFrontedModulesOwnDeclaredCallerIsAdmitted(t *testing.T) {
+	workspace, env := hopCell(t, map[string]string{
+		"modules/platform/services/worker/" + resources.ServiceConfigurationName: workerReachingInternal,
+	})
+	edges, err := hopCellEdges(t, workspace, env, "platform")
+	require.NoError(t, err, "a sibling's declared reach is an intra-module edge, not a route around the hop")
+	internal := hopCellEdge(t, edges, "api", "internal")
+	require.NotNil(t, internal)
+	require.Equal(t, []string{workerPrincipal}, internal.Principals,
+		"the sibling that declared the dependency, and only it: api's own principal arrives from the module-granular list without having asked")
+	require.Equal(t, []string{hopPrincipal}, hopCellEdge(t, edges, "api", "web").Principals,
+		"the routed listener stays the hop's: worker asked for internal, not web")
+}
+
+// And when the only sibling that asked is withdrawn by the environment, the
+// module-granular list still carries its ask onto every principal that
+// remains; none of them declared it, so the listener is reached by nobody
+// rather than refused over a caller that does not run.
+func TestAWithdrawnSiblingsAskIsNotCarriedOntoTheOthers(t *testing.T) {
+	workspace, env := hopCell(t, map[string]string{
+		resources.WorkspaceConfigurationName:                                      hopCellWorkspace("    exclude-services:\n      - service: platform/witness\n"),
+		"modules/platform/" + resources.ModuleConfigurationName:                   "kind: module\nname: platform\nservices:\n  - name: api\n  - name: worker\n  - name: witness\n",
+		"modules/platform/services/witness/" + resources.ServiceConfigurationName: strings.Replace(workerReachingInternal, "name: worker", "name: witness", 1),
+	})
+	edges, err := hopCellEdges(t, workspace, env, "platform")
+	require.NoError(t, err, "the withdrawn asker has no principal, and the siblings it left behind never asked")
+	require.Nil(t, hopCellEdge(t, edges, "api", "internal"), "nobody that runs reaches it")
 }
 
 // A composition that routes a consumer straight to a module listener is
