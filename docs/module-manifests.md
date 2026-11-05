@@ -1248,7 +1248,11 @@ declared it, and what to change: a dependency on a module service, a host route
 onto a module listener, prepared runnable bindings sent to an owner instead of
 through the hop. An environment's `runnable-call-endpoint` is how the last one
 is fixed — it sends every prepared call to that endpoint, and the executors are
-then admitted there rather than at each owner's listener.
+then admitted there rather than at each owner's listener. When that endpoint is
+the gateway's own (`runnable-call-endpoint: <gateway>/hop`), it is the
+gateway's third mesh endpoint beside `rest` and `workload`, on a rendered
+Service port of its own; any other gateway endpoint with a mesh edge is a
+listener around the presenter path and refuses the render.
 
 **The one environment the rule is lifted for is a developer's own cluster**,
 where calling a module directly is the point — and that is a *declared* local

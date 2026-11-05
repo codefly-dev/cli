@@ -3,6 +3,7 @@ package gitops
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/standards"
@@ -10,7 +11,16 @@ import (
 
 // bindGatewayServiceEvidence joins the logical gateway edges to the Services
 // the agent actually rendered, including all environment overlay patches.
-func bindGatewayServiceEvidence(record *MeshEdges, tree *renderRoot, stage, environment string, units []InventoryUnit) error {
+//
+// The gateway's mesh endpoints are its HTTP presenter path (`rest`), the
+// workload endpoint every composed workload mints on, and — when the
+// environment sends every prepared runnable call to one of the gateway's own
+// endpoints (`runnable-call-endpoint: <gateway>/<endpoint>`, the hop) — that
+// endpoint, which the executors reach by the composition's own statement.
+// callEndpoint is that declaration, "" when the environment makes none. Any
+// other endpoint of the gateway with a mesh edge is a listener around the
+// presenter path and is refused.
+func bindGatewayServiceEvidence(record *MeshEdges, tree *renderRoot, stage, environment string, units []InventoryUnit, callEndpoint string) error {
 	if record == nil {
 		return nil
 	}
@@ -32,10 +42,11 @@ func bindGatewayServiceEvidence(record *MeshEdges, tree *renderRoot, stage, envi
 	if err != nil {
 		return err
 	}
+	admitted := gatewayMeshEndpoints(record.Gateway, callEndpoint)
 	seen := map[string]uint32{}
 	for _, edge := range gateway {
-		if edge.Endpoint != "rest" && edge.Endpoint != gatewayWorkloadEndpoint {
-			return fmt.Errorf("gateway mesh endpoint %s cannot bypass its HTTP presenter path", edge.Endpoint)
+		if !slices.Contains(admitted, edge.Endpoint) {
+			return fmt.Errorf("gateway mesh endpoint %s cannot bypass its HTTP presenter path: the gateway's mesh endpoints are %s", edge.Endpoint, strings.Join(admitted, ", "))
 		}
 		if _, duplicate := seen[edge.Endpoint]; duplicate {
 			return fmt.Errorf("gateway repeats endpoint %s", edge.Endpoint)
@@ -45,10 +56,37 @@ func bindGatewayServiceEvidence(record *MeshEdges, tree *renderRoot, stage, envi
 			return err
 		}
 	}
-	if len(seen) != 2 || seen["rest"] == 0 || seen[gatewayWorkloadEndpoint] == 0 || seen["rest"] == seen[gatewayWorkloadEndpoint] {
-		return fmt.Errorf("gateway rest and workload must have distinct resolved container ports")
+	if seen["rest"] == 0 || seen[gatewayWorkloadEndpoint] == 0 {
+		return fmt.Errorf("gateway rest and workload must both resolve a container port")
+	}
+	byPort := map[uint32]string{}
+	for _, endpoint := range admitted {
+		port, bound := seen[endpoint]
+		if !bound {
+			continue
+		}
+		if other, shared := byPort[port]; shared {
+			return fmt.Errorf("gateway endpoints %s and %s must have distinct resolved container ports, both resolve %d", other, endpoint, port)
+		}
+		byPort[port] = endpoint
 	}
 	return nil
+}
+
+// gatewayMeshEndpoints is the gateway's admitted mesh endpoints: rest, the
+// workload endpoint, and the endpoint of the environment's declared runnable
+// call endpoint when it is the gateway's own. The declaration is
+// `<module>/<service>/<endpoint>`; one naming another service admits nothing
+// here, since that service's edges are judged where they are rendered.
+func gatewayMeshEndpoints(gateway, callEndpoint string) []string {
+	admitted := []string{"rest", gatewayWorkloadEndpoint}
+	if cut := strings.LastIndex(callEndpoint, "/"); cut > 0 {
+		unique, endpoint := callEndpoint[:cut], callEndpoint[cut+1:]
+		if unique == gateway && endpoint != "" && !slices.Contains(admitted, endpoint) {
+			admitted = append(admitted, endpoint)
+		}
+	}
+	return admitted
 }
 
 // gatewayOverlay is the environment overlay of the gateway's one rendered

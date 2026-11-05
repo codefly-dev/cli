@@ -277,7 +277,7 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts, containerPorts, selfConsuming); err != nil {
 		return err
 	}
-	if err = bindGatewayServiceEvidence(r.options.MeshEdges, r.options.renderRoot, stage, r.env.Name, r.options.Units); err != nil {
+	if err = bindGatewayServiceEvidence(r.options.MeshEdges, r.options.renderRoot, stage, r.env.Name, r.options.Units, r.env.RunnableCallEndpoint); err != nil {
 		return err
 	}
 	if err = r.declareInstances(ctx, services); err != nil {
