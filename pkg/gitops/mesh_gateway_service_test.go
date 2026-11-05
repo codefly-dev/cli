@@ -38,7 +38,63 @@ func bindGatewayTestUnit(t *testing.T, record *MeshEdges, manifests string, over
 	tree, err := newRenderRoot(unit)
 	require.NoError(t, err)
 	defer tree.Close()
-	return bindGatewayServiceEvidence(record, tree, unit, "staging", []InventoryUnit{{Kind: UnitKindService, Name: "gateway", Path: "."}})
+	return bindGatewayServiceEvidence(record, tree, unit, "staging", []InventoryUnit{{Kind: UnitKindService, Name: "gateway", Path: "."}}, "")
+}
+
+func bindGatewayTestUnitCallingThrough(t *testing.T, record *MeshEdges, manifests, callEndpoint string) error {
+	t.Helper()
+	unit := writeUnit(t, manifests, nil)
+	tree, err := newRenderRoot(unit)
+	require.NoError(t, err)
+	defer tree.Close()
+	return bindGatewayServiceEvidence(record, tree, unit, "staging", []InventoryUnit{{Kind: UnitKindService, Name: "gateway", Path: "."}}, callEndpoint)
+}
+
+const gatewayHopPort = `    - name: http-hop
+      port: 82
+      targetPort: 8082
+`
+
+func gatewayHopEdge() MeshEdge {
+	return MeshEdge{Module: "host", Service: "gateway", Namespace: "cell-host", Endpoint: "hop", Port: 82, TargetPort: 8082,
+		Principals: []string{"spiffe://cluster.local/ns/cell-runtime/sa/worker"}}
+}
+
+// An environment that sends every prepared runnable call to one of the
+// gateway's own endpoints (runnable-call-endpoint: host/gateway/hop) makes
+// that endpoint a third mesh endpoint of the gateway: the executors reach it,
+// on a Service port of its own. Without the declaration the same edge is a
+// listener around the presenter path, and is refused as before.
+func TestGatewayMeshEvidenceAdmitsTheDeclaredRunnableCallEndpoint(t *testing.T) {
+	manifests := gatewayServiceUnit + gatewayHopPort
+	t.Run("declared on the gateway", func(t *testing.T) {
+		record := gatewayMeshRecord()
+		record.Edges = append(record.Edges, gatewayHopEdge())
+		require.NoError(t, bindGatewayTestUnitCallingThrough(t, record, manifests, "host/gateway/hop"))
+		require.Equal(t, "http-hop", record.Edges[2].RenderedService.PortName)
+	})
+	t.Run("not declared", func(t *testing.T) {
+		record := gatewayMeshRecord()
+		record.Edges = append(record.Edges, gatewayHopEdge())
+		err := bindGatewayTestUnitCallingThrough(t, record, manifests, "")
+		require.ErrorContains(t, err, "gateway mesh endpoint hop cannot bypass its HTTP presenter path")
+		require.ErrorContains(t, err, "rest, workload")
+	})
+	t.Run("declared on another service", func(t *testing.T) {
+		record := gatewayMeshRecord()
+		record.Edges = append(record.Edges, gatewayHopEdge())
+		require.ErrorContains(t, bindGatewayTestUnitCallingThrough(t, record, manifests, "runtime/worker/hop"), "cannot bypass")
+	})
+	t.Run("declared but no executor reaches it", func(t *testing.T) {
+		require.NoError(t, bindGatewayTestUnitCallingThrough(t, gatewayMeshRecord(), manifests, "host/gateway/hop"))
+	})
+	t.Run("shares the presenter's listener", func(t *testing.T) {
+		record := gatewayMeshRecord()
+		edge := gatewayHopEdge()
+		edge.TargetPort = record.Edges[0].TargetPort
+		record.Edges = append(record.Edges, edge)
+		require.ErrorContains(t, bindGatewayTestUnitCallingThrough(t, record, manifests, "host/gateway/hop"), "distinct resolved container ports")
+	})
 }
 
 func TestGatewayMeshEvidenceUsesTheEffectiveService(t *testing.T) {
