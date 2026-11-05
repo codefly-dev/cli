@@ -1246,7 +1246,14 @@ runtime with nothing said at render time.
 Every other declared reach **refuses the render**, naming the principal, what
 declared it, and what to change: a dependency on a module service, a host route
 onto a module listener, prepared runnable bindings sent to an owner instead of
-through the hop. An environment's `runnable-call-endpoint` is how the last one
+through the hop. A fronted module's **own** services are inside what the hop
+fronts: a call between two of them never leaves the module, so a sibling that
+declares a dependency on a module listener is admitted as its own principal.
+The derived allow-list is at module granularity, so that one ask arrives as
+every principal of the module; the siblings that did not declare it — a store,
+or the principals left when the asker is withdrawn by the environment — never
+asked, and are neither admitted nor refused. An environment's
+`runnable-call-endpoint` is how the last one
 is fixed — it sends every prepared call to that endpoint, and the executors are
 then admitted there rather than at each owner's listener. When that endpoint is
 the gateway's own (`runnable-call-endpoint: <gateway>/hop`), it is the
