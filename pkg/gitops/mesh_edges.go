@@ -395,6 +395,11 @@ func (index *meshComposition) callsThrough(unique, endpoint string) bool {
 	return index.reach.reaches(module, service, endpoint)
 }
 
+// declarerKindService is the kind core gives a module's service among its
+// dependency declarers (Module.LoadDependencyDeclarers): the only declarer
+// kind that runs under a mesh principal of its own.
+const declarerKindService = "service"
+
 // ownAsks is the principals of a fronted module's OWN workloads that declare
 // a dependency on one of its listeners, read from the module's declarers at
 // service granularity. The derived allow-list is at module granularity, so one
@@ -409,7 +414,7 @@ func (index *meshComposition) ownAsks(env *environments.Environment, declarers [
 	namespace := env.ModuleNamespace(index.workspace, module)
 	asks := map[string]bool{}
 	for _, declarer := range declarers {
-		if declarer.Kind != "service" {
+		if declarer.Kind != declarerKindService {
 			continue
 		}
 		principal := meshPrincipal(env.Host, namespace, declarer.Name)
