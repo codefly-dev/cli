@@ -133,7 +133,7 @@ func TestGatewayMeshEvidenceRefusesBypassAndAmbiguity(t *testing.T) {
 	t.Run("missing workload endpoint", func(t *testing.T) {
 		record := gatewayMeshRecord()
 		record.Edges = record.Edges[:1]
-		require.ErrorContains(t, bindGatewayTestUnit(t, record, gatewayServiceUnit, nil), "distinct resolved container ports")
+		require.ErrorContains(t, bindGatewayTestUnit(t, record, gatewayServiceUnit, nil), "must both resolve a container port")
 	})
 }
 

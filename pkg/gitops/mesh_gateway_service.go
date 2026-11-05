@@ -56,8 +56,8 @@ func bindGatewayServiceEvidence(record *MeshEdges, tree *renderRoot, stage, envi
 			return err
 		}
 	}
-	if seen["rest"] == 0 || seen[gatewayWorkloadEndpoint] == 0 || seen["rest"] == seen[gatewayWorkloadEndpoint] {
-		return fmt.Errorf("gateway rest and workload must have distinct resolved container ports")
+	if seen["rest"] == 0 || seen[gatewayWorkloadEndpoint] == 0 {
+		return fmt.Errorf("gateway rest and workload must both resolve a container port")
 	}
 	byPort := map[uint32]string{}
 	for _, endpoint := range admitted {
