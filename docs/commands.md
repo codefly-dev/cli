@@ -2786,10 +2786,11 @@ with the failure each one causes when it is skipped.
 
 ### `codefly doctor solution [module]`
 
-Judge a solution against the shape `add solution` generates, without changing
-anything. With no argument every module in the workspace is judged; a module
-that ships no solution manifest is reported as "not a solution" rather than as
-broken.
+Judge a solution — or a module page — against the shape `add solution`
+generates, and what each of its roles reaches, without changing anything. With
+no argument every module in the workspace is judged; a module that ships no
+solution manifest and declares no page is reported as "not a solution" rather
+than as broken.
 
 ```bash
 codefly doctor solution
@@ -2807,7 +2808,7 @@ Every rule is one that silently broke something. The two worth knowing:
 | | |
 |---|---|
 | `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
-| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
+| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares neither a binding nor an `edge_dependencies` entry for. A **warning**: an edge dependency is the declaration that the page reaches the module with the person's own Work Context, which needs no binding, so it is not reported; anything else is a bug when the solution calls the module on a person's behalf — and the two look identical until a call is refused. |
 | `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
 
 Exit codes: `0` every judged solution conforms (warnings allowed), `1` at least
@@ -2822,6 +2823,45 @@ scope ceilings nor a scope one of its bindings spells out"*. That is the
 missing-permission class, caught before install rather than at the first
 refused call. What a composition's values resolve each binding to is not
 judged: that needs the composition, not the directory.
+
+**What each role reaches.** Every role is judged against the operations the
+package publishes, with the authority's own `decide.AdmitMethod` — the function
+the local authority runs at boot to log *"no single declared role covers this
+method"*, one line among hundreds. Asked here, it is asked before anything
+boots:
+
+| | |
+|---|---|
+| `operation_reached_by_no_role` | An operation requires what no role carries, so no person can ever call it. An operation admitting any checked caller needs no role. A **warning**. |
+| `binding_wider_than_roles` | A binding redeemed for a person (`invoke`, `lookup`) asks for what no role grants. Issuance cuts a child to the holder's grants *and* the binding, so that part is never carried: a call needing it is refused, and the consent an administrator reviews is wider than anyone can use. A binding whose ceiling its `calls:` decide is reported when no role grants anything outside the unit's own kinds — it then carries nothing for anyone. A **warning**. |
+| `role_grants_unreached_scope` | The inverse on the unit's own kinds: a role grants an action no published operation requires. A **warning**. |
+| `installation_role_undeclared` | Roles, and no `installation_role`. A host refuses the install unless the request names one: *"declares no installation authority; its owner must declare it before installation"*. A module page should declare `none`. A **warning**. |
+
+`--roles` prints the same answer per role, in three places:
+
+```text
+  roles — what a holder reaches, as this directory declares it:
+    (every role, and any checked caller, also reaches the 62 operation(s) that require no scope)
+    viewer
+      on notes: GET /v1/notes/upload-access, POST /v1/notes/mcp
+      through binding documents (invoke): documents.collection:read, documents:read
+      as the person (their own grants decide): assistant, tracing
+```
+
+*On the unit* is exact: the authority's own admission over the published
+method table. *Through a binding* is what the role can carry — its scopes cut
+to what the binding spells — and what the module at the other end then admits,
+and onward, is the composition's: the authority computes that reach over the
+delivered modules. *As the person* are the edge dependencies, where the
+holder's own grants decide. `--json` carries the same as `roles[]` and
+`open_operations`.
+
+**Module pages.** A module that ships no solution manifest and declares
+`solution.frontend.codefly.yaml` beside a service is judged as a module page:
+people are entitled to a page only through a role it declares, so a page with
+no role is shown to nobody and offers an administrator nothing to set up
+(`module_page_declares_no_roles`, a **failure**). Its installer role, its
+`installation_role`, and what each role reaches are judged as for a solution.
 
 `page_shell_has_no_app` is worth knowing about: conforming the fleet to one
 shape added the `web` shell's *manifest* to solutions whose page had never been
@@ -2840,6 +2880,7 @@ page declaration, a solution with no shell at all.
 | `--json` | Print a versioned report per module to stdout |
 | `--dir` | Judge this module directory on its own, without resolving a workspace |
 | `--require-solution` | With `--dir`, fail when the directory ships no solution manifest |
+| `--roles` | Also print, per role, what a holder reaches: on the unit, through each binding, and as the person |
 
 `--dir` exists because a consumer repository gating a tree of solutions has
 module directories, not necessarily a workspace at each one — `excel-extract`

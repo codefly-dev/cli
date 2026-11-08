@@ -7,6 +7,9 @@ import (
 
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+
+	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
 
 	"github.com/codefly-dev/cli/pkg/methodpolicy"
 )
@@ -63,36 +66,44 @@ const (
 // contract, and a tree whose contract is behind its code would make a
 // legitimate grant look surplus. Failing a gate on that would be worse than
 // the thing it reports.
-func (r *Report) checkRoleScopesAreReached(dir string, contract *modulecontract.Contract, packaged *composition.PackageManifest) {
+func (r *Report) checkRoleScopesAreReached(dir string, contract *modulecontract.Contract, packaged *composition.PackageManifest) map[string]domain.MethodPolicy {
 	if len(contract.Roles) == 0 {
-		return // checkInstallerRole answers for a solution with no role.
+		return nil // checkInstallerRole answers for a solution with no role.
 	}
-	own := ownKinds(contract)
-	if len(own) == 0 {
-		r.ok(CodeRoleScopeUnreached, fmt.Sprintf("the solution declares no kinds of its own, so each of its %d role(s) grants only what a binding carries", len(contract.Roles)))
-		return
-	}
-
 	if !packageDeclaresAContract(packaged) {
 		// checkBackendContract already failed, with the remediation. Saying it
 		// a second time in another vocabulary helps nobody.
-		return
+		return nil
 	}
 
-	required, operations, err := publishedRequirements(dir, packaged)
+	methods, err := publishedMethods(dir, packaged)
 	switch {
 	case err != nil:
 		r.warn(CodeOperationPoliciesUnread,
 			fmt.Sprintf("cannot read what the published operations require: %v", err),
 			"the authority derives every route's policy from the same contracts, so whatever refuses this read refuses that derivation too. `codefly generate contracts` rewrites them")
-		return
-	case operations == 0:
+		return nil
+	case len(methods) == 0:
 		r.warn(CodeOperationPoliciesUnread,
 			"the published contracts carry no operation, so what the roles reach cannot be judged",
 			"a solution's roles are spelled in the policies of the routes it publishes; with no operation published there is nothing to compare them against. Run `codefly generate contracts`")
-		return
+		return nil
 	}
-	r.ok(CodeOperationPoliciesUnread, fmt.Sprintf("the published contracts carry %d operation(s) to judge the roles against", operations))
+	r.ok(CodeOperationPoliciesUnread, fmt.Sprintf("the published contracts carry %d operation(s) to judge the roles against", len(methods)))
+
+	own := ownKinds(contract)
+	if len(own) == 0 {
+		r.ok(CodeRoleScopeUnreached, fmt.Sprintf("the solution declares no kinds of its own, so each of its %d role(s) grants only what a binding carries", len(contract.Roles)))
+		return methods
+	}
+	required := map[string]bool{}
+	for _, method := range methods {
+		for _, scope := range method.Requires {
+			for _, action := range scope.GetActions() {
+				required[scope.GetResourceKind()+":"+action] = true
+			}
+		}
+	}
 
 	var surplus []string
 	for _, role := range contract.Roles {
@@ -112,12 +123,13 @@ func (r *Report) checkRoleScopesAreReached(dir string, contract *modulecontract.
 	}
 	if len(surplus) == 0 {
 		r.ok(CodeRoleScopeUnreached, fmt.Sprintf("every action the %d role(s) grant on the solution's own kinds is required by an operation it publishes", len(contract.Roles)))
-		return
+		return methods
 	}
 	sort.Strings(surplus)
 	r.warn(CodeRoleScopeUnreached,
 		fmt.Sprintf("no operation this solution publishes requires what these role grants carry: %s", strings.Join(surplus, ", ")),
 		"each names an action on one of the solution's OWN kinds, so the solution itself is what would check it — and no route policy it publishes spells it, so nothing ever will. Either a route is missing its policy, or the role is wider than the solution: narrow the role, with the reason beside what it keeps")
+	return methods
 }
 
 // packageDeclaresAContract reports whether the package publishes any API
@@ -142,36 +154,33 @@ func ownKinds(contract *modulecontract.Contract) map[string]bool {
 	return kinds
 }
 
-// publishedRequirements is every "<kind>:<action>" some operation of the
-// solution's published contracts requires, with the number of operations read,
-// so a contract carrying none is told from one whose operations all admit any
-// checked caller. It reads with the same reader the authority's own
-// method-policy derivation uses (pkg/methodpolicy), so what is judged here is
-// exactly what a host would enforce.
-func publishedRequirements(dir string, packaged *composition.PackageManifest) (map[string]bool, int, error) {
+// publishedMethods is the policy of every operation the solution's published
+// contracts serve, keyed as the authority admits a call. It reads with the
+// same reader the authority's own method-policy derivation uses
+// (pkg/methodpolicy), so what is judged here is exactly what a host would
+// enforce.
+func publishedMethods(dir string, packaged *composition.PackageManifest) (map[string]domain.MethodPolicy, error) {
 	catalog, err := methodpolicy.LoadCatalog(dir)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	required := map[string]bool{}
-	operations := 0
+	out := map[string]domain.MethodPolicy{}
 	for index := range packaged.Services {
 		service := &packaged.Services[index]
 		for position := range service.APIContracts {
 			contract := &service.APIContracts[position]
 			methods, _, err := methodpolicy.Contract(dir, catalog, service.Name, contract)
 			if err != nil {
-				return nil, 0, fmt.Errorf("service %s, contract %s: %w", service.Name, contract.Path, err)
+				return nil, fmt.Errorf("service %s, contract %s: %w", service.Name, contract.Path, err)
 			}
-			operations += len(methods)
 			for _, method := range methods {
-				for _, scope := range method.GetRequires() {
-					for _, action := range scope.GetActions() {
-						required[scope.GetResourceKind()+":"+action] = true
-					}
+				policy := domain.MethodPolicy{AnyCheckedCaller: method.GetAnyCheckedCaller()}
+				for _, required := range method.GetRequires() {
+					policy.Requires = append(policy.Requires, &basev0.WorkScopeV1{ResourceKind: required.GetResourceKind(), Actions: required.GetActions()})
 				}
+				out[method.GetMethod()] = policy
 			}
 		}
 	}
-	return required, operations, nil
+	return out, nil
 }
