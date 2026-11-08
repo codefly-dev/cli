@@ -913,24 +913,35 @@ func loadPublicationInventory(
 	rendered,
 	pathRoot string,
 ) (Inventory, error) {
-	if err := ValidateRenderedTree(rendered, "", true); err != nil {
-		return Inventory{}, fmt.Errorf("validate promotable render: %w", err)
-	}
+	// The render record is read before the tree is held to its own graph.
+	// `deployments/modules/<module>` is one working tree for every
+	// environment: the last render of ANY environment is what it holds, a
+	// `render --all` that stopped at an earlier module leaves it as it was,
+	// and a reset of the working tree puts the committed render back. A tree
+	// rendered for another environment is then the real finding, named with
+	// the one command that lifts it; validating its unit graph first reports
+	// whatever that other render's layout disagrees about ("unexpected unit
+	// object-storage") and hides which render this is.
+	renderFirst := fmt.Sprintf("run `codefly deploy gitops render %s --env %s` first", request.Module, request.Environment)
 	inventory, err := LoadInventory(rendered)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Inventory{}, fmt.Errorf("module %s has never been rendered (no %s): %s", request.Module, filepath.Join(rendered, InventoryFilename), renderFirst)
+	}
 	if err != nil {
 		return Inventory{}, err
 	}
 	if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Unit != "" {
 		return Inventory{}, fmt.Errorf(
-			"render inventory targets module %q environment %q unit %q",
-			inventory.Module,
-			inventory.Environment,
-			inventory.Unit,
+			"%s holds the render of module %q for environment %q (unit %q), not module %s for environment %s: %s",
+			rendered, inventory.Module, inventory.Environment, inventory.Unit, request.Module, request.Environment, renderFirst,
 		)
 	}
 	expectedOwnedPath := deliveryModulePath(pathRoot, request.Module)
 	if inventory.OwnedPath != expectedOwnedPath {
-		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
+		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q: %s", inventory.OwnedPath, expectedOwnedPath, renderFirst)
+	}
+	if err := ValidateRenderedTree(rendered, "", true); err != nil {
+		return Inventory{}, fmt.Errorf("validate promotable render: %w", err)
 	}
 	if inventoryHasSolutionUnits(&inventory) {
 		if err := validateSolutionUnits(request.Module, inventory.Units); err != nil {
