@@ -923,6 +923,23 @@ A file that exists states nothing by itself: one written for
 release custody as the revocation of every grant on the cell, and every module
 principal would stop minting.
 
+**A grant names a composed module, or it is refused.** A module principal
+is the module's own name (a solution is a module), so the envelope is held
+at publish to the modules the composition declares — the same set a cell
+removal is judged against — and a grant naming any other principal is
+refused by name, saying what the composition does declare: a grant that
+outlived its module when the module left `modules:`, or a name mistyped,
+would otherwise be signed under release custody, kept on the host's record,
+and reported against on every reconcile pass as a grant nobody can use. The
+remedy is in the composition's file: remove the grant, or compose the module
+it is for. **The host's own principal — the module whose endpoint
+`host.delivery` names — needs no grant by declaration**: it serves the
+delivery API and is the host, not a module the host mints for, so an
+envelope that omits it is complete; one that names it is admitted like any
+other composed principal. Every composed module is not required to be
+granted — a composed module the envelope omits is a module the host mints
+nothing for, which is a statement, not an error.
+
 **A delivered grant names no organization.** A grant carrying a non-empty
 `tenant` is refused at publish, naming the principals: tenancy resolves
 through each organization's installation, and pinning a module to one

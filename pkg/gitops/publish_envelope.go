@@ -72,6 +72,12 @@ type declaredEnvelope struct {
 	// carry (minimum_revision), 0 for none: how a composition steps past a
 	// revision the host's administrator wrote interactively.
 	MinimumRevision uint64
+	// Composed names the module principals the composition declares
+	// (composedModules): a module's principal is its own name, a solution
+	// being a module. An envelope is held to it — a grant naming a principal
+	// the composition does not carry is refused — and nil composes nothing,
+	// so a publish that states no composition can grant no principal.
+	Composed map[string]bool
 }
 
 // declareEnvelope reads the composition's envelope into the publication's
@@ -105,7 +111,10 @@ func (p *deliveryPublication) declareEnvelope(inventory *Inventory, environment 
 	if err != nil {
 		return err
 	}
-	p.options.Envelope = &declaredEnvelope{Principals: principals, Stated: stated, StatesPrincipals: statesPrincipals, MinimumRevision: floor}
+	p.options.Envelope = &declaredEnvelope{
+		Principals: principals, Stated: stated, StatesPrincipals: statesPrincipals, MinimumRevision: floor,
+		Composed: composedModules(p.workspace),
+	}
 	return nil
 }
 
@@ -161,6 +170,9 @@ func settleEnvelope(
 			environment, inventory.Module)
 	}
 	if err = refuseTenantGrants(declared.Principals, environment); err != nil {
+		return nil, nil, err
+	}
+	if err = refuseUncomposedPrincipals(declared.Principals, declared.Composed, environment); err != nil {
 		return nil, nil, err
 	}
 	if slices.Contains(files, moduleEnvelopeFile) {
@@ -265,6 +277,42 @@ func refuseTenantGrants(principals map[string]json.RawMessage, environment strin
 	sort.Strings(named)
 	return fmt.Errorf("the module envelope of %s grants %s with a tenant; a delivered module envelope names no organization: tenancy resolves through each organization's installation, and pinning a module to one organization is an administrator's interactive write — remove \"tenant\" from configurations/%s/module-envelope.json",
 		environment, strings.Join(named, ", "), environment)
+}
+
+// refuseUncomposedPrincipals holds the envelope to the composition: a grant
+// names a module principal, a principal is the module's own name, and a
+// module the composition does not declare has no workload to mint for — so a
+// grant naming one is a grant nobody can use, kept on the host's record and
+// reported against on every reconcile. A module removed from `modules:` is
+// the usual way one gets there: its grant outlives it. The host principal
+// needs no grant to be named here; it is only ever refused, like any other,
+// when it is not composed.
+func refuseUncomposedPrincipals(principals map[string]json.RawMessage, composed map[string]bool, environment string) error {
+	var named []string
+	for principal := range principals {
+		if !composed[principal] {
+			named = append(named, principal)
+		}
+	}
+	if len(named) == 0 {
+		return nil
+	}
+	sort.Strings(named)
+	declared := make([]string, 0, len(composed))
+	for module := range composed {
+		declared = append(declared, module)
+	}
+	sort.Strings(declared)
+	return fmt.Errorf("the module envelope of %s grants %s, which the composition does not declare as a module; a module principal is the module's own name, and the composition declares %s — remove the grant from configurations/%s/module-envelope.json, or compose the module it is for",
+		environment, strings.Join(named, ", "), orNone(declared), environment)
+}
+
+// orNone spells an empty list for a refusal.
+func orNone(names []string) string {
+	if len(names) == 0 {
+		return "no module"
+	}
+	return strings.Join(names, ", ")
 }
 
 // writeEnvelope writes the envelope's ConfigMap — the canonical document and,

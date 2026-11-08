@@ -248,7 +248,7 @@ func TestAPublishListsPreparedBindingsInTheEnvelopeItDelivers(t *testing.T) {
 	require.NoError(t, publication.listPreparedBindings(context.Background(), grantsEnvironment))
 	require.Nil(t, publication.options.Envelope)
 
-	publication.options.Envelope = &declaredEnvelope{Principals: map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, Stated: true, StatesPrincipals: true}
+	publication.options.Envelope = &declaredEnvelope{Principals: map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, Stated: true, StatesPrincipals: true, Composed: map[string]bool{"shop": true}}
 	require.NoError(t, publication.listPreparedBindings(context.Background(), grantsEnvironment))
 	var grant struct {
 		OperationAudiences map[string]struct {
