@@ -92,6 +92,11 @@ type deliveryPublishOptions struct {
 	// Envelope is the module envelope the composition states, set only for
 	// the publish that delivers it (declareEnvelope); nil delivers none.
 	Envelope *declaredEnvelope
+	// Withdraw is the last manifest of each binding a module the
+	// composition no longer declares delivered, keyed by binding: the publish
+	// of the module hosting the delivery API withdraws each from its own
+	// overlay (host_withdrawals.go). Ignored by every other module's publish.
+	Withdraw map[string]deliveredManifest
 	// Signs names who signs this publish's manifests, for the refusal a
 	// publish that may not deliver unsigned gives when its signer had no
 	// identity. Empty means the release workflow.
@@ -169,8 +174,10 @@ func settleManifestDelivery(
 
 // settleManifests settles the manifests of the staged tree against the base
 // branch, writes the withdrawal of every binding this module delivered before
-// and no longer declares, signs every manifest, writes the carriers and the
-// delivery Job, and returns what it delivered and the files it wrote.
+// and no longer declares — and, for the module hosting the delivery API, of
+// every binding a module the composition dropped delivered — signs every
+// manifest, writes the carriers and the delivery Job, and returns what it
+// delivered and the files it wrote.
 func settleManifests(
 	ctx context.Context,
 	repo, baseBranch, target, targetPath, environment string,
@@ -187,6 +194,9 @@ func settleManifests(
 		if rendered, err = renderedManifests(filepath.Join(target, filepath.FromSlash(overlay))); err != nil {
 			return nil, nil, err
 		}
+	}
+	if err = carryCompositionWithdrawals(prior, rendered, inventory, opts); err != nil {
+		return nil, nil, err
 	}
 	if len(rendered) == 0 && len(prior) == 0 {
 		return nil, nil, nil
@@ -712,11 +722,17 @@ func renderedManifests(directory string) (map[string]deliveredManifest, error) {
 // as and, when the base branch delivers it paired, the authority document
 // beside it.
 func priorDeliveredManifests(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]deliveredManifest, error) {
-	ref := "refs/remotes/origin/" + baseBranch
 	files, err := deliveredOverlayFiles(ctx, repo, baseBranch, overlayPath)
 	if err != nil {
 		return nil, err
 	}
+	return deliveredManifestsAt(ctx, repo, "refs/remotes/origin/"+baseBranch, baseBranch, overlayPath, files)
+}
+
+// deliveredManifestsAt reads the manifests the overlay's files deliver at
+// revision, keyed by binding, as priorDeliveredManifests does for the base
+// branch; where names the revision in a refusal.
+func deliveredManifestsAt(ctx context.Context, repo, ref, where, overlayPath string, files []string) (map[string]deliveredManifest, error) {
 	prior := map[string]deliveredManifest{}
 	var pairs []string
 	for _, name := range files {
@@ -726,11 +742,11 @@ func priorDeliveredManifests(ctx context.Context, repo, baseBranch, overlayPath 
 		}
 		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
 		if err != nil {
-			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
+			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, where, err)
 		}
 		manifest, carrier, held, err := manifestFromConfigMap(data)
 		if err != nil {
-			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
+			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, where, err)
 		}
 		if held {
 			prior[manifest.Binding] = deliveredManifest{manifest: manifest, carrier: carrier}
@@ -739,18 +755,18 @@ func priorDeliveredManifests(ctx context.Context, repo, baseBranch, overlayPath 
 	for _, name := range pairs {
 		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
 		if err != nil {
-			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
+			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, where, err)
 		}
 		pair, held, err := pairedDocumentFromConfigMap(name, data)
 		if err != nil {
-			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
+			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, where, err)
 		}
 		if !held {
 			continue
 		}
 		entry, delivered := prior[pair.binding]
 		if !delivered || entry.manifest.Generation != pair.generation {
-			return nil, fmt.Errorf("the delivered %s on %s pairs binding %s at generation %d and the branch delivers no manifest of it at that generation; the delivered tree and its pair disagree, so no generation can be settled against it", name, baseBranch, pair.binding, pair.generation)
+			return nil, fmt.Errorf("the delivered %s on %s pairs binding %s at generation %d and the branch delivers no manifest of it at that generation; the delivered tree and its pair disagree, so no generation can be settled against it", name, where, pair.binding, pair.generation)
 		}
 		entry.paired = true
 		entry.authority = pair.request.GetAuthority().GetDocument()
@@ -850,14 +866,27 @@ func deliveredOverlayFiles(ctx context.Context, repo, baseBranch, overlayPath st
 	if _, err := gitCommand(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
 		return nil, fmt.Errorf("the base branch %s is not available in the publication checkout (%s), so what it delivers cannot be read and no generation can be settled: %w", baseBranch, ref, err)
 	}
-	if _, err := gitCommand(ctx, repo, "rev-parse", "--verify", "--quiet", ref+":"+overlayPath); err != nil {
+	if !gitHasPath(ctx, repo, ref, overlayPath) {
 		// The branch exists and the path is not on it: nothing was delivered
-		// there. (--verify --quiet fails only for an unresolvable object.)
+		// there.
 		return nil, nil
 	}
-	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+overlayPath)
+	return overlayFilesAt(ctx, repo, ref, baseBranch, overlayPath)
+}
+
+// gitHasPath reports whether revision holds path. (--verify --quiet fails
+// only for an unresolvable object.)
+func gitHasPath(ctx context.Context, repo, revision, path string) bool {
+	_, err := gitCommand(ctx, repo, "rev-parse", "--verify", "--quiet", revision+":"+path)
+	return err == nil
+}
+
+// overlayFilesAt lists the YAML files an overlay holds at revision, which
+// must hold it; where names the revision in a refusal.
+func overlayFilesAt(ctx context.Context, repo, revision, where, overlayPath string) ([]string, error) {
+	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", revision+":"+overlayPath)
 	if err != nil {
-		return nil, fmt.Errorf("list what %s delivers under %s: %w", baseBranch, overlayPath, err)
+		return nil, fmt.Errorf("list what %s delivers under %s: %w", where, overlayPath, err)
 	}
 	var files []string
 	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {

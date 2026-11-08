@@ -1230,7 +1230,11 @@ through and the plan reports it (`undeclaredCellRemovals`), and the
 publication also removes that module's delivered tree from
 `<gitops path>/modules/` with everything else it writes (`removedModules`):
 the cell no longer admits anything of it, and the ApplicationSet that tree
-carries would keep stamping Applications whose every pod the cell refuses. A
+carries would keep stamping Applications whose every pod the cell refuses.
+The host is told by the module hosting the delivery API: its publish
+withdraws every binding a dropped module last delivered, from its own
+overlay, and the plan lists each (`hostWithdrawals`; see
+[What publish settles](module-manifests.md#what-publish-settles)). A
 checkout that never had a module and one that dropped it derive the same cell
 file, so the history decides: when the workspace repository is the delivery
 repository (it holds the base commit, or the delivery holds the workspace

@@ -631,6 +631,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	for _, removed := range plan.RemovedModules {
 		cli.Warning("Removed %s from the delivery: the composition no longer declares it", removed)
 	}
+	for _, withdrawal := range plan.HostWithdrawals {
+		cli.Warning("Withdraws %s from the host: the composition no longer declares the module, so the host module's delivery Job carries its withdrawal", withdrawal)
+	}
 	for _, stale := range plan.StaleConsumers {
 		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
 	}

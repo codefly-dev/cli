@@ -555,6 +555,13 @@ type PublishPlan struct {
 	// relative to the delivery repository: modules the composition no longer
 	// declares, which the cell file it carries no longer admits.
 	RemovedModules []string `json:"removedModules,omitempty"`
+	// HostWithdrawals are the withdrawals this publication of the module
+	// hosting the delivery API delivers for modules the composition no
+	// longer declares: each binding such a module last delivered, at the
+	// next generation, in the host module's own overlay and POSTed by its
+	// delivery Job (host_withdrawals.go). One delivered before is carried
+	// forward, and shown again.
+	HostWithdrawals []string `json:"hostWithdrawals,omitempty"`
 	// CellFile is the environment's cell file this publication carries into
 	// the delivery repository, at the path the cell's infrastructure reads it
 	// from. A cell admits only the builds that file names, so a promotion of

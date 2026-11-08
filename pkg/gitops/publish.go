@@ -220,14 +220,15 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
-	baseCell, claim, removedModules, err := judgeCompositionRemovals(ctx, workspace, env, cell, &compositionBase{
+	baseCell, claim, removals, err := judgeCompositionRemovals(ctx, workspace, env, cell, &compositionBase{
 		repo: repo, gitopsPath: pathRoot, branch: baseBranch, revision: baseRevision,
-		module: request.Module, restoreRevision: restoreRevision,
+		module: request.Module, restoreRevision: restoreRevision, hostsDelivery: inventory.HostsDelivery,
 	})
 	if err != nil {
 		return fail(err)
 	}
-	publishedPaths = append(publishedPaths, removedModules...)
+	publishedPaths = append(publishedPaths, removals.removed...)
+	publication.options.Withdraw = removals.withdraw
 	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, owned, claim.owns(pathRoot), branchRevision, replacesRevision); err != nil {
 		return fail(err)
 	}
@@ -285,7 +286,8 @@ func preparePublish(
 		StaleConsumers:         staleConsumers,
 		CellRemovals:           allowedRemovals,
 		UndeclaredCellRemovals: undeclaredRemovals,
-		RemovedModules:         removedModules,
+		RemovedModules:         removals.removed,
+		HostWithdrawals:        withdrawnByHost(inventory.Delivery, removals.withdraw),
 		CellFile:               carriedCell,
 		CellNotice:             cellNotice(env, cell, restoreRevision, request.Module),
 		Carriers:               publication.options.Carriers,

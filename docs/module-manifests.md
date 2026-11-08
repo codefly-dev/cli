@@ -554,6 +554,30 @@ bindings is refused, not withdrawn. A withdrawal is authored by the domain that
 delivered the binding: a manifest delivered under another ownership domain is
 never withdrawn by this publish.
 
+**A module the composition dropped is withdrawn by the host module.** A module
+removed from `modules:` is published by nobody: its delivered tree is removed
+with the cell file that no longer admits it, and its namespace and its
+`delivery` account go with it, so it cannot carry its own withdrawal. The host
+accepts a withdrawal from the `delivery` account of the withdrawn module's
+namespace **or of the host module's** — the module hosting the delivery API,
+which carries the module envelope — because the host module carries the
+composition. So the host module's forward publish to a hosted environment
+withdraws, for every module the composition no longer declares, each binding
+that module last delivered to the environment and did not itself withdraw: at
+prior + 1, `removed: true`, in the host module's own overlay
+(`modules/<host>/module-manifests/overlays/<environment>/`), signed by the
+publish's release custody like any manifest and POSTed by the host module's
+own `deliver-manifest` Job beside its live manifests. What the dropped module
+last delivered is read from the base branch while its tree is there (this
+publication removes it), and otherwise from the base branch's history — the
+last commit that held the tree's overlay; a history that cannot say is refused
+by name, and so is a binding a live tree on the base branch delivers now. Once
+delivered, the withdrawal is the host module's own record and is carried
+forward verbatim: it is never written twice, and re-delivered it is the same
+generation and bytes, which the host answers as a replay. The plan lists each
+under `hostWithdrawals`. No other module's publish writes one, and the removed
+module's tree is deleted outright, so the cell needs no exception for it.
+
 **Held to the host declared now.** Every manifest the render declares is held,
 at publish, to the environment's host block as it is then — the ownership
 domain and the host coordinate — and a
