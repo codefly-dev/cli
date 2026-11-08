@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -125,7 +126,11 @@ func (b *Builder) decideImageReuse(
 	if err != nil {
 		return imageReuse{}, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
-	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe)
+	pinned, err := b.pinnedContext(contextRoot)
+	if err != nil {
+		return imageReuse{}, w.Wrap(err)
+	}
+	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe, pinned)
 	if err != nil {
 		return imageReuse{}, w.Wrapf(err, "cannot prepare recipe context")
 	}
@@ -144,7 +149,7 @@ func (b *Builder) decideImageReuse(
 	// base-image resolution through the reference each manifest is read from
 	// and is not part of the identity (see registry_mirror.go).
 	mirrors := registryMirrors(b.world.Env)
-	scope := imageBuildScope{OutputDir: outputDir, ContextDir: prepared.Root, WorkspaceDir: b.world.Workspace.Dir()}
+	scope := prepared.scope(outputDir, b.world.Workspace.Dir())
 
 	// The identity is derived from the invocation as it would run on any builder
 	// and without a metadata file, so the decision to reuse is taken before a
@@ -353,6 +358,22 @@ func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush 
 	return targeted, nil
 }
 
+// pinnedContext reports whether a recipe's context root is the code of a pinned
+// release the CLI materialized (modulecache.Owned) — its checkout, not a
+// context the agent assembled elsewhere — which is then built from its commit
+// (committedSourceContext). A checkout the developer owns is built from its
+// files, local edits included.
+func (b *Builder) pinnedContext(contextRoot string) (bool, error) {
+	if contextRoot != b.instance.Service.Dir() {
+		return false, nil
+	}
+	owned, err := modulecache.Owned(b.world.Workspace.Dir(), contextRoot)
+	if err != nil {
+		return false, fmt.Errorf("cannot tell whether %s builds a pinned release: %w", b.instance.Unique(), err)
+	}
+	return owned, nil
+}
+
 // recipeContextRoot is the directory a recipe's context is resolved against.
 //
 // The inventory scope says who assembled the context. A TREE plan claims every
@@ -486,7 +507,11 @@ func (b *Builder) buildRecipe(
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
 
-	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe)
+	pinned, err := b.pinnedContext(contextRoot)
+	if err != nil {
+		return w.Wrap(err)
+	}
+	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe, pinned)
 	if err != nil {
 		return w.Wrapf(err, "cannot prepare recipe context")
 	}
@@ -507,7 +532,7 @@ func (b *Builder) buildRecipe(
 	// resolution through the reference each manifest is read from; it is in
 	// neither case part of the identity (see registry_mirror.go).
 	mirrors := registryMirrors(b.world.Env)
-	scope := imageBuildScope{OutputDir: outputDir, ContextDir: contextDir, WorkspaceDir: b.world.Workspace.Dir()}
+	scope := prepared.scope(outputDir, b.world.Workspace.Dir())
 	imageCache := b.imageBuildCache()
 
 	builderName, err := b.selectImageBuilder(ctx, multiArch, mirrors)
@@ -860,21 +885,37 @@ func recipeContext(root string, recipe *builderv0.DockerBuildRecipe) (string, er
 
 // preparedRecipeContext keeps source traversal and ignore matching with Docker.
 // Only a custom build definition is staged, so concurrent recipes never mutate
-// a shared Dockerfile.dockerignore or copy/filter the application's inputs.
+// a shared Dockerfile.dockerignore or copy/filter the application's inputs —
+// except for a pinned release, whose context is the committed copy (source).
 type preparedRecipeContext struct {
 	Root       string
 	Dockerfile string
 	directory  string
+	// source, when set, is the committed copy Root names (committedSource).
+	source *committedSource
 }
 
 func (p *preparedRecipeContext) Close() error {
-	if p.directory == "" {
-		return nil
+	var errs []error
+	if p.directory != "" {
+		errs = append(errs, os.RemoveAll(p.directory))
 	}
-	return os.RemoveAll(p.directory)
+	if p.source != nil {
+		errs = append(errs, os.RemoveAll(p.source.dir))
+	}
+	return errors.Join(errs...)
 }
 
-func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*preparedRecipeContext, error) {
+// scope is where the identity and the post-build re-check read this context.
+func (p *preparedRecipeContext) scope(outputDir, workspaceDir string) imageBuildScope {
+	return imageBuildScope{OutputDir: outputDir, ContextDir: p.Root, WorkspaceDir: workspaceDir, committed: p.source}
+}
+
+// prepareRecipeContext resolves the context a recipe is built from. pinned says
+// the context is the code of a pinned release the CLI materialized
+// (pinnedContext): it is then read from its commit, not from its files
+// (committedSourceContext).
+func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe, pinned bool) (*preparedRecipeContext, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -886,40 +927,62 @@ func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, rec
 	if err != nil {
 		return nil, err
 	}
+	prepared := &preparedRecipeContext{Root: root, Dockerfile: dockerfile}
+	if pinned {
+		source, err := committedSourceContext(ctx, root, outputDir, recipe)
+		if err != nil {
+			return nil, err
+		}
+		if source != nil {
+			prepared.Root, prepared.source = source.root, source
+		}
+	}
 	if recipe.GetDockerignore() == "" {
-		return &preparedRecipeContext{Root: root, Dockerfile: dockerfile}, nil
+		return prepared, nil
 	}
 
 	// Dockerfile-specific policy replaces root policy; it is not an additional
 	// filter. Put the declared policy beside a private copy of the definition
 	// and let Docker apply its native precedence and directory pruning.
-	definition, err := os.ReadFile(dockerfile)
+	staged, err := stageBuildDefinition(dockerfile, filepath.Join(outputDir, recipe.GetDockerignore()))
 	if err != nil {
+		_ = prepared.Close()
 		return nil, err
 	}
-	ignore, err := os.ReadFile(filepath.Join(outputDir, recipe.GetDockerignore()))
+	prepared.directory, prepared.Dockerfile = filepath.Dir(staged), staged
+	return prepared, nil
+}
+
+// stageBuildDefinition copies a Dockerfile beside its declared ignore file into
+// a private directory and returns the copy's path.
+func stageBuildDefinition(dockerfile, ignorePath string) (string, error) {
+	definition, err := os.ReadFile(dockerfile)
 	if err != nil {
-		return nil, err
+		return "", err
+	}
+	ignore, err := os.ReadFile(ignorePath)
+	if err != nil {
+		return "", err
 	}
 	directory, err := os.MkdirTemp("", "codefly-build-definition-")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	definitionRoot, err := os.OpenRoot(directory)
 	if err != nil {
 		_ = os.RemoveAll(directory)
-		return nil, err
+		return "", err
 	}
 	defer definitionRoot.Close()
 	if err := definitionRoot.WriteFile("Dockerfile", definition, 0o600); err != nil {
 		_ = os.RemoveAll(directory)
-		return nil, err
+		return "", err
 	}
 	if err := definitionRoot.WriteFile("Dockerfile.dockerignore", ignore, 0o600); err != nil {
 		_ = os.RemoveAll(directory)
-		return nil, err
+		return "", err
 	}
-	return &preparedRecipeContext{Root: root, Dockerfile: filepath.Join(directory, "Dockerfile"), directory: directory}, nil
+	return filepath.Join(directory, "Dockerfile"), nil
 }
 
 // ensureBuildxBuilder provisions the dedicated docker-container buildx builder

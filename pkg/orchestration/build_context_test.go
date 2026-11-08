@@ -57,7 +57,7 @@ func TestPrepareRecipeContextPreservesDockerInputs(t *testing.T) {
 	for _, scenario := range recipeContextCases {
 		t.Run(scenario, func(t *testing.T) {
 			root, output, recipe := recipeContextFixture(t, scenario)
-			prepared, err := prepareRecipeContext(context.Background(), root, output, recipe)
+			prepared, err := prepareRecipeContext(context.Background(), root, output, recipe, false)
 			require.NoError(t, err)
 			defer prepared.Close()
 			resolved, err := filepath.EvalSymlinks(root)
@@ -71,7 +71,7 @@ func TestPrepareRecipeContextPreservesDockerInputs(t *testing.T) {
 				original, err := os.ReadFile(filepath.Join(output, "Dockerfile.dockerignore"))
 				require.NoError(t, err)
 				require.Equal(t, "assets/\n", string(original))
-				second, err := prepareRecipeContext(context.Background(), root, output, recipe)
+				second, err := prepareRecipeContext(context.Background(), root, output, recipe, false)
 				require.NoError(t, err)
 				defer second.Close()
 				require.NotEqual(t, prepared.Dockerfile, second.Dockerfile)
@@ -86,7 +86,7 @@ func TestPrepareRecipeContextPreservesDockerInputs(t *testing.T) {
 func TestPrepareRecipeContextRejectsMissingDeclaredIgnore(t *testing.T) {
 	root, output, recipe := recipeContextFixture(t, "symlink")
 	recipe.Dockerignore = "missing"
-	_, err := prepareRecipeContext(context.Background(), root, output, recipe)
+	_, err := prepareRecipeContext(context.Background(), root, output, recipe, false)
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
@@ -101,7 +101,7 @@ func TestRecipeContextDockerSemantics(t *testing.T) {
 			root, output, recipe := recipeContextFixture(t, scenario)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			prepared, err := prepareRecipeContext(ctx, root, output, recipe)
+			prepared, err := prepareRecipeContext(ctx, root, output, recipe, false)
 			require.NoError(t, err)
 			defer prepared.Close()
 			destination := t.TempDir()
@@ -184,7 +184,7 @@ func TestRecipeContextRootSelectsWhatBuildxReceives(t *testing.T) {
 
 			contextDir, err := recipeContext(root, recipe)
 			require.NoError(t, err)
-			prepared, err := prepareRecipeContext(context.Background(), contextDir, recipeRoot, recipe)
+			prepared, err := prepareRecipeContext(context.Background(), contextDir, recipeRoot, recipe, false)
 			require.NoError(t, err)
 			defer func() { require.NoError(t, prepared.Close()) }()
 

@@ -5250,6 +5250,19 @@ any machine or cache state. Docker still sends an ignored file the recipe's
 policy does not drop; a build whose image depends on one is not reproducible
 from source, and the recipe's ignore policy is where to drop it.
 
+A **pinned release** the CLI materialized into its module cache is read from its
+commit, not from its files. The cache checkout is also where a local run works,
+and a run rewrites files a module commits (an agent's `.cache/local/*.hash`),
+leaves untracked files and writes ignored scratch; so for a service whose code
+is a pinned release, the context is a private copy of the committed tree at the
+checkout's `HEAD` (checked out through a private index, attributes and modes as
+a clone has them), plus the ignored entries the recipe's policy sends, which the
+digest leaves out. Identity and image are built from that one copy: a tracked
+edit, an untracked file or ignored scratch in the cache moves neither, and the
+checkout itself is never touched. A checkout the developer owns — a workspace
+service, a checkout of their own, or a cache root set through `CODEFLY_MODULE_CACHE` — is
+built from its files, local edits included.
+
 Reuse never stands in for a build on the strength of the record alone. A pushed
 image is reused only if the registry still serves the recorded manifest digest,
 and a locally loaded image only if the daemon still holds the recorded image ID;

@@ -293,6 +293,11 @@ type imageBuildScope struct {
 	OutputDir    string
 	ContextDir   string
 	WorkspaceDir string
+	// committed, when set, is the committed copy of a pinned release that
+	// ContextDir names: the entries it carried from the working tree because
+	// the repository ignores them are left out, as sourceIgnoredPaths leaves
+	// them out of a checkout.
+	committed *committedSource
 }
 
 // contextDigest is the one definition of "the bytes of this recipe's build
@@ -308,7 +313,11 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 		return "", fmt.Errorf("ignore policy of %s: %w", recipe.GetName(), err)
 	}
 	excluded := contextExclusions(ctx, scope.ContextDir, scope.OutputDir, scope.WorkspaceDir)
-	maps.Copy(excluded, sourceIgnoredPaths(ctx, scope.ContextDir))
+	if scope.committed != nil {
+		maps.Copy(excluded, scope.committed.scratch)
+	} else {
+		maps.Copy(excluded, sourceIgnoredPaths(ctx, scope.ContextDir))
+	}
 	return contextContentDigest(ctx, scope.ContextDir, ignore, excluded)
 }
 

@@ -1067,6 +1067,11 @@ repository ignores is left out (`sourceIgnoredPaths`), so the scratch an agent
 or a local run writes inside a service directory cannot move the identity of a
 pinned release between renders or between machines; tracked files never are,
 and a context that is itself ignored or outside a repository keeps every file.
+A pinned release the CLI materialized (`modulecache.Owned`) is read from its
+commit (`committedSourceContext`): the identity and the build share a private
+copy of the committed tree at `HEAD`, plus the ignored entries Docker would
+send, so what a local run writes into the module cache — tracked files
+included — moves neither the identity nor the image.
 
 **The identity binds what the agent emitted.** For a service whose module
 replaces a sibling by filesystem path, the agent assembles a build context
