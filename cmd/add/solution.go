@@ -152,24 +152,8 @@ func addSolution(ctx context.Context, name string) (result error) {
 	// author is left a module and a half-built service to delete by hand
 	// before they can retry.
 	defer func() {
-		if result == nil {
-			return
-		}
-		// Re-read, for the same reason step 3 does: the handle loaded above
-		// predates the module, so deleting through it reports that the module
-		// <name> does not exist and leaves it on disk.
-		current, loadErr := common.LoadWorkspace(ctx)
-		if loadErr != nil {
-			result = errors.Join(result, fmt.Errorf("roll back: cannot re-load the workspace: %w", loadErr))
-			return
-		}
-		moduleDir := current.ModulePath(ctx, &resources.ModuleReference{Name: name})
-		if rollbackErr := current.DeleteModule(ctx, name); rollbackErr != nil {
-			result = errors.Join(result, fmt.Errorf("roll back module reference: %w", rollbackErr))
-			return
-		}
-		if rollbackErr := os.RemoveAll(moduleDir); rollbackErr != nil {
-			result = errors.Join(result, fmt.Errorf("roll back module directory: %w", rollbackErr))
+		if result != nil {
+			result = errors.Join(result, rollBackModule(ctx, name))
 		}
 	}()
 
@@ -267,6 +251,26 @@ func addSolution(ctx context.Context, name string) (result error) {
 
 	cli.Header(1, "Solution <%s> scaffolded: %s (entry) and %s (the page's shell).", name, solutionEntryService, solutionPageService)
 	reportNextSteps(name)
+	return nil
+}
+
+// rollBackModule removes a module a scaffold created and could not finish,
+// reference and directory, so the author can retry without deleting a
+// half-built module by hand. It re-reads the workspace: a handle loaded
+// before the module was added does not list it, and deleting through it
+// reports that the module does not exist and leaves it on disk.
+func rollBackModule(ctx context.Context, name string) error {
+	current, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("roll back: cannot re-load the workspace: %w", err)
+	}
+	moduleDir := current.ModulePath(ctx, &resources.ModuleReference{Name: name})
+	if err := current.DeleteModule(ctx, name); err != nil {
+		return fmt.Errorf("roll back module reference: %w", err)
+	}
+	if err := os.RemoveAll(moduleDir); err != nil {
+		return fmt.Errorf("roll back module directory: %w", err)
+	}
 	return nil
 }
 
@@ -421,7 +425,7 @@ func applyPageServiceShape(ctx context.Context, mod *resources.Module) error {
 // replacement is reported rather than silent.
 func setEndpoints(root *yaml.Node, service string, endpoint *resources.Endpoint) error {
 	if existing := yamledit.MapValue(root, "endpoints"); existing != nil && len(existing.Content) > 0 {
-		cli.Info("%s: replacing the %d endpoint(s) the agent scaffolded with the solution's one %s endpoint", service, len(existing.Content), endpoint.Name)
+		cli.Info("%s: replacing the %d endpoint(s) the agent scaffolded with the shape's one %s endpoint", service, len(existing.Content), endpoint.Name)
 	}
 	encoded, err := yamledit.Encode([]resources.Endpoint{*endpoint})
 	if err != nil {

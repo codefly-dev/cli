@@ -2784,6 +2784,51 @@ which modules it pins and at what commits, and the configuration groups those
 modules need, are the composition's to say. The command prints each of them,
 with the failure each one causes when it is skipped.
 
+**`add module-page`:**
+
+```sh
+codefly add module-page notes --package-id acme/notes
+```
+
+Scaffolds a **module with a page**: a module that ships no
+`solution.codefly.yaml` and declares its page beside its entry service. It is
+not a solution: it is installed by composition in every organization that
+composes it, holds no standing authority (`installation_role: none`), and
+nobody can use it until an administrator grants one of its roles ("Set up
+access" in Admin assigns the teams `<name>-installer`, `<name>-editor`,
+`<name>-viewer`). It is a verb of its own, beside `add solution`, because it is
+a shape rather than a mode of `add module`, whose `--source`, `--worktree` and
+`--agent` modes exclude each other.
+
+It composes `add module`, `add service` (the `go-grpc` agent, answered with
+Connect and no REST gateway), `sync service`, `generate contracts`, `generate
+permissions` and `generate client`, and reads each document back through
+Core's reader. What it creates:
+
+| | |
+|------|-------------|
+| `services/<name>` | the entry: Connect (which also carries gRPC and gRPC-Web), internal, exported in the module's interface. Its `proto/api.proto` marks every method with `authority.hop.v1.policy`: `Version` (any checked caller), `ListEntries` (`<name>.entry:read`), `PutEntry` (`<name>.entry:write`), `ConfigurePage` (`<name>.page:configure`). The option proto is vendored under `proto/authority/` and mapped onto the authority's hop library, which the entry's `go.mod` then requires |
+| `module.contract.codefly.yaml` | `installer`, `editor`, `viewer`, each derived from the operations its holders call, with the operation named in a comment above every scope: viewer reads, editor reads and writes, installer reads and configures the page. `installation_role: none` and `require_method_policies: true` |
+| `module.package.codefly.yaml` + `contracts/api` | the published identity and the entry's Connect contract the policies are read from |
+| `services/<name>/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
+| `services/<name>/code/pkg/gen/permissions` | the typed permissions (`generate permissions`) |
+| `libraries/<name>-client` | the generated TypeScript client the page calls the module through |
+| `services/fe-remote` | the `./Page` remote. It calls the module's own procedures on the host's **module edge**, `<moduleApiBase>/<package.Service>/<Method>` (the `/_browser` door), never on `apiBase`, which is the host's relay for a solution runtime's `/v1/<alias>` routes. It depends on no registry-guarded kit |
+| `README.md` | what the page is and how access to it works |
+
+The result passes `codefly doctor solution --dir modules/<name>` with no
+warning. The scaffolded methods answer `Unimplemented` until you implement them.
+The entry's `go get` of the hop library needs the authority's libraries to be
+reachable: if the module proxy cannot see them, set
+`GOPRIVATE=github.com/codefly-dev/*` and run the scaffold again.
+
+| Flag | Description |
+|------|-------------|
+| `--package-id` | The `<owner>/<name>` identity the module is published under. Required |
+| `--title` / `--order` | The page's title and position in the host's shell |
+| `--minimum-codefly-version` | The Codefly range the package declares. Required when scaffolding with a build from source |
+| `--yes` | Skip confirmation prompts |
+
 ### `codefly doctor solution [module]`
 
 Judge a solution — or a module page — against the shape `add solution`

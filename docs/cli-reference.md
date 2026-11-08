@@ -107,6 +107,7 @@ Subcommands:
 - [`codefly add library`](#codefly-add-library)
 - [`codefly add library-dependency`](#codefly-add-library-dependency)
 - [`codefly add module`](#codefly-add-module)
+- [`codefly add module-page`](#codefly-add-module-page)
 - [`codefly add runnable`](#codefly-add-runnable)
 - [`codefly add service`](#codefly-add-service)
 - [`codefly add solution`](#codefly-add-solution)
@@ -267,6 +268,54 @@ Flags:
       --version string    Committed version constraint recorded with a composed module's identity (default "latest")
       --worktree string   Compose an out-of-repo module by <owner/repo>@<ref>; the resolver finds your local worktree (location in codefly.local.yaml)
       --yes               Skip confirmation prompts (non-interactive/MCP mode)
+```
+
+## `codefly add module-page`
+
+Scaffold a module with a page: its Connect entry service, the page remote, and least-privilege roles
+
+```
+Scaffold a module that people reach through a page a host mounts.
+
+A module page is a module that ships NO solution.codefly.yaml and declares its
+page beside its entry service (solution.frontend.codefly.yaml). Unlike a
+solution, it is installed by composition in every organization that composes
+it, holds no standing authority (installation_role: none), and nobody can use
+it until an administrator grants one of its roles ("Set up access" in Admin).
+
+What this writes:
+
+  services/<name>    The entry: a go-grpc service serving Connect (which also
+                     carries gRPC and gRPC-Web). Its proto marks every method
+                     with what a call must hold (authority.hop.v1.policy).
+  services/fe-remote The ./Page remote. It calls the module's own procedures
+                     on the host's module edge — <moduleApiBase>/<package.Service>/<Method>,
+                     the /_browser door — through the generated client, never
+                     on apiBase, the host's relay for a solution runtime.
+  module.contract.codefly.yaml
+                     installer, editor and viewer, each granting exactly what
+                     the operations its holders call require, with the
+                     operation named beside each scope; installation_role: none.
+
+Then it regenerates the entry's code from the proto, publishes its contract,
+generates the typed permissions and the page's TypeScript client, and the
+result passes "codefly doctor solution --dir modules/<name>" with no warning.
+
+The scaffolded methods answer Unimplemented until you implement them.
+```
+
+```
+codefly add module-page [flags]
+```
+
+Flags:
+
+```
+      --minimum-codefly-version string   The Codefly range the package declares (default: the running release, open to the end of its major). Required when scaffolding with a build from source, which reports no release version
+      --order int                        The page's order in the host's shell (default 50)
+      --package-id string                The <owner>/<name> identity the module is published under. Required; nothing here can derive who publishes it
+      --title string                     The page's title in the host's shell (default: the module name, capitalised)
+      --yes                              Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add runnable`

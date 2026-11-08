@@ -215,19 +215,46 @@ func runLegacyClientAlias(_ *cobra.Command, alias string) error {
 		return fmt.Errorf("cannot solve destination path: %w", err)
 	}
 
+	clearClientFlags()
 	clientFrom = module.Name + "/" + service.Name
 	clientLanguages = []string{languageInput}
-	clientServices = nil
-	clientName = ""
-	clientModuleName = ""
 	clientNoFacade = true
 	clientOutput = dest
 	clientForce = true
+
+	return runGenerateClient(ctx)
+}
+
+// TypeScriptClient generates the TypeScript client library of one endpoint a
+// local module serves, into <workspace>/libraries/<name>: what `codefly
+// generate client --from <from> --language typescript --name <name>
+// --npm-scope <npmPackage> --force` does. A scaffold whose page calls its own
+// module uses it, so the page reaches the module through the generated client
+// rather than a hand-written one.
+func TypeScriptClient(ctx context.Context, from, name, npmPackage string) error {
+	clearClientFlags()
+	clientFrom = from
+	clientLanguages = []string{string(languages.TYPESCRIPT)}
+	clientName = name
+	clientForce = true
+	clientNpmScope = npmPackage
+	return runGenerateClient(ctx)
+}
+
+// clearClientFlags clears every generate-client flag var, so a value left by
+// another invocation in the same process never leaks into a delegated run.
+func clearClientFlags() {
+	clientFrom = ""
+	clientLanguages = nil
+	clientServices = nil
+	clientName = ""
+	clientModuleName = ""
+	clientNoFacade = false
+	clientOutput = ""
+	clientForce = false
 	clientEndpoint = ""
 	clientGoModule = ""
 	clientNpmScope = ""
-
-	return runGenerateClient(ctx)
 }
 
 // resolvedContractSource is what any of the three --from kinds resolve to: a
