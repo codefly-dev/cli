@@ -617,3 +617,23 @@ func TestTheSolutionDirectoryIsTheWorkspace(t *testing.T) {
 		t.Fatal("the run happens at the solution root, not in a playground subdirectory")
 	}
 }
+
+// TestTheContractGrantsOnlyWhatTheScaffoldedRouteRequires. A host refuses to
+// install a solution whose installation_role is undeclared, and a grant no
+// route requires is checked by nothing: `codefly doctor solution` warns on
+// both, so a scaffold that carried either would be born warning about itself.
+// The one route a scaffold serves requires <name>.page:read.
+func TestTheContractGrantsOnlyWhatTheScaffoldedRouteRequires(t *testing.T) {
+	contract := solutionContract("notes")
+	if contract.InstallationRole != "none" {
+		t.Fatalf("installation_role = %q, want none: a host refuses to install a solution that leaves it undeclared", contract.InstallationRole)
+	}
+	for _, role := range contract.Roles {
+		if len(role.Scopes) != 1 || role.Scopes[0].ResourceKind != "notes.page" || !slices.Equal(role.Scopes[0].Actions, []string{"read"}) {
+			t.Errorf("role %s grants %+v, want notes.page:read only", role.Name, role.Scopes)
+		}
+	}
+	if err := contract.Validate(); err != nil {
+		t.Fatalf("core refuses the scaffolded contract: %v", err)
+	}
+}

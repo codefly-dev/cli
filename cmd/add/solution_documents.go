@@ -357,12 +357,20 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 #
 # ROLES. A solution is a unit a person installs, and the authority refuses to
 # admit one that offers a person no role to hold on it ("declares 0 role(s)
-# and none is \"installer\""). The installer role below is scoped to this
-# solution's own page, the one resource a scaffold knows it has. Name the
-# solution's real resource kinds in scope_ceilings and widen the role to them,
-# and add a role per other kind of person who uses it (wiki: editor, viewer;
-# proposals: reviewer, viewer). A role may grant a scope only within a
-# ceiling, or through a binding it names, so the two cannot drift apart.
+# and none is \"installer\""). A person reaches the solution only through a
+# role a team of theirs is granted, so each role grants exactly what the
+# routes its holders call require. The one route a scaffold serves requires
+# <name>.page:read, so every role grants that and nothing more. When a route
+# requires another action, add it to scope_ceilings and to the roles whose
+# holders call that route (editor writes; installer administers), and give a
+# kind of person with different access a role of its own. A role may grant a
+# scope only within a ceiling, or through a binding it names, so the two
+# cannot drift apart. "codefly doctor solution --roles" prints what each role
+# reaches, and warns on a grant no route requires, a route no role reaches and
+# a binding wider than every role.
+#
+# installation_role: none — the installation holds no standing machine grant;
+# a host refuses to install a solution that does not say so.
 `
 
 // solutionContract is the module contract the solution ships: the principal
@@ -376,14 +384,11 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 // person capabilities from the authority"), and refuses it by name otherwise.
 // A solution scaffolded without it receives no owner-selected scope and can
 // act for nobody.
-// readAction and writeAction are the two actions a scaffolded solution's own
-// vocabulary carries, spelled once: they appear in the ceiling and in each
-// role that sits within it, and a typo between them is a role the authority
-// silently never issues.
-const (
-	readAction  = "read"
-	writeAction = "write"
-)
+//
+// readAction is the one action a scaffolded solution's own vocabulary carries,
+// spelled once: it appears in the ceiling and in each role that sits within
+// it, and a typo between them is a role the authority silently never issues.
+const readAction = "read"
 
 func solutionContract(name string) *modulecontract.Contract {
 	// The solution's own permission vocabulary, and the one role the host
@@ -404,22 +409,34 @@ func solutionContract(name string) *modulecontract.Contract {
 	// it here and in the role together — core's Contract.Validate refuses a
 	// role granting a scope no ceiling covers, so the pair cannot drift
 	// apart silently.
+	//
+	// Each role grants only what the scaffold's one route requires
+	// (`<name>.page:read`): a grant no route requires is checked by nothing,
+	// so holding it reaches nothing, and `codefly doctor solution` warns on
+	// it. A scaffold that warned on itself would teach that the warning is
+	// noise. The roles stay three, so a solution that grows a write route
+	// widens the role it belongs to rather than inventing one.
 	ownScope := []modulecontract.CeilingScope{{
 		ResourceKind: name + ".page",
-		Actions:      []string{readAction, writeAction},
+		Actions:      []string{readAction},
 	}}
 	return &modulecontract.Contract{
 		Schema:     modulecontract.SchemaV1,
 		Principal:  name,
 		OwnerAware: true,
-		Namespaces: []string{},
-		Queues:     []string{},
+		// No standing machine grant: the installation holds none of its
+		// roles. A host refuses to install a solution that leaves this
+		// undeclared ("declares no installation authority; its owner must
+		// declare it before installation") unless the request names one.
+		InstallationRole: "none",
+		Namespaces:       []string{},
+		Queues:           []string{},
 		ScopeCeilings: []modulecontract.ScopeCeiling{{
 			ResourceKind: name + ".page",
-			Actions:      []string{readAction, writeAction},
+			Actions:      []string{readAction},
 		}},
-		// installer / editor / viewer, the standard set — the same three wiki
-		// declares, and now every solution in the fleet.
+		// installer / editor / viewer, the standard set every solution in the
+		// fleet declares, and the teams a host assigns at install.
 		//
 		// `installer` is required BY NAME: the authority refuses a solution
 		// without it. `viewer` is what the organization is installed as, so
@@ -427,18 +444,14 @@ func solutionContract(name string) *modulecontract.Contract {
 		// without a second role only the owner holds anything and everyone
 		// else is refused by name. `editor` is the write position between
 		// them, so a solution that grows one does not have to invent a name
-		// for it; proposals calls its middle role `reviewer`, which is the
-		// same position in its own domain's word.
+		// for it; a solution may call it by its own domain's word.
 		//
 		// Every role must grant something: core refuses `role "installer"
 		// grants nothing`.
 		Roles: []modulecontract.Role{
 			{Name: modulecontract.InstallerRole, Scopes: ownScope},
 			{Name: "editor", Scopes: ownScope},
-			{Name: "viewer", Scopes: []modulecontract.CeilingScope{{
-				ResourceKind: name + ".page",
-				Actions:      []string{readAction},
-			}}},
+			{Name: "viewer", Scopes: ownScope},
 		},
 		Bindings:     []modulecontract.Binding{},
 		Destinations: []modulecontract.Destination{},
