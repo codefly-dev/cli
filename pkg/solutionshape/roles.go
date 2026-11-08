@@ -69,6 +69,9 @@ type BindingReach struct {
 	// require (or a kind the composition fills), so Carries is the role's
 	// grants outside the unit's own kinds: an upper bound.
 	ResolvedByComposition bool `json:"resolved_by_composition,omitempty"`
+	// WholeBinding says the role names the binding under its bindings, and
+	// so grants everything the binding carries for the operation.
+	WholeBinding bool `json:"whole_binding,omitempty"`
 }
 
 // personOperations are the binding operations a hop redeems for a holder; a
@@ -135,18 +138,24 @@ func (r *Report) judgeRoles(contract *modulecontract.Contract, methods map[strin
 					continue
 				}
 				through, spelled := spelledCeiling(binding, operation)
+				whole := grantsBinding(role, binding.ID, operation)
 				var carries []*basev0.WorkScopeV1
-				if spelled {
+				switch {
+				case whole && spelled:
+					carries = through
+				case whole:
+					carried[binding.ID+"/"+operation+"/*"] = true
+				case spelled:
 					carries = scope.Intersect(held, through)
-				} else {
+				default:
 					carries = foreign(held, own)
 				}
 				names := actionNames(carries)
 				for _, name := range names {
 					carried[binding.ID+"/"+operation+"/"+name] = true
 				}
-				if len(names) > 0 || !spelled {
-					reach.Bindings = append(reach.Bindings, BindingReach{Binding: binding.ID, Operation: operation, Carries: names, ResolvedByComposition: !spelled})
+				if len(names) > 0 || !spelled || whole {
+					reach.Bindings = append(reach.Bindings, BindingReach{Binding: binding.ID, Operation: operation, Carries: names, ResolvedByComposition: !spelled, WholeBinding: whole})
 				}
 			}
 		}
@@ -222,6 +231,14 @@ func (r *Report) checkBindingsCarried(contract *modulecontract.Contract, carried
 	r.warn(CodeBindingWiderThanRoles,
 		fmt.Sprintf("bindings ask for what no role can carry: %s", strings.Join(wider, "; ")),
 		"a hop for a person carries the person's grants cut to the binding, so what no role grants is never carried — a call needing it is refused, and the consent reviewed is wider than anyone can use. Narrow the binding to what a role grants, grant it to the role that needs it, or declare the operation headless when the unit acts for nobody")
+}
+
+// grantsBinding reports whether role names binding's operation under its
+// bindings, which grants everything the binding carries for it.
+func grantsBinding(role *modulecontract.Role, binding, operation string) bool {
+	return slices.ContainsFunc(role.Bindings, func(granted modulecontract.RoleBinding) bool {
+		return granted.Binding == binding && granted.Operation == operation
+	})
 }
 
 // roleScopes is what a holder of role carries at the unit: its scopes and its

@@ -188,6 +188,17 @@ func TestABindingWiderThanEveryRoleWarns(t *testing.T) {
 			t.Fatalf("a calls binding is shown as resolved by the composition: %+v", binding)
 		}
 	})
+	t.Run("a role naming the binding carries all of it", func(t *testing.T) {
+		contract := strings.Replace(withoutFileGrants(notesContract), "    - name: viewer\n", "    - name: viewer\n      bindings:\n          - binding: files\n            operation: invoke\n", 1)
+		report := Inspect("notes", modulePage(t, contract))
+		if check := checkFor(t, report, CodeBindingWiderThanRoles); check.Status != StatusOK {
+			t.Fatalf("got %s %q", check.Status, check.Message)
+		}
+		viewer := roleNamed(t, report, "viewer")
+		if len(viewer.Bindings) != 1 || !viewer.Bindings[0].WholeBinding || !slices.Equal(viewer.Bindings[0].Carries, []string{"files.file:read", "files.file:write"}) {
+			t.Fatalf("viewer carries %+v, want the binding's whole ceiling", viewer.Bindings)
+		}
+	})
 	t.Run("a headless binding acts for nobody and is not judged", func(t *testing.T) {
 		// Core already refuses a role granting what only a headless binding
 		// asks for, so the roles grant nothing at files here.

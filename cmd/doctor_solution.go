@@ -126,7 +126,7 @@ With --json, a versioned report per module is printed to stdout:
   {schema_version, module, dir, is_solution, is_module_page?, status: ok|fail,
    checks: [{code, status, message, remediation?}],
    roles?: [{role, operations, bindings?: [{binding, operation, carries?,
-            resolved_by_composition?}], as_person?}]}
+            resolved_by_composition?, whole_binding?}], as_person?}]}
 
 Stable diagnostic codes: not_a_solution, solution_manifest_unreadable,
 consumed_api_unnamed, service_entry_missing, service_entry_not_the_entry,
@@ -348,6 +348,8 @@ func printRoleReach(report *solutionshape.Report) {
 		for _, binding := range role.Bindings {
 			carries := strings.Join(binding.Carries, ", ")
 			switch {
+			case binding.WholeBinding && carries == "":
+				carries = "everything it carries (the role names the binding)"
 			case binding.ResolvedByComposition && carries == "":
 				carries = "nothing (its ceiling is what its calls require, and the role grants nothing outside this unit's kinds)"
 			case binding.ResolvedByComposition:
