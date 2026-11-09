@@ -60,8 +60,10 @@ jobs:
         # receipt-bearing test moves as tests are added, so receipts are
         # verified across all shards in docker-generate, never per shard.
         # Separate runners also isolate the Docker daemon; each runner pulls
-        # the published image only once.
-        shard: [0, 1, 2]
+        # the published image only once. Six, not three: the row's ~750 s of
+        # serial tests left each of three shards 4m20s of tests on top of
+        # setup (run 42706145791); six put the job inside the 5-minute budget.
+        shard: [0, 1, 2, 3, 4, 5]
     env:
       GOWORK: 'off'
       GOFLAGS: -mod=mod
