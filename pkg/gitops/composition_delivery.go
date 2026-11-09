@@ -61,6 +61,14 @@ func NewCompositionDelivery(conn grpc.ClientConnInterface, signer solutionhost.S
 	}
 }
 
+// ReadingSharedKinds has the delivery also read the kinds each module
+// declares shared (AuthoritySources.SharedKinds) into the authority's
+// document; without it a module declares none.
+func (c *CompositionDelivery) ReadingSharedKinds(sharedKinds func(ctx context.Context, module string) ([]string, error)) *CompositionDelivery {
+	c.sources.SharedKinds = sharedKinds
+	return c
+}
+
 func (c *CompositionDelivery) post(ctx context.Context, module string, signed *solutionhost.Signed, token string, declaration []byte) (Receipt, error) {
 	manifest, err := solutionhost.ManifestFromVerified(signed.Document)
 	if err != nil {
@@ -140,6 +148,9 @@ type AuthoritySources struct {
 	Roles func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error)
 	// OwnerAware reads the module's explicit owner-selector enforcement declaration.
 	OwnerAware func(ctx context.Context, module string) (bool, error)
+	// SharedKinds reads the kinds the module declares shared (a scope
+	// ceiling's shared: true), which the authority issues unselected.
+	SharedKinds func(ctx context.Context, module string) ([]string, error)
 	// Installation reads the installation declaration. Carried verbatim but
 	// for an edge's presence, which is resolved for the environment's class
 	// here and on the Core signed manifest alike — the paired agreement rule
@@ -182,6 +193,13 @@ func (s AuthoritySources) Declaration(ctx context.Context, module string) ([]byt
 			return nil, err
 		}
 	}
+	var shared []string
+	if s.SharedKinds != nil {
+		var err error
+		if shared, err = s.SharedKinds(ctx, module); err != nil {
+			return nil, err
+		}
+	}
 	var installationRole string
 	var edges []*compositionv1.EdgeDependencyV1
 	if s.Installation != nil {
@@ -191,12 +209,12 @@ func (s AuthoritySources) Declaration(ctx context.Context, module string) ([]byt
 		}
 	}
 	if !declared && len(ceilings) == 0 && len(roles) == 0 && !ownerAware &&
-		installationRole == "" && len(edges) == 0 {
+		installationRole == "" && len(edges) == 0 && len(shared) == 0 {
 		return nil, nil
 	}
 	return proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
 		Methods: methods, ScopeCeilings: ceilings, Roles: roles, OwnerAware: ownerAware,
-		InstallationRole: installationRole, EdgeDependencies: edges,
+		InstallationRole: installationRole, EdgeDependencies: edges, SharedKinds: shared,
 	})
 }
 

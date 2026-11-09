@@ -312,6 +312,17 @@ false declaration stays false, including for solutions with roles or
 solution by name. The declaration participates in delivery generation changes
 and is omitted from withdrawals together with other live policy.
 
+**Shared kinds and reach through a binding are declared, never inferred.** A
+scope ceiling declaring `shared: true` (a kind no installation owns, such as a
+model's profiles) is carried in `AuthorityManifestV1.shared_kinds` (field 10),
+in the order written; the authority issues a scope of it unselected through a
+solution. A role scope naming `through: <binding id>` (a kind a module
+downstream of that binding consumes) is carried in the role's `through`
+(`RoleThroughV1`, one per binding in the order first named), apart from its own
+`scopes`; core's contract reader holds the binding to be declared and one a
+person causes, and the authority holds the kind reachable from it in the
+composition it is delivered to.
+
 **The installation declaration is authored, carried verbatim, and compared
 across both signed documents.** A unit declares, at the top level of its
 `module.contract.codefly.yaml`, which standing role an installation's agent

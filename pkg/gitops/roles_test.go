@@ -209,6 +209,56 @@ func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
 	}
 }
 
+// reachContract names, for its viewer, what the agent it binds reaches: the
+// model's profiles and the documents' read, through that binding; and
+// declares one of its own kinds shared.
+const reachContract = `schema: codefly/module-contract/v1
+principal: shop
+namespaces: []
+queues: []
+scope_ceilings:
+  - resource_kind: wiki.page
+    actions: [read]
+  - resource_kind: wiki.catalogue
+    actions: [read]
+    shared: true
+roles:
+  - name: installer
+    scopes:
+      - {resource_kind: wiki.page, actions: [read]}
+  - name: viewer
+    scopes:
+      - {resource_kind: model.profiles, actions: [invoke, read], through: agent}
+      - {resource_kind: wiki.page, actions: [read]}
+      - {resource_kind: documents, actions: [read], through: agent}
+bindings:
+  - id: agent
+    operations: [invoke]
+    audience: {from: shop/agent-audience}
+    scope_ceiling:
+      invoke:
+        - {resource_kind: agent.intents, actions: [run]}
+destinations: []
+`
+
+// A role's scopes named through a binding reach the authority's document in
+// the role's through, per binding, apart from its own scopes; a shared kind
+// reaches it in shared_kinds.
+func TestReachThroughABindingAndSharedKindsReachTheAuthorityDocument(t *testing.T) {
+	doc := deliveredAuthorityDocument(t, writeContract(t, reachContract))
+	requireRoles(t, []*compositionv1.RoleV1{
+		{Name: modulecontract.InstallerRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
+		{Name: "viewer", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
+			Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
+				{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}},
+	}, doc.GetRoles())
+	require.Equal(t, []string{"wiki.catalogue"}, doc.GetSharedKinds())
+
+	// Core's rules hold a through to a binding the unit declares.
+	_, err := Roles(writeContract(t, strings.Replace(reachContract, "through: agent}\n      - {resource_kind: wiki.page", "through: nowhere}\n      - {resource_kind: wiki.page", 1)))
+	require.ErrorContains(t, err, `through binding "nowhere", which the contract does not declare`)
+}
+
 // deliveredAuthorityDocument delivers a solution whose module contract is at
 // dir through the composition delivery and returns the authority document the
 // host received.
@@ -232,7 +282,8 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
 		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
 		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) },
-		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil)
+		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil).
+		ReadingSharedKinds(func(context.Context, string) ([]string, error) { return SharedKinds(dir) })
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},

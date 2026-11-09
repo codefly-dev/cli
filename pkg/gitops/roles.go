@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 
@@ -42,7 +43,11 @@ func refuseRetiredRoles(dir string) error {
 // them to its rules — an installer among them, each scope and each
 // installation-owned scope within the unit's own kinds or a permission its
 // bindings ask for on a person's behalf, an installation-owned scope naming
-// no ids. None when it publishes no contract or its contract declares none.
+// no ids, a scope reached through a binding naming one it declares that a
+// person causes. A scope naming through is carried in the role's through,
+// per binding in the order first named, for the authority to hold reachable
+// in the composition. None when it publishes no contract or its contract
+// declares none.
 func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 	contract, err := ownContract(dir)
 	if err != nil || contract == nil {
@@ -50,11 +55,44 @@ func Roles(dir string) ([]*compositionv1.RoleV1, error) {
 	}
 	var out []*compositionv1.RoleV1
 	for _, role := range contract.Roles {
+		var own []modulecontract.CeilingScope
+		var through []*compositionv1.RoleThroughV1
+		for _, scope := range role.Scopes {
+			if scope.Through == "" {
+				own = append(own, scope)
+				continue
+			}
+			i := slices.IndexFunc(through, func(t *compositionv1.RoleThroughV1) bool { return t.GetBinding() == scope.Through })
+			if i < 0 {
+				through = append(through, &compositionv1.RoleThroughV1{Binding: scope.Through})
+				i = len(through) - 1
+			}
+			through[i].Scopes = append(through[i].Scopes, workScopes([]modulecontract.CeilingScope{scope})...)
+		}
 		out = append(out, &compositionv1.RoleV1{
 			Name:                    role.Name,
-			Scopes:                  workScopes(role.Scopes),
+			Scopes:                  workScopes(own),
 			InstallationOwnedScopes: workScopes(role.InstallationOwnedScopes),
+			Through:                 through,
 		})
+	}
+	return out, nil
+}
+
+// SharedKinds reads the kinds the module at dir declares shared in its module
+// contract (a scope ceiling's shared: true), in the order written: kinds no
+// installation owns, which the authority issues unselected through a
+// solution. None when it publishes no contract or declares none.
+func SharedKinds(dir string) ([]string, error) {
+	contract, err := ownContract(dir)
+	if err != nil || contract == nil {
+		return nil, err
+	}
+	var out []string
+	for _, ceiling := range contract.ScopeCeilings {
+		if ceiling.Shared {
+			out = append(out, ceiling.ResourceKind)
+		}
 	}
 	return out, nil
 }

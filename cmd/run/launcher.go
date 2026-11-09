@@ -606,8 +606,8 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 
 // newCompositionDelivery speaks the composition interface over conn, reading
 // each module's method policies (the table its manifest carries to this
-// host, gitops.HostMethodPolicies), scope ceilings, roles and owner-awareness
-// from the module as the run composes it at the time of the delivery.
+// host, gitops.HostMethodPolicies), scope ceilings, roles, owner-awareness
+// and shared kinds from the module as the run composes it at the time of the delivery.
 func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *gitops.CompositionDelivery {
 	load := func(ctx context.Context, module string) (string, error) {
 		m, err := cluster.composed().LoadModuleFromName(ctx, module)
@@ -616,7 +616,7 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 		}
 		return m.Dir(), nil
 	}
-	return gitops.NewCompositionDelivery(conn, cluster.signer,
+	delivery := gitops.NewCompositionDelivery(conn, cluster.signer,
 		func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
 			m, err := cluster.composed().LoadModuleFromName(ctx, module)
 			if err != nil {
@@ -652,6 +652,13 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 			}
 			return gitops.InstallationDeclaration(dir, cluster.env.Class)
 		})
+	return delivery.ReadingSharedKinds(func(ctx context.Context, module string) ([]string, error) {
+		dir, err := load(ctx, module)
+		if err != nil {
+			return nil, err
+		}
+		return gitops.SharedKinds(dir)
+	})
 }
 
 // compositionHost holds the run's connection to the host's composition
