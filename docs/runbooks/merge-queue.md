@@ -14,8 +14,13 @@ one speculative branch and merging the whole batch off one CI run.
 ## Required gates
 
 All five required contexts — `bootstrap-audit`, `control-integration`,
-`coverage`, `race`, `dashboard` — are the `matrix.gate` legs of the single
-`Go CLI` workflow (`.github/workflows/go.yml`). `lint` is deliberately **not**
+`coverage`, `race`, `dashboard` — are jobs of the single `Go CLI` workflow
+(`.github/workflows/go.yml`). `bootstrap-audit` and `control-integration` are
+`matrix.gate` legs of `quality`. The suite runs once, under the race detector
+and with coverage, split across the `test (N)` shards by
+`scripts/test-shard.sh`; `coverage` merges their profiles and verifies their
+conformance receipts, and `race` (`if: always()`) fails unless every shard
+succeeded, so the shards themselves are not required by name. `lint` is deliberately **not**
 required: it lints the whole repository (no baseline; the rule is that the
 full run is clean at the head) and runs only on `pull_request` events, so a `merge_group` run never reports a
 `lint` context — and a required context that never reports ejects every entry

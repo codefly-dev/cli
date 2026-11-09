@@ -24,13 +24,15 @@ func TestRequiredCLIGatesDoNotInstallReleasedAgents(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(data), &workflow); err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range workflow.Jobs["quality"].Steps {
-		if strings.Contains(step.Run, "codefly agent install") || strings.Contains(step.Run, "codefly.dev/") {
-			t.Fatalf("CLI required gate depends on a released agent: %s", step.Run)
-		}
-		for key, value := range step.Env {
-			if key == "CODEFLY_SOURCE_QUALIFY_AGENT" || strings.Contains(value, "codefly.dev/") {
-				t.Fatalf("CLI gate selects a released agent through %s", key)
+	for _, job := range []string{"quality", "test"} {
+		for _, step := range workflow.Jobs[job].Steps {
+			if strings.Contains(step.Run, "codefly agent install") || strings.Contains(step.Run, "codefly.dev/") {
+				t.Fatalf("CLI required gate depends on a released agent: %s", step.Run)
+			}
+			for key, value := range step.Env {
+				if key == "CODEFLY_SOURCE_QUALIFY_AGENT" || strings.Contains(value, "codefly.dev/") {
+					t.Fatalf("CLI gate selects a released agent through %s", key)
+				}
 			}
 		}
 	}
