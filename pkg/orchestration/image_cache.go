@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -133,6 +134,13 @@ type imageInputs struct {
 	// send, computed here rather than taken from any declaration. A pinned
 	// release's context is its committed tree (committedSourceContext).
 	ContextTree string `json:"context_tree_digest"`
+	// AgentOutputs is the digest of what a pinned release's committed copy
+	// carried from the working tree because Docker is sent it — an agent's
+	// generated build inputs (committedSource.scratch) — or empty when nothing
+	// was carried. They reach the image, so they are inputs; they are what the
+	// agent contributes, not the release's code, so they are in the Recipe
+	// class and never move the Code class the published label is judged by.
+	AgentOutputs string `json:"agent_outputs_digest,omitempty"`
 	// GoModules is the digest of the go.mod and go.sum of each Go module root the
 	// recipe declares a download for, hashed by path so no ignore policy can
 	// drop them.
@@ -271,7 +279,11 @@ func identityClasses(inputs *imageInputs) (*buildClasses, error) {
 	if err != nil {
 		return nil, err
 	}
-	recipe, err := classDigest("recipe", []any{inputs.Recipe, inputs.Dockerfile, inputs.RecipeTree, inputs.Command})
+	recipeInputs := []any{inputs.Recipe, inputs.Dockerfile, inputs.RecipeTree, inputs.Command}
+	if inputs.AgentOutputs != "" {
+		recipeInputs = append(recipeInputs, inputs.AgentOutputs)
+	}
+	recipe, err := classDigest("recipe", recipeInputs)
 	if err != nil {
 		return nil, err
 	}
@@ -318,13 +330,47 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 	// the image, so it changes the identity, and reuse never keeps an image
 	// built from other inputs. Scratch that should not reach an image is the
 	// recipe's ignore policy's to drop, which leaves it out of both. A pinned
-	// release is the one exception: its context is its commit, and the agent
-	// outputs carried beside it are left out as a fresh clone of that commit
-	// lacks them (committedSource.scratch).
+	// release's Code class is its commit: the agent outputs carried beside it
+	// are left out here, as a fresh clone of that commit lacks them, and bound
+	// to the identity apart (imageInputs.AgentOutputs).
 	if scope.committed != nil {
 		maps.Copy(excluded, scope.committed.scratch)
 	}
 	return contextContentDigest(ctx, scope.ContextDir, ignore, excluded)
+}
+
+// carriedOutputsDigest digests every entry a pinned release's committed copy
+// carried from the working tree (committedSource.scratch), in path order, the
+// way the context digest records an entry: the bytes Docker is sent beside the
+// commit. Empty when the context is not a committed copy or carried nothing,
+// so every other identity is exactly what it was.
+func carriedOutputsDigest(scope imageBuildScope) (string, error) {
+	if scope.committed == nil || len(scope.committed.scratch) == 0 {
+		return "", nil
+	}
+	root := filepath.Clean(scope.ContextDir)
+	carried := slices.Sorted(maps.Keys(scope.committed.scratch))
+	hasher := sha256.New()
+	for _, entry := range carried {
+		err := filepath.WalkDir(filepath.Join(root, filepath.FromSlash(entry)), func(path string, dirEntry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			return hashContextEntry(hasher, filepath.ToSlash(relative), path, dirEntry)
+		})
+		if errors.Is(err, fs.ErrNotExist) {
+			// Every file under it was one the recipe's policy drops.
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("digest the build inputs carried into %s: %w", root, err)
+		}
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // sourceIgnoredPaths lists the context-relative, slash-separated paths the
@@ -373,6 +419,10 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	if err != nil {
 		return imageIdentity{}, err
 	}
+	agentOutputs, err := carriedOutputsDigest(scope)
+	if err != nil {
+		return imageIdentity{}, err
+	}
 	bases, err := baseImageDigests(ctx, dockerfilePath, builderName, mirrors)
 	if err != nil {
 		return imageIdentity{}, err
@@ -386,6 +436,7 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 		Command:       normalizedBuildxArgs(args, scope.ContextDir, dockerfilePath, proxies),
 		RecipeTree:    recipeTree,
 		ContextTree:   contextTree,
+		AgentOutputs:  agentOutputs,
 		GoModules:     goModules,
 		Bases:         bases,
 		ImageBindings: bindings,

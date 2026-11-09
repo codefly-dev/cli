@@ -5254,7 +5254,8 @@ leaves untracked files and writes ignored scratch; so for a service whose code
 is a pinned release, the context is a private copy of the committed tree at the
 checkout's `HEAD` (checked out through a private index, attributes and modes as
 a clone has them), plus the ignored entries the recipe's policy sends, which the
-digest leaves out. Identity and image are built from that one copy: a tracked
+code digest leaves out and the identity binds as the agent's outputs (Recipe
+class), so a changed one rebuilds. Identity and image are built from that one copy: a tracked
 edit, an untracked file or ignored scratch in the cache moves neither, and the
 checkout itself is never touched. A checkout the developer owns — a workspace
 service, a checkout of their own, or a cache root set through `CODEFLY_MODULE_CACHE` — is

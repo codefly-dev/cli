@@ -37,9 +37,11 @@ import (
 // plus the entries the repository ignores that Docker would send. Those are
 // carried because an agent writes some of its build inputs there (a generated
 // logging configuration the Dockerfile copies), and are recorded in scratch so
-// the digest leaves them out: the release's identity is its commit, which a
-// fresh clone reproduces and the published label records. A tracked edit and
-// an untracked file therefore move neither the identity nor the image.
+// the context digest — the Code class, which a fresh clone of the commit
+// reproduces and the published label records — leaves them out; they are
+// bound to the identity as the agent's outputs instead (carriedOutputsDigest),
+// so a carried input that changed is rebuilt, never reused. A tracked edit and
+// an untracked file move neither the identity nor the image.
 type committedSource struct {
 	// root is the copy of the context; its base name is the context's, which
 	// the digest records.

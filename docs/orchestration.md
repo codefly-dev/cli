@@ -1070,8 +1070,11 @@ drop, which leaves it out of the build and the identity alike.
 A pinned release the CLI materialized (`modulecache.Owned`) is read from its
 commit (`committedSourceContext`): the identity and the build share a private
 copy of the committed tree at `HEAD`, plus the ignored entries Docker would
-send, so what a local run writes into the module cache — tracked files
-included — moves neither the identity nor the image.
+send, so a tracked edit or an untracked file a local run leaves in the module
+cache moves neither the identity nor the image. The carried entries (an
+agent's generated build inputs) are bound to the identity as the agent's
+outputs, in the Recipe class: a changed one rebuilds, while the Code class the
+published label is judged by stays the commit's.
 
 **The identity binds what the agent emitted.** For a service whose module
 replaces a sibling by filesystem path, the agent assembles a build context

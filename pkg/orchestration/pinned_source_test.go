@@ -246,3 +246,33 @@ func TestAPinnedReleasePrefetchesItsCommittedGoModules(t *testing.T) {
 	}
 	require.Equal(t, committed, harness.read(t, filepath.Join(harness.docker.dir, "context", "code", "go.mod")), "Docker is handed the committed go.mod")
 }
+
+// A pinned release's committed copy carries the inputs an agent generated
+// beside the commit (a log configuration the Dockerfile copies). They reach
+// the image, so a carried input that changed is rebuilt rather than reused;
+// they are the agent's outputs, not the release's code, so the Code class the
+// published label is judged by stays the commit's.
+func TestAPinnedReleaseRebuildsWhenACarriedInputChanges(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	t.Setenv(resources.CodeflyHomeEnv, harness.workspaceDir)
+	t.Setenv(modulecache.Env, "")
+	require.NoError(t, os.WriteFile(filepath.Join(harness.workspaceDir, ".gitignore"), []byte(".codefly/\ngenerated.json\n"), 0o644))
+	runGit(t, harness.workspaceDir, "init", "-q")
+	runGit(t, harness.workspaceDir, "add", "-A")
+	runGit(t, harness.workspaceDir, "commit", "-q", "-m", "release")
+	stubRegistry(t, nil)
+
+	harness.write(t, filepath.Join(harness.serviceDir, "code", "generated.json"), `{"permission":"old"}`)
+	harness.build(t)
+	harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"), "unchanged inputs reuse the image")
+	first := classLabels(t, harness.docker.buildArgs(t)[0])
+
+	harness.write(t, filepath.Join(harness.serviceDir, "code", "generated.json"), `{"permission":"new"}`)
+	harness.build(t)
+	require.Equal(t, 2, harness.docker.calls(t, "build"), "a changed carried input rebuilds the image")
+	second := classLabels(t, harness.docker.buildArgs(t)[1])
+	require.NotEqual(t, first[buildInputsLabel], second[buildInputsLabel])
+	require.NotEqual(t, first[buildRecipeLabel], second[buildRecipeLabel], "the carried input is the agent's, in the Recipe class")
+	require.Equal(t, first[buildCodeLabel], second[buildCodeLabel], "the release's code is its commit")
+}
