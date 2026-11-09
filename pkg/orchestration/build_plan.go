@@ -126,13 +126,9 @@ func (b *Builder) decideImageReuse(
 	if err != nil {
 		return imageReuse{}, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
-	pinned, err := b.pinnedContext(contextRoot)
+	prepared, err := b.prepareContext(ctx, contextRoot, contextDir, outputDir, recipe)
 	if err != nil {
 		return imageReuse{}, w.Wrap(err)
-	}
-	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe, pinned)
-	if err != nil {
-		return imageReuse{}, w.Wrapf(err, "cannot prepare recipe context")
 	}
 	defer prepared.Close()
 
@@ -358,6 +354,43 @@ func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush 
 	return targeted, nil
 }
 
+// prepareContext prepares the context a recipe is built and identified from:
+// the committed copy for a pinned release the CLI materialized
+// (pinnedContext), its files otherwise. The reuse decision and the build call
+// it alike, so both read one context.
+func (b *Builder) prepareContext(ctx context.Context, contextRoot, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*preparedRecipeContext, error) {
+	pinned, err := b.pinnedContext(contextRoot)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe, pinned)
+	if err != nil {
+		return nil, fmt.Errorf("cannot prepare recipe context: %w", err)
+	}
+	return prepared, nil
+}
+
+// prefetchGoModules fetches the Go modules a recipe declares from the context
+// it is built from (prepareContext): for a pinned release, the go.mod and
+// go.sum of its commit, which are what Docker is handed and what the identity
+// digests, never a working file a local run rewrote in the module cache. The
+// proxy outlives the context, which is removed once the fetch is done.
+func (b *Builder) prefetchGoModules(ctx context.Context, contextRoot, outputDir string, recipe *builderv0.DockerBuildRecipe) (map[string]string, error) {
+	if len(recipe.GetGoModuleDownloads()) == 0 {
+		return nil, nil
+	}
+	contextDir, err := recipeContext(contextRoot, recipe)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve build context for recipe %s of %s: %w", recipe.GetName(), b.instance.Unique(), err)
+	}
+	prepared, err := b.prepareContext(ctx, contextRoot, contextDir, outputDir, recipe)
+	if err != nil {
+		return nil, err
+	}
+	defer prepared.Close()
+	return b.world.goModules().proxiesFor(ctx, prepared.Root, recipe)
+}
+
 // pinnedContext reports whether a recipe's context root is the code of a pinned
 // release the CLI materialized (modulecache.Owned) — its checkout, not a
 // context the agent assembled elsewhere — which is then built from its commit
@@ -507,13 +540,9 @@ func (b *Builder) buildRecipe(
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
 
-	pinned, err := b.pinnedContext(contextRoot)
+	prepared, err := b.prepareContext(ctx, contextRoot, contextDir, outputDir, recipe)
 	if err != nil {
 		return w.Wrap(err)
-	}
-	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe, pinned)
-	if err != nil {
-		return w.Wrapf(err, "cannot prepare recipe context")
 	}
 	defer prepared.Close()
 	dockerfile := prepared.Dockerfile
@@ -929,9 +958,9 @@ func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, rec
 	}
 	prepared := &preparedRecipeContext{Root: root, Dockerfile: dockerfile}
 	if pinned {
-		source, err := committedSourceContext(ctx, root, outputDir, recipe)
-		if err != nil {
-			return nil, err
+		source, sourceErr := committedSourceContext(ctx, root, outputDir, recipe)
+		if sourceErr != nil {
+			return nil, sourceErr
 		}
 		if source != nil {
 			prepared.Root, prepared.source = source.root, source

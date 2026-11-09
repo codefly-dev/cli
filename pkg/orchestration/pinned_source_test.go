@@ -218,3 +218,30 @@ func TestAPinnedReleaseIsBuiltAndAdoptedFromItsCommit(t *testing.T) {
 	defer cancel()
 	require.ErrorContains(t, harness.tryBuild(ctx, t), "is already published from other code")
 }
+
+// A pinned release's Go modules are fetched from its commit, as Docker is
+// handed it and as the identity digests it: a local operation that rewrote
+// the module cache checkout's go.mod changes neither what is fetched nor
+// what is built.
+func TestAPinnedReleasePrefetchesItsCommittedGoModules(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.goModules = true
+	t.Setenv(resources.CodeflyHomeEnv, harness.workspaceDir)
+	t.Setenv(modulecache.Env, "")
+	require.NoError(t, os.WriteFile(filepath.Join(harness.workspaceDir, ".gitignore"), []byte(".codefly/\n"), 0o644))
+	committed := harness.read(t, filepath.Join(harness.serviceDir, "code", "go.mod"))
+	runGit(t, harness.workspaceDir, "init", "-q")
+	runGit(t, harness.workspaceDir, "add", "-A")
+	runGit(t, harness.workspaceDir, "commit", "-q", "-m", "release")
+	stubRegistry(t, nil)
+
+	harness.write(t, filepath.Join(harness.serviceDir, "code", "go.mod"), committed+"\nrequire example.com/lib v2.0.0+incompatible\n")
+	harness.write(t, filepath.Join(harness.docker.dir, "hook"), `for argument in "$@"; do context="$argument"; done; cp -R "$context" "$STATE/context"`+"\n")
+	harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.NotEmpty(t, harness.goMods, "the declared module graph is fetched")
+	for _, read := range harness.goMods {
+		require.Equal(t, committed, read, "the prefetch reads the committed go.mod")
+	}
+	require.Equal(t, committed, harness.read(t, filepath.Join(harness.docker.dir, "context", "code", "go.mod")), "Docker is handed the committed go.mod")
+}

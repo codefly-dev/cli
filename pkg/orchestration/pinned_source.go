@@ -37,9 +37,9 @@ import (
 // plus the entries the repository ignores that Docker would send. Those are
 // carried because an agent writes some of its build inputs there (a generated
 // logging configuration the Dockerfile copies), and are recorded in scratch so
-// the digest leaves them out exactly as sourceIgnoredPaths leaves them out of a
-// checkout. A tracked edit, an untracked file and ignored scratch therefore move
-// neither the identity nor the image.
+// the digest leaves them out: the release's identity is its commit, which a
+// fresh clone reproduces and the published label records. A tracked edit and
+// an untracked file therefore move neither the identity nor the image.
 type committedSource struct {
 	// root is the copy of the context; its base name is the context's, which
 	// the digest records.
@@ -71,7 +71,7 @@ func committedSourceContext(ctx context.Context, contextDir, outputDir string, r
 		return nil, err
 	}
 	source := &committedSource{commit: commit, scratch: map[string]bool{}, dir: dir}
-	if err := source.checkout(ctx, top, prefix, contextDir); err != nil {
+	if err := source.checkout(ctx, top, prefix); err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("check out %s of %s: %w", commit, contextDir, err)
 	}
@@ -108,7 +108,7 @@ func committedLocation(ctx context.Context, contextDir string) (top, prefix, com
 // neither the checkout's index nor its working tree is touched: a run may be
 // using both. The copy lands at <dir>/<base of the repository>/<prefix>, whose
 // base name is the context's.
-func (source *committedSource) checkout(ctx context.Context, top, prefix, contextDir string) error {
+func (source *committedSource) checkout(ctx context.Context, top, prefix string) error {
 	resolved, err := filepath.EvalSymlinks(source.dir)
 	if err != nil {
 		return err
@@ -116,18 +116,18 @@ func (source *committedSource) checkout(ctx context.Context, top, prefix, contex
 	tree := filepath.Join(resolved, "tree", filepath.Base(top))
 	source.root = filepath.Join(tree, filepath.FromSlash(prefix))
 	git := func(stdin io.Reader, args ...string) ([]byte, error) {
-		command := exec.CommandContext(ctx, "git", append([]string{"-C", top}, args...)...)
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", top}, args...)...) //nolint:gosec // G204: fixed git executable; arguments are this function's own subcommands, a commit id and a literal pathspec, no shell
 		command.Env = append(os.Environ(), "GIT_INDEX_FILE="+filepath.Join(resolved, "index"))
 		command.Stdin = stdin
 		var stderr bytes.Buffer
 		command.Stderr = &stderr
-		out, err := command.Output()
-		if err != nil {
-			return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		out, runErr := command.Output()
+		if runErr != nil {
+			return nil, fmt.Errorf("git %s: %w: %s", args[0], runErr, strings.TrimSpace(stderr.String()))
 		}
 		return out, nil
 	}
-	if _, err := git(nil, "read-tree", source.commit); err != nil {
+	if _, err = git(nil, "read-tree", source.commit); err != nil {
 		return err
 	}
 	pathspec := ":(top,literal)" + prefix
@@ -218,18 +218,18 @@ func copyContextEntry(from, to string, entry fs.DirEntry) error {
 	case info.IsDir():
 		return os.MkdirAll(to, 0o755)
 	case info.Mode()&os.ModeSymlink != 0:
-		target, err := os.Readlink(from)
-		if err != nil {
-			return err
+		target, linkErr := os.Readlink(from)
+		if linkErr != nil {
+			return linkErr
 		}
-		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		if err = os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 			return err
 		}
 		return os.Symlink(target, to)
 	case !info.Mode().IsRegular():
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err
 	}
 	in, err := os.Open(from)

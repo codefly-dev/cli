@@ -130,9 +130,8 @@ type imageInputs struct {
 	// files on disk.
 	RecipeTree string `json:"recipe_tree_digest"`
 	// ContextTree is the digest of every byte of the build context Docker would
-	// send that is source, computed here rather than taken from any
-	// declaration: what the repository's own ignore rules exclude is left out
-	// (sourceIgnoredPaths).
+	// send, computed here rather than taken from any declaration. A pinned
+	// release's context is its committed tree (committedSourceContext).
 	ContextTree string `json:"context_tree_digest"`
 	// GoModules is the digest of the go.mod and go.sum of each Go module root the
 	// recipe declares a download for, hashed by path so no ignore policy can
@@ -313,36 +312,29 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 		return "", fmt.Errorf("ignore policy of %s: %w", recipe.GetName(), err)
 	}
 	excluded := contextExclusions(ctx, scope.ContextDir, scope.OutputDir, scope.WorkspaceDir)
+	// Every file Docker is sent is an input, whatever the repository's own
+	// ignore rules say: a file the repository ignores but the recipe's policy
+	// lets through (a generated client, a configuration under code/) changes
+	// the image, so it changes the identity, and reuse never keeps an image
+	// built from other inputs. Scratch that should not reach an image is the
+	// recipe's ignore policy's to drop, which leaves it out of both. A pinned
+	// release is the one exception: its context is its commit, and the agent
+	// outputs carried beside it are left out as a fresh clone of that commit
+	// lacks them (committedSource.scratch).
 	if scope.committed != nil {
 		maps.Copy(excluded, scope.committed.scratch)
-	} else {
-		maps.Copy(excluded, sourceIgnoredPaths(ctx, scope.ContextDir))
 	}
 	return contextContentDigest(ctx, scope.ContextDir, ignore, excluded)
 }
 
 // sourceIgnoredPaths lists the context-relative, slash-separated paths the
-// context's own repository ignores, so the digest is a function of the source
-// tree and not of what a machine has done beside it. Agents and the native run
-// write their scratch inside a service directory — a compiled binary under
-// `.cache/native/`, a virtual environment, `__pycache__/`, a generated log
-// configuration — and every one of those is ignored by the repository that
-// never meant them as source. Hashing them made the Code class of a pinned
-// release move between two renders of the same commit on one machine (the
-// first render adopted the published image, a local run wrote `.cache/`, the
-// next render refused the same image as "already published from other code")
-// and differ between machines, which is the opposite of what the class is for:
-// the published label was computed over a fresh clone, so the tree as the
-// repository defines it is exactly what reproduces it. Docker still sends an
-// ignored file when the recipe's ignore policy does not drop it; a build whose
-// image depends on one is already not reproducible from its source, and the
-// recipe's own policy is where to drop it.
-//
-// Tracked files are never excluded, whatever the rules say about their names,
-// so a repository's committed inputs stay inputs. A context that is itself
-// ignored — an agent-assembled tree under the workspace's `.codefly/` — is one
-// the rules say nothing about, and keeps every file; so does a context outside
-// any repository, or on a host without git.
+// context's own repository ignores: what a pinned release's committed copy
+// carries from the working tree because Docker would send it
+// (committedSource.carryIgnored). Tracked files are never listed, whatever the
+// rules say about their names. A context that is itself ignored — an
+// agent-assembled tree under the workspace's `.codefly/` — is one the rules
+// say nothing about, and lists nothing; so does a context outside any
+// repository, or on a host without git.
 func sourceIgnoredPaths(ctx context.Context, contextDir string) map[string]bool {
 	w := wool.Get(ctx).In("orchestration.sourceIgnoredPaths")
 	// Exit 1 is "not ignored"; 0 says the root itself is ignored and anything

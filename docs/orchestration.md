@@ -1062,11 +1062,11 @@ every base image, because a `FROM` tag is re-pushed whenever the base is patched
 The identity also carries the context digest it was taken over, so the tree can
 be proven unchanged after the build; a context that moved mid-build records
 nothing, since the entry would claim inputs the image does not match. The
-context digest is a function of the source tree: what the context's own
-repository ignores is left out (`sourceIgnoredPaths`), so the scratch an agent
-or a local run writes inside a service directory cannot move the identity of a
-pinned release between renders or between machines; tracked files never are,
-and a context that is itself ignored or outside a repository keeps every file.
+context digest covers every file Docker is sent, including one the
+repository's own rules ignore: a generated file the recipe's ignore policy lets
+through changes the image, so it changes the identity and reuse rebuilds.
+Scratch that should never reach an image is the recipe's ignore policy's to
+drop, which leaves it out of the build and the identity alike.
 A pinned release the CLI materialized (`modulecache.Owned`) is read from its
 commit (`committedSourceContext`): the identity and the build share a private
 copy of the committed tree at `HEAD`, plus the ignored entries Docker would

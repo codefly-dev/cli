@@ -5239,20 +5239,13 @@ recipe's ignore policy excludes is excluded too, matched with the same matcher
 Docker uses — a file Docker does not send is not an input. A recipe-declared
 ignore file takes precedence over the context root's, exactly as for Docker.
 
-A third exclusion makes the key a function of the **source tree**: whatever the
-context's own repository ignores (`.gitignore`, `git ls-files --ignored`) is
-left out, tracked files never are, and a context that is itself ignored — an
-agent-assembled tree under `.codefly/` — or outside any repository keeps every
-file. Agents and the native run write their scratch inside a service directory
-(a compiled binary under `.cache/native/`, a virtual environment, `__pycache__/`,
-a generated log configuration), and hashing it made a pinned release's identity
-differ between two renders of one commit and between machines, so a published
-image was refused as "already published from other code" though no source had
-moved. The published label was computed over a fresh clone, which is exactly
-the tree the repository defines, so the same pinned commit reproduces it from
-any machine or cache state. Docker still sends an ignored file the recipe's
-policy does not drop; a build whose image depends on one is not reproducible
-from source, and the recipe's ignore policy is where to drop it.
+The key covers every file Docker is sent, including one the context's own
+repository ignores: a generated client or configuration the recipe's ignore
+policy lets through reaches the image, so changing it rebuilds. Scratch that
+should never reach an image (`.cache/`, a virtual environment, `__pycache__/`)
+is the recipe's ignore policy's to drop, which leaves it out of the build and
+the key alike. A pinned release the CLI materialized is keyed and built from
+its commit instead (below), so scratch in the module cache never moves it.
 
 A **pinned release** the CLI materialized into its module cache is read from its
 commit, not from its files. The cache checkout is also where a local run works,

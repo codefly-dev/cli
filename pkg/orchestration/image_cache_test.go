@@ -186,6 +186,8 @@ type imageCacheHarness struct {
 	noCapture bool
 	// goCalls records every go command the prefetch of each build runs.
 	goCalls []goCall
+	// goMods records the go.mod each go command the prefetch runs reads.
+	goMods []string
 	// gitCalls records every git command the git source prefetch runs.
 	gitCalls [][]string
 }
@@ -283,7 +285,7 @@ func (harness *imageCacheHarness) build(t *testing.T) string {
 		RebuildImages:      harness.rebuild,
 	}
 	prefetch := newGoModulePrefetch()
-	prefetch.run = recordingGo(&harness.goCalls, nil)
+	prefetch.run = harness.goRun()
 	world.goModulePrefetch = prefetch
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
 	gitPrefetch := newGitSourcePrefetch()
@@ -964,9 +966,21 @@ func (harness *imageCacheHarness) tryBuild(ctx context.Context, t *testing.T) er
 	instance.Builder = &services.BuilderInstance{Instance: instance, Builder: harness.client}
 	world := &World{Workspace: workspace, Env: harness.env, Push: harness.push, CaptureImageDigest: harness.push && !harness.noCapture, BuildxBuilder: "stub"}
 	prefetch := newGoModulePrefetch()
-	prefetch.run = recordingGo(&harness.goCalls, nil)
+	prefetch.run = harness.goRun()
 	world.goModulePrefetch = prefetch
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
 	_, err := harness.run(ctx, instance, world)
 	return err
+}
+
+// goRun is the prefetch's go tool for a harness build: it records each call
+// and the go.mod the call reads.
+func (harness *imageCacheHarness) goRun() func(context.Context, string, []string, ...string) error {
+	record := recordingGo(&harness.goCalls, nil)
+	return func(ctx context.Context, dir string, env []string, args ...string) error {
+		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
+			harness.goMods = append(harness.goMods, string(data))
+		}
+		return record(ctx, dir, env, args...)
+	}
 }

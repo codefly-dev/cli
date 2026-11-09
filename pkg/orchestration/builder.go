@@ -413,14 +413,10 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 					wool.Field("recipe", recipe.GetName()), wool.Field("image", reuse.entry.Image))
 				continue
 			}
-			contextDir, err := recipeContext(contextRoot, recipe)
-			if err != nil {
-				return nil, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
-			}
 			if len(recipe.GetGoModuleDownloads()) > 0 {
 				w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
 			}
-			proxies, err := b.world.goModules().proxiesFor(ctx, contextDir, recipe)
+			proxies, err := b.prefetchGoModules(ctx, contextRoot, outputDir, recipe)
 			if err != nil {
 				// What names the cause of a failed fetch is the go tool's own
 				// output — a git error, a missing credential, an incomplete
