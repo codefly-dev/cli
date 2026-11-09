@@ -342,7 +342,10 @@ func newComposedCallees(read func(module string) ([]*compositionv1.MethodPolicyV
 
 // Requires implements modulecontract.Callees. A call the audience does not
 // serve, or one it serves declaring nothing (which the hop refuses), is an
-// error naming it; a call open to any checked caller requires no scope.
+// error naming it; a call open to any checked caller requires no scope. What a
+// call may carry beyond what it requires (authority.hop.v1.Policy.carries, an
+// effect the audience performs on some calls alone) is part of what a binding
+// naming it may carry, so it is answered beside what the call requires.
 func (c *composedCallees) Requires(audience, call string) ([]string, error) {
 	methods, held := c.policies[audience]
 	if !held {
@@ -369,7 +372,7 @@ func (c *composedCallees) Requires(audience, call string) ([]string, error) {
 		return nil, fmt.Errorf("%s declares nothing for it, and the hop refuses a call to a method that declares nothing", audience)
 	}
 	var scopes []string
-	for _, required := range method.GetRequires() {
+	for _, required := range slices.Concat(method.GetRequires(), method.GetCarries()) {
 		for _, action := range required.GetActions() {
 			scopes = append(scopes, required.GetResourceKind()+":"+action)
 		}

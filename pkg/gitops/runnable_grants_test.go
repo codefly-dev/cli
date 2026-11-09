@@ -259,19 +259,22 @@ func TestAPublishListsPreparedBindingsInTheEnvelopeItDelivers(t *testing.T) {
 	require.Equal(t, "module_actor", grant.OperationAudiences[preparedKey].DelegationMode)
 }
 
-// A prepared binding addressed to the installing module itself is installed
-// nowhere: not in the module's request and not in its envelope entry. The host
-// admits a self-addressed binding only as headless work, and a module needs no
-// capability to reach its own operations.
-func TestAPreparedBindingAddressedToTheInstallerItselfIsNotInstalled(t *testing.T) {
+// A prepared binding addressed to the installing module itself is in the
+// module's request, for the authority core to issue through as for any other
+// audience (an agent calling its own operations as tools for the person), and
+// not in its envelope entry, whose registry takes a self-addressed binding for
+// headless work only.
+func TestAPreparedBindingAddressedToTheInstallerItselfIsRequestedNotEnveloped(t *testing.T) {
 	grants := []preparedGrant{
 		{key: "SHOP__API_CONNECT_LIST", audience: "shop", invoke: []preparedScope{{kind: "shop.items", actions: []string{"read"}}}},
 		{key: "ACME__ITEMS_CONNECT_READ", audience: "acme.items", invoke: []preparedScope{{kind: "acme.item", actions: []string{"read"}}}},
 	}
 	authority := &solutionhost.Authority{Principal: "shop"}
 	require.NoError(t, appendPreparedBindings(authority, "shop", grants))
-	require.Len(t, authority.Bindings, 1)
-	require.Equal(t, "ACME__ITEMS_CONNECT_READ", authority.Bindings[0].ID)
+	require.Len(t, authority.Bindings, 2)
+	require.Equal(t, "SHOP__API_CONNECT_LIST", authority.Bindings[0].ID)
+	require.Equal(t, "shop", authority.Bindings[0].Audience)
+	require.Equal(t, []string{"shop.items:read"}, authority.Bindings[0].Operations["invoke"])
 
 	entry, err := withPreparedEntries("shop", json.RawMessage(`{"resources":["shop.items"]}`), grants)
 	require.NoError(t, err)
