@@ -287,7 +287,7 @@ func TestAPreparedBindingAddressedToTheInstallerItselfIsRequestedNotEnveloped(t 
 	require.Equal(t, "shop", authority.Bindings[0].Audience)
 	require.Equal(t, []string{"shop.items:read"}, authority.Bindings[0].Operations["invoke"])
 
-	entry, err := withPreparedEntries("shop", json.RawMessage(`{"resources":["shop.items"]}`), grants, nil)
+	entry, err := withPreparedEntries("shop", json.RawMessage(`{"resources":["shop.items"]}`), grants, map[string]bool{"SHOP__API_CONNECT_LIST": true, "ACME__ITEMS_CONNECT_READ": true})
 	require.NoError(t, err)
 	require.Contains(t, string(entry), "ACME__ITEMS_CONNECT_READ")
 	require.NotContains(t, string(entry), "SHOP__API_CONNECT_LIST")
