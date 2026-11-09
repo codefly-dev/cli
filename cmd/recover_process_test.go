@@ -44,9 +44,10 @@ func TestProcessExitReceiptNativeShape(t *testing.T) {
 	}
 	_, raw := processExitTestReceipt(t, processExitTestIdentity())
 	require.Equal(t, "{\"schema_version\":1,\"process\":{\"PID\":1234567,\"PGID\":1234567,\"BootID\":\"boot\",\"StartID\":42,\"Executable\":\"fixture\"}}\n", string(raw))
-	result, err := json.Marshal(processExitResult{SchemaVersion: 1, PID: 1234567, Observation: "unknown"})
+	// The result is v2 (mode/signal added); the receipt above stays v1.
+	result, err := json.Marshal(processExitResult{SchemaVersion: 2, PID: 1234567, Mode: "force", Signal: "killed", Observation: "unknown"})
 	require.NoError(t, err)
-	require.JSONEq(t, `{"schema_version":1,"pid":1234567,"signal_attempted":false,"signal_accepted":false,"observation":"unknown","expected_birth_gone":false}`, string(result))
+	require.JSONEq(t, `{"schema_version":2,"pid":1234567,"mode":"force","signal":"killed","signal_attempted":false,"signal_accepted":false,"observation":"unknown","expected_birth_gone":false}`, string(result))
 }
 
 func TestProcessExitReceiptRejectsAlteredEvidence(t *testing.T) {
@@ -108,6 +109,12 @@ func TestProcessExitCommandRefusesBeforeEffects(t *testing.T) {
 		{pid, "--expect", path}, {pid, "--force"}, {pid, "--preview", "--force"}, {pid, "--preview", "--expect", path},
 		{pid, "--expect=", "--force"}, {pid, "--expect", path + "-missing", "--force"},
 		{"1234568", "--expect", path, "--force"}, {pid, "another", "--preview"},
+		// --graceful is a mode, not a modifier: it needs its receipt, it cannot
+		// be combined with --force or --preview, and a stale receipt or a
+		// missing one refuses before anything is signaled.
+		{pid, "--graceful"}, {pid, "--graceful", "--force"}, {pid, "--graceful", "--force", "--expect", path},
+		{pid, "--preview", "--graceful"}, {pid, "--graceful", "--expect="},
+		{pid, "--graceful", "--expect", path + "-missing"}, {"1234568", "--expect", path, "--graceful"},
 	}
 	for _, args := range cases {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -166,7 +173,7 @@ func TestProcessExitOwnerOutcomes(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			reads, calls := 0, 0
-			result, err := forceProcessExit(ctx, expected, func(pid int) (base.ProcessIdentity, error) {
+			result, err := requestProcessExit(ctx, expected, syscall.SIGKILL, "force", func(pid int) (base.ProcessIdentity, error) {
 				require.Equal(t, expected.PID, pid)
 				require.Less(t, reads, len(tc.reads))
 				r := tc.reads[reads]
@@ -186,7 +193,8 @@ func TestProcessExitOwnerOutcomes(t *testing.T) {
 			if tc.delivery != nil {
 				require.ErrorIs(t, err, tc.delivery)
 			}
-			tc.want.SchemaVersion, tc.want.PID = 1, expected.PID
+			tc.want.SchemaVersion, tc.want.PID = 2, expected.PID
+			tc.want.Mode, tc.want.Signal = "force", syscall.SIGKILL.String()
 			require.Equal(t, tc.want, result)
 			require.Equal(t, len(tc.reads), reads)
 			if result.SignalAttempted {
@@ -202,14 +210,14 @@ func TestProcessExitCancellationAndPollingBudget(t *testing.T) {
 	expected := processExitTestIdentity()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	result, err := forceProcessExit(ctx, expected, func(int) (base.ProcessIdentity, error) { t.Fatal("canceled inspection"); return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error {
+	result, err := requestProcessExit(ctx, expected, syscall.SIGKILL, "force", func(int) (base.ProcessIdentity, error) { t.Fatal("canceled inspection"); return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error {
 		t.Fatal("canceled signal")
 		return nil
 	})
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, result.SignalAttempted)
 	reads := 0
-	result, err = forceProcessExit(t.Context(), expected, func(int) (base.ProcessIdentity, error) { reads++; return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
+	result, err = requestProcessExit(t.Context(), expected, syscall.SIGKILL, "force", func(int) (base.ProcessIdentity, error) { reads++; return expected, nil }, func(context.Context, base.ProcessIdentity, syscall.Signal) error { return nil })
 	require.ErrorContains(t, err, "polling budget")
 	require.Greater(t, reads, 1)
 	require.Equal(t, "same_birth", result.Observation)

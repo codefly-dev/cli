@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -101,7 +102,7 @@ func TestProcessExitRealTargetAndSameGroupSibling(t *testing.T) {
 	// delivery race, while this tests the CLI admission boundary with a live PID.
 	stale := siblingIdentity
 	stale.StartID++
-	result, err = forceProcessExit(t.Context(), stale, base.InspectProcess, base.SignalProcess)
+	result, err = requestProcessExit(t.Context(), stale, syscall.SIGKILL, "force", base.InspectProcess, base.SignalProcess)
 	require.Error(t, err)
 	require.False(t, result.SignalAttempted)
 	require.Equal(t, "changed_birth", result.Observation)
@@ -142,7 +143,7 @@ func TestProcessExitCanTriggerIndirectChildReaction(t *testing.T) {
 	parent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	identity, done := startProcessExitChild(t, parent)
 	require.Eventually(t, func() bool { _, err := os.Stat(ready); return err == nil }, 5*time.Second, 10*time.Millisecond)
-	result, err := forceProcessExit(t.Context(), identity, base.InspectProcess, base.SignalProcess)
+	result, err := requestProcessExit(t.Context(), identity, syscall.SIGKILL, "force", base.InspectProcess, base.SignalProcess)
 	assertProcessExitRealReadback(t, result, err)
 	select {
 	case err := <-done:
@@ -155,4 +156,94 @@ func TestProcessExitCanTriggerIndirectChildReaction(t *testing.T) {
 	require.Eventually(t, func() bool { _, err := os.Stat(reaction); return err == nil }, 5*time.Second, 10*time.Millisecond)
 	// This is intentional contrary evidence: one-PID delivery does not prove
 	// zero child effects. It qualifies no historical agent cleanup implementation.
+}
+
+// TestProcessExitGracefulHelper is the real SIGTERM target. It installs a
+// handler that writes a durable marker and only then exits, which is the whole
+// point of --graceful: a store holding authoritative state must get to finish
+// writing. "ignore" instead refuses to die, so the timeout can be observed.
+func TestProcessExitGracefulHelper(t *testing.T) {
+	switch os.Getenv("CLI934_PROCESS_EXIT_GRACEFUL") {
+	case "handler":
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM)
+		// Readiness AFTER the handler is installed: a SIGTERM delivered before
+		// that point takes the default disposition and the target dies without
+		// running its shutdown, which would make this test prove nothing.
+		require.NoError(t, os.WriteFile(os.Getenv("CLI934_PROCESS_EXIT_READY"), []byte("ready"), 0o600))
+		<-signals
+		require.NoError(t, os.WriteFile(os.Getenv("CLI934_PROCESS_EXIT_MARKER"), []byte("shutdown written before exit\n"), 0o600))
+		os.Exit(0)
+	case "ignore":
+		signal.Ignore(syscall.SIGTERM)
+		require.NoError(t, os.WriteFile(os.Getenv("CLI934_PROCESS_EXIT_READY"), []byte("ready"), 0o600))
+		for {
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+// TestProcessExitGracefulLetsTheTargetWriteBeforeExit is the positive: one
+// SIGTERM, the target's own shutdown runs to completion, and the result names
+// the mode and signal that were requested.
+func TestProcessExitGracefulLetsTheTargetWriteBeforeExit(t *testing.T) {
+	dir := t.TempDir()
+	marker, ready := filepath.Join(dir, "marker"), filepath.Join(dir, "ready")
+	target := exec.Command(os.Args[0], "-test.run=^TestProcessExitGracefulHelper$")
+	target.Env = append(os.Environ(), "CLI934_PROCESS_EXIT_GRACEFUL=handler",
+		"CLI934_PROCESS_EXIT_MARKER="+marker, "CLI934_PROCESS_EXIT_READY="+ready)
+	target.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	identity, done := startProcessExitChild(t, target)
+	require.Eventually(t, func() bool { _, err := os.Stat(ready); return err == nil }, 10*time.Second, 10*time.Millisecond,
+		"the target must have installed its SIGTERM handler first")
+
+	result, err := requestProcessExit(t.Context(), identity, syscall.SIGTERM, "graceful", base.InspectProcess, base.SignalProcess)
+	require.NoError(t, err)
+	require.True(t, result.SignalAttempted)
+	require.True(t, result.SignalAccepted)
+	require.Equal(t, "absent", result.Observation)
+	require.True(t, result.ExpectedBirthGone)
+	require.Equal(t, "graceful", result.Mode)
+	require.Equal(t, syscall.SIGTERM.String(), result.Signal)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("graceful target never exited")
+	}
+	body, readErr := os.ReadFile(marker)
+	require.NoError(t, readErr, "the target's own shutdown must have run")
+	require.Contains(t, string(body), "shutdown written before exit")
+}
+
+// TestProcessExitGracefulNeverEscalates is the protection the disposition is
+// really about: a target that ignores SIGTERM stays ALIVE when the polling
+// budget expires. The command reports the exit unconfirmed and sends nothing
+// else — no SIGKILL fallback — so a store that did not finish writing is never
+// taken down by this command.
+func TestProcessExitGracefulNeverEscalates(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "ready")
+	target := exec.Command(os.Args[0], "-test.run=^TestProcessExitGracefulHelper$")
+	target.Env = append(os.Environ(), "CLI934_PROCESS_EXIT_GRACEFUL=ignore", "CLI934_PROCESS_EXIT_READY="+ready)
+	target.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	identity, _ := startProcessExitChild(t, target)
+	require.Eventually(t, func() bool { _, err := os.Stat(ready); return err == nil }, 10*time.Second, 10*time.Millisecond,
+		"the target must be ignoring SIGTERM before it is sent")
+
+	var sent []syscall.Signal
+	result, err := requestProcessExit(t.Context(), identity, syscall.SIGTERM, "graceful", base.InspectProcess,
+		func(ctx context.Context, id base.ProcessIdentity, sig syscall.Signal) error {
+			sent = append(sent, sig)
+			return base.SignalProcess(ctx, id, sig)
+		})
+	require.ErrorContains(t, err, "unconfirmed")
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM}, sent, "exactly one signal, and never SIGKILL")
+	require.Equal(t, "same_birth", result.Observation)
+	require.False(t, result.ExpectedBirthGone)
+	require.Equal(t, "graceful", result.Mode)
+
+	// And it is still running, at its original birth.
+	alive, inspectErr := base.InspectProcess(identity.PID)
+	require.NoError(t, inspectErr)
+	require.Equal(t, identity, alive, "an unconfirmed graceful exit leaves the target untouched")
 }

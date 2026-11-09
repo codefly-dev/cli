@@ -4981,19 +4981,36 @@ process group, descendants, containers or registrations.
 ```bash
 codefly recover process 12345 --preview > process-exit.json
 # Review the complete identity and independently establish the target.
+codefly recover process 12345 --expect process-exit.json --graceful
+# …or, when losing unwritten state is acceptable:
 codefly recover process 12345 --expect process-exit.json --force
 ```
 
 Execution requires the same PID and full current identity as the preview,
 including process group and executable at admission. PID1 and this CLI's PID
-refuse. The only signal is explicit, irreversible SIGKILL through Core's
-`SignalProcess`: there is no graceful default, escalation or automatic retry.
+refuse. **Exactly one of `--graceful` or `--force` is required with
+`--expect`**, and they are mutually exclusive: `--graceful` requests one
+`SIGTERM`, `--force` requests one irreversible `SIGKILL`, both through Core's
+`SignalProcess`. There is no default mode, no escalation and no automatic
+retry — a `--graceful` request is **never** followed by `SIGKILL`, and an exit
+that stays unconfirmed is reported as unconfirmed rather than falling back to
+force.
+
+Which mode to use is a data question, not a speed one. `--graceful` lets the
+process run its own shutdown, so a store that owns authoritative state — a
+Redis holding revocation records and nonces, say — gets to finish writing
+before it exits. `--force` discards whatever the process had not yet written;
+for such a store that can reopen revoked tokens, and process exit alone is not
+durability evidence (an RDB/AOF save and readback is). A target that ignores
+`SIGTERM` stays alive when the polling budget expires, untouched.
 Core binds delivery to process birth and group, not an immutable executable;
 a same-birth exec after admission can still receive the signal. One CLI owner
 call may involve Core's internal kernel-token retries.
 
-The result reports `signal_attempted`, `signal_accepted`, `observation` and
-`expected_birth_gone`. Success requires observed absence and no delivery,
+The result is `schema_version` 2 and reports the requested `mode` and `signal`
+alongside `signal_attempted`, `signal_accepted`, `observation` and
+`expected_birth_gone`, so a reader never has to infer which irreversibility
+contract applied. The `--preview` receipt is unchanged at `schema_version` 1. Success requires observed absence and no delivery,
 inspection, cancellation or output error. Already-absent is successful without
 a signal attempt. A replacement is reported as `changed_birth` with a nonzero
 exit and is never selected; its presence proves neither PID availability nor
@@ -5012,9 +5029,13 @@ Orphan recovery and registry removal remain separate explicit operations.
 
 **Fixed local receipt exception:** Core's owner explicitly approved this
 separate native-identity exception under its architecture contract policy.
-Version1 embeds `base.ProcessIdentity` unchanged in a `schema_version`/`process`
-envelope and uses a fixed local result shape. Both ends must use the same
-reviewed implementation on the same host/boot; any change requires fresh preview.
+The fixed version-1 preview receipt embeds `base.ProcessIdentity` unchanged in
+a `schema_version`/`process` envelope. The independently versioned result is
+fixed at version 2, adding requested `mode` and `signal` under the
+[explicit Core owner acceptance](design/process-result-v2-exception.md). These
+fields describe the request, not proof of exit or persistence. Both ends must
+use the same reviewed implementation on the same host/boot; any implementation
+change requires fresh preview even when the receipt schema is unchanged.
 The command does not detect the binary that produced a receipt. It is untrusted
 comparison evidence, not a credential, ownership grant, registry or remote API.
 The complete default JSON encoding plus its single newline must be saved
