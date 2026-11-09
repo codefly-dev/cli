@@ -145,7 +145,8 @@ func TestAPinnedReleaseIsItsCommittedTree(t *testing.T) {
 }
 
 // A checkout the developer owns is built from its files: a tracked edit is a
-// local change and moves the identity, while ignored scratch still does not.
+// local change and moves the identity, and so does an ignored file Docker is
+// sent, which reaches the image as surely.
 func TestADeveloperCheckoutIsItsWorkingTree(t *testing.T) {
 	fixture := newPinnedFixture(t, "")
 	pristine, prepared := fixture.digest(t, false)
@@ -154,11 +155,11 @@ func TestADeveloperCheckoutIsItsWorkingTree(t *testing.T) {
 
 	writeFile(t, filepath.Join(fixture.service, "code", "uvicorn-log-config.json"), "{}\n", 0o644)
 	ignored, _ := fixture.digest(t, false)
-	require.Equal(t, pristine, ignored)
+	require.NotEqual(t, pristine, ignored, "an ignored file Docker is sent is an input")
 
 	writeFile(t, filepath.Join(fixture.service, ".cache", "local", "api.hash"), "rewritten\n", 0o644)
 	edited, _ := fixture.digest(t, false)
-	require.NotEqual(t, pristine, edited, "a tracked edit in a developer's checkout is a code change")
+	require.NotEqual(t, ignored, edited, "a tracked edit in a developer's checkout is a code change")
 }
 
 // A pinned context with no commit to read — the verified-package cache holds no

@@ -200,8 +200,11 @@ func TestAPromotionOwnsTheRemovalItsOwnBranchCarries(t *testing.T) {
 // TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule: a checkout that never
 // had a module and one that dropped it derive the same cell file. Only a
 // checkout that has seen the composition the base's file was rendered from
-// may remove on the composition's word; from any other the removal is still
-// the flag's to confirm, and even named, the delivered tree is not pruned.
+// may remove on the composition's word; from any other, the publication
+// leaves the module — its namespace and its caller edge on the published
+// module's own endpoint, which is the caller's statement — as the base has
+// it, and withdrawing it is the flag's. Even named, the delivered tree is not
+// pruned.
 func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
 	committedWorkspace(t, workspace)
@@ -226,9 +229,9 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
 		PromotionBranch: "codefly/promote-payments-production",
 	}
-	_, err = PlanPublish(ctx, workspace, &request)
-	if err == nil || !strings.Contains(err.Error(), "--allow-cell-removal (legacy)") || !strings.Contains(err.Error(), "may be a stale checkout's") {
-		t.Fatalf("a stale checkout withdrew a module on the composition's word: %v", err)
+	kept, err := PlanPublish(ctx, workspace, &request)
+	if err != nil || len(kept.CellRemovals) != 0 || len(kept.UndeclaredCellRemovals) != 0 {
+		t.Fatalf("a stale checkout withdrew a module on the composition's word: %v %v %v", err, kept.CellRemovals, kept.UndeclaredCellRemovals)
 	}
 	request.AllowCellRemovals = []string{"legacy"}
 	plan, err := PlanPublish(ctx, workspace, &request)
@@ -246,9 +249,9 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 // addLegacyCaller gives a base cell file a module legacy the fixture's
 // composition does not declare: its namespace, and its caller edge on the
 // payments host's endpoint. A publication of payments leaves another module's
-// namespace as the base has it (promotedCell), so it is the edge — on the
-// published module's own endpoint, which the render no longer names — that
-// the publication removes, and that the hold judges.
+// namespace, and its edge on payments' own endpoint, as the base has them
+// (promotedCell) unless the module is withdrawn: by the composition's word
+// from a checkout that saw it, or by --allow-cell-removal.
 func addLegacyCaller(t *testing.T, file *cellfile.File) {
 	t.Helper()
 	payments := &file.Namespaces[0]
@@ -287,9 +290,9 @@ func TestACompositionThatNeverDeclaredTheModuleDoesNotRemoveIt(t *testing.T) {
 		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
 		PromotionBranch: "codefly/promote-payments-production",
 	}
-	_, err = PlanPublish(ctx, workspace, &request)
-	if err == nil || !strings.Contains(err.Error(), "--allow-cell-removal (legacy)") || !strings.Contains(err.Error(), "neither did its own configuration at "+head) {
-		t.Fatalf("a checkout whose composition never named legacy withdrew it on the composition's word: %v", err)
+	kept, err := PlanPublish(ctx, workspace, &request)
+	if err != nil || len(kept.CellRemovals) != 0 || len(kept.UndeclaredCellRemovals) != 0 {
+		t.Fatalf("a checkout whose composition never named legacy withdrew it on the composition's word: %v %v %v", err, kept.CellRemovals, kept.UndeclaredCellRemovals)
 	}
 	request.AllowCellRemovals = []string{"legacy"}
 	plan, err := PlanPublish(ctx, workspace, &request)
@@ -307,7 +310,8 @@ func TestACompositionThatNeverDeclaredTheModuleDoesNotRemoveIt(t *testing.T) {
 // not fetched the base commit descends from it — yet never saw the `modules:`
 // edit that rode in the render's commit. The delivery clone holding that
 // workspace revision is what tells one repository from two, so the base
-// commit stays the one to contain, and the removal is the flag's to confirm.
+// commit stays the one to contain: the publication leaves legacy as the base
+// has it, and withdrawing it is the flag's.
 func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
 	head := committedWorkspace(t, workspace, "legacy")
@@ -332,9 +336,9 @@ func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.
 		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
 		PromotionBranch: "codefly/promote-payments-production",
 	}
-	_, err = PlanPublish(ctx, workspace, &request)
-	if err == nil || !strings.Contains(err.Error(), "--allow-cell-removal (legacy)") || !strings.Contains(err.Error(), "may be a stale checkout's") {
-		t.Fatalf("an unfetched checkout of the delivery repository withdrew a module on the composition's word: %v", err)
+	kept, err := PlanPublish(ctx, workspace, &request)
+	if err != nil || len(kept.CellRemovals) != 0 || len(kept.UndeclaredCellRemovals) != 0 {
+		t.Fatalf("an unfetched checkout of the delivery repository withdrew a module on the composition's word: %v %v %v", err, kept.CellRemovals, kept.UndeclaredCellRemovals)
 	}
 	request.AllowCellRemovals = []string{"legacy"}
 	plan, err := PlanPublish(ctx, workspace, &request)
