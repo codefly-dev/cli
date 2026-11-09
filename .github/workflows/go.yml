@@ -51,29 +51,9 @@ jobs:
           - gate: control-integration
             timeout_minutes: 12
             conformance_rows: linux-amd64-native-control
-          - gate: coverage
-            timeout_minutes: 16
-            conformance_rows: linux-amd64-source,linux-amd64-native-npm
-          - gate: race
-            timeout_minutes: 20
-            conformance_rows: linux-amd64-source,linux-amd64-native-npm
     steps:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Go
-        if: matrix.gate == 'coverage' || matrix.gate == 'race'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      # pkg/librarystore's npm backend shells out to the real npm CLI (npm pack,
-      # npm publish) against an httptest registry rather than mocking the store;
-      # those tests need node/npm on the runner.
-      - name: Set up Node
-        if: matrix.gate == 'coverage' || matrix.gate == 'race'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
 
       # Restore before the bootstrap action: that action compiles the CLI, so
       # restoring afterward would make its cache permanently ineffective.
@@ -107,19 +87,6 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           codefly audit go --dir .
 
-      - name: Test with coverage
-        if: matrix.gate == 'coverage'
-        env:
-          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
-        run: go test -failfast -v -timeout=4m ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
-
-      - name: Check test coverage
-        if: matrix.gate == 'coverage'
-        id: coverage
-        uses: vladopajic/go-test-coverage@f484eec846448c97c777a26f8b58c5a69a327e12 # v2
-        with:
-          config: ./.testcoverage.yaml
-
       # The CGO-free companion/self-cross build (`-tags codefly_nosemantic`,
       # CGO_ENABLED=0) selects pkg/engine/source_nosemantic.go. `codefly
       # companion publish` exercises it only in companions.yaml, which needs
@@ -127,18 +94,12 @@ jobs:
       # statically and runs its base source behavior. Without this a regression
       # in the analyzer-free variant would surface only at publish time.
       - name: Verify CGO-free (companion) build variant
-        if: matrix.gate == 'coverage'
+        if: matrix.gate == 'bootstrap-audit'
         env:
           CGO_ENABLED: "0"
         run: |
           go build -tags codefly_nosemantic -ldflags '-s -w -extldflags "-static"' -o /dev/null .
           go test -tags codefly_nosemantic ./pkg/engine/ -run '^TestNewSourceExecutesLanguageNeutralOperation$' -count=1
-
-      - name: Test with race detection
-        if: matrix.gate == 'race'
-        env:
-          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
-        run: go test -failfast -race ./... -v
 
       # The cross-process control-ownership proof drives the CLI built by the
       # install action above as a real subprocess against real sockets. It runs
@@ -244,6 +205,178 @@ jobs:
           name: conformance-receipts-${{ matrix.gate }}
           path: conformance-receipts/
           if-no-files-found: warn
+
+  # The suite runs ONCE, under the race detector and with coverage, split
+  # across these shards. It used to run twice, as the `coverage` gate (with
+  # -coverpkg=./...) and the `race` gate, each one job over every package:
+  # 6-7 minutes apiece. scripts/test-shard.sh owns the split, and
+  # pkg/conformance's TestTestShardsRunEveryTestOnce holds that the shards
+  # together run every package, and every test of a split package, exactly once.
+  #
+  # `coverage` and `race`, the required contexts, are the two jobs after this
+  # one: `coverage` merges the shards' profiles and verifies their conformance
+  # receipts, and `race` fails unless every shard succeeded.
+  test:
+    name: test (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    # The package alarm (-timeout below) must expire while the runner is still
+    # listening, so a hang arrives as a stack trace rather than a cancellation;
+    # the reserve covers checkout, toolchain, cache restore, module download and
+    # a cold compile.
+    timeout-minutes: 10
+    strategy:
+      # Every shard reports: a run's point is the whole list of failures.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    env:
+      SHARDS: 9
+      # Each shard claims the rows the suite proves, so a row's test cannot
+      # skip itself when its backend is missing; `coverage` verifies the
+      # receipts of all shards together.
+      CODEFLY_CONFORMANCE_REQUIRED: linux-amd64-source,linux-amd64-native-npm
+      CODEFLY_CONFORMANCE_RECEIPTS: ${{ github.workspace }}/conformance-receipts
+    steps:
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # pkg/librarystore's npm backend shells out to the real npm CLI (npm pack,
+      # npm publish) against an httptest registry rather than mocking the store;
+      # those tests need node/npm on the runner.
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+
+      # Per shard: each compiles a different set of packages under -race and
+      # -cover. Compiled artifacts only, as in the quality gates above. Test
+      # RESULTS are never reused from it: -race and -coverprofile already make
+      # a run uncacheable, and -count=1 says so.
+      - name: Restore Go build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/go-build
+          key: cli-go-build-v3-test-${{ matrix.shard }}-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            cli-go-build-v3-test-${{ matrix.shard }}-${{ runner.os }}-
+
+      - name: Install Dependencies
+        run: go mod download
+
+      - name: Test with race detection and coverage
+        env:
+          CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
+        run: |
+          set -euo pipefail
+          # A command substitution, so a failing script fails the step; a
+          # process substitution would hand go test an empty list, and go test
+          # with no package tests the repository root and passes.
+          selection="$(./scripts/test-shard.sh "${{ matrix.shard }}" "$SHARDS")"
+          mapfile -t args <<<"$selection"
+          if [ -z "$selection" ] || [ "${#args[@]}" -eq 0 ]; then
+            echo "shard ${{ matrix.shard }} selected nothing to test" >&2
+            exit 1
+          fi
+          echo "shard ${{ matrix.shard }}/$SHARDS: ${args[*]}"
+          go test -failfast -v -race -count=1 -timeout=4m -coverprofile=cover.out -covermode=atomic "${args[@]}"
+
+      - name: Upload the shard's profile and receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-shard-${{ matrix.shard }}
+          path: |
+            cover.out
+            conformance-receipts/
+          if-no-files-found: warn
+          retention-days: 3
+
+  coverage:
+    name: coverage
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # The test job's shard count; TestTestShardsRunEveryTestOnce holds the
+      # two equal.
+      SHARDS: 9
+      CODEFLY_CONFORMANCE_REQUIRED: linux-amd64-source,linux-amd64-native-npm
+      CODEFLY_CONFORMANCE_RECEIPTS: ${{ github.workspace }}/conformance-receipts
+    steps:
+      - name: checkout
+        # go-test-coverage reads the sources to count statements.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-shard-*
+          path: shards
+
+      - name: Merge the shard profiles
+        # A split package's blocks appear in each of its shards' profiles, each
+        # counting the tests that shard ran, so the merge sums a block's counts.
+        # A missing profile is a shard that never ran: refuse rather than
+        # measure what the others happened to cover.
+        run: |
+          set -euo pipefail
+          profiles=(shards/test-shard-*/cover.out)
+          if [ "${#profiles[@]}" -ne "$SHARDS" ]; then
+            echo "expected $SHARDS shard profiles, found ${#profiles[@]}: ${profiles[*]}" >&2
+            exit 1
+          fi
+          {
+            echo "mode: atomic"
+            for f in "${profiles[@]}"; do tail -n +2 "$f"; done \
+              | awk '{ count[$1 " " $2] += $3 } END { for (block in count) print block, count[block] }' \
+              | sort
+          } > cover.out
+
+      - name: Check test coverage
+        id: coverage
+        uses: vladopajic/go-test-coverage@f484eec846448c97c777a26f8b58c5a69a327e12 # v2
+        with:
+          config: ./.testcoverage.yaml
+
+      # Every row the shards claimed has to have left a receipt in one of them.
+      - name: Verify conformance receipts
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEFLY_CONFORMANCE_RECEIPTS"
+          # Receipt names carry the package and test, so no two shards write
+          # the same one.
+          shopt -s nullglob
+          for receipt in shards/test-shard-*/conformance-receipts/*.json; do
+            cp "$receipt" "$CODEFLY_CONFORMANCE_RECEIPTS"/
+          done
+          ./scripts/verify-conformance-receipts.sh
+
+  # The `race` required context. Without `always()` a failed shard would SKIP
+  # this job, and a skipped required check passes; with it, the job always
+  # reports, and fails unless every shard succeeded -- a failure, a skip and a
+  # cancellation are all refusals.
+  race:
+    name: race
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: every shard succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != success ]; then
+              echo "a test shard did not succeed ($result); see the test jobs above" >&2
+              exit 1
+            fi
+          done
 
   # golangci-lint runs as its own job, not a quality gate, for two reasons:
   # a new-issues baseline has a well-defined meaning only against a

@@ -48,16 +48,17 @@ func TestOCIQualificationRequiredByNormalCIGates(t *testing.T) {
 		} `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal(data, &workflow))
-	for _, name := range []string{"Test with coverage", "Test with race detection"} {
-		found := false
-		for _, step := range workflow.Jobs["quality"].Steps {
-			if step.Name == name {
-				found = true
-				require.Equal(t, "1", step.Env["CODEFLY_COMPOSITION_OCI_QUALIFY"], name+" must run actual registry/GC/upload regressions")
-			}
+	// One step runs the suite, under the race detector and with coverage, in
+	// every test shard; the `coverage` and `race` gates stand for it.
+	const name = "Test with race detection and coverage"
+	found := false
+	for _, step := range workflow.Jobs["test"].Steps {
+		if step.Name == name {
+			found = true
+			require.Equal(t, "1", step.Env["CODEFLY_COMPOSITION_OCI_QUALIFY"], name+" must run actual registry/GC/upload regressions")
 		}
-		require.True(t, found, "missing CI gate %s", name)
 	}
+	require.True(t, found, "missing CI step %s", name)
 }
 
 func TestOCIArtifactRequiresExactReferenceBeforeCacheUse(t *testing.T) {
