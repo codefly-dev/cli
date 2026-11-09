@@ -13,40 +13,76 @@ import (
 
 const RuntimeExecutionGroup = "runtime-execution"
 
-// PreparedSelection is a consumer's exact prepared keys. Nil preserves the
-// unselected consumer's catalog; a non-nil empty selection installs nothing.
+// PreparedSelection compares keys with Runtime configuration lookup semantics.
+// An empty selection installs nothing.
 type PreparedSelection map[string]bool
 
-func (s PreparedSelection) Includes(key string) bool { return s == nil || s[key] }
-
-// RuntimePreparedSelection projects only the fields owned by
-// runtime.installation/v1 (module-runtime/pkg/runnable.Manifest). The runtime
-// still validates the complete installation. The CLI has no runtime dependency.
-// Only an explicit consumer of runtime-execution installs its releases: public
-// root configuration also reaches unrelated services, including tool catalogs.
-func RuntimePreparedSelection(service *resources.Service, delivered []*basev0.Configuration) (PreparedSelection, error) {
-	if !slices.Contains(service.WorkspaceConfigurationDependencies, RunnableBindingsGroup) || !slices.Contains(service.WorkspaceConfigurationDependencies, RuntimeExecutionGroup) {
-		return nil, nil
+func (s PreparedSelection) Includes(key string) bool {
+	for selected := range s {
+		if resources.Match(selected, key) {
+			return true
+		}
 	}
-	keys := PreparedSelection{}
+	return false
+}
+
+// PreparedSelectionFor reads the composition's offered tools and Runtime's
+// installation references from the actual delivered configuration. Missing
+// declarations select nothing. Full installation validation remains Runtime's.
+func PreparedSelectionFor(service *resources.Service, delivered []*basev0.Configuration) (PreparedSelection, error) {
+	keys, available, offered := PreparedSelection{}, PreparedSelection{}, PreparedSelection{}
+	if !slices.Contains(service.WorkspaceConfigurationDependencies, RunnableBindingsGroup) {
+		return keys, nil
+	}
+	identity, identityErr := service.Identity()
+	module := ""
+	if identityErr == nil {
+		module = identity.Module
+	}
 	found := false
 	for _, conf := range delivered {
 		for _, info := range conf.GetInfos() {
-			if info.GetName() != RuntimeExecutionGroup {
-				continue
-			}
 			for _, value := range info.GetConfigurationValues() {
-				if !resources.Match(value.GetKey(), "installation-json") {
-					continue
-				}
-				if found || value.GetSecret() {
-					return nil, fmt.Errorf("runtime-execution/installation-json must be one public installation declaration")
-				}
-				found = true
-				if err := installationKeys(value.GetValue(), keys); err != nil {
-					return nil, fmt.Errorf("runtime-execution/installation-json: %w", err)
+				switch info.GetName() {
+				case RunnableBindingsGroup:
+					available[value.GetKey()] = true
+				case "runnable-tools":
+					if identityErr != nil {
+						return nil, identityErr
+					}
+					if !resources.Match(value.GetKey(), module) {
+						continue
+					}
+					var names []string
+					if value.GetSecret() || !strings.HasPrefix(strings.TrimSpace(value.GetValue()), "[") || json.Unmarshal([]byte(value.GetValue()), &names) != nil {
+						return nil, fmt.Errorf("runnable-tools/%s must be a public JSON array of prepared ids", module)
+					}
+					for _, name := range names {
+						offered[name] = true
+						keys[name] = true
+					}
+				case RuntimeExecutionGroup:
+					if !slices.Contains(service.WorkspaceConfigurationDependencies, RuntimeExecutionGroup) || !resources.Match(value.GetKey(), "installation-json") {
+						continue
+					}
+					if found || value.GetSecret() {
+						return nil, fmt.Errorf("runtime-execution/installation-json must be one public installation declaration")
+					}
+					found = true
+					if err := installationKeys(value.GetValue(), keys); err != nil {
+						return nil, fmt.Errorf("runtime-execution/installation-json: %w", err)
+					}
 				}
 			}
+		}
+	}
+	for key := range keys {
+		if !available.Includes(key) {
+			source := "runtime-execution/installation-json"
+			if offered.Includes(key) {
+				source = "runnable-tools/" + module
+			}
+			return nil, fmt.Errorf("%s names unknown or unprepared operation %q", source, key)
 		}
 	}
 	return keys, nil
@@ -110,7 +146,7 @@ func SelectPreparedConfigurations(delivered []*basev0.Configuration, keys Prepar
 
 // PreparedConfigurationsFor applies the installation selection at delivery.
 func PreparedConfigurationsFor(service *resources.Service, delivered []*basev0.Configuration) ([]*basev0.Configuration, error) {
-	keys, err := RuntimePreparedSelection(service, delivered)
+	keys, err := PreparedSelectionFor(service, delivered)
 	if err != nil {
 		return nil, fmt.Errorf("service %s: %w", service.Name, err)
 	}

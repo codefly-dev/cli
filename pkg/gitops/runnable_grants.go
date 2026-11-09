@@ -22,8 +22,8 @@ import (
 // --- What a module that installs prepared bindings is granted ---
 //
 // A service that declares the runnable-bindings workspace configuration group
-// installs its selected bindings (the full catalog unless it declares Runtime
-// installations), and calls each owner with
+// installs the tools offered by its composition and its Runtime installation
+// references, and calls each owner with
 // a capability exchanged for the call (derivedRunnableReach). The mesh already
 // admits it to those owners from that one derivation; this is the same
 // derivation read for authority: the module's request names each prepared
@@ -217,7 +217,7 @@ func (g *preparedGrant) envelopeEntry() envelopeEntry {
 // asks for authority and whose principal the composition grants. A
 // composition that grants nothing is returned unchanged: an envelope nobody
 // states is not one this writes.
-func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, principals map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, principals map[string]json.RawMessage, resolvers ...WorkspaceConfigurationResolver) (map[string]json.RawMessage, error) {
 	if len(principals) == 0 || workspace == nil || env == nil {
 		return principals, nil
 	}
@@ -262,7 +262,7 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 		out[principal] = grant
 	}
 	for principal, services := range installers {
-		keys, err := preparedSelection(ctx, workspace, env, services)
+		keys, err := preparedSelection(ctx, workspace, env, services, resolvers...)
 		if err != nil {
 			return nil, err
 		}

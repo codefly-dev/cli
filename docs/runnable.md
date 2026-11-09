@@ -200,21 +200,36 @@ is not run-wide: only a service that declares `runnable-bindings` in
 `workspace-configuration-dependencies` receives it in a run and in a render
 ([orchestration](orchestration.md#workspace-configuration-groups)).
 
-A service that also explicitly declares `runtime-execution` receives only the
-union of `bindings[].prepared` keys from its delivered `installation-json`:
-one `runtime.installation/v1` object or an array of them. Empty selections
-(including an absent installation value) receive no prepared bindings. Inline
-calls and compute bindings add no prepared key. The CLI reads only that schema
-and those references; Runtime still validates the complete installations.
-Malformed or unsupported documents refuse resolution. The same selection
-limits manifest authority, generated envelope grants, and prepared network reach.
-Module authority is the union of its installing services' selections.
+The composition offers tools through the public workspace-configuration group
+`runnable-tools`, in `configurations/<profile>/runnable-tools.env`. Each key is
+its consuming module's name, and the value is a JSON array of existing prepared
+operation ids (which already identify the providing module/service/operation):
 
-Other consumers retain the full catalog. In particular, merely receiving the
-root's public `runtime-execution` group does not select Runtime installations:
-the service must declare that dependency. Robin's per-tool selection remains
-open in [#1315](https://github.com/codefly-dev/cli/issues/1315), pending its
-authoritative consumer tool-source declaration.
+```dotenv
+ROBIN=["DOCUMENTS__DOCUMENTS_GRPC_GET_DOCUMENT_CONTENT"]
+RUNTIME=[]
+```
+
+The example illustrates the format, not a default offer. Omitted consumers and
+`[]` offer nothing. An offered id absent from this environment's prepared catalog
+refuses resolution by name. Profile inheritance and native invocation overrides
+use the existing workspace-configuration mechanism; no operation list is inferred
+from producer tool exposure. Remove an id and render/publish again to revoke it.
+
+A service explicitly declaring `runtime-execution` also receives the union of
+`bindings[].prepared` keys from its delivered `installation-json`: one
+`runtime.installation/v1` object or an array. Inline calls and compute bindings
+add no prepared key. The CLI projects only those references; Runtime still
+validates the complete installation. Malformed/unsupported documents refuse
+resolution. Key aliases follow Runtime's configuration lookup rules.
+
+This one selection limits delivered configuration, manifest authority, generated
+envelope entries, and prepared cell/mesh reach. Module authority unions its
+installing services. Merely receiving a root `runtime-execution` group does not
+make a service install Runtime releases: that dependency must be explicit.
+Native delivery uses the run's actual resolver; renders keep their override
+restriction. The composition must migrate its intended tools to this declaration
+before rollout ([#1315](https://github.com/codefly-dev/cli/issues/1315)).
 
 An environment that prepares no binding has no file when no module derives an
 operation. That absence is an answer, not a missing file: a service that

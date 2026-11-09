@@ -495,6 +495,7 @@ func moduleInstanceOf(
 	pkg *InventoryPackage,
 	artifacts []composition.ReleaseArtifact,
 	carriers map[string]string,
+	resolvers ...WorkspaceConfigurationResolver,
 ) (*ModuleInstance, string, error) {
 	request, err := authorityRequestOf(module)
 	if err != nil {
@@ -541,7 +542,7 @@ func moduleInstanceOf(
 	if instance.Endpoints, err = routedEndpoints(module.Name, services, carriers, identities); err != nil {
 		return nil, "", err
 	}
-	if instance.Authority, err = moduleAuthority(ctx, workspace, module, services, env, request); err != nil {
+	if instance.Authority, err = moduleAuthority(ctx, workspace, module, services, env, request, resolvers...); err != nil {
 		return nil, "", err
 	}
 	instance.Group = solutionGroupOf(workspace, instance)

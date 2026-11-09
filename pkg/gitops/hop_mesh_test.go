@@ -503,7 +503,7 @@ func TestAnIngressRouteOntoAHopRoutedListenerIsRefused(t *testing.T) {
 // at the HOP's endpoint, which is what the mesh then has to allow.
 func TestPreparedRunnableCallsGoThroughTheHop(t *testing.T) {
 	const operations = `{"schema":"codefly/runnable-operations/v1","workspace":"cell","module":"platform","operations":[{"name":"do","version":"0.0.1","digest":"sha256:0","service":"api","endpoint":"web","method":"Do","input_message":"DoRequest","output_message":"DoResponse","path":"do"}]}`
-	workspace, env := hopCell(t, map[string]string{"modules/platform/contracts/runnables/index.json": operations})
+	workspace, env := hopCell(t, map[string]string{"modules/platform/contracts/runnables/index.json": operations, "configurations/prod/runnable-tools.env": "EXEC=[\"PLATFORM__DO\"]\n", "configurations/prod/runnable-bindings.env": "PLATFORM__DO=" + preparedValue(t) + "\n"})
 
 	_, err := hopCellEdges(t, workspace, env, "platform")
 	require.ErrorContains(t, err, "platform/api/web is published through the hop authority/hop")

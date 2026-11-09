@@ -104,9 +104,10 @@ type NativeWorkload struct {
 
 // NativeDeliverer renders, signs and delivers a native run's manifests.
 type NativeDeliverer struct {
-	Workspace *resources.Workspace
-	Env       *environments.Environment
-	Signer    solutionhost.Signer
+	Configurations WorkspaceConfigurationResolver
+	Workspace      *resources.Workspace
+	Env            *environments.Environment
+	Signer         solutionhost.Signer
 	// StateDir keeps the generations reserved so far: changed content is the
 	// next generation, unchanged content is replayed.
 	StateDir string
@@ -155,7 +156,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 		return nil, fmt.Errorf("module %s declares no package manifest, so it names no release: %w", workload.Module.Name, err)
 	}
 	instance, undeclared, err := moduleInstanceOf(ctx, d.Workspace, workload.Module, workload.Services, d.Env,
-		&InventoryPackage{ID: manifest.ID, Version: manifest.Version}, manifest.ReleaseArtifacts, nil)
+		&InventoryPackage{ID: manifest.ID, Version: manifest.Version}, manifest.ReleaseArtifacts, nil, d.Configurations)
 	if err != nil {
 		return nil, err
 	}

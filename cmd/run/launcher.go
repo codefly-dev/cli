@@ -569,7 +569,8 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 		return nil, "", err
 	}
 	deliverer := &gitops.NativeDeliverer{
-		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
+		Configurations: cluster.flow.WorkspaceConfigurationsFor,
+		Workspace:      cluster.composed(), Env: cluster.env, Signer: cluster.signer,
 		StateDir: filepath.Join(cluster.stateDir, "delivery"),
 		Token: func(module string) (string, error) {
 			return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
@@ -1013,7 +1014,7 @@ func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.Envelope
 	if err != nil {
 		return nil, err
 	}
-	if principals, err = gitops.WithPreparedBindingGrants(ctx, cluster.composed(), cluster.env, principals); err != nil {
+	if principals, err = gitops.WithPreparedBindingGrants(ctx, cluster.composed(), cluster.env, principals, cluster.flow.WorkspaceConfigurationsFor); err != nil {
 		return nil, err
 	}
 	out := map[string]gitops.EnvelopeGrant{}

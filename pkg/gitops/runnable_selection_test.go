@@ -16,14 +16,17 @@ import (
 
 func TestRuntimeInstallationsSelectAuthorityEnvelopeAndConfiguration(t *testing.T) {
 	for _, tc := range []struct {
-		name, installation string
-		runtime            bool
-		want               []string
+		name, installation, tools string
+		runtime                   bool
+		want                      []string
 	}{
-		{"one", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]}`, true, []string{preparedKey}},
-		{"union", `[{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]},{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ADMIN"},{"prepared":"OWNER__ITEMS_APPLY"}]}]`, true, []string{"OWNER__ADMIN", preparedKey}},
-		{"empty", `{"contract":"runtime.installation/v1","bindings":[]}`, true, nil},
-		{"robin unchanged despite root installation", `{"contract":"runtime.installation/v1","bindings":[]}`, false, []string{"OWNER__ADMIN", preparedKey}},
+		{"one", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]}`, `[]`, true, []string{preparedKey}},
+		{"union", `[{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]},{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ADMIN"},{"prepared":"OWNER__ITEMS_APPLY"}]}]`, `[]`, true, []string{"OWNER__ADMIN", preparedKey}},
+		{"empty", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, true, nil},
+		{"robin default none despite root installation", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, false, nil},
+		{"robin offered", `{"contract":"runtime.installation/v1","bindings":[]}`, `["OWNER__ITEMS_APPLY"]`, false, []string{preparedKey}},
+		{"unknown", `{"contract":"runtime.installation/v1","bindings":[]}`, `["UNKNOWN_OPERATION"]`, false, nil},
+		{"runtime plus offered", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"owner__items-apply"}]}`, `["OWNER__ADMIN"]`, true, []string{"OWNER__ADMIN", preparedKey}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -34,12 +37,17 @@ func TestRuntimeInstallationsSelectAuthorityEnvelopeAndConfiguration(t *testing.
 			}
 			require.NoError(t, os.WriteFile(filepath.Join(w.module.Dir(), "services/api/service.codefly.yaml"), []byte(exposedHostedServiceYAML("api", groups...)+"module-identity: true\n"), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(w.workspace.Dir(), "configurations/test/runtime-execution.env"), []byte("INSTALLATION_JSON="+tc.installation+"\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(w.workspace.Dir(), "configurations/test/runnable-tools.env"), []byte("SHOP="+tc.tools+"\n"), 0o600))
 			var err error
 			w.workspace, err = resources.LoadWorkspaceFromDir(ctx, w.workspace.Dir())
 			require.NoError(t, err)
 			w.module, err = w.workspace.LoadModuleFromName(ctx, "shop")
 			require.NoError(t, err)
 			authority, err := w.authority(t)
+			if tc.name == "unknown" {
+				require.ErrorContains(t, err, "UNKNOWN_OPERATION")
+				return
+			}
 			require.NoError(t, err)
 			var got []string
 			for _, binding := range authority.Bindings[len(contractBindings()):] {
@@ -95,6 +103,7 @@ func TestRuntimeInstallationSelectsReachPerConsumer(t *testing.T) {
 			require.NoError(t, os.WriteFile(worker, append(data, []byte("  - runtime-execution\n")...), 0o600))
 			dir := filepath.Join(workspace.Dir(), "configurations/staging")
 			require.NoError(t, os.MkdirAll(dir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "runnable-tools.env"), []byte("SHOP=[\"SHOP__SHOP_REST_SYNC\"]\nRUNTIME=[]\n"), 0o600))
 			bindings := `[]`
 			if selected {
 				bindings = `[{"prepared":"SHOP__SHOP_REST_SYNC"}]`
@@ -120,4 +129,17 @@ func TestRuntimeInstallationSelectsReachPerConsumer(t *testing.T) {
 			require.Len(t, index.sources("shop", "api", "rest"), want)
 		})
 	}
+}
+
+func TestNativePreparedSelectionUsesInvocationOverride(t *testing.T) {
+	ctx := context.Background()
+	w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\n")
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{{Name: "runnable-tools", Key: "SHOP", Value: `[]`}})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+	grants, err := WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, selectionResolver(w.workspace, w.env, orchestration.RunMode))
+	require.NoError(t, err)
+	require.NotContains(t, string(grants["shop"]), preparedKey)
+	_, err = WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)})
+	require.ErrorContains(t, err, "this is a snapshot", "real renders retain the override guard")
 }
