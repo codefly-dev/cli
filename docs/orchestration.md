@@ -1061,7 +1061,20 @@ policy can drop what the prefetch acts on, and the resolved manifest digest of
 every base image, because a `FROM` tag is re-pushed whenever the base is patched.
 The identity also carries the context digest it was taken over, so the tree can
 be proven unchanged after the build; a context that moved mid-build records
-nothing, since the entry would claim inputs the image does not match.
+nothing, since the entry would claim inputs the image does not match. The
+context digest covers every file Docker is sent, including one the
+repository's own rules ignore: a generated file the recipe's ignore policy lets
+through changes the image, so it changes the identity and reuse rebuilds.
+Scratch that should never reach an image is the recipe's ignore policy's to
+drop, which leaves it out of the build and the identity alike.
+A pinned release the CLI materialized (`modulecache.Owned`) is read from its
+commit (`committedSourceContext`): the identity and the build share a private
+copy of the committed tree at `HEAD`, plus the ignored entries Docker would
+send, so a tracked edit or an untracked file a local run leaves in the module
+cache moves neither the identity nor the image. The carried entries (an
+agent's generated build inputs) are bound to the identity as the agent's
+outputs, in the Recipe class: a changed one rebuilds, while the Code class the
+published label is judged by stays the commit's.
 
 **The identity binds what the agent emitted.** For a service whose module
 replaces a sibling by filesystem path, the agent assembles a build context

@@ -14,29 +14,31 @@ package gitops
 // workload looked like a different application fault.
 //
 // WHO CARRIES IT. Every publication, not the host module's alone and not a
-// step of its own:
+// step of its own — and each carries only its own module's part of it:
 //
-//   - The file is whole or it is absent, never partial. It is derived from the
-//     composition as a whole, and a render refuses to write it while any
-//     composed module has no render for the environment
-//     (refuseUnrenderedModules), so the file a publication finds in the
-//     workspace describes every module the composition delivers. That is what
-//     makes carrying it safe when one module is published alone.
-//   - A module's own build is then approved by its own promotion. Were the
-//     host module's publication the only carrier, a round that does not
-//     republish the host would deliver builds nothing approves — the same
-//     outage — and the ordering that would hide it (the host published first)
-//     is one lane's workflow, never a rule of the delivery.
+//   - A module's own build is approved by its own promotion. Were the host
+//     module's publication the only carrier, a round that does not republish
+//     the host would deliver builds nothing approves — the same outage — and
+//     the ordering that would hide it (the host published first) is one
+//     lane's workflow, never a rule of the delivery.
+//   - What a promotion carries is the delivery base's file with only the
+//     published module's entries moved to the render's (cell_scope.go). The
+//     render's file approves every module's build as the checkout rendered
+//     it, and carried whole it approved a module's NEW build while that
+//     module's delivered tree still ran the old one — whose next pod the cell
+//     then refused. Each module's approval moves with its own tree.
 //   - A step of its own would be a second mechanism for what a publication
 //     already does: clone the delivery repository, hold the file to the base
 //     branch, write a signed commit, open the promotion. It would also be a
 //     step to forget, which is the defect itself.
 //
-// Carrying it on every publication delivers the same bytes more than once in a
-// round: every module of one `render --all` carries the one file that render
-// derived, so their promotions agree and merge. A module re-rendered mid-round
-// carries a different file, and git reports that conflict rather than quietly
-// merging two approved-build lists.
+// The render still writes the file whole, and refuses to write it while any
+// composed module has no render for the environment (refuseUnrenderedModules):
+// it is what each module's entries are read from. Publishing every module of
+// one `render --all`, in any order, delivers that render's whole file. Two
+// promotions open at once each change their own module's lines, never the
+// other's builds; promotions of different renders also differ on the source
+// revision line, which git reports as the conflict it is.
 //
 // IT IS NOT SIGNED, and belongs in no signed set. The signed documents — the
 // module manifests, the module envelope and the paired declarations — are
@@ -69,8 +71,9 @@ type publicationCell struct {
 	// source is the workspace file, and delivered its path in the delivery
 	// repository (deliveryCellPath).
 	source, delivered string
-	// data is the file exactly as the render wrote it: what is delivered, and
-	// what the reviewer reads. file is the same bytes through the file's own
+	// data is what is delivered and what the reviewer reads: the file as the
+	// render wrote it until the publication scopes it to its module
+	// (scopeToModule). file is the same document through the file's own
 	// reader, for the hold against the base branch's.
 	data []byte
 	file *cellfile.File
@@ -105,9 +108,9 @@ func publicationCellFile(workspace *resources.Workspace, env *environments.Envir
 
 // carryInto writes the cell file into the promotion clone at the path the
 // cell's infrastructure reads it from, beside the module trees it is derived
-// from. The bytes are the render's own, verbatim: the file is one of the
-// render's outputs, and a publication delivers what was rendered and reviewed
-// rather than re-deriving it here.
+// from. The bytes are the ones held: the render's own where the base has no
+// file, otherwise the base's with this module's entries moved
+// (scopeToModule), encoded the one way the render encodes them.
 func (cell *publicationCell) carryInto(repo string) error {
 	// The directory is confined as every other delivery destination is (no
 	// escape, no symbolic link traversed), and the file inside it is the one

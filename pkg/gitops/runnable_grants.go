@@ -146,18 +146,16 @@ func scopeStrings(scopes []preparedScope) []string {
 // A key the module's own contract already uses is refused by name: one id, two
 // declarations of what it asks.
 //
-// A prepared binding addressed to the module itself is not installed: the
-// composition prepares every runnable for every installer, so a module whose
-// own operations are runnables (robin's chat methods) would otherwise ask for
-// a person-delegated capability to call itself — which the host refuses, as
-// a binding naming its own module is only ever headless work — and reaching
-// its own operations needs no capability at all.
+// A prepared binding addressed to the module itself is installed too: a
+// module whose own operations are runnables (an agent's chat methods) calls
+// them as tools for the person, through the binding the tool names, and the
+// authority issues that child within the person's capability at the module
+// cut to the binding, as for any other audience. A host's module-principal
+// registry, which takes a self-addressed binding for headless work only,
+// omits it by name; the authority core issues through it.
 func appendPreparedBindings(authority *solutionhost.Authority, module string, grants []preparedGrant) error {
 	for i := range grants {
 		grant := &grants[i]
-		if grant.audience == module {
-			continue
-		}
 		for _, existing := range authority.Bindings {
 			if existing.ID == grant.key {
 				return fmt.Errorf("module %s declares binding %s and installs the prepared binding %s/%s under the same id; a binding has one declaration", module, existing.ID, runnablespkg.RunnableBindingsGroup, grant.key)
@@ -289,6 +287,9 @@ func withPreparedEntries(principal string, grant json.RawMessage, grants []prepa
 	}
 	for i := range grants {
 		prepared := &grants[i]
+		// A self-addressed binding is the authority core's to issue through
+		// (appendPreparedBindings); the envelope's registry takes one for
+		// headless work only and would refuse the whole grant.
 		if prepared.audience == principal {
 			continue
 		}

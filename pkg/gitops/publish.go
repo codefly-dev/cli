@@ -220,14 +220,15 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
-	baseCell, claim, removedModules, err := judgeCompositionRemovals(ctx, workspace, env, cell, &compositionBase{
+	baseCell, claim, removals, err := judgeCompositionRemovals(ctx, workspace, env, cell, &compositionBase{
 		repo: repo, gitopsPath: pathRoot, branch: baseBranch, revision: baseRevision,
-		module: request.Module, restoreRevision: restoreRevision,
+		module: request.Module, restoreRevision: restoreRevision, hostsDelivery: inventory.HostsDelivery,
 	})
 	if err != nil {
 		return fail(err)
 	}
-	publishedPaths = append(publishedPaths, removedModules...)
+	publishedPaths = append(publishedPaths, removals.removed...)
+	publication.options.Withdraw = removals.withdraw
 	if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, promotionBranch, owned, claim.owns(pathRoot), branchRevision, replacesRevision); err != nil {
 		return fail(err)
 	}
@@ -257,7 +258,7 @@ func preparePublish(
 		return fail(err)
 	}
 	staleConsumers := describeStaleConsumers(staleOnBase)
-	allowedRemovals, undeclaredRemovals, err := holdCellToBase(cell, env, baseBranch, baseCell, request.AllowCellRemovals, claim)
+	allowedRemovals, undeclaredRemovals, err := scopeAndHoldCell(cell, carriedCell != "", env, baseBranch, baseCell, request, claim)
 	if err != nil {
 		return fail(err)
 	}
@@ -285,7 +286,8 @@ func preparePublish(
 		StaleConsumers:         staleConsumers,
 		CellRemovals:           allowedRemovals,
 		UndeclaredCellRemovals: undeclaredRemovals,
-		RemovedModules:         removedModules,
+		RemovedModules:         removals.removed,
+		HostWithdrawals:        withdrawnByHost(inventory.Delivery, removals.withdraw),
 		CellFile:               carriedCell,
 		CellNotice:             cellNotice(env, cell, restoreRevision, request.Module),
 		Carriers:               publication.options.Carriers,
@@ -913,24 +915,35 @@ func loadPublicationInventory(
 	rendered,
 	pathRoot string,
 ) (Inventory, error) {
-	if err := ValidateRenderedTree(rendered, "", true); err != nil {
-		return Inventory{}, fmt.Errorf("validate promotable render: %w", err)
-	}
+	// The render record is read before the tree is held to its own graph.
+	// `deployments/modules/<module>` is one working tree for every
+	// environment: the last render of ANY environment is what it holds, a
+	// `render --all` that stopped at an earlier module leaves it as it was,
+	// and a reset of the working tree puts the committed render back. A tree
+	// rendered for another environment is then the real finding, named with
+	// the one command that lifts it; validating its unit graph first reports
+	// whatever that other render's layout disagrees about ("unexpected unit
+	// object-storage") and hides which render this is.
+	renderFirst := fmt.Sprintf("run `codefly deploy gitops render %s --env %s` first", request.Module, request.Environment)
 	inventory, err := LoadInventory(rendered)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Inventory{}, fmt.Errorf("module %s has never been rendered (no %s): %s", request.Module, filepath.Join(rendered, InventoryFilename), renderFirst)
+	}
 	if err != nil {
 		return Inventory{}, err
 	}
 	if inventory.Module != request.Module || inventory.Environment != request.Environment || inventory.Unit != "" {
 		return Inventory{}, fmt.Errorf(
-			"render inventory targets module %q environment %q unit %q",
-			inventory.Module,
-			inventory.Environment,
-			inventory.Unit,
+			"%s holds the render of module %q for environment %q (unit %q), not module %s for environment %s: %s",
+			rendered, inventory.Module, inventory.Environment, inventory.Unit, request.Module, request.Environment, renderFirst,
 		)
 	}
 	expectedOwnedPath := deliveryModulePath(pathRoot, request.Module)
 	if inventory.OwnedPath != expectedOwnedPath {
-		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
+		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q: %s", inventory.OwnedPath, expectedOwnedPath, renderFirst)
+	}
+	if err := ValidateRenderedTree(rendered, "", true); err != nil {
+		return Inventory{}, fmt.Errorf("validate promotable render: %w", err)
 	}
 	if inventoryHasSolutionUnits(&inventory) {
 		if err := validateSolutionUnits(request.Module, inventory.Units); err != nil {

@@ -10,7 +10,9 @@ package gitops
 // composition explains — the module left `modules:` — is carried without
 // more, and the module's delivered tree goes with it: the cell no longer
 // admits anything of it, and the ApplicationSet that tree carries would keep
-// stamping Applications whose every pod the cell refuses.
+// stamping Applications whose every pod the cell refuses. The host is told by
+// the module hosting the delivery API, whose publish withdraws what the tree
+// last delivered (host_withdrawals.go).
 
 import (
 	"context"
@@ -284,23 +286,43 @@ func (claim *compositionClaim) owns(gitopsPath string) func(path string) bool {
 type compositionBase struct {
 	repo, gitopsPath, branch, revision string
 	module, restoreRevision            string
+	// hostsDelivery is whether the module published hosts the delivery API,
+	// whose publish withdraws what dropped modules delivered.
+	hostsDelivery bool
+}
+
+// compositionRemovals is what a publication does on the composition's word:
+// removed are the delivered trees it removes, relative to the delivery
+// repository, and withdraw the last manifest of each binding a dropped
+// module delivered, for the host module's publish to withdraw
+// (host_withdrawals.go).
+type compositionRemovals struct {
+	removed  []string
+	withdraw map[string]deliveredManifest
 }
 
 // judgeCompositionRemovals is the one step a publication takes on the
 // composition's word: it reads the base's cell file, judges the checkout's
 // claim against it and removes from the clone the delivered trees that claim
-// explains, answering all three for the hold, the branch guard and the plan.
-func judgeCompositionRemovals(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, cell *publicationCell, base *compositionBase) (*cellfile.File, *compositionClaim, []string, error) {
+// explains, answering all three for the hold, the branch guard and the plan —
+// and, for the host module's forward publication to a hosted environment,
+// what every dropped module last delivered.
+func judgeCompositionRemovals(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, cell *publicationCell, base *compositionBase) (*cellfile.File, *compositionClaim, compositionRemovals, error) {
+	var removals compositionRemovals
 	baseCell, err := baseCellFile(ctx, cell, base.repo, base.branch, base.revision)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, removals, err
 	}
 	claim := newCompositionClaim(ctx, workspace, base.repo, base.module, base.revision, baseCell)
-	removed, err := removeUndeclaredDeliveries(base.repo, base.gitopsPath, env, base.restoreRevision, claim)
-	if err != nil {
-		return nil, nil, nil, err
+	if removals.removed, err = removeUndeclaredDeliveries(base.repo, base.gitopsPath, env, base.restoreRevision, claim); err != nil {
+		return nil, nil, removals, err
 	}
-	return baseCell, claim, removed, nil
+	if base.hostsDelivery && env != nil && env.Host != nil && base.restoreRevision == "" {
+		if removals.withdraw, err = composedOutManifests(ctx, base.repo, base.gitopsPath, base.branch, env.Name, removals.removed, claim); err != nil {
+			return nil, nil, removals, err
+		}
+	}
+	return baseCell, claim, removals, nil
 }
 
 // baseCellFile reads the cell file the delivery base revision carries at the

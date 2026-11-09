@@ -173,7 +173,7 @@ func WorkspaceAuthoritySources(workspace *resources.Workspace, env *environments
 			if err != nil {
 				return nil, err
 			}
-			return Roles(at)
+			return Roles(at, WorkspaceContractResolver(ctx, workspace, env))
 		},
 		OwnerAware: func(ctx context.Context, module string) (bool, error) {
 			at, err := dir(ctx, module)
@@ -181,6 +181,13 @@ func WorkspaceAuthoritySources(workspace *resources.Workspace, env *environments
 				return false, err
 			}
 			return OwnerAware(at)
+		},
+		SharedKinds: func(ctx context.Context, module string) ([]string, error) {
+			at, err := dir(ctx, module)
+			if err != nil {
+				return nil, err
+			}
+			return SharedKinds(at)
 		},
 		Installation: func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error) {
 			at, err := dir(ctx, module)

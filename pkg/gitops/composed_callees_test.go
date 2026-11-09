@@ -59,3 +59,18 @@ func TestACallRequiresWhatTheComposedCalleeDeclares(t *testing.T) {
 		t.Fatalf("an uncomposed callee: %v", err)
 	}
 }
+
+// What a call may carry beyond what it requires (a first write creating the
+// collection it writes to) is part of what a binding naming the call may
+// carry, answered beside what it requires.
+func TestACallCarriesWhatItsCalleeDeclaresBesideWhatItRequires(t *testing.T) {
+	callees := newComposedCallees(func(string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+		return []*compositionv1.MethodPolicyV1{{Method: "/documents.v1.DocumentsService/CreateDocument",
+			Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"write"}}},
+			Carries:  []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"create"}}}}}, true, nil
+	})
+	got, err := callees.Requires("documents", "/documents.v1.DocumentsService/CreateDocument")
+	if err != nil || strings.Join(got, ",") != "documents:write,documents.collection:create" {
+		t.Fatalf("CreateDocument: %v %v", got, err)
+	}
+}

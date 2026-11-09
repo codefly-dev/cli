@@ -11,10 +11,12 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -129,8 +131,16 @@ type imageInputs struct {
 	// files on disk.
 	RecipeTree string `json:"recipe_tree_digest"`
 	// ContextTree is the digest of every byte of the build context Docker would
-	// send, computed here rather than taken from any declaration.
+	// send, computed here rather than taken from any declaration. A pinned
+	// release's context is its committed tree (committedSourceContext).
 	ContextTree string `json:"context_tree_digest"`
+	// AgentOutputs is the digest of what a pinned release's committed copy
+	// carried from the working tree because Docker is sent it — an agent's
+	// generated build inputs (committedSource.scratch) — or empty when nothing
+	// was carried. They reach the image, so they are inputs; they are what the
+	// agent contributes, not the release's code, so they are in the Recipe
+	// class and never move the Code class the published label is judged by.
+	AgentOutputs string `json:"agent_outputs_digest,omitempty"`
 	// GoModules is the digest of the go.mod and go.sum of each Go module root the
 	// recipe declares a download for, hashed by path so no ignore policy can
 	// drop them.
@@ -269,7 +279,11 @@ func identityClasses(inputs *imageInputs) (*buildClasses, error) {
 	if err != nil {
 		return nil, err
 	}
-	recipe, err := classDigest("recipe", []any{inputs.Recipe, inputs.Dockerfile, inputs.RecipeTree, inputs.Command})
+	recipeInputs := []any{inputs.Recipe, inputs.Dockerfile, inputs.RecipeTree, inputs.Command}
+	if inputs.AgentOutputs != "" {
+		recipeInputs = append(recipeInputs, inputs.AgentOutputs)
+	}
+	recipe, err := classDigest("recipe", recipeInputs)
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +304,11 @@ type imageBuildScope struct {
 	OutputDir    string
 	ContextDir   string
 	WorkspaceDir string
+	// committed, when set, is the committed copy of a pinned release that
+	// ContextDir names: the entries it carried from the working tree because
+	// the repository ignores them are left out, as sourceIgnoredPaths leaves
+	// them out of a checkout.
+	committed *committedSource
 }
 
 // contextDigest is the one definition of "the bytes of this recipe's build
@@ -304,7 +323,85 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 	if err != nil {
 		return "", fmt.Errorf("ignore policy of %s: %w", recipe.GetName(), err)
 	}
-	return contextContentDigest(ctx, scope.ContextDir, ignore, contextExclusions(ctx, scope.ContextDir, scope.OutputDir, scope.WorkspaceDir))
+	excluded := contextExclusions(ctx, scope.ContextDir, scope.OutputDir, scope.WorkspaceDir)
+	// Every file Docker is sent is an input, whatever the repository's own
+	// ignore rules say: a file the repository ignores but the recipe's policy
+	// lets through (a generated client, a configuration under code/) changes
+	// the image, so it changes the identity, and reuse never keeps an image
+	// built from other inputs. Scratch that should not reach an image is the
+	// recipe's ignore policy's to drop, which leaves it out of both. A pinned
+	// release's Code class is its commit: the agent outputs carried beside it
+	// are left out here, as a fresh clone of that commit lacks them, and bound
+	// to the identity apart (imageInputs.AgentOutputs).
+	if scope.committed != nil {
+		maps.Copy(excluded, scope.committed.scratch)
+	}
+	return contextContentDigest(ctx, scope.ContextDir, ignore, excluded)
+}
+
+// carriedOutputsDigest digests every entry a pinned release's committed copy
+// carried from the working tree (committedSource.scratch), in path order, the
+// way the context digest records an entry: the bytes Docker is sent beside the
+// commit. Empty when the context is not a committed copy or carried nothing,
+// so every other identity is exactly what it was.
+func carriedOutputsDigest(scope imageBuildScope) (string, error) {
+	if scope.committed == nil || len(scope.committed.scratch) == 0 {
+		return "", nil
+	}
+	root := filepath.Clean(scope.ContextDir)
+	carried := slices.Sorted(maps.Keys(scope.committed.scratch))
+	hasher := sha256.New()
+	for _, entry := range carried {
+		err := filepath.WalkDir(filepath.Join(root, filepath.FromSlash(entry)), func(path string, dirEntry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			return hashContextEntry(hasher, filepath.ToSlash(relative), path, dirEntry)
+		})
+		if errors.Is(err, fs.ErrNotExist) {
+			// Every file under it was one the recipe's policy drops.
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("digest the build inputs carried into %s: %w", root, err)
+		}
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// sourceIgnoredPaths lists the context-relative, slash-separated paths the
+// context's own repository ignores: what a pinned release's committed copy
+// carries from the working tree because Docker would send it
+// (committedSource.carryIgnored). Tracked files are never listed, whatever the
+// rules say about their names. A context that is itself ignored — an
+// agent-assembled tree under the workspace's `.codefly/` — is one the rules
+// say nothing about, and lists nothing; so does a context outside any
+// repository, or on a host without git.
+func sourceIgnoredPaths(ctx context.Context, contextDir string) map[string]bool {
+	w := wool.Get(ctx).In("orchestration.sourceIgnoredPaths")
+	// Exit 1 is "not ignored"; 0 says the root itself is ignored and anything
+	// else (128: not a repository) says the rules cannot be read.
+	check := exec.CommandContext(ctx, "git", "-C", contextDir, "check-ignore", "-q", ".")
+	var exit *exec.ExitError
+	if err := check.Run(); err == nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", contextDir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z").Output()
+	if err != nil {
+		w.Debug("cannot list the paths the repository ignores; every file of the context is hashed", wool.DirField(contextDir), wool.ErrField(err))
+		return nil
+	}
+	ignored := map[string]bool{}
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path = strings.TrimSuffix(filepath.ToSlash(path), "/"); path != "" && path != "." {
+			ignored[path] = true
+		}
+	}
+	return ignored
 }
 
 // imageBuildIdentity digests the inputs of one recipe's image build. A zero
@@ -322,6 +419,10 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	if err != nil {
 		return imageIdentity{}, err
 	}
+	agentOutputs, err := carriedOutputsDigest(scope)
+	if err != nil {
+		return imageIdentity{}, err
+	}
 	bases, err := baseImageDigests(ctx, dockerfilePath, builderName, mirrors)
 	if err != nil {
 		return imageIdentity{}, err
@@ -335,6 +436,7 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 		Command:       normalizedBuildxArgs(args, scope.ContextDir, dockerfilePath, proxies),
 		RecipeTree:    recipeTree,
 		ContextTree:   contextTree,
+		AgentOutputs:  agentOutputs,
 		GoModules:     goModules,
 		Bases:         bases,
 		ImageBindings: bindings,

@@ -129,6 +129,9 @@ func contractMethods(path, digest string, serves func(pkg, procedure string) boo
 					for _, r := range policy.GetRequires() {
 						m.Requires = append(m.Requires, &authorityv1.WorkScopeV1{ResourceKind: r.GetResourceKind(), Actions: r.GetActions()})
 					}
+					for _, r := range policy.GetCarries() {
+						m.Carries = append(m.Carries, &authorityv1.WorkScopeV1{ResourceKind: r.GetResourceKind(), Actions: r.GetActions()})
+					}
 				}
 				out = append(out, m)
 				for _, route := range httpRoutes(method.GetOptions()) {
@@ -262,6 +265,9 @@ func routeMethods(path, digest string) ([]*compositionv1.MethodPolicyV1, error) 
 				m.AnyCheckedCaller = policy.GetAnyCheckedCaller()
 				for _, r := range policy.GetRequires() {
 					m.Requires = append(m.Requires, &authorityv1.WorkScopeV1{ResourceKind: r.GetResourceKind(), Actions: r.GetActions()})
+				}
+				for _, r := range policy.GetCarries() {
+					m.Carries = append(m.Carries, &authorityv1.WorkScopeV1{ResourceKind: r.GetResourceKind(), Actions: r.GetActions()})
 				}
 			}
 			out = append(out, m)

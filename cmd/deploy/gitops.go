@@ -631,6 +631,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	for _, removed := range plan.RemovedModules {
 		cli.Warning("Removed %s from the delivery: the composition no longer declares it", removed)
 	}
+	for _, withdrawal := range plan.HostWithdrawals {
+		cli.Warning("Withdraws %s from the host: the composition no longer declares the module, so the host module's delivery Job carries its withdrawal", withdrawal)
+	}
 	for _, stale := range plan.StaleConsumers {
 		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
 	}
@@ -750,6 +753,19 @@ var gitOpsRenderAll bool
 // the host's module first, then the rest by name — less every module the
 // environment withdraws whole, which it returns by name: nothing of such a
 // module renders in this environment.
+// unrenderedModules names the modules a stopped `render --all` did not reach,
+// as a suffix for its error; nothing when it stopped at the last.
+func unrenderedModules(remaining []*resources.Module) string {
+	if len(remaining) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(remaining))
+	for _, module := range remaining {
+		names = append(names, module.Name)
+	}
+	return " (not rendered, their trees are as they were: " + strings.Join(names, ", ") + ")"
+}
+
 func compositionRenderOrder(env *environments.Environment, modules []*resources.Module) (rendered []*resources.Module, withdrawn []string) {
 	host := ""
 	if env.Host != nil {
@@ -802,7 +818,7 @@ func renderComposition(ctx context.Context) error {
 	for _, name := range withdrawn {
 		cli.Info("Skipped %s: environment %s withdraws every service of it (exclude-services)", name, env.Name)
 	}
-	for _, module := range rendered {
+	for index, module := range rendered {
 		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
@@ -813,7 +829,10 @@ func renderComposition(ctx context.Context) error {
 			Progress: os.Stdout,
 		})
 		if renderErr != nil {
-			return fmt.Errorf("render %s: %w", module.Name, renderErr)
+			// The modules after this one keep whatever render their tree
+			// held, which publish reports as rendered for another
+			// environment; naming them here says why.
+			return fmt.Errorf("render %s: %w%s", module.Name, renderErr, unrenderedModules(rendered[index+1:]))
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)

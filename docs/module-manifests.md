@@ -303,6 +303,19 @@ that is not a prepared binding fails the render by key. A module that asks for
 nothing — no contract, no scoped consumption — gains nothing: the host grants
 it its envelope whole, and a request would change that.
 
+A prepared binding addressed to the module itself (an agent's own operations
+prepared as runnables) is requested too, for the authority core to issue
+through within the person's capability cut to the binding; it is left out of
+the module's envelope entry, whose registry takes a self-addressed binding for
+headless work only.
+
+**A binding derived from its calls carries what they declare beyond what they
+require.** A method's declaration (`authority.hop.v1.Policy`) may list, beside
+`requires`, what a call may exercise beyond it (`carries`): an effect the
+callee performs on some calls alone, on the call's own capability. The render
+reads it into `MethodPolicyV1.carries` and a binding naming the call in
+`calls` has it in its ceiling; the hop requires only `requires`.
+
 **Owner-aware enforcement is declared, never inferred.** A module that checks
 resource-owner selectors declares `owner_aware: true` at the top level of its
 `module.contract.codefly.yaml`. The composition delivery carries exactly that
@@ -311,6 +324,20 @@ false declaration stays false, including for solutions with roles or
 `installation_owned_scopes`; authority refuses person issuance to such a
 solution by name. The declaration participates in delivery generation changes
 and is omitted from withdrawals together with other live policy.
+
+**Shared kinds and reach through a binding are declared, never inferred.** A
+scope ceiling declaring `shared: true` (a kind no installation owns, such as a
+model's profiles) is carried in `AuthorityManifestV1.shared_kinds` (field 10),
+in the order written; the authority issues a scope of it unselected through a
+solution. A role scope naming `through: <binding id>` (a kind a module
+downstream of that binding consumes) is carried in the role's `through`
+(`RoleThroughV1`, one per binding in the order first named), apart from its own
+`scopes`; core's contract reader holds the binding to be declared and one a
+person causes, and the authority holds the kind reachable from it in the
+composition it is delivered to. The rows are read from the contract as the
+composition resolves it, exactly as the manifest's bindings are: a scope
+through an optional binding the composition leaves out (none of its slots
+filled) is carried in no `through`, because nothing is delivered through it.
 
 **The installation declaration is authored, carried verbatim, and compared
 across both signed documents.** A unit declares, at the top level of its
@@ -553,6 +580,30 @@ new binding. A render that names no host over a delivery that declared
 bindings is refused, not withdrawn. A withdrawal is authored by the domain that
 delivered the binding: a manifest delivered under another ownership domain is
 never withdrawn by this publish.
+
+**A module the composition dropped is withdrawn by the host module.** A module
+removed from `modules:` is published by nobody: its delivered tree is removed
+with the cell file that no longer admits it, and its namespace and its
+`delivery` account go with it, so it cannot carry its own withdrawal. The host
+accepts a withdrawal from the `delivery` account of the withdrawn module's
+namespace **or of the host module's** — the module hosting the delivery API,
+which carries the module envelope — because the host module carries the
+composition. So the host module's forward publish to a hosted environment
+withdraws, for every module the composition no longer declares, each binding
+that module last delivered to the environment and did not itself withdraw: at
+prior + 1, `removed: true`, in the host module's own overlay
+(`modules/<host>/module-manifests/overlays/<environment>/`), signed by the
+publish's release custody like any manifest and POSTed by the host module's
+own `deliver-manifest` Job beside its live manifests. What the dropped module
+last delivered is read from the base branch while its tree is there (this
+publication removes it), and otherwise from the base branch's history — the
+last commit that held the tree's overlay; a history that cannot say is refused
+by name, and so is a binding a live tree on the base branch delivers now. Once
+delivered, the withdrawal is the host module's own record and is carried
+forward verbatim: it is never written twice, and re-delivered it is the same
+generation and bytes, which the host answers as a replay. The plan lists each
+under `hostWithdrawals`. No other module's publish writes one, and the removed
+module's tree is deleted outright, so the cell needs no exception for it.
 
 **Held to the host declared now.** Every manifest the render declares is held,
 at publish, to the environment's host block as it is then — the ownership
@@ -922,6 +973,23 @@ A file that exists states nothing by itself: one written for
 `{"principals": {}}` revokes — otherwise a dropped key would be signed under
 release custody as the revocation of every grant on the cell, and every module
 principal would stop minting.
+
+**A grant names a composed module, or it is refused.** A module principal
+is the module's own name (a solution is a module), so the envelope is held
+at publish to the modules the composition declares — the same set a cell
+removal is judged against — and a grant naming any other principal is
+refused by name, saying what the composition does declare: a grant that
+outlived its module when the module left `modules:`, or a name mistyped,
+would otherwise be signed under release custody, kept on the host's record,
+and reported against on every reconcile pass as a grant nobody can use. The
+remedy is in the composition's file: remove the grant, or compose the module
+it is for. **The host's own principal — the module whose endpoint
+`host.delivery` names — needs no grant by declaration**: it serves the
+delivery API and is the host, not a module the host mints for, so an
+envelope that omits it is complete; one that names it is admitted like any
+other composed principal. Every composed module is not required to be
+granted — a composed module the envelope omits is a module the host mints
+nothing for, which is a statement, not an error.
 
 **A delivered grant names no organization.** A grant carrying a non-empty
 `tenant` is refused at publish, naming the principals: tenancy resolves

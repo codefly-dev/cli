@@ -1230,7 +1230,11 @@ through and the plan reports it (`undeclaredCellRemovals`), and the
 publication also removes that module's delivered tree from
 `<gitops path>/modules/` with everything else it writes (`removedModules`):
 the cell no longer admits anything of it, and the ApplicationSet that tree
-carries would keep stamping Applications whose every pod the cell refuses. A
+carries would keep stamping Applications whose every pod the cell refuses.
+The host is told by the module hosting the delivery API: its publish
+withdraws every binding a dropped module last delivered, from its own
+overlay, and the plan lists each (`hostWithdrawals`; see
+[What publish settles](module-manifests.md#what-publish-settles)). A
 checkout that never had a module and one that dropped it derive the same cell
 file, so the history decides: when the workspace repository is the delivery
 repository (it holds the base commit, or the delivery holds the workspace
@@ -5234,6 +5238,28 @@ contents are a copy of the recipe tree keyed by agent version. Everything the
 recipe's ignore policy excludes is excluded too, matched with the same matcher
 Docker uses — a file Docker does not send is not an input. A recipe-declared
 ignore file takes precedence over the context root's, exactly as for Docker.
+
+The key covers every file Docker is sent, including one the context's own
+repository ignores: a generated client or configuration the recipe's ignore
+policy lets through reaches the image, so changing it rebuilds. Scratch that
+should never reach an image (`.cache/`, a virtual environment, `__pycache__/`)
+is the recipe's ignore policy's to drop, which leaves it out of the build and
+the key alike. A pinned release the CLI materialized is keyed and built from
+its commit instead (below), so scratch in the module cache never moves it.
+
+A **pinned release** the CLI materialized into its module cache is read from its
+commit, not from its files. The cache checkout is also where a local run works,
+and a run rewrites files a module commits (an agent's `.cache/local/*.hash`),
+leaves untracked files and writes ignored scratch; so for a service whose code
+is a pinned release, the context is a private copy of the committed tree at the
+checkout's `HEAD` (checked out through a private index, attributes and modes as
+a clone has them), plus the ignored entries the recipe's policy sends, which the
+code digest leaves out and the identity binds as the agent's outputs (Recipe
+class), so a changed one rebuilds. Identity and image are built from that one copy: a tracked
+edit, an untracked file or ignored scratch in the cache moves neither, and the
+checkout itself is never touched. A checkout the developer owns — a workspace
+service, a checkout of their own, or a cache root set through `CODEFLY_MODULE_CACHE` — is
+built from its files, local edits included.
 
 Reuse never stands in for a build on the strength of the record alone. A pushed
 image is reused only if the registry still serves the recorded manifest digest,

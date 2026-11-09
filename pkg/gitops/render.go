@@ -122,6 +122,12 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err = projectServiceMesh(tree, owned, opts); err != nil {
 		return RenderResult{}, err
 	}
+	// After every projection that changes what a pod reads, so the digest
+	// covers the configuration as delivered: a configuration-only change is
+	// a pod-template change, and the pods roll. See configuration_digest.go.
+	if err = projectConfigurationDigest(tree, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
 	// Before the manifest and the validation read the tree: a Job or CronJob
 	// an agent rendered without pod labels is given the two that name it,
 	// so every pod-producing workload is one the cell file can select.

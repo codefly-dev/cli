@@ -24,8 +24,18 @@ func envelopeOptions(t *testing.T, signer *fakeSigner, principals map[string]jso
 	opts := publishOptions(signer)
 	opts.Coordinate = testHost().Coordinate
 	opts.SelfCheck, opts.ReuseCheck = check, check
-	opts.Envelope = &declaredEnvelope{Principals: principals, Stated: principals != nil, StatesPrincipals: principals != nil}
+	opts.Envelope = &declaredEnvelope{Principals: principals, Stated: principals != nil, StatesPrincipals: principals != nil, Composed: composing(principals)}
 	return opts
+}
+
+// composing is a composition that declares exactly the principals granted,
+// so the harness holds the envelope to the same set a publish would.
+func composing(principals map[string]json.RawMessage) map[string]bool {
+	composed := map[string]bool{}
+	for principal := range principals {
+		composed[principal] = true
+	}
+	return composed
 }
 
 func recordsGrant(audience string) map[string]json.RawMessage {
@@ -140,6 +150,38 @@ func TestPublishRefusesADeliveredEnvelopeGrantNamingATenant(t *testing.T) {
 	require.NotContains(t, err.Error(), "compute", "an empty tenant names nothing")
 }
 
+// TestPublishRefusesAnEnvelopeGrantNamingAnUncomposedPrincipal: a module
+// principal is the module's own name, so a grant naming a module the
+// composition does not declare — the grant of a module since removed from
+// `modules:`, or a name mistyped — is a grant nobody can use, which the host
+// would keep and report against on every reconcile. Publish refuses it by
+// name, says what the composition does declare, and signs nothing; a publish
+// that states no composition can grant no principal at all.
+func TestPublishRefusesAnEnvelopeGrantNamingAnUncomposedPrincipal(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+	granted := recordsGrant("tracing")
+	granted["proposals"] = json.RawMessage(`{}`)
+	opts := envelopeOptions(t, signer, granted)
+	opts.Envelope.Composed = map[string]bool{"records": true, "crm": true}
+	_, err := repository.settle(repository.stageRender(t, "crm"), &opts)
+	require.ErrorContains(t, err, "grants proposals, which the composition does not declare as a module")
+	require.ErrorContains(t, err, "the composition declares crm, records")
+	require.ErrorContains(t, err, "configurations/prod/module-envelope.json")
+	require.Equal(t, 1, signer.signed, "the manifest was signed; the envelope was refused before it was")
+
+	opts.Envelope.Composed = nil
+	_, err = repository.settle(repository.stageRender(t, "crm"), &opts)
+	require.ErrorContains(t, err, "grants proposals, records, which the composition does not declare as a module")
+	require.ErrorContains(t, err, "the composition declares no module")
+
+	delete(granted, "proposals")
+	opts = envelopeOptions(t, signer, granted)
+	opts.Envelope.Composed = map[string]bool{"records": true, "crm": true}
+	_, err = repository.settle(repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err, "a composed principal needs nothing more; the host's own principal needs no grant to be composed")
+}
+
 // TestPublishRefusesAnEnvelopeTheCompositionStoppedStating: an envelope
 // delivered before and stated by nothing now is refused, never skipped;
 // stating {"principals": {}} revokes every grant at the next revision.
@@ -234,7 +276,7 @@ func TestPublishRefusesAnUnsignedEnvelopeOutsideLocalQualification(t *testing.T)
 	inventory := repository.stageRender(t, "")
 	opts := publishOptions(signing.FromEnvironment(func(string) (string, bool) { return "", false }))
 	opts.Coordinate = testHost().Coordinate
-	opts.Envelope = &declaredEnvelope{Principals: recordsGrant("tracing"), Stated: true, StatesPrincipals: true}
+	opts.Envelope = &declaredEnvelope{Principals: recordsGrant("tracing"), Stated: true, StatesPrincipals: true, Composed: composing(recordsGrant("tracing"))}
 	_, err := repository.settle(inventory, &opts)
 	require.ErrorIs(t, err, signing.ErrNoIdentity)
 	require.ErrorContains(t, err, "the module envelope cannot be delivered unsigned to prod")
@@ -292,6 +334,7 @@ func TestOnlyTheHostingModulesHostedPublishDeclaresTheEnvelope(t *testing.T) {
 		require.True(t, publication.options.Envelope.Stated)
 		require.Contains(t, publication.options.Envelope.Principals, "records")
 		require.Equal(t, uint64(3), publication.options.Envelope.MinimumRevision)
+		require.Equal(t, composedModules(workspace), publication.options.Envelope.Composed, "the envelope is held to the modules the composition declares")
 	}
 	other := &deliveryPublication{workspace: workspace, env: &environments.Environment{Name: "staging"}, options: deliveryPublishOptions{Target: testDeliveryTarget()}}
 	require.NoError(t, other.declareEnvelope(hosting, "staging"))
