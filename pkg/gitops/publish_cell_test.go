@@ -213,7 +213,7 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
+	addLegacyCaller(t, file)
 	base, err := file.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -238,9 +238,25 @@ func TestAStaleCheckoutStillNeedsTheFlagToWithdrawAModule(t *testing.T) {
 	if len(plan.RemovedModules) != 0 || slices.ContainsFunc(plan.Changed, func(path string) bool { return strings.HasPrefix(path, legacy) }) {
 		t.Fatalf("a removal the flag confirms pruned the delivered tree: %v %v", plan.RemovedModules, plan.Changed)
 	}
-	if len(plan.CellRemovals) != 1 || len(plan.UndeclaredCellRemovals) != 0 {
-		t.Fatalf("the plan reports %v named and %v explained; want one named", plan.CellRemovals, plan.UndeclaredCellRemovals)
+	if len(plan.CellRemovals) != 2 || len(plan.UndeclaredCellRemovals) != 0 {
+		t.Fatalf("the plan reports %v named and %v explained; want legacy's namespace and its edge named", plan.CellRemovals, plan.UndeclaredCellRemovals)
 	}
+}
+
+// addLegacyCaller gives a base cell file a module legacy the fixture's
+// composition does not declare: its namespace, and its caller edge on the
+// payments host's endpoint. A publication of payments leaves another module's
+// namespace as the base has it (promotedCell), so it is the edge — on the
+// published module's own endpoint, which the render no longer names — that
+// the publication removes, and that the hold judges.
+func addLegacyCaller(t *testing.T, file *cellfile.File) {
+	t.Helper()
+	payments := &file.Namespaces[0]
+	if payments.Module != "payments" || len(payments.Workloads) != 2 || len(payments.Workloads[1].Endpoints) != 1 {
+		t.Fatalf("the fixture's cell file does not hold the payments host endpoint: %+v", payments)
+	}
+	payments.Workloads[1].Endpoints[0].Consumers = []string{"legacy/worker"}
+	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
 }
 
 // TestACompositionThatNeverDeclaredTheModuleDoesNotRemoveIt: with a separate
@@ -258,7 +274,7 @@ func TestACompositionThatNeverDeclaredTheModuleDoesNotRemoveIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
+	addLegacyCaller(t, file)
 	base, err := file.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +319,7 @@ func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	file.Namespaces = append(file.Namespaces, cellfile.Namespace{Name: "legacy", Module: "legacy", Workloads: []cellfile.Workload{{Name: "worker", Kind: "Deployment"}}})
+	addLegacyCaller(t, file)
 	base, err := file.Encode()
 	if err != nil {
 		t.Fatal(err)

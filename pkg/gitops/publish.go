@@ -258,6 +258,16 @@ func preparePublish(
 		return fail(err)
 	}
 	staleConsumers := describeStaleConsumers(staleOnBase)
+	// A forward publication carries the base's cell file with only this
+	// module's entries moved to the render's (cell_scope.go), never the
+	// render's file whole: every other module keeps the builds the base
+	// approves, which are the builds the base's trees run. The hold then
+	// judges the file that is carried.
+	if carriedCell != "" {
+		if err = cell.scopeToModule(env, baseCell, request.Module, request.AllowCellRemovals, claim); err != nil {
+			return fail(err)
+		}
+	}
 	allowedRemovals, undeclaredRemovals, err := holdCellToBase(cell, env, baseBranch, baseCell, request.AllowCellRemovals, claim)
 	if err != nil {
 		return fail(err)
