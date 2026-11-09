@@ -173,7 +173,7 @@ func WorkspaceAuthoritySources(workspace *resources.Workspace, env *environments
 			if err != nil {
 				return nil, err
 			}
-			return Roles(at)
+			return Roles(at, WorkspaceContractResolver(ctx, workspace, env))
 		},
 		OwnerAware: func(ctx context.Context, module string) (bool, error) {
 			at, err := dir(ctx, module)

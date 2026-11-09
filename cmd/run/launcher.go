@@ -636,7 +636,7 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 			if err != nil {
 				return nil, err
 			}
-			return gitops.Roles(dir)
+			return gitops.Roles(dir, gitops.WorkspaceContractResolver(ctx, cluster.composed(), cluster.env))
 		},
 		func(ctx context.Context, module string) (bool, error) {
 			dir, err := load(ctx, module)

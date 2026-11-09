@@ -37,6 +37,11 @@ func refuseRetiredRoles(dir string) error {
 	return fmt.Errorf("%s is no longer read: a unit's own kinds and its roles are declared in its %s, as scope_ceilings and roles (core's module contract); move them there and delete %s", path, modulecontract.FileName, retiredRolesFileName)
 }
 
+// ContractResolver resolves a module contract against the composition it is
+// delivered into (WorkspaceContractResolver): what Roles reads to know which
+// bindings the composition delivers.
+type ContractResolver func(*modulecontract.Contract) (*modulecontract.Resolved, error)
+
 // Roles reads the roles the module at dir declares in its module contract,
 // in the authority's spelling, in the order written: what the authority's
 // document carries for it (AuthorityManifestV1.roles). Core's reader holds
@@ -46,21 +51,38 @@ func refuseRetiredRoles(dir string) error {
 // no ids, a scope reached through a binding naming one it declares that a
 // person causes. A scope naming through is carried in the role's through,
 // per binding in the order first named, for the authority to hold reachable
-// in the composition. None when it publishes no contract or its contract
-// declares none.
-func Roles(dir string) ([]*compositionv1.RoleV1, error) {
+// in the composition — only when the composition delivers that binding: the
+// contract resolved by resolve (core's ResolvedRole.Through) leaves out an
+// optional binding the composition fills none of the slots of, and a role
+// reaches nothing through it. None when it publishes no contract or its
+// contract declares none.
+func Roles(dir string, resolve ContractResolver) ([]*compositionv1.RoleV1, error) {
 	contract, err := ownContract(dir)
-	if err != nil || contract == nil {
+	if err != nil || contract == nil || len(contract.Roles) == 0 {
 		return nil, err
 	}
+	resolved, err := resolve(contract)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the module contract of %s for its roles: %w", contract.Principal, err)
+	}
+	if len(resolved.Roles) != len(contract.Roles) {
+		return nil, fmt.Errorf("the module contract of %s resolves %d roles of the %d it declares", contract.Principal, len(resolved.Roles), len(contract.Roles))
+	}
 	var out []*compositionv1.RoleV1
-	for _, role := range contract.Roles {
+	for index, role := range contract.Roles {
+		if resolved.Roles[index].Name != role.Name {
+			return nil, fmt.Errorf("the module contract of %s resolves role %q where it declares %q", contract.Principal, resolved.Roles[index].Name, role.Name)
+		}
+		delivered := resolved.Roles[index].Through
 		var own []modulecontract.CeilingScope
 		var through []*compositionv1.RoleThroughV1
 		for _, scope := range role.Scopes {
 			if scope.Through == "" {
 				own = append(own, scope)
 				continue
+			}
+			if _, held := delivered[scope.Through]; !held {
+				continue // through an optional binding the composition leaves out
 			}
 			i := slices.IndexFunc(through, func(t *compositionv1.RoleThroughV1) bool { return t.GetBinding() == scope.Through })
 			if i < 0 {

@@ -64,6 +64,17 @@ var (
 	}
 )
 
+// resolvedWith resolves a contract against the public configuration given,
+// per group, as a composition supplies it.
+func resolvedWith(public map[string]map[string]string) ContractResolver {
+	return func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+		return contract.Resolve(modulecontract.MapValues{Public: public})
+	}
+}
+
+// composed resolves the test contracts with every binding's audience filled.
+var composed = resolvedWith(map[string]map[string]string{"shop": {"agent-audience": "agent", "collections-audience": "documents"}})
+
 func requireRoles(t *testing.T, want, got []*compositionv1.RoleV1) {
 	t.Helper()
 	require.Len(t, got, len(want))
@@ -78,12 +89,12 @@ func requireRoles(t *testing.T, want, got []*compositionv1.RoleV1) {
 // constructed module has nowhere to ship one.
 func TestASolutionsRolesAreReadFromItsModuleContract(t *testing.T) {
 	for name, dir := range map[string]string{"no contract": t.TempDir(), "no directory": ""} {
-		roles, err := Roles(dir)
+		roles, err := Roles(dir, composed)
 		require.NoError(t, err, name)
 		require.Nil(t, roles, name)
 	}
 	dir := writeContract(t, wikiContract)
-	roles, err := Roles(dir)
+	roles, err := Roles(dir, composed)
 	require.NoError(t, err)
 	requireRoles(t, wikiRoles, roles)
 	ceilings, err := ScopeCeilings(dir)
@@ -92,7 +103,7 @@ func TestASolutionsRolesAreReadFromItsModuleContract(t *testing.T) {
 	require.True(t, proto.Equal(wikiPage, ceilings[0]))
 
 	bare := writeContract(t, strings.SplitN(wikiContract, "roles:", 2)[0]+"bindings: []\ndestinations: []\n")
-	roles, err = Roles(bare)
+	roles, err = Roles(bare, composed)
 	require.NoError(t, err)
 	require.Nil(t, roles)
 }
@@ -108,7 +119,7 @@ func TestARolesCoreRefusesIsRefusedByTheDelivery(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeContract(t, c.document)
-			_, rolesErr := Roles(dir)
+			_, rolesErr := Roles(dir, composed)
 			_, ceilingsErr := ScopeCeilings(dir)
 			if c.reason == "" {
 				// One kind grammar: core's, which accepts a kind the
@@ -131,7 +142,7 @@ func TestTheRetiredRolesDeclarationIsRefusedByName(t *testing.T) {
 	dir := writeContract(t, wikiContract)
 	retired := filepath.Join(dir, "roles.codefly.yaml")
 	require.NoError(t, os.WriteFile(retired, []byte("schema: codefly/solution-roles/v1\n"), 0o644))
-	_, rolesErr := Roles(dir)
+	_, rolesErr := Roles(dir, composed)
 	_, ceilingsErr := ScopeCeilings(dir)
 	for _, err := range []error{rolesErr, ceilingsErr} {
 		require.ErrorContains(t, err, retired)
@@ -204,7 +215,7 @@ func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
 		"ids":           {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents.collection, actions: [read], resource_ids: [a]}", 1), "resource_ids"},
 		"beyond a kind": {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents, actions: [read]}", 1), `role "viewer" grants installation-owned documents:read`},
 	} {
-		_, err := Roles(writeContract(t, c.document))
+		_, err := Roles(writeContract(t, c.document), composed)
 		require.ErrorContains(t, err, c.reason, name)
 	}
 }
@@ -255,8 +266,31 @@ func TestReachThroughABindingAndSharedKindsReachTheAuthorityDocument(t *testing.
 	require.Equal(t, []string{"wiki.catalogue"}, doc.GetSharedKinds())
 
 	// Core's rules hold a through to a binding the unit declares.
-	_, err := Roles(writeContract(t, strings.Replace(reachContract, "through: agent}\n      - {resource_kind: wiki.page", "through: nowhere}\n      - {resource_kind: wiki.page", 1)))
+	_, err := Roles(writeContract(t, strings.Replace(reachContract, "through: agent}\n      - {resource_kind: wiki.page", "through: nowhere}\n      - {resource_kind: wiki.page", 1)), composed)
 	require.ErrorContains(t, err, `through binding "nowhere", which the contract does not declare`)
+}
+
+// A role reaches nothing through an optional binding the composition leaves
+// out: the composition delivers no such binding, so the authority's document
+// carries no through row for it (core's ResolvedRole.Through), while the
+// role's own scopes are carried as declared. Filled, the binding carries the
+// role's through as any other.
+func TestAnOmittedOptionalBindingCarriesNoReachThrough(t *testing.T) {
+	optional := strings.Replace(reachContract, "  - id: agent\n    operations: [invoke]\n", "  - id: agent\n    optional: true\n    operations: [invoke]\n", 1)
+	require.NotEqual(t, reachContract, optional)
+	dir := writeContract(t, optional)
+	viewerOwn := []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}
+	installer := &compositionv1.RoleV1{Name: modulecontract.InstallerRole, Scopes: viewerOwn}
+
+	roles, err := Roles(dir, resolvedWith(nil))
+	require.NoError(t, err)
+	requireRoles(t, []*compositionv1.RoleV1{installer, {Name: "viewer", Scopes: viewerOwn}}, roles)
+
+	roles, err = Roles(dir, composed)
+	require.NoError(t, err)
+	requireRoles(t, []*compositionv1.RoleV1{installer, {Name: "viewer", Scopes: viewerOwn,
+		Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
+			{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}}}, roles)
 }
 
 // deliveredAuthorityDocument delivers a solution whose module contract is at
@@ -281,7 +315,7 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 	d := NewCompositionDelivery(conn, signer,
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
 		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
-		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir) },
+		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir, composed) },
 		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil).
 		ReadingSharedKinds(func(context.Context, string) ([]string, error) { return SharedKinds(dir) })
 	manifest := &solutionhost.ModuleManifest{

@@ -93,20 +93,7 @@ func moduleAuthority(
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
 	}
-	callees := newComposedCallees(func(name string) ([]*compositionv1.MethodPolicyV1, bool, error) {
-		callee, loadErr := workspace.LoadModuleFromName(ctx, name)
-		if loadErr != nil {
-			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
-		}
-		return HostMethodPolicies(ctx, workspace, env, callee)
-	})
-	// Resolved for the class of the environment being delivered to: an edge
-	// whose presence differs along the promotion path resolves to the one
-	// presence it has here, and the delivered manifest carries that. The
-	// authority document's half resolves with the same class
-	// (InstallationDeclaration), because an agreement rule compares them.
-	resolved, err := request.contract.Resolve(workspaceValues{provided: provided},
-		modulecontract.WithCallees(callees), modulecontract.WithEnvironmentClass(env.Class))
+	resolved, err := resolveContract(ctx, workspace, env, provided, request.contract)
 	if err != nil {
 		return nil, fmt.Errorf("module %s: %w", module.Name, err)
 	}
@@ -181,6 +168,41 @@ func moduleAuthority(
 		}
 	}
 	return authority, nil
+}
+
+// resolveContract resolves contract against the composition's public
+// configuration (provided), reading each callee's method declarations from the
+// workspace. Resolved for the class of the environment being delivered to: an
+// edge whose presence differs along the promotion path resolves to the one
+// presence it has here, and the delivered manifest carries that. The
+// authority document's half resolves with the same class
+// (InstallationDeclaration, WorkspaceContractResolver), because an agreement
+// rule compares them.
+func resolveContract(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, provided *configurations.WorkspaceConfigurations, contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+	callees := newComposedCallees(func(name string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+		callee, loadErr := workspace.LoadModuleFromName(ctx, name)
+		if loadErr != nil {
+			return nil, false, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
+		}
+		return HostMethodPolicies(ctx, workspace, env, callee)
+	})
+	return contract.Resolve(workspaceValues{provided: provided},
+		modulecontract.WithCallees(callees), modulecontract.WithEnvironmentClass(env.Class))
+}
+
+// WorkspaceContractResolver resolves a module's contract exactly as its
+// delivered manifest is resolved (moduleAuthority): against the composed
+// workspace's public configuration for env, so the authority document's half
+// reads the same resolution — an optional binding the composition leaves out
+// is left out of both.
+func WorkspaceContractResolver(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ContractResolver {
+	return func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+		provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
+		if err != nil {
+			return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", contract.Principal, err)
+		}
+		return resolveContract(ctx, workspace, env, provided, contract)
+	}
 }
 
 // authorityRequest is what a module asks for authority with, from exactly one

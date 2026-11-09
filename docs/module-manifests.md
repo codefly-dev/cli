@@ -334,7 +334,10 @@ downstream of that binding consumes) is carried in the role's `through`
 (`RoleThroughV1`, one per binding in the order first named), apart from its own
 `scopes`; core's contract reader holds the binding to be declared and one a
 person causes, and the authority holds the kind reachable from it in the
-composition it is delivered to.
+composition it is delivered to. The rows are read from the contract as the
+composition resolves it, exactly as the manifest's bindings are: a scope
+through an optional binding the composition leaves out (none of its slots
+filled) is carried in no `through`, because nothing is delivered through it.
 
 **The installation declaration is authored, carried verbatim, and compared
 across both signed documents.** A unit declares, at the top level of its
