@@ -74,9 +74,9 @@ func composedOutManifests(ctx context.Context, repo, gitopsPath, baseBranch, env
 	withdraw := map[string]deliveredManifest{}
 	delivered := map[string]string{}
 	for _, tree := range names {
-		last, err := lastDeliveredManifests(ctx, repo, ref, baseBranch, tree+"/"+overlay, trees[tree])
-		if err != nil {
-			return nil, err
+		last, lastErr := lastDeliveredManifests(ctx, repo, ref, baseBranch, tree+"/"+overlay, trees[tree])
+		if lastErr != nil {
+			return nil, lastErr
 		}
 		for binding, entry := range last {
 			if entry.manifest.Removed {

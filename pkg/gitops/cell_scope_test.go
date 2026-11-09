@@ -132,6 +132,31 @@ func cellChangesOutside(base, next *cellfile.File, module string) []string {
 		}
 		return described
 	}
+	// On module's own endpoints the base already carries, every other
+	// caller's edge is that caller's statement, and must be the base's.
+	othersOn := func(file *cellfile.File) map[string][]string {
+		edges := map[string][]string{}
+		for _, namespace := range file.Namespaces {
+			if namespace.Module != module {
+				continue
+			}
+			for _, workload := range namespace.Workloads {
+				for _, endpoint := range workload.Endpoints {
+					key := namespace.Name + "/" + workload.Kind + "/" + workload.Name + "/" + endpoint.Name
+					edges[key] = slices.DeleteFunc(slices.Clone(endpoint.Consumers), func(consumer string) bool {
+						return strings.HasPrefix(consumer, module+"/")
+					})
+				}
+			}
+		}
+		return edges
+	}
+	wasOn, isOn := othersOn(base), othersOn(next)
+	for key, edges := range isOn {
+		if before, carried := wasOn[key]; carried && !slices.Equal(before, edges) {
+			outside = append(outside, fmt.Sprintf("other callers on %s: %v → %v", key, before, edges))
+		}
+	}
 	was, is := others(base), others(next)
 	for name, body := range was {
 		if is[name] != body {
@@ -262,6 +287,43 @@ func TestACallerEdgeMovesWithTheCaller(t *testing.T) {
 	}
 	if removals := cellRemovals(afterA, afterDrop); len(removals) != 1 || !slices.Equal(removals[0].modules, []string{"b", "a"}) {
 		t.Fatalf("the dropped edge is not the one removal the hold sees: %+v", removals)
+	}
+}
+
+// TestAProviderPromotionKeepsEveryOtherCallersEdge is the provider side of
+// an edge: a stopped calling b and was published, so the delivery base no
+// longer carries a's edge on b's endpoint. Publishing b from a render that
+// predates a's change must not put a's edge back — a network permission a's
+// delivered declaration no longer asks for, and an addition the removal hold
+// never sees. Nor does b's promotion deliver c's new edge before c's own. An
+// endpoint b adds with this promotion carries its edges as rendered.
+func TestAProviderPromotionKeepsEveryOtherCallersEdge(t *testing.T) {
+	base := scopeCell(strings.Repeat("1", 40), digest("a"), digest("b"), "c/old")
+	stale := scopeCell(strings.Repeat("2", 40), digest("a"), digest("d"), "a/api", "c/old", "c/new", "b/self")
+
+	afterB := promote(t, base, stale, "b")
+	if got := afterB.Namespaces[1].Workloads[0].Endpoints[0].Consumers; !slices.Equal(got, []string{"c/old", "b/self"}) {
+		t.Fatalf("b's promotion leaves its endpoint called by %v, want every other caller's edge as the base has it and b's own as rendered", got)
+	}
+	if got := namespaceDigest(t, afterB, "b"); got != digest("d") {
+		t.Fatalf("b's promotion approves b at %s, want its new build", got)
+	}
+	if removals := cellRemovals(base, afterB); len(removals) != 0 {
+		t.Fatalf("keeping the base's edges is no removal: %+v", removals)
+	}
+
+	added := scopeCell(strings.Repeat("3", 40), digest("a"), digest("d"), "c/old")
+	added.Namespaces[1].Workloads[0].Endpoints = append(added.Namespaces[1].Workloads[0].Endpoints,
+		cellfile.Endpoint{Name: "http", API: "http", Port: 8080, Consumers: []string{"a/api"}})
+	withNew := promote(t, base, added, "b")
+	if got := withNew.Namespaces[1].Workloads[0].Endpoints[1].Consumers; !slices.Equal(got, []string{"a/api"}) {
+		t.Fatalf("an endpoint b adds carries %v, want its edges as rendered", got)
+	}
+
+	// Published caller first, then provider, the edge is delivered either way.
+	callerFirst := promote(t, promote(t, base, added, "a"), added, "b")
+	if got := callerFirst.Namespaces[1].Workloads[0].Endpoints[1].Consumers; !slices.Equal(got, []string{"a/api"}) {
+		t.Fatalf("a's edge on b's new endpoint is lost when a is published first: %v", got)
 	}
 }
 

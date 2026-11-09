@@ -16,11 +16,13 @@ package gitops
 // entries exactly as the base has them — the builds the base approves are the
 // builds the base's trees run. What a publication of module M may change:
 //
-//   - M's namespaces, wholesale: every namespace whose `module` is M, as the
-//     render describes it (added, replaced or removed). Each namespace is the
-//     image of one module's delivered tree — its workloads, digests, release,
+//   - M's namespaces: every namespace whose `module` is M, as the render
+//     describes it (added, replaced or removed). Each namespace is the image
+//     of one module's delivered tree — its workloads, digests, release,
 //     egress, ingress and delivery Job are all rendered into M's tree — so it
-//     moves with that tree and with nothing else.
+//     moves with that tree and with nothing else. Except another caller's
+//     edge on one of M's endpoints the base already carries: that is the
+//     caller's statement, and stays the base's (below).
 //   - M's caller edges: in another module's namespace, the consumers of an
 //     endpoint that name M (`M/<service>`), as the render states them for an
 //     endpoint it still describes. An edge is the caller's statement of what
@@ -68,6 +70,22 @@ import (
 // errHeaderMoved is a render whose cell-wide header differs from the delivery
 // base's, published by a module that does not carry the header.
 var errHeaderMoved = errors.New("the render moves the cell-wide header")
+
+// scopeAndHoldCell scopes a forward publication's cell file to the published
+// module (scopeToModule), then holds the file that is carried to the base's
+// (holdCellToBase). A forward publication carries the base's cell file with
+// only this module's entries moved to the render's, never the render's file
+// whole: every other module keeps the builds the base approves, which are the
+// builds the base's trees run. forward is false when the publication carries
+// no cell file; the hold then judges what there is, as before.
+func scopeAndHoldCell(cell *publicationCell, forward bool, env *environments.Environment, baseBranch string, base *cellfile.File, request *PublishRequest, claim *compositionClaim) (named, undeclared []string, err error) {
+	if forward {
+		if err = cell.scopeToModule(env, base, request.Module, request.AllowCellRemovals, claim); err != nil {
+			return nil, nil, err
+		}
+	}
+	return holdCellToBase(cell, env, baseBranch, base, request.AllowCellRemovals, claim)
+}
 
 // scopeToModule replaces what the publication carries — the render's file —
 // with what a promotion of module may deliver: the base's file with only the
@@ -128,8 +146,8 @@ func promotedCell(base, rendered *cellfile.File, module string, withdraws func(s
 	next.Source = promotedSource(base.Source, rendered.Source)
 	next.Namespaces = nil
 	for index := range rendered.Namespaces {
-		if rendered.Namespaces[index].Module == module {
-			next.Namespaces = append(next.Namespaces, rendered.Namespaces[index])
+		if namespace := &rendered.Namespaces[index]; namespace.Module == module {
+			next.Namespaces = append(next.Namespaces, withOthersEdges(namespace, baseNamespace(base, namespace), module, gone))
 		}
 	}
 	for index := range base.Namespaces {
@@ -186,6 +204,47 @@ func headerChanges(base, rendered *cellfile.File) []string {
 		field("source.path", base.Source.Path, rendered.Source.Path)
 	}
 	return moved
+}
+
+// baseNamespace is the base's namespace of the same name given to the same
+// module as namespace, or nil when the base has none.
+func baseNamespace(base *cellfile.File, namespace *cellfile.Namespace) *cellfile.Namespace {
+	return renderedNamespace(base, namespace)
+}
+
+// withOthersEdges is module's own namespace as the render describes it, with
+// every other caller's edge on an endpoint the base already carries kept as
+// the base has it. An edge is the caller's statement, delivered by the
+// caller's publication: a render of the provider predating a caller's
+// withdrawal of its edge must not restore that edge (a network permission the
+// caller's delivered declaration no longer asks for), and one stating a
+// caller's new edge must not deliver it before the caller's build is. An
+// endpoint the base does not carry is new with this promotion, so the render's
+// list is all there is. Only consumer lists are rebuilt, as fresh slices.
+func withOthersEdges(rendered, base *cellfile.Namespace, module string, gone func(string) bool) cellfile.Namespace {
+	own := *rendered
+	if base == nil {
+		return own
+	}
+	own.Workloads = slices.Clone(rendered.Workloads)
+	for w := range own.Workloads {
+		workload := &own.Workloads[w]
+		found := slices.IndexFunc(base.Workloads, func(candidate cellfile.Workload) bool {
+			return candidate.Name == workload.Name && candidate.Kind == workload.Kind
+		})
+		if found < 0 {
+			continue
+		}
+		baseWorkload := &base.Workloads[found]
+		workload.Endpoints = slices.Clone(workload.Endpoints)
+		for e := range workload.Endpoints {
+			endpoint := &workload.Endpoints[e]
+			if at := slices.IndexFunc(baseWorkload.Endpoints, func(candidate cellfile.Endpoint) bool { return candidate.Name == endpoint.Name }); at >= 0 {
+				endpoint.Consumers = callerEdges(baseWorkload.Endpoints[at].Consumers, endpoint.Consumers, module, gone)
+			}
+		}
+	}
+	return own
 }
 
 // renderedNamespace is the render's description of base's namespace — the
