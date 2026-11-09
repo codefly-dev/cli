@@ -303,6 +303,19 @@ that is not a prepared binding fails the render by key. A module that asks for
 nothing — no contract, no scoped consumption — gains nothing: the host grants
 it its envelope whole, and a request would change that.
 
+A prepared binding addressed to the module itself (an agent's own operations
+prepared as runnables) is requested too, for the authority core to issue
+through within the person's capability cut to the binding; it is left out of
+the module's envelope entry, whose registry takes a self-addressed binding for
+headless work only.
+
+**A binding derived from its calls carries what they declare beyond what they
+require.** A method's declaration (`authority.hop.v1.Policy`) may list, beside
+`requires`, what a call may exercise beyond it (`carries`): an effect the
+callee performs on some calls alone, on the call's own capability. The render
+reads it into `MethodPolicyV1.carries` and a binding naming the call in
+`calls` has it in its ceiling; the hop requires only `requires`.
+
 **Owner-aware enforcement is declared, never inferred.** A module that checks
 resource-owner selectors declares `owner_aware: true` at the top level of its
 `module.contract.codefly.yaml`. The composition delivery carries exactly that
