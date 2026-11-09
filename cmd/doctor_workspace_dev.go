@@ -38,7 +38,7 @@ func checkDevDeployments(ws *resources.Workspace, report *workspaceReadinessRepo
 				revision += " (dirty)"
 			}
 			report.add(codeGitOpsDevDeploymentActive,
-				fmt.Sprintf("dev deployment %s/%s in %s", inventory.Module, dev.Service, inventory.Environment), "warn",
+				fmt.Sprintf("dev deployment %s/%s in %s", inventory.Module, dev.Service, inventory.Environment), checkStatusWarn,
 				fmt.Sprintf("environment %s runs service %s/%s from %s at %s (image %s, deployed %s): code no release describes",
 					inventory.Environment, inventory.Module, dev.Service, dev.Source, revision, dev.Image, dev.DeployedAt.Format("2006-01-02T15:04:05Z")),
 				fmt.Sprintf("leave dev mode with a full render: `codefly deploy gitops render %s --env %s`", inventory.Module, inventory.Environment))

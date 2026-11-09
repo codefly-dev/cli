@@ -50,7 +50,7 @@ func checkRunnableBindingDeclines(ctx context.Context, ws *resources.Workspace, 
 				fmt.Sprintf("remove runnable-scope-selections[%s], or correct the key to the binding of an operation with a required scope slot; `codefly generate runnable-bindings --env %s` refuses it as it stands", key, env.Name))
 			continue
 		}
-		report.add(codeRunnableBindingDeclined, "runnable binding "+key, "warn",
+		report.add(codeRunnableBindingDeclined, "runnable binding "+key, checkStatusWarn,
 			fmt.Sprintf("environment %s declines %s (runnable-scope-selections: []): no binding is prepared and no authority granted, so a service that installs it is refused where it reads %s/%s",
 				env.Name, key, generate.RunnableBindingsGroup, key),
 			fmt.Sprintf("to install it, answer its required scope slots with exact resources under runnable-scope-selections[%s] and run `codefly generate runnable-bindings --env %s`", key, env.Name))

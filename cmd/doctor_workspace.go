@@ -79,6 +79,7 @@ const (
 // Per-check statuses, as they appear in the JSON report.
 const (
 	checkStatusFail = "fail"
+	checkStatusWarn = "warn"
 )
 
 type workspaceDiagnostic struct {
@@ -129,9 +130,20 @@ type workspaceReadinessOptions struct {
 
 // workspaceReadiness runs the read-only readiness validation and always
 // returns a report; every failure is a diagnostic, never a bare error. It
-// must not create, modify, or delete any file, and must not start agents,
-// containers, or services. Secret references are resolved in memory through
-// the environment's configured backend and the values discarded immediately.
+// must not create, modify, or delete any file in the workspace, and must not
+// start containers or services. Secret references are resolved in memory
+// through the environment's configured backend and the values discarded
+// immediately.
+//
+// One check starts agents: for an environment that renders secret-free
+// manifests, checkServiceSecretRequirements asks each service's builder agent
+// which secret configurations its render requires, over the read-only
+// BuildCapabilities probe. That requirement is the agent's own and nothing a
+// host reads statically carries it, so a readiness run that does not ask
+// cannot judge it — and reported ready for a render the agent then refused,
+// after every image was built. It runs last, so everything a static read can
+// refuse is already reported before an operator pays for a process per
+// service.
 func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *workspaceReadinessReport {
 	if opts.timeout > 0 {
 		var cancel context.CancelFunc
@@ -196,6 +208,11 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	checkConfigurationReferences(ctx, ws, env, provided, checked, rootGroups, checkErr, scope, report)
 
 	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
+
+	// Last, because it is the only check that starts agents: everything a
+	// static read can refuse has already been reported by the time an operator
+	// pays for a process per service.
+	checkServiceSecretRequirements(ctx, ws, env, scope, deliveredServiceSecretKeys(env, scope, toResolve), report)
 
 	return report
 }
@@ -357,7 +374,7 @@ func checkVendoredPinVersion(ctx context.Context, workspaceRoot func() (string, 
 	if !ok || description.SatisfiesVersion(ref.Version) {
 		return
 	}
-	report.add(codeModuleCheckoutVersionDrift, "vendored pin "+ref.Name, "warn",
+	report.add(codeModuleCheckoutVersionDrift, "vendored pin "+ref.Name, checkStatusWarn,
 		fmt.Sprintf("module %q pins %s at version %s, but its checkout %s is %s: the pin resolves to the checkout, so the declared version is not what runs", ref.Name, ref.Source, ref.Version, checkoutRoot, description.Raw),
 		fmt.Sprintf("check out %s in %s, or update the `version:` of module %q in %s to what the checkout holds", ref.Version, checkoutRoot, ref.Name, resources.WorkspaceConfigurationName))
 }
@@ -474,7 +491,7 @@ func checkServiceOverrideDrift(ctx context.Context, ref *resources.ModuleReferen
 	if !ok || description.SatisfiesVersion(ref.Version) {
 		return
 	}
-	report.add(codeModuleCheckoutVersionDrift, fmt.Sprintf("service override %s/%s", ref.Name, service), "warn",
+	report.add(codeModuleCheckoutVersionDrift, fmt.Sprintf("service override %s/%s", ref.Name, service), checkStatusWarn,
 		fmt.Sprintf("module %q pins %s at version %s, but service %q is taken from checkout %s, which is %s: the override decides what runs, so the declared version is not what runs", ref.Name, ref.Source, ref.Version, service, checkoutRoot, description.Raw),
 		fmt.Sprintf("check out %s in %s, or drop the override with `codefly override service %s/%s --clear`", ref.Version, checkoutRoot, ref.Name, service))
 }
@@ -562,13 +579,13 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 		if mode == composition.ResolutionModeCommit {
 			// Named apart from the opt-outs: no module-trust entry can make a
 			// commit verified, so the remediation is the tag, not the policy.
-			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
+			report.add(codeModuleUnverified, "module-trust for "+ref.Name, checkStatusWarn,
 				fmt.Sprintf("module %q is pinned at commit %s: it resolves by cloning %s at that commit, and nothing about it is signature- or digest-checked — a commit pin is for validation", ref.Name, ref.Version, ref.Source),
 				fmt.Sprintf("release from a tag: once the cell is green, cut the tag on %s and set the `version:` of module %q in %s to it", ref.Source, ref.Name, resources.WorkspaceConfigurationName))
 			continue
 		}
 		if mode.Unverified() {
-			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
+			report.add(codeModuleUnverified, "module-trust for "+ref.Name, checkStatusWarn,
 				fmt.Sprintf("module %q resolves through the unverified git clone: nothing about it is signature- or digest-checked", ref.Name),
 				unverifiedRemediation(ref.Name, mode))
 			continue
@@ -645,7 +662,7 @@ func checkModuleMaterialization(ref *resources.ModuleReference, directive *resou
 	if receipt.Answers(ref, mode) {
 		return
 	}
-	report.add(codeModuleResolutionStale, "materialization of "+ref.Name, "warn",
+	report.add(codeModuleResolutionStale, "materialization of "+ref.Name, checkStatusWarn,
 		fmt.Sprintf("module %q is materialized at %s for %s, but the workspace now requests %s: the next run re-resolves it and refuses that checkout if the request cannot be resolved", ref.Name, directive.Path, receiptRequestLabel(receipt), moduleRequestLabel(ref, mode)),
 		fmt.Sprintf("run `codefly run solution` to re-resolve %q, or set resolve.%s.path in %s to a local checkout", ref.Name, ref.Name, resources.LocalOverlayConfigurationName))
 }
@@ -901,7 +918,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		// checkConfigurationSources already failed on the read and said why;
 		// record that this check did not run rather than leaving its absence to
 		// be read as a pass.
-		report.add("", "configuration references", "warn",
+		report.add("", "configuration references", checkStatusWarn,
 			"not checked: the workspace configurations could not be read",
 			"fix the workspace configurations reported above, then run the doctor again")
 		return
@@ -1037,7 +1054,7 @@ func checkDevAgents(scope []*resources.Service, report *workspaceReadinessReport
 		if svc.Agent == nil || !publish.IsDevVersion(svc.Agent.Version) {
 			continue
 		}
-		report.add(codeAgentDevBuild, "agent "+svc.Agent.Identifier(), "warn",
+		report.add(codeAgentDevBuild, "agent "+svc.Agent.Identifier(), checkStatusWarn,
 			fmt.Sprintf("%s runs unreleased agent dev build %s", serviceUnique(svc), svc.Agent.Version),
 			fmt.Sprintf("release the agent with `codefly publish patch` and pin that version instead of %s", svc.Agent.Version))
 	}
@@ -1080,7 +1097,7 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	sort.Strings(required)
 	sort.Strings(renderOwned)
 	for _, name := range renderOwned {
-		status, message := "warn", "supplied only by a local k3d or cell render; absent here"
+		status, message := checkStatusWarn, "supplied only by a local k3d or cell render; absent here"
 		switch {
 		case name == environments.EgressConfiguration:
 			status, message = "ok", "generated from the environment's egress declaration on every run and render"
@@ -1156,7 +1173,7 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		if byName[environments.FederationConfiguration] == nil && provided.Ambiguous[environments.FederationConfiguration] == nil &&
 			nativeFederationCoversScope(env, scope) {
 			required = slices.DeleteFunc(required, func(name string) bool { return name == environments.FederationConfiguration })
-			report.add("", "workspace configuration federation", "warn",
+			report.add("", "workspace configuration federation", checkStatusWarn,
 				"derived from host for the native delivery service; container runs and deployments still require authored federation values", "")
 		}
 		reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir, required, byName, own, report)
@@ -1360,7 +1377,7 @@ func checkServiceConfigurationSources(ctx context.Context, env *environments.Env
 		relSvcDir := filepath.Join(svc.Name, "configurations", filepath.Base(svcCfgDir))
 		if !svcCfgExists {
 			if others := otherEnvironmentDirs(filepath.Join(svc.Dir(), "configurations"), profile); len(others) > 0 {
-				report.add(codeConfigurationDirMissing, "service configurations", "warn",
+				report.add(codeConfigurationDirMissing, "service configurations", checkStatusWarn,
 					fmt.Sprintf("%s has configurations for %s but none for environment %q", label, strings.Join(others, ", "), env.Name),
 					fmt.Sprintf("create %s/ if this service needs configuration in %q", relSvcDir, env.Name))
 			}
@@ -1538,7 +1555,7 @@ func checkSecretReferences(ctx context.Context, env *environments.Environment, r
 		ref, isRef := configurations.ParseSecretReference(value)
 		if !isRef {
 			if scheme, looksRef := unknownReferenceScheme(value); looksRef {
-				report.add(codeReferenceSchemeUnknown, "secret references", "warn",
+				report.add(codeReferenceSchemeUnknown, "secret references", checkStatusWarn,
 					fmt.Sprintf("%s looks like a secret reference with unsupported scheme %q — codefly would use it as plaintext", where, scheme),
 					fmt.Sprintf("supported reference scheme: %s:// ; if the value is intentional plaintext, ignore this warning", configurations.OnePasswordScheme))
 				return
@@ -1546,7 +1563,7 @@ func checkSecretReferences(ctx context.Context, env *environments.Environment, r
 			plaintext++
 			if len(resolvers) > 0 && !env.Local() && !warnedPlaintext[name] {
 				warnedPlaintext[name] = true
-				report.add(codePlaintextNotAllowed, "secret references", "warn",
+				report.add(codePlaintextNotAllowed, "secret references", checkStatusWarn,
 					fmt.Sprintf("configuration %q holds plaintext secret values although environment %q declares a secret backend", name, env.Name),
 					fmt.Sprintf("replace the plaintext values with %s:// references", configurations.OnePasswordScheme))
 			}
@@ -1758,9 +1775,17 @@ The check discovers the workspace, resolves the selected environment
 (default: local), validates declared secret backends and their executables,
 verifies that required workspace and service configurations exist for the
 environment, and resolves secret provider references (op://…) in memory,
-discarding the values immediately. It is strictly read-only: it never creates
-directories or files, never starts agents, containers, or services, and never
-prints secret values or raw references.
+discarding the values immediately. It never creates directories or files in
+the workspace, never starts containers or services, and never prints secret
+values or raw references.
+
+For an environment that renders secret-free manifests it also asks each
+service's builder agent which secret configurations its render requires — the
+one step that starts a process per service, and the only place that
+requirement exists: without it a render refuses a missing credential only at
+deploy time, after every image is built and pushed. A service whose agent
+cannot be asked is a failure; one whose agent does not declare its
+requirements is named, and the verdict says how many were not judged.
 
 Designed for fresh git worktrees, where ignored *.secret.env files are absent
 and the failure would otherwise only surface mid-orchestration.
@@ -1837,7 +1862,7 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 			fmt.Println(tui.RenderError("Workspace is NOT ready — fix the items marked ✗ above."))
 			return fmt.Errorf("workspace is not ready")
 		}
-		fmt.Println(tui.RenderInfo(fmt.Sprintf("Workspace %q is ready for environment %q.", report.Workspace, report.Environment)))
+		fmt.Println(tui.RenderInfo(fmt.Sprintf("Workspace %q is ready for environment %q.%s", report.Workspace, report.Environment, readinessQualifier(report))))
 		return nil
 	},
 }
@@ -1845,7 +1870,7 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 func printWorkspaceDiagnostic(diagnostic *workspaceDiagnostic) {
 	result := checkResult{name: diagnostic.Name, detail: diagnostic.Message, fix: diagnostic.Remediation}
 	switch diagnostic.Status {
-	case "warn":
+	case checkStatusWarn:
 		result.status = statusWarn
 		result.detail = fmt.Sprintf("%s [%s]", diagnostic.Message, diagnostic.Code)
 	case checkStatusFail:
