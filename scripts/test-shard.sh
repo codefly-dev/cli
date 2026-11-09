@@ -56,7 +56,12 @@ pkg/control 6
 pkg/solutionrun 5
 '
 
-mapfile -t splits < <(printf '%s\n' "$SPLITS" | awk 'NF > 0')
+# A read loop rather than mapfile: macOS ships Bash 3.2, and the partition
+# guard runs this script from the ordinary test suite.
+splits=()
+while IFS= read -r line; do
+	[[ -n "${line// /}" ]] && splits+=("$line")
+done <<<"$SPLITS"
 if ((total <= ${#splits[@]})); then
 	echo "test-shard.sh: TOTAL must exceed the ${#splits[@]} split shards, or no shard runs the other packages" >&2
 	exit 2

@@ -272,7 +272,15 @@ jobs:
           CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
         run: |
           set -euo pipefail
-          mapfile -t args < <(./scripts/test-shard.sh "${{ matrix.shard }}" "$SHARDS")
+          # A command substitution, so a failing script fails the step; a
+          # process substitution would hand go test an empty list, and go test
+          # with no package tests the repository root and passes.
+          selection="$(./scripts/test-shard.sh "${{ matrix.shard }}" "$SHARDS")"
+          mapfile -t args <<<"$selection"
+          if [ -z "$selection" ] || [ "${#args[@]}" -eq 0 ]; then
+            echo "shard ${{ matrix.shard }} selected nothing to test" >&2
+            exit 1
+          fi
           echo "shard ${{ matrix.shard }}/$SHARDS: ${args[*]}"
           go test -failfast -v -race -count=1 -timeout=4m -coverprofile=cover.out -covermode=atomic "${args[@]}"
 

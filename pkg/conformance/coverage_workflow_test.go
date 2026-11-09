@@ -117,6 +117,12 @@ func TestTheSuiteRunsOnceUnderRaceAndCoverageWithTimeoutDiagnostics(t *testing.T
 		if step.Env["CODEFLY_COMPOSITION_OCI_QUALIFY"] != "1" {
 			t.Error("the suite must exercise real OCI qualification")
 		}
+		// A shard whose selection failed or came back empty must fail: go test
+		// with no package tests the repository root, which passes.
+		if !strings.Contains(step.Run, `selection="$(./scripts/test-shard.sh`) ||
+			!strings.Contains(step.Run, `selected nothing to test`) {
+			t.Error("the test step no longer fails a shard whose package selection failed or is empty")
+		}
 		return
 	}
 	t.Fatal("the test step is missing")
