@@ -12,6 +12,7 @@ import (
 )
 
 const RuntimeExecutionGroup = "runtime-execution"
+const OfferedToolsGroup = "runnable-tools"
 
 // PreparedSelection compares keys with Runtime configuration lookup semantics.
 // An empty selection installs nothing.
@@ -46,7 +47,7 @@ func PreparedSelectionFor(service *resources.Service, delivered []*basev0.Config
 				switch info.GetName() {
 				case RunnableBindingsGroup:
 					available[value.GetKey()] = true
-				case "runnable-tools":
+				case OfferedToolsGroup:
 					if identityErr != nil {
 						return nil, identityErr
 					}

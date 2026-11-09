@@ -32,12 +32,16 @@ func preparedSelection(ctx context.Context, workspace *resources.Workspace, env 
 		if err != nil {
 			return nil, err
 		}
-		selected, err := runnables.PreparedSelectionFor(service, delivered)
-		if err != nil {
-			return nil, err
-		}
-		for key := range selected {
-			keys[key] = true
+		// The resolver already selected and validated these values, including
+		// run-profile exclusions. Do not impose the original declarations again.
+		for _, conf := range delivered {
+			for _, info := range conf.GetInfos() {
+				if info.GetName() == runnables.RunnableBindingsGroup {
+					for _, value := range info.GetConfigurationValues() {
+						keys[value.GetKey()] = true
+					}
+				}
+			}
 		}
 	}
 	return keys, nil

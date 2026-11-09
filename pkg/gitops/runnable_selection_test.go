@@ -143,3 +143,50 @@ func TestNativePreparedSelectionUsesInvocationOverride(t *testing.T) {
 	_, err = WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)})
 	require.ErrorContains(t, err, "this is a snapshot", "real renders retain the override guard")
 }
+
+func TestModuleCannotOfferItselfTools(t *testing.T) {
+	ctx := context.Background()
+	w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\n")
+	rootOffer := filepath.Join(w.workspace.Dir(), "configurations/test/runnable-tools.env")
+	require.NoError(t, os.Remove(rootOffer))
+	moduleDir := filepath.Join(w.module.Dir(), "configurations/test")
+	require.NoError(t, os.MkdirAll(moduleDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "runnable-tools.env"), []byte(`SHOP=["OWNER__ITEMS_APPLY"]`+"\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(w.module.Dir(), "services/api/service.codefly.yaml"), []byte(exposedHostedServiceYAML("api", "runnable-tools", runnables.RunnableBindingsGroup)+"module-identity: true\n"), 0600))
+	external := filepath.Join(t.TempDir(), "shop")
+	require.NoError(t, os.Rename(w.module.Dir(), external))
+	require.NoError(t, os.WriteFile(filepath.Join(w.workspace.Dir(), resources.WorkspaceConfigurationName), []byte("name: acme\nlayout: modules\nmodules:\n  - name: shop\n    path: "+external+"\nenvironments:\n  - name: test\n    namespace: acme\n"), 0600))
+	var err error
+	w.workspace, err = resources.LoadWorkspaceFromDir(ctx, w.workspace.Dir())
+	require.NoError(t, err)
+	w.module, err = w.workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	_, err = w.authority(t)
+	require.ErrorContains(t, err, "runnable-tools is composition-owned")
+	// A root overlay must not legitimize the module's inherited defaults.
+	require.NoError(t, os.WriteFile(rootOffer, []byte(`SHOP=[]`+"\n"), 0600))
+	_, err = w.authority(t)
+	require.ErrorContains(t, err, "runnable-tools is composition-owned")
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{{Name: "runnable-tools", Key: "SHOP", Value: `[]`}})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+	_, err = WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, selectionResolver(w.workspace, w.env, orchestration.RunMode))
+	require.ErrorContains(t, err, "runnable-tools is composition-owned")
+}
+
+func TestProfileCanExcludePreparedBindings(t *testing.T) {
+	ctx := context.Background()
+	w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\n")
+	flow, err := orchestration.NewFlow(ctx, w.workspace, nil, nil, w.env, orchestration.RunMode)
+	require.NoError(t, err)
+	flow.WithRuntimeContext(resources.RuntimeContextNative)
+	require.NoError(t, flow.WithRunProfile(resources.RunProfile{ExcludeWorkspaceConfigurations: []string{runnables.RunnableBindingsGroup}}))
+	require.NoError(t, flow.ConfigurationManager.Load(ctx, w.env.Runtime()))
+	service, err := w.module.LoadServiceFromName(ctx, "api")
+	require.NoError(t, err)
+	_, err = flow.WorkspaceConfigurationsFor(ctx, service)
+	require.NoError(t, err, "an explicitly excluded group must impose no delivery obligation")
+	grants, err := WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, flow.WorkspaceConfigurationsFor)
+	require.NoError(t, err)
+	require.NotContains(t, string(grants["shop"]), preparedKey)
+}

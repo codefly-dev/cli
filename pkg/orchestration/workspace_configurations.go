@@ -262,7 +262,7 @@ func (world *World) workspaceConfigurationsFor(
 		return nil, err
 	}
 
-	return runnables.PreparedConfigurationsFor(service, out)
+	return runnables.PreparedConfigurationsFor(world.withoutExcludedGroups(service), out)
 }
 
 // withheldCredentials is what one service does NOT receive of the composition

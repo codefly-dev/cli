@@ -215,6 +215,9 @@ The example illustrates the format, not a default offer. Omitted consumers and
 refuses resolution by name. Profile inheritance and native invocation overrides
 use the existing workspace-configuration mechanism; no operation list is inferred
 from producer tool exposure. Remove an id and render/publish again to revoke it.
+Modules cannot supply this group themselves. Core's composition provenance is
+checked before delivery, including module defaults retained beneath root or
+invocation overrides; those declarations are refused as non-operator offers.
 
 A service explicitly declaring `runtime-execution` also receives the union of
 `bindings[].prepared` keys from its delivered `installation-json`: one
