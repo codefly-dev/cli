@@ -754,7 +754,7 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 	if referencesErr != nil {
 		return nil, nil, referencesErr
 	}
-	reach, reachErr := derivedRunnableReach(ctx, workspace)
+	reach, reachErr := derivedRunnableReach(ctx, workspace, env)
 	if reachErr != nil {
 		return nil, nil, reachErr
 	}
@@ -1016,7 +1016,7 @@ func preparedReachConsumers(reach *runnableReach) []consumerEdge {
 	}
 	var edges []consumerEdge
 	for key := range reach.owners {
-		for _, executor := range reach.executors {
+		for _, executor := range reach.consumers[key] {
 			consumer := executor.Unique()
 			edges = append(edges, consumerEdge{key: key, consumer: consumer,
 				why: fmt.Sprintf("cell: %s reaches %s through the runnable bindings it installs; prepared by the composition, not declared by either service", consumer, key)})

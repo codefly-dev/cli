@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -261,7 +262,7 @@ func (world *World) workspaceConfigurationsFor(
 		return nil, err
 	}
 
-	return out, nil
+	return runnables.PreparedConfigurationsFor(service, out)
 }
 
 // withheldCredentials is what one service does NOT receive of the composition

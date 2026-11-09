@@ -228,7 +228,7 @@ type meshComposition struct {
 	targets          []orchestration.HostRouteTarget
 	// executors are the principals of the services that install prepared
 	// runnable bindings; owners are the endpoints their prepared calls target.
-	executors []string
+	executors map[string]string
 	reach     *runnableReach
 	// callEndpoint is the `<module>/<service>/<endpoint>` the environment
 	// declares every prepared runnable call is sent to instead of the owner's
@@ -298,7 +298,7 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	// for the cell file and the mesh alike (derivedRunnableReach): the
 	// executors' principals, and the owner endpoints their prepared bindings
 	// call.
-	reach, err := derivedRunnableReach(ctx, workspace)
+	reach, err := derivedRunnableReach(ctx, workspace, env)
 	if err != nil {
 		return nil, err
 	}
@@ -324,6 +324,7 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 			return nil, err
 		}
 	}
+	index.executors = map[string]string{}
 	for _, executor := range reach.executors {
 		if _, managed := env.ManagedService(executor.Module, executor.Service); managed {
 			continue
@@ -332,9 +333,8 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 		if namespace == "" {
 			continue
 		}
-		index.executors = append(index.executors, meshPrincipal(host, namespace, executor.Service))
+		index.executors[executor.Unique()] = meshPrincipal(host, namespace, executor.Service)
 	}
-	slices.Sort(index.executors)
 	return index, nil
 }
 
@@ -373,7 +373,10 @@ func (index *meshComposition) sources(module, service, endpoint string) []meshSo
 		}
 	}
 	if index.callsThrough(unique, endpoint) {
-		for _, principal := range index.executors {
+		for consumer, principal := range index.executors {
+			if index.callEndpoint == "" && !slices.ContainsFunc(index.reach.consumers[unique+"/"+endpoint], func(e runnableExecutor) bool { return e.Unique() == consumer }) {
+				continue
+			}
 			declare(principal, "it installs prepared runnable bindings whose calls are sent here (codefly generate runnable-bindings)")
 		}
 	}

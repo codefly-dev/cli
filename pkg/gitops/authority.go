@@ -146,7 +146,11 @@ func moduleAuthority(
 		if err != nil {
 			return nil, fmt.Errorf("module %s: %w", module.Name, err)
 		}
-		if err := appendPreparedBindings(authority, module.Name, grants); err != nil {
+		keys, err := preparedSelection(ctx, workspace, env, services)
+		if err != nil {
+			return nil, err
+		}
+		if err := appendPreparedBindings(authority, module.Name, selectPreparedGrants(grants, keys)); err != nil {
 			return nil, err
 		}
 	}

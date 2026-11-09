@@ -197,8 +197,24 @@ a declared call endpoint](#naming-scope-and-a-declared-call-endpoint).
 
 The file sits in the composition root's configuration directory, but the group
 is not run-wide: only a service that declares `runnable-bindings` in
-`workspace-configuration-dependencies` receives it, whole, in a run and in a
-render ([orchestration](orchestration.md#workspace-configuration-groups)).
+`workspace-configuration-dependencies` receives it in a run and in a render
+([orchestration](orchestration.md#workspace-configuration-groups)).
+
+A service that also explicitly declares `runtime-execution` receives only the
+union of `bindings[].prepared` keys from its delivered `installation-json`:
+one `runtime.installation/v1` object or an array of them. Empty selections
+(including an absent installation value) receive no prepared bindings. Inline
+calls and compute bindings add no prepared key. The CLI reads only that schema
+and those references; Runtime still validates the complete installations.
+Malformed or unsupported documents refuse resolution. The same selection
+limits manifest authority, generated envelope grants, and prepared network reach.
+Module authority is the union of its installing services' selections.
+
+Other consumers retain the full catalog. In particular, merely receiving the
+root's public `runtime-execution` group does not select Runtime installations:
+the service must declare that dependency. Robin's per-tool selection remains
+open in [#1315](https://github.com/codefly-dev/cli/issues/1315), pending its
+authoritative consumer tool-source declaration.
 
 An environment that prepares no binding has no file when no module derives an
 operation. That absence is an answer, not a missing file: a service that

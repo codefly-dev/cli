@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -15,7 +16,7 @@ import (
 // runnableReach is the one reach the composition PREPARES rather than
 // declares. A service that installs prepared runnable bindings (it declares
 // the `runnable-bindings` workspace configuration group) calls the owner of
-// every derived operation in the workspace, and no module declares the other:
+// its selected derived operations, and no module declares the other:
 // the owner publishes an operation, the executor installs it, and neither
 // names a service dependency on the other. The reach is therefore read from
 // the prepared index, which is the only statement of it.
@@ -29,7 +30,9 @@ type runnableReach struct {
 	executors []runnableExecutor
 	// owners holds `<module>/<service>/<endpoint>` for every endpoint a
 	// prepared call targets.
-	owners map[string]bool
+	owners     map[string]bool
+	consumers  map[string][]runnableExecutor
+	selections map[string]runnablespkg.PreparedSelection
 }
 
 // runnableExecutor is one service that installs prepared bindings.
@@ -61,8 +64,8 @@ func (reach *runnableReach) reaches(module, service, endpoint string) bool {
 // name: it would otherwise render a cell in which the executor's call is
 // denied by the mesh, which the owner reports to nobody and the executor
 // sees only as an owner that did not answer.
-func derivedRunnableReach(ctx context.Context, workspace *resources.Workspace) (*runnableReach, error) {
-	reach := &runnableReach{owners: map[string]bool{}}
+func derivedRunnableReach(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*runnableReach, error) {
+	reach := &runnableReach{owners: map[string]bool{}, consumers: map[string][]runnableExecutor{}, selections: map[string]runnablespkg.PreparedSelection{}}
 	modules, err := workspace.LoadModules(ctx)
 	if err != nil {
 		return nil, err
@@ -73,7 +76,15 @@ func derivedRunnableReach(ctx context.Context, workspace *resources.Workspace) (
 			if err != nil {
 				return nil, fmt.Errorf("load service %s/%s to index what it executes: %w", module.Name, serviceReference.Name, err)
 			}
-			if slices.Contains(service.WorkspaceConfigurationDependencies, runnablespkg.RunnableBindingsGroup) {
+			if !env.Excludes(module.Name, service.Name) && slices.Contains(service.WorkspaceConfigurationDependencies, runnablespkg.RunnableBindingsGroup) {
+				keys, err := preparedSelection(ctx, workspace, env, []*resources.Service{service})
+				if err != nil {
+					return nil, err
+				}
+				reach.selections[resources.ServiceUnique(module.Name, service.Name)] = keys
+				if keys != nil && len(keys) == 0 {
+					continue
+				}
 				reach.executors = append(reach.executors, runnableExecutor{Module: module.Name, Service: service.Name})
 			}
 		}
@@ -98,6 +109,15 @@ func derivedRunnableReach(ctx context.Context, workspace *resources.Workspace) (
 		}
 		for i := range derived.Operations {
 			operation := &derived.Operations[i]
+			var consumers []runnableExecutor
+			for _, executor := range reach.executors {
+				if reach.selections[executor.Unique()].Includes(runnablespkg.BindingKey(module.Name, operation.Name)) {
+					consumers = append(consumers, executor)
+				}
+			}
+			if len(consumers) == 0 {
+				continue
+			}
 			service, err := module.LoadServiceFromName(ctx, operation.Service)
 			if err != nil {
 				return nil, fmt.Errorf("module %s derived operation %s: %w", module.Name, operation.Name, err)
@@ -111,7 +131,13 @@ func derivedRunnableReach(ctx context.Context, workspace *resources.Workspace) (
 				return nil, err
 			}
 			for _, name := range called {
-				reach.owners[resources.ServiceUnique(module.Name, operation.Service)+"/"+name] = true
+				key := resources.ServiceUnique(module.Name, operation.Service) + "/" + name
+				reach.owners[key] = true
+				for _, consumer := range consumers {
+					if !slices.Contains(reach.consumers[key], consumer) {
+						reach.consumers[key] = append(reach.consumers[key], consumer)
+					}
+				}
 			}
 		}
 	}

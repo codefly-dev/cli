@@ -487,15 +487,7 @@ func SelectRunnableBindings(ctx context.Context, workspace *resources.Workspace,
 // its module and its derived name, upper-cased with every other character an
 // underscore, so the SDK's workspace-value lookup finds it.
 func RunnableBindingKey(module, name string) string {
-	var key strings.Builder
-	for _, r := range strings.ToUpper(module + "__" + name) {
-		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			key.WriteRune(r)
-			continue
-		}
-		key.WriteByte('_')
-	}
-	return key.String()
+	return runnablespkg.BindingKey(module, name)
 }
 
 // prepareRunnable prepares one derived operation for the environment the
