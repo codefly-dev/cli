@@ -126,7 +126,7 @@ func modulePageContract(module, entry string) *modulecontract.Contract {
 		RequireMethodPolicies: true,
 	}
 	for _, scope := range pageScopes(module, "") {
-		contract.ScopeCeilings = append(contract.ScopeCeilings, modulecontract.ScopeCeiling(scope))
+		contract.ScopeCeilings = append(contract.ScopeCeilings, modulecontract.ScopeCeiling{ResourceKind: scope.ResourceKind, Actions: scope.Actions})
 	}
 	for _, role := range pageRoles {
 		contract.Roles = append(contract.Roles, modulecontract.Role{Name: role, Scopes: pageScopes(module, role)})
