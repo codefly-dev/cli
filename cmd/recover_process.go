@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
 	"syscall"
@@ -184,6 +185,25 @@ func readProcessExitReceipt(ctx context.Context, path string) (processExitReceip
 	return receipt, ctx.Err()
 }
 
+// errExitInProgress marks the one inspection failure that means "this process
+// is on its way out", as opposed to "this inspection went wrong".
+//
+// Core reads /proc/<pid>/stat and then /proc/<pid>/exe. A missing stat it
+// reports as ErrProcessNotFound; a missing exe link with the stat still
+// readable it deliberately refuses to call absence, because a thread-group
+// leader can exit while its threads live on. That same reading is what a
+// process looks like between its own exit and its parent's wait, so the only
+// ENOENT core can hand back is a process in the middle of leaving. Every other
+// inspection failure — a permission error, an unparseable stat, an identity
+// that changed mid-read — carries no ENOENT and stays fatal here.
+//
+// Before the signal, even this is a refusal to act: an unclear reading is no
+// basis for sending anything. While polling for an exit that has already been
+// requested it means "not yet", so the loop keeps waiting for a verdict. If
+// the budget expires without one, the exit is reported unconfirmed — the
+// honest answer, and the behaviour that already existed.
+var errExitInProgress = errors.New("process is exiting but its identity is not yet resolvable")
+
 func sameProcessBirth(first, second base.ProcessIdentity) bool {
 	return first.PID == second.PID && first.BootID == second.BootID && first.StartID == second.StartID
 }
@@ -200,6 +220,8 @@ func requestProcessExit(ctx context.Context, expected base.ProcessIdentity, requ
 		case errors.Is(err, base.ErrProcessNotFound):
 			result.Observation, result.ExpectedBirthGone = processObservationAbsent, true
 			err = nil
+		case errors.Is(err, fs.ErrNotExist):
+			err = errors.Join(errExitInProgress, err)
 		case err != nil:
 		case current.PID != expected.PID || current.PGID <= 0 || current.BootID == "" || current.StartID == 0 || current.Executable == "":
 			err = errors.New("core returned an incomplete or mismatched process observation")
@@ -230,16 +252,23 @@ func requestProcessExit(ctx context.Context, expected base.ProcessIdentity, requ
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	var unresolved error
 	for {
 		_, err := observe()
-		if err != nil || result.Observation == processObservationAbsent {
+		switch {
+		case result.Observation == processObservationAbsent:
+			return result, errors.Join(deliveryErr, err)
+		case errors.Is(err, errExitInProgress):
+			// Keep the reason so an expired budget can say what it kept seeing.
+			unresolved = err
+		case err != nil:
 			return result, errors.Join(deliveryErr, err)
 		}
 		select {
 		case <-ctx.Done():
-			return result, errors.Join(deliveryErr, ctx.Err())
+			return result, errors.Join(deliveryErr, unresolved, ctx.Err())
 		case <-deadline.C:
-			return result, errors.Join(deliveryErr, errors.New("process exit unconfirmed within polling budget"))
+			return result, errors.Join(deliveryErr, unresolved, errors.New("process exit unconfirmed within polling budget"))
 		case <-ticker.C:
 		}
 	}
