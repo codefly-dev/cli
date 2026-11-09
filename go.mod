@@ -16,7 +16,7 @@ require (
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261026023425-000d44495d93
 	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261027171336-5178f01696e3
 	github.com/codefly-dev/authority/libraries/hop/go v0.1.1-0.20261109185355-2178ef5a33b2
-	github.com/codefly-dev/core v0.19.20-0.20261109192222-1b9a895a48b3
+	github.com/codefly-dev/core v0.19.20-0.20261109211818-3e7b38e3d9ad
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
