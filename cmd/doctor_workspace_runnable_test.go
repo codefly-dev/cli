@@ -221,7 +221,7 @@ func TestDoctorWorkspaceJudgesTheRunnableBindingsGroupByWhatTheEnvironmentSelect
 func TestRenderReadinessAcceptsAnAbsentRunnableBindingsGroupWhenNoneIsSelected(t *testing.T) {
 	dir := singleServiceWorkspace(t, testWorkspaceYAML, []string{generate.RunnableBindingsGroup}, nil)
 	t.Chdir(dir)
-	if err := deploy.WorkspaceReadiness(context.Background(), "local", "backend"); err != nil {
+	if err := deploy.WorkspaceReadiness(context.Background(), "local", "backend", true); err != nil {
 		t.Fatalf("the render's readiness gate refused: %v", err)
 	}
 	out, err := runGitOpsVerb(t, dir, "render", "backend", "--env", "local")
@@ -242,7 +242,7 @@ func TestRunnableReadinessChecksInvocationValuesOverAuthoredGroup(t *testing.T) 
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir, module: "backend"})
 	requireCode(t, report, codeConfigurationInvalid, checkStatusFail)
 	t.Chdir(dir)
-	require.ErrorContains(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend"), "out of date")
+	require.ErrorContains(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend", true), "out of date")
 	raw, err := os.ReadFile(filepath.Join(dir, "configurations/local/runnable-bindings.env"))
 	require.NoError(t, err)
 	require.Equal(t, "# no derived operations\n", string(raw))

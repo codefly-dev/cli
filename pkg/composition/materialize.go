@@ -858,6 +858,16 @@ func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout stri
 		}
 	} else {
 		if out, err := gitCommand(ctx, "clone", "--quiet", "--depth", "1", "--branch", tag, url, tmp).CombinedOutput(); err != nil {
+			// A pin is handed to git as a REF NAME, so an abbreviated SHA — which
+			// git resolves locally and a remote does not — arrives here as
+			// "Remote branch <pin> not found in upstream origin", naming a branch
+			// nobody wrote. Said plainly once the clone has actually failed, so a
+			// tag whose name happens to be hex is never pre-refused on a shape
+			// test alone.
+			if AbbreviatedCommitPin(tag) {
+				return fmt.Errorf("clone %s@%s: %s does not publish a ref named %q, and a %d-character hex pin is an abbreviated commit SHA, which resolves nowhere: only the full 40-character object name or a published tag resolves. Use the full SHA",
+					url, tag, ref.Source, tag, len(tag))
+			}
 			return fmt.Errorf("clone %s@%s: %w: %s", url, tag, err, strings.TrimSpace(string(out)))
 		}
 		if err := gitCommand(ctx, "-C", tmp, "show-ref", "--verify", "--quiet", "refs/tags/"+tag).Run(); err != nil {

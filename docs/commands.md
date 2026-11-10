@@ -2245,7 +2245,11 @@ render`, which refuses to render pins that are behind. Pins that could not be
 compared because a source was unreadable are reported as
 `pin_currency_unverified`: a warning locally, a failure in a render, never a
 pass. There is no offline mode for a render: its only escape is
-`--skip-workspace-readiness`, which skips every readiness check and says so.
+`--skip-workspace-readiness`, which skips the **refusal** and not the
+evaluation — the verdict is still produced and printed, and the verb proceeds
+naming that the next delivery verb will refuse until it is fixed. So the override
+does not make a render offline: it still spends the currency timeout before
+proceeding.
 The check reads the network (bounded at 10 s, 25 s for a render); a first run
 fetches each stale source's history once.
 

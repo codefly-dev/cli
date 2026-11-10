@@ -16,13 +16,21 @@ func stubReadiness(t *testing.T, verdict func(ctx context.Context, env, module s
 	t.Helper()
 	previous := WorkspaceReadiness
 	t.Cleanup(func() { WorkspaceReadiness = previous })
+	enforced = nil
+	t.Cleanup(func() { enforced = nil })
 	var asked []string
-	WorkspaceReadiness = func(ctx context.Context, env, module string) error {
+	WorkspaceReadiness = func(ctx context.Context, env, module string, enforcing bool) error {
 		asked = append(asked, env+"/"+module)
+		enforced = append(enforced, enforcing)
 		return verdict(ctx, env, module)
 	}
 	return &asked
 }
+
+// enforced records, per question, whether the engine was asked to enforce. The
+// override must report without enforcing, so the engine does not print a refusal
+// banner on a verb that proceeds.
+var enforced []bool
 
 func withSkip(t *testing.T, value bool) {
 	t.Helper()
@@ -183,5 +191,33 @@ func stubModuleLoader(t *testing.T) func(ctx context.Context, args []string) (*r
 		workspace := &resources.Workspace{Name: "demo"}
 		workspace.WithDir(t.TempDir())
 		return workspace, &resources.Module{Name: name}, nil
+	}
+}
+
+// The override reports without enforcing, so the engine prints its diagnostics
+// and not the refusal banner: a verb that proceeds and exits 0 must not leave
+// "Workspace is NOT ready" in the log for a scraper to read as a failure.
+func TestSkipWorkspaceReadinessReportsWithoutEnforcing(t *testing.T) {
+	withSkip(t, true)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("the override must let the verb proceed: %v", err)
+	}
+	if len(enforced) != 1 || enforced[0] {
+		t.Fatalf("the override must ask without enforcing, got %v", enforced)
+	}
+}
+
+// Enforcing asks to enforce, so the banner is printed by the verb that refuses.
+func TestRequireWorkspaceReadyEnforcesWhenItRefuses(t *testing.T) {
+	withSkip(t, false)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
+		t.Fatal("an unready workspace must be refused")
+	}
+	if len(enforced) != 1 || !enforced[0] {
+		t.Fatalf("the enforcing path must ask to enforce, got %v", enforced)
 	}
 }

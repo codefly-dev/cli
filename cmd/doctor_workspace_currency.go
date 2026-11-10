@@ -124,6 +124,22 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 			return currencyVerdict{false, fmt.Sprintf("%s behind %s", plural(lag.Behind, "commit"), branch)}
 		}
 	}
+	// Hex, but not the full object name, and not a tag this source publishes: an
+	// abbreviated SHA. Every clone reads a pin as a ref name, so this one fails
+	// deep inside the render as "Remote branch <pin> not found in upstream
+	// origin" — naming a branch nobody wrote.
+	//
+	// ABOVE the release comparison on purpose. A pin's shape has nothing to do
+	// with whether its source has cut a release, and the comparison below answers
+	// "no release to compare with" as CURRENT — so judged there, an unresolvable
+	// pin on a tagless source reported green and the render still died. A commit
+	// pin is exactly what a source that has not cut a tag yet is pinned by, so
+	// that is not a rare case; it is the common one.
+	if composition.AbbreviatedCommitPin(version) && !slices.Contains(head.Tags, version) {
+		return currencyVerdict{false, fmt.Sprintf(
+			"an abbreviated commit SHA, which resolves nowhere: a pin is read as a git ref, and only the full 40-character object name or a tag %s publishes resolves. Use the full SHA",
+			head.Branch)}
+	}
 	newest := composition.NewestRelease(head.Tags)
 	if version == "" || version == "latest" {
 		return currencyVerdict{true, "follows the newest release"}
@@ -149,16 +165,6 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 			return currencyVerdict{true, fmt.Sprintf("a range that reaches the newest release, %s", newest)}
 		}
 		return currencyVerdict{false, fmt.Sprintf("a range that cannot reach the newest release, %s", newest)}
-	}
-	// Hex, but not the full object name, and not a tag this source publishes: an
-	// abbreviated SHA. Every clone reads a pin as a ref name, so this one fails
-	// deep inside the render as "Remote branch <pin> not found in upstream
-	// origin" — naming a branch nobody wrote. Said here instead, before anything
-	// is pulled or built, with the fix in the sentence.
-	if composition.AbbreviatedCommitPin(version) && !slices.Contains(head.Tags, version) {
-		return currencyVerdict{false, fmt.Sprintf(
-			"an abbreviated commit SHA, which resolves nowhere: a pin is read as a git ref, and only the full 40-character object name or a tag %s publishes resolves. Use the full SHA",
-			head.Branch)}
 	}
 	return currencyVerdict{false, fmt.Sprintf("neither a tag, a range nor a commit, so it was not compared with %s", branch)}
 }
