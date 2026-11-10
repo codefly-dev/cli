@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload conformance receipts
         if: always() && matrix.conformance_rows != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: conformance-receipts-${{ matrix.gate }}
           path: conformance-receipts/
@@ -250,7 +250,7 @@ jobs:
       # npm publish) against an httptest registry rather than mocking the store;
       # those tests need node/npm on the runner.
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
 
       # Per shard: each compiles a different set of packages under -race and
       # -cover. Compiled artifacts only, as in the quality gates above. Test
@@ -286,7 +286,7 @@ jobs:
 
       - name: Upload the shard's profile and receipts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-shard-${{ matrix.shard }}
           path: |
@@ -337,7 +337,7 @@ jobs:
 
       - name: Check test coverage
         id: coverage
-        uses: vladopajic/go-test-coverage@f484eec846448c97c777a26f8b58c5a69a327e12 # v2
+        uses: vladopajic/go-test-coverage@6890500b00a7e5862e54662c04ea9fa7c799ce1e # v2
         with:
           config: ./.testcoverage.yaml
 
@@ -458,7 +458,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # Pinned rather than left to the runner default: this job's whole
           # value is that a dirty out/ means the dependencies moved, so the
