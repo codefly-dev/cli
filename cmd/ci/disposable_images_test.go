@@ -101,6 +101,7 @@ func validDisposableReplay(t *testing.T, root string, ws *resources.Workspace, p
 }
 
 func TestDisposableReplayAdmissionBeforeAnyAction(t *testing.T) {
+	stubTestInspection(t, nil, nil)
 	root, ws := disposableAdmissionWorkspace(t, "build", false)
 	plan := validDisposableReplay(t, root, ws, "test", []string{"modules/app/services/independent/code/input", "modules/app/services/origin/code/input"})
 	for _, disposable := range []bool{false, true} {

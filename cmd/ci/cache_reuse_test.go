@@ -96,6 +96,7 @@ func TestVerifiedReusePublishesAndReusesWithoutAPreinstalledAgent(t *testing.T) 
 }
 
 func TestVerifiedReuseMatchesDefaultAndNamedTestSuites(t *testing.T) {
+	stubTestInspection(t, nil, nil)
 	_, workspace := loadReuseFixture(t)
 	plan := cacheTestPlan(workspace, "management/consumer")
 	store := t.TempDir()

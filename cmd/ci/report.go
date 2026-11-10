@@ -361,7 +361,11 @@ func (reporter *Reporter) registerTasks(ctx context.Context, workspace *resource
 	for index := range tasks {
 		task := &tasks[index]
 		id := reportTaskID(phase, options.Suite, task.planned.Service)
-		if _, exists := reporter.taskIndex[id]; exists {
+		if existing, exists := reporter.taskIndex[id]; exists {
+			if reporter.report.Tasks[existing].Status == reportStatusPending {
+				reporter.report.Tasks[existing].Prerequisites = cloneStrings(task.prerequisites)
+				reporter.report.Tasks[existing].RuntimeResources = cloneStrings(task.resources)
+			}
 			ids[index] = id
 			continue
 		}

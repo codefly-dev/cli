@@ -4647,13 +4647,23 @@ Tools, JSON, contracts, and configuration retain normal dependency-aware
 selection.
 
 Affected-service phase commands accept `--jobs` (`0` selects an automatic value
-capped at four) and `--fail-fast`. Selected dependency prerequisites remain
-ordered in every phase, including image builds: standalone agent execution
+capped at four) and `--fail-fast`. Outside the test phase, selected dependency
+prerequisites remain ordered, including image builds: standalone agent execution
 does not establish that another service's image is absent from build inputs.
 With `--fail-fast=false`, independent tasks continue after failures while tasks
-whose prerequisites failed are skipped. Test flows also lock shared runtime
-dependency closures. Executable CI commands atomically write a
-schema-versioned `report.json` to `.codefly/ci` by default. `--output` selects a
+whose prerequisites failed are skipped. Test tasks never wait for another
+service's test result: each flow handles its own build/start readiness. Before
+scheduling tests, CI inspects the selected agents over gRPC and uses the same
+suite resolution as the live flow (including named/default, legacy and skipped
+suites). Dependency-free suites exclusively lock only their target. Suites that
+start dependencies retain exclusive locks on their target and conservative
+runtime closure through teardown and agent eviction; two flows cannot mutate or
+stop the same runtime concurrently. A test failure still fails the run, and
+`--fail-fast` stops unscheduled tasks. Offline/replay plans retain conservative
+resource sets, narrowed at execution and recorded in the report. The live flow
+refuses any manager outside its owned set before creating it, including when an
+agent's advertisement changes after inspection. Executable CI commands atomically
+write a schema-versioned `report.json` to `.codefly/ci` by default. `--output` selects a
 different workspace-relative report/artifact directory; `--format json`
 suppresses normal narration and emits the same report payload on stdout. Every
 task includes Codefly's content-addressed cache key and input digests. The

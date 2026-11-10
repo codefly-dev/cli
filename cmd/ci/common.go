@@ -174,7 +174,7 @@ func CI(ctx context.Context, workspace *resources.Workspace, action Action) erro
 
 // ScheduleOptions controls bounded affected-service execution. Test phases use
 // LockDependencyClosure so two flows cannot concurrently own one runtime
-// dependency agent; static and artifact phases only lock their target.
+// dependency agent. Test execution narrows this using the advertised suite.
 type ScheduleOptions struct {
 	Jobs                  int
 	FailFast              bool
@@ -200,6 +200,7 @@ type ciScheduledTask struct {
 	prerequisites  []string
 	failedRequired []string
 	resources      []string
+	preparationErr error
 }
 
 type ciTaskResult struct {
@@ -214,9 +215,9 @@ type ciTaskFailure struct {
 }
 
 // WithPlanOptions executes each affected service once, allowing independent
-// graph nodes to run concurrently while every selected prerequisite completes
-// first. Failures and blocked dependents are reported in deterministic plan
-// order regardless of goroutine completion order.
+// graph nodes to run concurrently while each phase's prerequisites complete
+// first (test tasks do not depend on other test results). Failures and blocked
+// dependents are reported in plan order regardless of completion order.
 func WithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan *Plan, action Action, options ScheduleOptions) error {
 	w := wool.Get(ctx).In("affectedCI")
 	if plan == nil {
@@ -243,6 +244,9 @@ func WithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan *
 	tasks, err := buildScheduledTasks(ctx, workspace, plan, options)
 	if err != nil {
 		return err
+	}
+	if options.Phase == ciPhaseTest {
+		prepareTestTasks(ctx, workspace, tasks, options.Suite)
 	}
 	if jobs > len(tasks) {
 		jobs = len(tasks)
@@ -351,14 +355,21 @@ func (scheduler *ciScheduler) launchRunnable(ctx context.Context) {
 		scheduler.running++
 		task := scheduler.tasks[index]
 		taskContext := ctx
+		if scheduler.options.Phase == ciPhaseTest {
+			taskContext = context.WithValue(taskContext, testOwnershipKey{}, task.resources)
+		}
 		reportID := ""
 		if scheduler.options.Reporter != nil {
 			reportID = scheduler.reportTaskIDs[index]
 			scheduler.options.Reporter.startTask(reportID)
-			taskContext = withCIReportTask(ctx, scheduler.options.Reporter, reportID)
+			taskContext = withCIReportTask(taskContext, scheduler.options.Reporter, reportID)
 		}
 		go func() {
-			scheduler.results <- ciTaskResult{index: task.index, err: runScheduledTask(taskContext, scheduler.options.Reporter, reportID, scheduler.workspace, &task.planned, scheduler.action)}
+			err := task.preparationErr
+			if err == nil {
+				err = runScheduledTask(taskContext, scheduler.options.Reporter, reportID, scheduler.workspace, &task.planned, scheduler.action)
+			}
+			scheduler.results <- ciTaskResult{index: task.index, err: err}
 		}()
 	}
 }
@@ -508,11 +519,11 @@ func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, 
 		}
 		selected[planned.Service] = index
 		tasks[index] = ciScheduledTask{index: index, planned: planned, resources: []string{planned.Service}}
-		if !options.LockDependencyClosure {
+		if !options.LockDependencyClosure && options.Phase != ciPhaseTest {
 			continue
 		}
-		// Runtime flows still own their conservative closure until agents declare
-		// effective inputs; changing ordering must not weaken those ownership locks.
+		// Offline plans retain conservative ownership. Test execution narrows it
+		// only after inspecting the selected agent, before any task starts.
 		for _, required := range runtimeDependencies.Services() {
 			depends, err := runtimeDependencies.DependsOn(planned.Service, required.Unique)
 			if err != nil {
@@ -523,6 +534,11 @@ func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, 
 			}
 		}
 		tasks[index].resources = sortedUnique(tasks[index].resources)
+	}
+	// Tests consume runtime/build readiness, never another service's test result.
+	// Their flows own lifecycle ordering; resource locks protect shared agents.
+	if options.Phase == ciPhaseTest {
+		return tasks, nil
 	}
 	// Preserve transitive ordering even when an intermediate service is not in
 	// the affected set (for example two library consumers separated by a
