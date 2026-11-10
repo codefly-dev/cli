@@ -30,6 +30,7 @@ func TestRunnableBindingsReachOnlyTheServicesThatDeclareThem(t *testing.T) {
 		"modules/payments/services/web/service.codefly.yaml": "kind: service\nname: web\nversion: 0.0.0\nmodule: payments\n" + agent,
 		"modules/payments/services/api/service.codefly.yaml": "kind: service\nname: api\nversion: 0.0.0\nmodule: payments\n" + agent,
 		"configurations/local/platform.env":                  "REGION=local\n",
+		"configurations/local/runnable-tools.env":            `PAYMENTS=["PAYMENTS__WORKER_CONNECT_SETTLE","PAYMENTS__WORKER_CONNECT_REFUND"]` + "\n",
 		"configurations/local/runnable-bindings.env":         "PAYMENTS__WORKER_CONNECT_SETTLE={}\nPAYMENTS__WORKER_CONNECT_REFUND={}\n",
 	})
 	world, _ := referenceValidityWorld(t, workspace, func(world *World) { world.Mode = RunMode })
@@ -52,17 +53,17 @@ func TestRunnableBindingsReachOnlyTheServicesThatDeclareThem(t *testing.T) {
 	}
 
 	ran, built, values := received("worker")
-	require.ElementsMatch(t, []string{"platform", runnablespkg.RunnableBindingsGroup}, ran)
+	require.ElementsMatch(t, []string{"platform", runnablespkg.RunnableBindingsGroup, runnablespkg.OfferedToolsGroup}, ran)
 	require.ElementsMatch(t, ran, built, "the render hands the declaring service what the run does")
-	require.Equal(t, 2, values, "the declaring service receives every prepared binding")
+	require.Equal(t, 2, values, "the declaring service receives offered prepared bindings")
 	for _, name := range []string{"web", "api"} {
 		ran, built, _ = received(name)
-		require.Equal(t, []string{"platform"}, ran, "%s declares no runnable-bindings and receives none", name)
+		require.ElementsMatch(t, []string{"platform", runnablespkg.OfferedToolsGroup}, ran, "%s declares no runnable-bindings and receives none", name)
 		require.Equal(t, ran, built, "%s: the render hands it what the run does", name)
 	}
 	// The plan gate reads the root's names through the same rule, so it does not
 	// hold a service to a group it never receives.
 	_, rootGroups, err := WorkspaceConfigurationsForChecking(ctx, workspace, world.Env)
 	require.NoError(t, err)
-	require.Equal(t, []string{"platform"}, rootGroups)
+	require.ElementsMatch(t, []string{"platform", runnablespkg.OfferedToolsGroup}, rootGroups)
 }

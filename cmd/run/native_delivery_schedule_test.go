@@ -291,6 +291,10 @@ type fakeLauncherFlow struct {
 	attemptedBeforeHostReady bool
 }
 
+func (f *fakeLauncherFlow) WorkspaceConfigurationsFor(context.Context, *resources.Service) ([]*basev0.Configuration, error) {
+	return nil, nil
+}
+
 func (f *fakeLauncherFlow) World() *orchestration.World { return nil }
 func (f *fakeLauncherFlow) ServiceFromUnique(string) (*resources.Service, error) {
 	return nil, errors.New("no service in this test")

@@ -74,6 +74,7 @@ func moduleAuthority(
 	services []*resources.Service,
 	env *environments.Environment,
 	request authorityRequest,
+	resolvers ...WorkspaceConfigurationResolver,
 ) (*solutionhost.Authority, error) {
 	authority := &solutionhost.Authority{Principal: module.Name}
 	if err := refuseRetiredRoles(module.Dir()); err != nil {
@@ -146,7 +147,11 @@ func moduleAuthority(
 		if err != nil {
 			return nil, fmt.Errorf("module %s: %w", module.Name, err)
 		}
-		if err := appendPreparedBindings(authority, module.Name, grants); err != nil {
+		keys, err := preparedSelection(ctx, workspace, env, services, resolvers...)
+		if err != nil {
+			return nil, err
+		}
+		if err := appendPreparedBindings(authority, module.Name, selectPreparedGrants(grants, keys)); err != nil {
 			return nil, err
 		}
 	}

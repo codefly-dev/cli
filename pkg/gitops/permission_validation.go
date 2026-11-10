@@ -131,7 +131,7 @@ func ValidateModulePermissions(ctx context.Context, workspace *resources.Workspa
 // require_method_policies holds every method its package publishes, the
 // services that stand in for the host included, since it asked for exactly
 // that.
-func validateModulePermissions(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, selectedSource *resources.Service) error {
+func validateModulePermissions(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, selectedSource *resources.Service, resolvers ...WorkspaceConfigurationResolver) error {
 	request, err := authorityRequestOf(module)
 	if err != nil {
 		return err
@@ -162,13 +162,17 @@ func validateModulePermissions(ctx context.Context, workspace *resources.Workspa
 	if err != nil {
 		return err
 	}
-	_, err = moduleAuthority(ctx, workspace, module, services, env, request)
+	_, err = moduleAuthority(ctx, workspace, module, services, env, request, resolvers...)
 	return err
 }
 
 // CheckCompositionPermissions collects all selected-module diagnostics. Local
 // run adoption warns; deployment rejects the same diagnostics before effects.
 func CheckCompositionPermissions(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, strict bool, seeds ...string) error {
+	return checkCompositionPermissions(ctx, workspace, env, strict, nil, seeds...)
+}
+
+func checkCompositionPermissions(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, strict bool, resolve WorkspaceConfigurationResolver, seeds ...string) error {
 	var selected *resources.ModuleClosure
 	if len(seeds) > 0 {
 		provided, _, err := orchestration.WorkspaceConfigurationsForChecking(ctx, workspace, env)
@@ -191,7 +195,7 @@ func CheckCompositionPermissions(ctx context.Context, workspace *resources.Works
 		}
 		module, err := workspace.LoadModuleFromName(ctx, ref.Name)
 		if err == nil {
-			err = ValidateModulePermissions(ctx, workspace, module, env)
+			err = validateModulePermissions(ctx, workspace, module, env, nil, resolve)
 		}
 		if err != nil {
 			problems = append(problems, err)
@@ -209,6 +213,9 @@ func CheckCompositionPermissions(ctx context.Context, workspace *resources.Works
 // orchestration engine depend on the deployment implementation.
 func PermissionPreflight(strict bool) func(context.Context, *resources.Workspace, *environments.Environment) error {
 	return func(ctx context.Context, w *resources.Workspace, e *environments.Environment) error {
+		if !strict {
+			return checkCompositionPermissions(ctx, w, e, strict, selectionResolver(w, e, orchestration.RunMode))
+		}
 		return CheckCompositionPermissions(ctx, w, e, strict)
 	}
 }

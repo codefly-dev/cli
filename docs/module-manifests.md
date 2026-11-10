@@ -313,7 +313,10 @@ it (strict reader), and a host older than it refuses the manifest.
 **A module that installs prepared bindings also asks for each one.** When one
 of its services declares the `runnable-bindings` workspace configuration group
 ([Runnable](runnable.md)), the module's request gains a binding for every
-prepared binding the environment's group carries:
+prepared binding its services receive. Explicit `runtime-execution` consumers
+add their installation manifests' `bindings[].prepared` union to the tools the
+composition offers in `runnable-tools`, as described in [Runnable](runnable.md).
+An unlisted consumer with no installation references receives none:
 `{id: <the prepared key, MODULE__OPERATION>, audience, operations: {invoke, lookup}}`,
 with the audience and the kinds and actions of the binding's resolved policy.
 It carries **no resource id**: which resources an organization lets the module

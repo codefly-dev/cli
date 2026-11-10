@@ -197,8 +197,42 @@ a declared call endpoint](#naming-scope-and-a-declared-call-endpoint).
 
 The file sits in the composition root's configuration directory, but the group
 is not run-wide: only a service that declares `runnable-bindings` in
-`workspace-configuration-dependencies` receives it, whole, in a run and in a
-render ([orchestration](orchestration.md#workspace-configuration-groups)).
+`workspace-configuration-dependencies` receives it in a run and in a render
+([orchestration](orchestration.md#workspace-configuration-groups)).
+
+The composition offers tools through the public workspace-configuration group
+`runnable-tools`, in `configurations/<profile>/runnable-tools.env`. Each key is
+its consuming module's name, and the value is a JSON array of existing prepared
+operation ids (which already identify the providing module/service/operation):
+
+```dotenv
+ROBIN=["DOCUMENTS__DOCUMENTS_GRPC_GET_DOCUMENT_CONTENT"]
+RUNTIME=[]
+```
+
+The example illustrates the format, not a default offer. Omitted consumers and
+`[]` offer nothing. An offered id absent from this environment's prepared catalog
+refuses resolution by name. Profile inheritance and native invocation overrides
+use the existing workspace-configuration mechanism; no operation list is inferred
+from producer tool exposure. Remove an id and render/publish again to revoke it.
+Modules cannot supply this group themselves. Core's composition provenance is
+checked before delivery, including module defaults retained beneath root or
+invocation overrides; those declarations are refused as non-operator offers.
+
+A service explicitly declaring `runtime-execution` also receives the union of
+`bindings[].prepared` keys from its delivered `installation-json`: one
+`runtime.installation/v1` object or an array. Inline calls and compute bindings
+add no prepared key. The CLI projects only those references; Runtime still
+validates the complete installation. Malformed/unsupported documents refuse
+resolution. Key aliases follow Runtime's configuration lookup rules.
+
+This one selection limits delivered configuration, manifest authority, generated
+envelope entries, and prepared cell/mesh reach. Module authority unions its
+installing services. Merely receiving a root `runtime-execution` group does not
+make a service install Runtime releases: that dependency must be explicit.
+Native delivery uses the run's actual resolver; renders keep their override
+restriction. The composition must migrate its intended tools to this declaration
+before rollout ([#1315](https://github.com/codefly-dev/cli/issues/1315)).
 
 An environment that prepares no binding has no file when no module derives an
 operation. That absence is an answer, not a missing file: a service that

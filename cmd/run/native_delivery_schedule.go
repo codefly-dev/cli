@@ -28,6 +28,7 @@ import (
 
 // launcherFlow is what the launcher reads from the run's flow.
 type launcherFlow interface {
+	WorkspaceConfigurationsFor(context.Context, *resources.Service) ([]*basev0.Configuration, error)
 	World() *orchestration.World
 	ServiceFromUnique(unique string) (*resources.Service, error)
 	GetAddressForEndpoint(ctx context.Context, module, service, endpoint string) (string, error)

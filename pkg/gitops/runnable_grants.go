@@ -22,7 +22,8 @@ import (
 // --- What a module that installs prepared bindings is granted ---
 //
 // A service that declares the runnable-bindings workspace configuration group
-// installs every binding the composition prepared, and calls each owner with
+// installs the tools offered by its composition and its Runtime installation
+// references, and calls each owner with
 // a capability exchanged for the call (derivedRunnableReach). The mesh already
 // admits it to those owners from that one derivation; this is the same
 // derivation read for authority: the module's request names each prepared
@@ -216,7 +217,7 @@ func (g *preparedGrant) envelopeEntry() envelopeEntry {
 // asks for authority and whose principal the composition grants. A
 // composition that grants nothing is returned unchanged: an envelope nobody
 // states is not one this writes.
-func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, principals map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, principals map[string]json.RawMessage, resolvers ...WorkspaceConfigurationResolver) (map[string]json.RawMessage, error) {
 	if len(principals) == 0 || workspace == nil || env == nil {
 		return principals, nil
 	}
@@ -224,7 +225,7 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 	if err != nil {
 		return nil, err
 	}
-	var installers []string
+	installers := map[string][]*resources.Service{}
 	for _, module := range modules {
 		if _, granted := principals[module.Name]; !granted {
 			continue
@@ -243,7 +244,7 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 		if request.undeclared != "" {
 			continue
 		}
-		installers = append(installers, module.Name)
+		installers[module.Name] = services
 	}
 	if len(installers) == 0 {
 		return principals, nil
@@ -260,8 +261,12 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 	for principal, grant := range principals {
 		out[principal] = grant
 	}
-	for _, principal := range installers {
-		merged, err := withPreparedEntries(principal, out[principal], grants)
+	for principal, services := range installers {
+		keys, err := preparedSelection(ctx, workspace, env, services, resolvers...)
+		if err != nil {
+			return nil, err
+		}
+		merged, err := withPreparedEntries(principal, out[principal], grants, keys)
 		if err != nil {
 			return nil, err
 		}
@@ -271,8 +276,8 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 }
 
 // withPreparedEntries adds the generated entries to one principal's grant,
-// keeping every entry the grant already states.
-func withPreparedEntries(principal string, grant json.RawMessage, grants []preparedGrant) (json.RawMessage, error) {
+// keeping stated entries except prepared keys the installation no longer selects.
+func withPreparedEntries(principal string, grant json.RawMessage, grants []preparedGrant, keys runnablespkg.PreparedSelection) (json.RawMessage, error) {
 	fields := map[string]json.RawMessage{}
 	if trimmed := strings.TrimSpace(string(grant)); trimmed != "" && trimmed != "null" {
 		if err := json.Unmarshal(grant, &fields); err != nil {
@@ -287,6 +292,10 @@ func withPreparedEntries(principal string, grant json.RawMessage, grants []prepa
 	}
 	for i := range grants {
 		prepared := &grants[i]
+		if !keys.Includes(prepared.key) {
+			delete(audiences, prepared.key)
+			continue
+		}
 		// A self-addressed binding is the authority core's to issue through
 		// (appendPreparedBindings); the envelope's registry takes one for
 		// headless work only and would refuse the whole grant.

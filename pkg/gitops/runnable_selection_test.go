@@ -1,0 +1,192 @@
+package gitops
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/runnables"
+	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
+)
+
+func TestRuntimeInstallationsSelectAuthorityEnvelopeAndConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, installation, tools string
+		runtime                   bool
+		want                      []string
+	}{
+		{"one", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]}`, `[]`, true, []string{preparedKey}},
+		{"union", `[{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]},{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ADMIN"},{"prepared":"OWNER__ITEMS_APPLY"}]}]`, `[]`, true, []string{"OWNER__ADMIN", preparedKey}},
+		{"empty", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, true, nil},
+		{"robin default none despite root installation", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, false, nil},
+		{"robin offered", `{"contract":"runtime.installation/v1","bindings":[]}`, `["OWNER__ITEMS_APPLY"]`, false, []string{preparedKey}},
+		{"unknown", `{"contract":"runtime.installation/v1","bindings":[]}`, `["UNKNOWN_OPERATION"]`, false, nil},
+		{"runtime plus offered", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"owner__items-apply"}]}`, `["OWNER__ADMIN"]`, true, []string{"OWNER__ADMIN", preparedKey}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\nOWNER__ADMIN="+preparedValue(t)+"\n")
+			groups := []string{runnables.RunnableBindingsGroup}
+			if tc.runtime {
+				groups = append(groups, runnables.RuntimeExecutionGroup)
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(w.module.Dir(), "services/api/service.codefly.yaml"), []byte(exposedHostedServiceYAML("api", groups...)+"module-identity: true\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(w.workspace.Dir(), "configurations/test/runtime-execution.env"), []byte("INSTALLATION_JSON="+tc.installation+"\n"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(w.workspace.Dir(), "configurations/test/runnable-tools.env"), []byte("SHOP="+tc.tools+"\n"), 0o600))
+			var err error
+			w.workspace, err = resources.LoadWorkspaceFromDir(ctx, w.workspace.Dir())
+			require.NoError(t, err)
+			w.module, err = w.workspace.LoadModuleFromName(ctx, "shop")
+			require.NoError(t, err)
+			authority, err := w.authority(t)
+			if tc.name == "unknown" {
+				require.ErrorContains(t, err, "UNKNOWN_OPERATION")
+				return
+			}
+			require.NoError(t, err)
+			var got []string
+			for _, binding := range authority.Bindings[len(contractBindings()):] {
+				got = append(got, binding.ID)
+			}
+			require.ElementsMatch(t, tc.want, got)
+			envelope, err := WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{"operation_audiences":{"OWNER__ADMIN":{"audience":"acme.items"}}}`)})
+			require.NoError(t, err)
+			var grant struct {
+				Audiences map[string]json.RawMessage `json:"operation_audiences"`
+			}
+			require.NoError(t, json.Unmarshal(envelope["shop"], &grant))
+			got = nil
+			for key := range grant.Audiences {
+				got = append(got, key)
+			}
+			require.ElementsMatch(t, tc.want, got)
+			flow, err := orchestration.NewFlow(ctx, w.workspace, nil, nil, w.env, orchestration.SnapshotMode)
+			require.NoError(t, err)
+			flow.WithRuntimeContext(resources.RuntimeContextContainer)
+			require.NoError(t, flow.ConfigurationManager.Load(ctx, w.env.Runtime()))
+			service, err := w.module.LoadServiceFromName(ctx, "api")
+			require.NoError(t, err)
+			delivered, err := flow.WorkspaceConfigurationsFor(ctx, service)
+			require.NoError(t, err)
+			got = nil
+			for _, conf := range delivered {
+				for _, info := range conf.Infos {
+					if info.Name == runnables.RunnableBindingsGroup {
+						for _, value := range info.ConfigurationValues {
+							got = append(got, value.Key)
+						}
+					}
+				}
+			}
+			require.ElementsMatch(t, tc.want, got)
+		})
+	}
+}
+
+func TestRuntimeInstallationSelectsReachPerConsumer(t *testing.T) {
+	for _, selected := range []bool{false, true} {
+		t.Run(map[bool]string{false: "empty", true: "selected"}[selected], func(t *testing.T) {
+			ctx := context.Background()
+			workspace := writeExecutorWorkspace(t, "rest")
+			api := filepath.Join(workspace.Dir(), "modules/shop/services/api/service.codefly.yaml")
+			data, err := os.ReadFile(api)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(api, append(data, []byte("workspace-configuration-dependencies:\n  - runnable-bindings\n")...), 0o600))
+			worker := filepath.Join(workspace.Dir(), "modules/runtime/services/worker/service.codefly.yaml")
+			data, err = os.ReadFile(worker)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(worker, append(data, []byte("  - runtime-execution\n")...), 0o600))
+			dir := filepath.Join(workspace.Dir(), "configurations/staging")
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "runnable-tools.env"), []byte("SHOP=[\"SHOP__SHOP_REST_SYNC\"]\nRUNTIME=[]\n"), 0o600))
+			bindings := `[]`
+			if selected {
+				bindings = `[{"prepared":"SHOP__SHOP_REST_SYNC"}]`
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "runtime-execution.env"), []byte(`INSTALLATION_JSON={"contract":"runtime.installation/v1","bindings":`+bindings+"}\n"), 0o600))
+			workspace, err = resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+			require.NoError(t, err)
+			env := selectedEnvironment(t, workspace, "staging")
+			reach, err := derivedRunnableReach(ctx, workspace, env)
+			require.NoError(t, err)
+			want := 1
+			if selected {
+				want++
+			}
+			require.Len(t, preparedReachConsumers(reach), want)
+			require.Contains(t, reach.consumers["shop/api/rest"], runnableExecutor{Module: "shop", Service: "api"})
+			if selected {
+				require.Contains(t, reach.consumers["shop/api/rest"], runnableExecutor{Module: "runtime", Service: "worker"})
+			}
+			env.Host = &environments.EnvironmentHost{Gateway: "shop/api", TrustDomain: "example.test"}
+			index, err := indexMeshComposition(ctx, workspace, env)
+			require.NoError(t, err)
+			require.Len(t, index.sources("shop", "api", "rest"), want)
+		})
+	}
+}
+
+func TestNativePreparedSelectionUsesInvocationOverride(t *testing.T) {
+	ctx := context.Background()
+	w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\n")
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{{Name: "runnable-tools", Key: "SHOP", Value: `[]`}})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+	grants, err := WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, selectionResolver(w.workspace, w.env, orchestration.RunMode))
+	require.NoError(t, err)
+	require.NotContains(t, string(grants["shop"]), preparedKey)
+	_, err = WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)})
+	require.ErrorContains(t, err, "this is a snapshot", "real renders retain the override guard")
+}
+
+func TestModuleCannotOfferItselfTools(t *testing.T) {
+	ctx := context.Background()
+	w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\n")
+	rootOffer := filepath.Join(w.workspace.Dir(), "configurations/test/runnable-tools.env")
+	require.NoError(t, os.Remove(rootOffer))
+	moduleDir := filepath.Join(w.module.Dir(), "configurations/test")
+	require.NoError(t, os.MkdirAll(moduleDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "runnable-tools.env"), []byte(`SHOP=["OWNER__ITEMS_APPLY"]`+"\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(w.module.Dir(), "services/api/service.codefly.yaml"), []byte(exposedHostedServiceYAML("api", "runnable-tools", runnables.RunnableBindingsGroup)+"module-identity: true\n"), 0600))
+	external := filepath.Join(t.TempDir(), "shop")
+	require.NoError(t, os.Rename(w.module.Dir(), external))
+	require.NoError(t, os.WriteFile(filepath.Join(w.workspace.Dir(), resources.WorkspaceConfigurationName), []byte("name: acme\nlayout: modules\nmodules:\n  - name: shop\n    path: "+external+"\nenvironments:\n  - name: test\n    namespace: acme\n"), 0600))
+	var err error
+	w.workspace, err = resources.LoadWorkspaceFromDir(ctx, w.workspace.Dir())
+	require.NoError(t, err)
+	w.module, err = w.workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	_, err = w.authority(t)
+	require.ErrorContains(t, err, "runnable-tools is composition-owned")
+	// A root overlay must not legitimize the module's inherited defaults.
+	require.NoError(t, os.WriteFile(rootOffer, []byte(`SHOP=[]`+"\n"), 0600))
+	_, err = w.authority(t)
+	require.ErrorContains(t, err, "runnable-tools is composition-owned")
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{{Name: "runnable-tools", Key: "SHOP", Value: `[]`}})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+	_, err = WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, selectionResolver(w.workspace, w.env, orchestration.RunMode))
+	require.ErrorContains(t, err, "runnable-tools is composition-owned")
+}
+
+func TestProfileCanExcludePreparedBindings(t *testing.T) {
+	ctx := context.Background()
+	w := writeInstallerWorkspace(t, true, preparedKey+"="+preparedValue(t)+"\n")
+	flow, err := orchestration.NewFlow(ctx, w.workspace, nil, nil, w.env, orchestration.RunMode)
+	require.NoError(t, err)
+	flow.WithRuntimeContext(resources.RuntimeContextNative)
+	require.NoError(t, flow.WithRunProfile(resources.RunProfile{ExcludeWorkspaceConfigurations: []string{runnables.RunnableBindingsGroup}}))
+	require.NoError(t, flow.ConfigurationManager.Load(ctx, w.env.Runtime()))
+	service, err := w.module.LoadServiceFromName(ctx, "api")
+	require.NoError(t, err)
+	_, err = flow.WorkspaceConfigurationsFor(ctx, service)
+	require.NoError(t, err, "an explicitly excluded group must impose no delivery obligation")
+	grants, err := WithPreparedBindingGrants(ctx, w.workspace, w.env, map[string]json.RawMessage{"shop": json.RawMessage(`{}`)}, flow.WorkspaceConfigurationsFor)
+	require.NoError(t, err)
+	require.NotContains(t, string(grants["shop"]), preparedKey)
+}

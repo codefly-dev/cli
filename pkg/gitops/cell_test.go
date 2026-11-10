@@ -660,6 +660,8 @@ func writeExecutorWorkspace(t *testing.T, endpoint string) *resources.Workspace 
 	index := `{"schema":"codefly/runnable-operations/v1","workspace":"acme","module":"shop","operations":[` +
 		`{"name":"shop-` + endpoint + `-sync","version":"0.1.0","digest":"d","service":"api","endpoint":"` + endpoint + `","method":"/shop.v1.Shop/Sync","path":"contracts/runnables/shop/` + endpoint + `/Sync"}]}`
 	files := map[string]string{
+		"configurations/staging/runnable-tools.env":                                                   `RUNTIME=["SHOP__SHOP_` + strings.ToUpper(endpoint) + `_SYNC"]` + "\n",
+		"configurations/staging/runnable-bindings.env":                                                "SHOP__SHOP_" + strings.ToUpper(endpoint) + "_SYNC=" + preparedValue(t) + "\n",
 		resources.WorkspaceConfigurationName:                                                          "name: acme\nlayout: modules\nmodules:\n  - name: shop\n  - name: runtime\nenvironments:\n  - name: staging\n    namespace: acme\n",
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                           "kind: module\nname: shop\nservices:\n  - name: api\n",
 		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       apiYAML,

@@ -23,6 +23,8 @@ func meshWorkspace(t *testing.T) (*resources.Workspace, *environments.Environmen
 		return "kind: service\nname: " + name + "\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\n" + endpoints
 	}
 	files := map[string]string{
+		"configurations/prod/runnable-tools.env":    "EXEC=[\"APP__DO\"]\n",
+		"configurations/prod/runnable-bindings.env": "APP__DO=" + preparedValue(t) + "\n",
 		resources.WorkspaceConfigurationName: `name: example
 layout: modules
 modules:

@@ -392,3 +392,16 @@ func CanonicalJSON(message proto.Message) ([]byte, error) {
 	}
 	return json.Marshal(generic)
 }
+
+// BindingKey is the canonical workspace configuration key of a derived operation.
+func BindingKey(module, name string) string {
+	var key strings.Builder
+	for _, r := range strings.ToUpper(module + "__" + name) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			key.WriteRune(r)
+			continue
+		}
+		key.WriteByte('_')
+	}
+	return key.String()
+}

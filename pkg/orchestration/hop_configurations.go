@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/authority/libraries/hop/go/routing"
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
 	"github.com/codefly-dev/cli/pkg/methodpolicy"
+	"github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
@@ -59,6 +60,18 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 		return err
 	}
 	configs := r.ConfigurationInformationLocalReader.Configurations()
+	// Core retains module provenance even when root values overlay that group.
+	// Invocation overrides can mark a whole group root-owned, so judge the
+	// pre-invocation provenance too: a module cannot supply operator tool offers.
+	if slices.ContainsFunc(workspaceConfigurationInfos(configs), func(info *basev0.ConfigurationInformation) bool { return info.GetName() == runnables.OfferedToolsGroup }) {
+		provided, err := configurations.ReadWorkspaceConfigurations(ctx, r.workspace, env, ModuleArtifactResolverFor(r.workspace))
+		if err != nil {
+			return err
+		}
+		if module := provided.ComposedBy[runnables.OfferedToolsGroup]; module != "" {
+			return fmt.Errorf("runnable-tools is composition-owned; module %s supplies it, including defaults retained under root overrides", module)
+		}
+	}
 	group, err := generatedHopRoutes(ctx, r.workspace, configs)
 	if err != nil {
 		return err
