@@ -14,6 +14,7 @@ var (
 	libraryLanguages []string
 	libraryGitRemote string
 	libraryGitBranch string
+	libraryYes       bool
 )
 
 // LibraryCmd represents the add library command
@@ -34,6 +35,9 @@ Examples:
 
   # Add an external library as a git submodule
   codefly add library shared-models --git=git@github.com:myorg/shared-models.git
+
+  # Without a terminal (CI, scripts, MCP): skip the confirmation
+  codefly add library shared-models --languages=go --yes
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -44,6 +48,9 @@ Examples:
 func addLibrary(name string) error {
 	ctx, done := common.NewContext()
 	defer done()
+
+	// Non-interactive mode: answer the confirmation with its default.
+	cli.SetWithDefault(libraryYes)
 
 	workspace, err := common.LoadWorkspace(ctx)
 	if err != nil {
@@ -127,4 +134,5 @@ func init() {
 		"Git remote URL to add as submodule")
 	LibraryCmd.Flags().StringVar(&libraryGitBranch, "branch", "main",
 		"Git branch for submodule")
+	LibraryCmd.Flags().BoolVar(&libraryYes, "yes", false, "Skip confirmation prompts (non-interactive/MCP mode)")
 }

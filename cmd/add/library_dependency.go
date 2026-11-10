@@ -16,6 +16,7 @@ var (
 	libDepVersion    string
 	libDepLanguages  []string
 	libDepSetupLocal bool
+	libDepYes        bool
 )
 
 // LibraryDependencyCmd represents the add library-dependency command
@@ -47,6 +48,9 @@ Examples:
 func addLibraryDependency(libraryName string) error {
 	ctx, done := common.NewContext()
 	defer done()
+
+	// Non-interactive mode: answer the confirmation with its default.
+	cli.SetWithDefault(libDepYes)
 
 	workspace, err := common.LoadWorkspace(ctx)
 	if err != nil {
@@ -149,4 +153,5 @@ func init() {
 	LibraryDependencyCmd.Flags().StringVar(&libDepVersion, "version", "", "Version constraint (e.g., ^1.0.0)")
 	LibraryDependencyCmd.Flags().StringSliceVar(&libDepLanguages, "languages", nil, "Language exports to use")
 	LibraryDependencyCmd.Flags().BoolVar(&libDepSetupLocal, "setup-local", false, "Setup local development immediately")
+	LibraryDependencyCmd.Flags().BoolVar(&libDepYes, "yes", false, "Skip confirmation prompts (non-interactive/MCP mode)")
 }
