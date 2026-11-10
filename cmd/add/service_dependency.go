@@ -17,7 +17,10 @@ import (
 
 var (
 	serviceDependencyTarget string
-	serviceDependencyYes    bool
+	// serviceDependencyEndpoints narrows the dependency to these endpoints
+	// of the target; empty consumes every endpoint it has.
+	serviceDependencyEndpoints []string
+	serviceDependencyYes       bool
 )
 
 // ServiceDependencyCmd represents the run command
@@ -39,6 +42,9 @@ Examples:
 
   # ...or in another module
   codefly add dependency billing/api --dependency accounts/store --yes
+
+  # Only one of its endpoints: the others may be private to its module
+  codefly add dependency billing/api --dependency accounts/store --endpoint connect --yes
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -188,6 +194,7 @@ func linkServiceDependency(ctx context.Context, workspace *resources.Workspace, 
 		Module:           module.Name,
 		DependencyModule: dependencyModule,
 		DependencyName:   dependencyName,
+		Endpoints:        serviceDependencyEndpoints,
 	})
 	if err != nil {
 		return fmt.Errorf("cannot create dependency action: %w", err)
@@ -203,5 +210,7 @@ func linkServiceDependency(ctx context.Context, workspace *resources.Workspace, 
 func init() {
 	ServiceDependencyCmd.Flags().StringVar(&serviceDependencyTarget, "dependency", "",
 		"Service to depend on: a service of the same module, or module/service")
+	ServiceDependencyCmd.Flags().StringSliceVar(&serviceDependencyEndpoints, "endpoint", nil,
+		"Endpoint of the dependency to consume (repeatable); every endpoint when omitted")
 	ServiceDependencyCmd.Flags().BoolVar(&serviceDependencyYes, "yes", false, "Skip confirmation prompts (non-interactive/MCP mode)")
 }
