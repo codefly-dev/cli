@@ -1,6 +1,9 @@
 package composition
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The pin spelling that resolves nowhere. Git resolves an abbreviated SHA
 // locally and a remote does not, so every clone reads it as a ref name and the
@@ -68,5 +71,50 @@ func TestUppercaseCommitPin(t *testing.T) {
 		if UppercaseCommitPin(other) {
 			t.Fatalf("UppercaseCommitPin(%q) must be false", other)
 		}
+	}
+}
+
+// One predicate answers every spelling that cannot resolve, because the first
+// version derived the question twice and the two answers disagreed: a hex-looking
+// tag was protected in one place and refused in the other, and a pin hold could
+// still carry the spelling the other guard had not learned.
+func TestUnresolvablePin(t *testing.T) {
+	lower := "e55299311a8ae55299311a8ae55299311a8ae552"
+	upper := "E55299311A8AE55299311A8AE55299311A8AE552"
+	mixed := "E55299311a8ae55299311a8ae55299311a8ae552"
+
+	for _, tc := range []struct {
+		name    string
+		version string
+		tags    []string
+		bad     bool
+		says    string
+	}{
+		{"the 12-character SHA from 2026-11-10", lower[:12], []string{"v0.2.2"}, true, "abbreviated commit SHA"},
+		{"a tagless source still judges the shape", lower[:12], nil, true, "abbreviated commit SHA"},
+		{"a published tag that happens to be hex is a tag", "deadbeef", []string{"deadbeef"}, false, ""},
+		{"the same spelling unpublished is a near miss", "deadbeef", []string{"v1.0.0"}, true, "abbreviated commit SHA"},
+		{"the object name in uppercase", upper, []string{"v1.0.0"}, true, "lowercase spelling"},
+		{"a published 40-hex uppercase TAG is a tag, not a near miss", upper, []string{upper}, false, ""},
+		{"mixed case is the same defect and must not be called uppercase", mixed, nil, true, "lowercase spelling"},
+		{"the lowercase object name resolves", lower, nil, false, ""},
+		{"a semver tag", "v0.2.2", nil, false, ""},
+		{"a range", ">=0.1.225 <1.0.0", nil, false, ""},
+		{"a branch name", "main", nil, false, ""},
+		{"empty means latest", "", nil, false, ""},
+		{"padding is trimmed", "  " + lower[:12] + "  ", nil, true, "abbreviated commit SHA"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detail, bad := UnresolvablePin(tc.version, tc.tags)
+			if bad != tc.bad {
+				t.Fatalf("UnresolvablePin(%q, %v) = %v, want %v (detail %q)", tc.version, tc.tags, bad, tc.bad, detail)
+			}
+			if tc.says != "" && !strings.Contains(detail, tc.says) {
+				t.Fatalf("detail %q does not name %q", detail, tc.says)
+			}
+			if !bad && detail != "" {
+				t.Fatalf("a resolvable pin carries no detail, got %q", detail)
+			}
+		})
 	}
 }

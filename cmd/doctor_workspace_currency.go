@@ -124,16 +124,9 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 			return currencyVerdict{false, fmt.Sprintf("%s behind %s", plural(lag.Behind, "commit"), branch)}
 		}
 	}
-	// The full object name in the wrong case. A commit pin is lowercase, as
-	// `git rev-parse` prints it, so an uppercase paste from a web UI resolves
-	// nowhere either — and said nothing useful before this.
-	if composition.UppercaseCommitPin(version) {
-		return currencyVerdict{false, "the full object name in uppercase: a commit pin is the lowercase 40-character name, as `git rev-parse` prints it. Lowercase it"}
-	}
-	// Hex, but not the full object name, and not a tag this source publishes: an
-	// abbreviated SHA. Every clone reads a pin as a ref name, so this one fails
-	// deep inside the render as "Remote branch <pin> not found in upstream
-	// origin" — naming a branch nobody wrote.
+	// A pin that can never name anything, whatever its spelling: one predicate
+	// answers it, and the hold bypass below reads the same answer rather than
+	// deriving the question a second time.
 	//
 	// ABOVE the release comparison on purpose. A pin's shape has nothing to do
 	// with whether its source has cut a release, and the comparison below answers
@@ -141,10 +134,8 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 	// pin on a tagless source reported green and the render still died. A commit
 	// pin is exactly what a source that has not cut a tag yet is pinned by, so
 	// that is not a rare case; it is the common one.
-	if composition.AbbreviatedCommitPin(version) && !slices.Contains(head.Tags, version) {
-		return currencyVerdict{false, fmt.Sprintf(
-			"an abbreviated commit SHA, which resolves nowhere: a pin is read as a git ref, and only the full 40-character object name or a tag %s publishes resolves. Use the full SHA",
-			head.Branch)}
+	if detail, unresolvable := composition.UnresolvablePin(version, head.Tags); unresolvable {
+		return currencyVerdict{false, detail}
 	}
 	newest := composition.NewestRelease(head.Tags)
 	if version == "" || version == "latest" {
@@ -282,18 +273,26 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 			report.add("", name, "ok", fmt.Sprintf("%s: %s", p, verdict.detail), "")
 			continue
 		}
+		hold, index := matchingHold(holds, usable, &p)
 		// A hold says "behind on purpose", and states a reason and an end date.
-		// An abbreviated pin is not behind: it names no commit any remote can
+		// An unresolvable pin is not behind: it names nothing any remote can
 		// resolve, so there is nothing to be behind of and nothing a hold can
-		// excuse. Refused ahead of the hold lookup so a stale entry cannot carry
-		// an unresolvable pin into a render.
-		if composition.AbbreviatedCommitPin(strings.TrimSpace(p.version)) && !slices.Contains(sources[p.source].Tags, strings.TrimSpace(p.version)) {
+		// excuse. The SAME predicate judgePin used answers it — re-deriving the
+		// question here is how the uppercase spelling ended up protected in one
+		// place and refused in the other.
+		//
+		// A matching hold is still marked used: it is not "holding nothing", it is
+		// holding something that cannot resolve, and telling an operator both at
+		// once sends them to the wrong file.
+		if _, unresolvable := composition.UnresolvablePin(p.version, sources[p.source].Tags); unresolvable {
+			if hold != nil {
+				used[index] = true
+			}
 			stale++
 			report.add(codePinStale, name, staleStatus, fmt.Sprintf("%s: %s", p, verdict.detail),
-				fmt.Sprintf("write the full 40-character object name of the commit in the pin of %s; a hold cannot cover a pin that resolves nowhere", p.name))
+				fmt.Sprintf("write the pin of %s so it resolves — the lowercase 40-character object name, or a tag its source publishes; a hold cannot cover a pin that resolves nowhere", p.name))
 			continue
 		}
-		hold, index := matchingHold(holds, usable, &p)
 		if hold == nil {
 			stale++
 			report.add(codePinStale, name, staleStatus, fmt.Sprintf("%s: %s", p, verdict.detail),

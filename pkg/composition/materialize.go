@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -573,6 +574,34 @@ var uppercaseCommitPin = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 func UppercaseCommitPin(version string) bool {
 	version = strings.TrimSpace(version)
 	return !commitPin.MatchString(version) && uppercaseCommitPin.MatchString(version)
+}
+
+// UnresolvablePin is why version can never name anything, given the tags its
+// source publishes — or ok false when it resolves, or may.
+//
+// A pin is handed to git as a REF NAME. Only the lowercase 40-character object
+// name and a published tag resolve, so a hex string that is neither names
+// nothing, and the clone fails reporting a branch nobody wrote. ONE predicate
+// answers it for every spelling, because the first version of this check derived
+// the question twice and the two answers disagreed: a hex-looking tag was
+// protected in one place and refused in the other, and a pin hold could still
+// carry the spelling the other guard had not learned.
+//
+// tags may be nil, which means "not known"; a pin is then judged on its shape
+// alone, since a shape that cannot resolve cannot be rescued by a tag list we
+// could not read.
+func UnresolvablePin(version string, tags []string) (string, bool) {
+	version = strings.TrimSpace(version)
+	if slices.Contains(tags, version) {
+		return "", false
+	}
+	switch {
+	case AbbreviatedCommitPin(version):
+		return "an abbreviated commit SHA, which resolves nowhere: a pin is read as a git ref, and only the full 40-character object name or a tag its source publishes resolves. Use the full SHA", true
+	case UppercaseCommitPin(version):
+		return "the 40-character object name, but not in the lowercase spelling a commit pin takes, as `git rev-parse` prints it. Lowercase it", true
+	}
+	return "", false
 }
 
 func requestedVersionLabel(version string) string {

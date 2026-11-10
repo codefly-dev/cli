@@ -2337,15 +2337,21 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 	if len(existing) == 1 {
 		pr := existing[0]
 		if pr.GetHead().GetSHA() != commit {
-			// The open promotion pull request points at a commit this publish did
-			// not just write, which is what happens when another promotion moved
-			// the base branch after this one was prepared. Two sentences of
-			// diagnosis instead of two SHAs: the refusal used to leave an operator
-			// comparing hex by eye with no statement of what had happened or what
-			// to do, and it is met whenever promotions land close together.
+			// The open pull request's head is not the commit this publish just
+			// pushed — and the push WAS verified: twenty lines up,
+			// publicationRemoteRef confirmed refs/heads/<promotion> resolves to
+			// exactly this commit, and a promotion branch moved under us is
+			// refused by the force-with-lease path with its own error.
+			//
+			// So this says what it can establish and no more: the two differ, and
+			// re-running publish regenerates the promotion. It deliberately does
+			// NOT name a cause. The earlier version blamed "another promotion
+			// moved the base", which the ref check above rules out — asserting a
+			// cause the control flow denies is the defect this branch exists to
+			// remove, and it was committed here first.
 			return "", 0, fmt.Errorf(
-				"promotion pull request #%d for %s is stale: its head is %s and this publish wrote %s, so another promotion moved %s after this one was prepared. Re-run publish for %s to regenerate the promotion against the current base",
-				pr.GetNumber(), prepared.plan.PromotionBranch, shortRevision(pr.GetHead().GetSHA()), shortRevision(commit), prepared.plan.BaseBranch, prepared.plan.PromotionBranch)
+				"promotion pull request #%d for %s is stale: its head is %s and this publish pushed %s to that branch. Re-run publish for %s to regenerate the promotion",
+				pr.GetNumber(), prepared.plan.PromotionBranch, shortRevision(pr.GetHead().GetSHA()), shortRevision(commit), prepared.plan.PromotionBranch)
 		}
 		if _, _, editErr := client.PullRequests.Edit(ctx, owner, repo, pr.GetNumber(), &github.PullRequest{
 			Title: github.Ptr(title),
