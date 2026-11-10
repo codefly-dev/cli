@@ -152,6 +152,30 @@ func runAgentRelease(ctx context.Context, o releaseOptions) error {
 		}
 	}
 
+	// Resume a release whose PR is merged but whose tag was never cut, when
+	// the checkout already carries the merged manifest. That is the state the
+	// documented flow leaves: `--no-wait` opens the PR, a human merges it, the
+	// checkout is updated to main, and the command is re-run "to tag and
+	// verify". The manifest is then one version above the latest tag, and
+	// bumping from it would open a second release PR for the next version and
+	// abandon the merged one untagged. The manifest version is only resumed
+	// when this tool released it (its release/<tag> PR is merged); a manifest
+	// ahead of the tags for any other reason is bumped from as before.
+	if latest == nil || manifest.Version.GreaterThan(latest) {
+		pendingTag := "v" + manifest.Version.String()
+		pr, ferr := target.findPRForBranch(ctx, releaseBranch(pendingTag))
+		if ferr != nil {
+			return ferr
+		}
+		if pr != nil && prMerged(pr) && pr.GetMergeCommitSHA() != "" {
+			cli.Info("resuming release %s: %s is merged and not tagged yet; tagging %s", pendingTag, pr.GetHTMLURL(), shortSHA(pr.GetMergeCommitSHA()))
+			if err = target.createTagRef(ctx, pendingTag, pr.GetMergeCommitSHA()); err != nil {
+				return err
+			}
+			return target.verifyPublishedAsset(ctx, manifest.Version.String(), extraPlatform)
+		}
+	}
+
 	newVer, err := bumpFrom(releaseBase(manifest.Version, latest), o.bump)
 	if err != nil {
 		return err
