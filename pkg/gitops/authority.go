@@ -160,6 +160,11 @@ func moduleAuthority(
 	// resolves through its catalogue — never a name, binding id or release.
 	authority.InstallationRole = resolved.InstallationRole
 	authority.EdgeDependencies = append([]modulecontract.EdgeDependency(nil), resolved.EdgeDependencies...)
+	// The scopes that govern a source tied to an installation of the module,
+	// as core resolved them ("<kind>:<action>", sorted). The host reads them
+	// off this signed manifest and holds them to the module's roles; the CLI
+	// decides nothing about them.
+	authority.SourceGovernance = append([]string(nil), resolved.SourceGovernance...)
 	authority.Queues = append([]string(nil), resolved.Queues...)
 	authority.Namespaces = append([]string(nil), resolved.Namespaces...)
 	for _, ceiling := range resolved.ScopeCeilings {
