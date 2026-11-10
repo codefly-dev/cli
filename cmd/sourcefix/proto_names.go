@@ -127,7 +127,7 @@ func PlanProtoNames(serviceDir, module, service string) (*ProtoNamesPlan, error)
 	}
 	plan := &ProtoNamesPlan{dir: serviceDir, From: from, OldPackage: string(pkg[2]), Package: strings.Join(elements, ".")}
 	plan.To = filepath.Join(append(append([]string{"proto"}, elements...), "api.proto")...)
-	if _, err := os.Stat(filepath.Join(serviceDir, plan.To)); err == nil {
+	if _, statErr := os.Stat(filepath.Join(serviceDir, plan.To)); statErr == nil {
 		return nil, fmt.Errorf("%s already exists", plan.To)
 	}
 	updated := protoPackageDecl.ReplaceAll(content, []byte("${1}"+plan.Package+"${3}"))
@@ -171,7 +171,7 @@ func (p *ProtoNamesPlan) Apply() error {
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(to, []byte(p.proto), 0o644); err != nil {
+	if err := os.WriteFile(to, []byte(p.proto), 0o644); err != nil { //nolint:gosec // a source file, readable like the one it replaces
 		return err
 	}
 	if err := os.Remove(filepath.Join(p.dir, p.From)); err != nil {
@@ -183,7 +183,7 @@ func (p *ProtoNamesPlan) Apply() error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, []byte(rewriteGoImports(string(content), p.OldGoImport, p.GoImport, p.GoName)), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(rewriteGoImports(string(content), p.OldGoImport, p.GoImport, p.GoName)), 0o644); err != nil { //nolint:gosec // a source file rewritten in place, readable as it was
 			return err
 		}
 	}
@@ -198,14 +198,14 @@ func rewriteGoImports(source, oldImport, newImport, name string) string {
 	quoted := regexp.QuoteMeta(oldImport)
 	sub := regexp.MustCompile(`"` + quoted + `/`)
 	source = sub.ReplaceAllString(source, `"`+newImport+`/`)
-	exact := regexp.MustCompile(`(?m)^(\s*)(?:import\s+)?(([A-Za-z_]\w*|\.)\s+)?"` + quoted + `"`)
+	exact := regexp.MustCompile(`(?m)^(\s*)(import\s+)?(([A-Za-z_]\w*|\.)\s+)?"` + quoted + `"`)
 	return exact.ReplaceAllStringFunc(source, func(line string) string {
 		m := exact.FindStringSubmatch(line)
 		keyword := ""
-		if strings.Contains(line[:strings.Index(line, `"`)], "import") {
+		if m[2] != "" {
 			keyword = "import "
 		}
-		alias := m[2]
+		alias := m[3]
 		if alias == "" {
 			alias = name + " "
 		}
@@ -232,7 +232,7 @@ func goFilesImporting(serviceDir, goImport string) ([]string, error) {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_gen.go") || strings.HasSuffix(path, ".pb.go") {
 			return nil
 		}
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(path) //nolint:gosec // the service's own source tree, read to find its imports
 		if err != nil {
 			return err
 		}
