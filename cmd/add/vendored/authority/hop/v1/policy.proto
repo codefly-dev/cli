@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+// The authority's declaration of what a call to one method must hold. A module
+// marks each method it serves; the hop in front of the module reads the marks
+// and lets a call through only when the authority checked its Work Context and
+// the call holds what its method declares.
+package authority.hop.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1;hopv1";
+
+// Policy is one method's declaration. Exactly one of its two fields is set: a
+// method that requires nothing says so with any_checked_caller, because an
+// absent declaration and "nothing is required" must not look the same. The hop
+// refuses every call to a method that declares neither, or both.
+message Policy {
+  // Requires lists what the call must hold, every entry: each action on its
+  // resource kind, in the call's effective authority.
+  repeated Requirement requires = 1;
+  // AnyCheckedCaller lets through any call whose Work Context the authority
+  // checked, holding nothing in particular.
+  bool any_checked_caller = 2;
+}
+
+// Requirement is actions on one resource kind, spelled in the kind's own
+// vocabulary as the module's contract declares it.
+message Requirement {
+  // ResourceKind is the kind, as the module's scope ceilings name it.
+  string resource_kind = 1;
+  // Actions are each required.
+  repeated string actions = 2;
+}
+
+extend google.protobuf.MethodOptions {
+  // policy is the method's declaration.
+  Policy policy = 51100;
+}

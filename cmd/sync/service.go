@@ -34,33 +34,8 @@ var ServiceCmd = &cobra.Command{
 			return err
 		}
 
-		flow, err := initSyncService(ctx, workspace, module, service, standAlone)
-		if err != nil {
-			return fmt.Errorf("cannot initialize service: %w", err)
-		}
-		cleaned := false
-		cleanup := func() error {
-			if cleaned {
-				return nil
-			}
-			cleaned = true
-			return cleanSyncService(flow)
-		}
-		defer func() { _ = cleanup() }()
-
-		syncErr := common.WithHeartbeat(ctx, "syncing "+service.Name, func() error {
-			return syncService(ctx, flow)
-		})
-		stopErr := cleanup()
-		var result []error
-		if syncErr != nil {
-			result = append(result, fmt.Errorf("service sync failed: %w", syncErr))
-		}
-		if stopErr != nil {
-			result = append(result, fmt.Errorf("cannot stop flow: %w", stopErr))
-		}
-		if len(result) > 0 {
-			return errors.Join(result...)
+		if err := Service(ctx, workspace, module, service, standAlone); err != nil {
+			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -68,6 +43,40 @@ var ServiceCmd = &cobra.Command{
 		cli.Header(1, "Work done!")
 		return nil
 	},
+}
+
+// Service regenerates one service through its agent's Sync — what `codefly
+// sync service` does — and stops the agent whatever the outcome. A scaffold
+// that rewrites a service's protocol source calls it so the code it leaves is
+// the code the agent derives from that source, not the code it derived from
+// the template's.
+func Service(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) error {
+	flow, err := initSyncService(ctx, workspace, module, service, standAlone)
+	if err != nil {
+		return fmt.Errorf("cannot initialize service: %w", err)
+	}
+	cleaned := false
+	cleanup := func() error {
+		if cleaned {
+			return nil
+		}
+		cleaned = true
+		return cleanSyncService(flow)
+	}
+	defer func() { _ = cleanup() }()
+
+	syncErr := common.WithHeartbeat(ctx, "syncing "+service.Name, func() error {
+		return syncService(ctx, flow)
+	})
+	stopErr := cleanup()
+	var result []error
+	if syncErr != nil {
+		result = append(result, fmt.Errorf("service sync failed: %w", syncErr))
+	}
+	if stopErr != nil {
+		result = append(result, fmt.Errorf("cannot stop flow: %w", stopErr))
+	}
+	return errors.Join(result...)
 }
 
 func initSyncService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, standAlone bool) (*orchestration.Flow, error) {

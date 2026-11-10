@@ -15,6 +15,7 @@ func init() {
 	AddCmd.AddCommand(add.ModuleCmd)
 	AddCmd.AddCommand(add.ServiceCmd)
 	AddCmd.AddCommand(add.SolutionCmd)
+	AddCmd.AddCommand(add.ModulePageCmd)
 	AddCmd.AddCommand(add.ServiceDependencyCmd)
 	AddCmd.AddCommand(add.LibraryCmd)
 	AddCmd.AddCommand(add.LibraryDependencyCmd)

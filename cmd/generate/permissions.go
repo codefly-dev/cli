@@ -78,6 +78,12 @@ func init() {
 	PermissionsCmd.Flags().BoolVar(&permissionsCheck, "check", false, "fail on missing or stale output without writing")
 }
 
+// ModulePermissions writes the module's typed permission tables into each Go
+// service, as `codefly generate permissions` does with no flag.
+func ModulePermissions(ctx context.Context, module *resources.Module) error {
+	return generatePermissions(ctx, module, "", false)
+}
+
 func generatePermissions(ctx context.Context, module *resources.Module, output string, check bool) error {
 	destinations, skipped, unserved, err := permissionDestinations(ctx, module, output)
 	if err != nil {

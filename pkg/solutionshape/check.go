@@ -95,12 +95,21 @@ type Check struct {
 
 // Report is what one module was judged to be.
 type Report struct {
-	SchemaVersion string  `json:"schema_version"`
-	Module        string  `json:"module"`
-	Dir           string  `json:"dir"`
-	IsSolution    bool    `json:"is_solution"`
-	Status        Status  `json:"status"`
-	Checks        []Check `json:"checks"`
+	SchemaVersion string `json:"schema_version"`
+	Module        string `json:"module"`
+	Dir           string `json:"dir"`
+	IsSolution    bool   `json:"is_solution"`
+	// IsModulePage is a module that ships no solution manifest and declares
+	// a page: people reach it, so it is judged on the roles they hold.
+	IsModulePage bool    `json:"is_module_page,omitempty"`
+	Status       Status  `json:"status"`
+	Checks       []Check `json:"checks"`
+	// Roles is what each declared role reaches, as the directory declares
+	// it (roles.go).
+	Roles []RoleReach `json:"roles,omitempty"`
+	// OpenOperations counts the published operations that admit any
+	// checked caller, which every role reaches.
+	OpenOperations int `json:"open_operations,omitempty"`
 }
 
 // Conforms reports whether nothing failed. A warning is not a failure: it
@@ -119,6 +128,10 @@ func Inspect(moduleName, dir string) *Report {
 	manifestPath := filepath.Join(dir, manifest.FileName)
 	raw, err := os.ReadFile(manifestPath)
 	if errors.Is(err, os.ErrNotExist) {
+		if page := modulePageDeclaration(dir); page != "" {
+			report.inspectModulePage(dir, page)
+			return report
+		}
 		report.add(Check{Code: CodeNotASolution, Status: StatusOK,
 			Message: fmt.Sprintf("no %s: this module is not a solution", manifest.FileName)})
 		return report
@@ -143,7 +156,7 @@ func Inspect(moduleName, dir string) *Report {
 	// package together: what the roles grant against what the published
 	// operations require.
 	if contract != nil && packaged != nil {
-		report.checkRoleScopesAreReached(dir, contract, packaged)
+		report.judgeRoles(contract, report.checkRoleScopesAreReached(dir, contract, packaged))
 	}
 	return report
 }
@@ -305,6 +318,7 @@ func (r *Report) checkContract(dir string, consumed []string) *modulecontract.Co
 	r.checkConsumedModulesHaveAuthority(consumed, contract)
 
 	r.checkInstallerRole(contract)
+	r.checkInstallationRole(contract, false)
 
 	// The one that fails silently, and the reason this checker exists.
 	if contract.OwnerAware {
@@ -580,7 +594,9 @@ func interfaceKey(reference string) string {
 // binding — which is why it warns rather than fails. It is reported because
 // the two declarations live in different files, so nothing else puts them side
 // by side, and "the binding was never added" and "this one needs none" look
-// identical until a call is refused.
+// identical until a call is refused. A module the contract declares under
+// edge_dependencies is the second case stated: reached with the person's own
+// Work Context, it needs no binding and is not reported.
 func (r *Report) checkConsumedModulesHaveAuthority(consumes []string, contract *modulecontract.Contract) {
 	if len(consumes) == 0 {
 		return
@@ -594,19 +610,33 @@ func (r *Report) checkConsumedModulesHaveAuthority(consumes []string, contract *
 		}
 		bound[contract.Bindings[i].ID] = true
 	}
-	var unbound []string
+	asPerson := map[string]bool{}
+	for _, edge := range contract.EdgeDependencies {
+		asPerson[edge.Module] = true
+	}
+	var unbound, edges []string
 	for _, module := range consumes {
-		if !bound[module] {
+		switch {
+		case bound[module]:
+		case asPerson[module]:
+			edges = append(edges, module)
+		default:
 			unbound = append(unbound, module)
 		}
 	}
 	if len(unbound) == 0 {
-		r.ok(CodeConsumedWithoutBinding, "every consumed module has a binding")
+		message := "every consumed module has a binding"
+		if len(edges) > 0 {
+			// An edge dependency is the declaration that the module is
+			// reached on the person's own session: no binding is the design.
+			message = fmt.Sprintf("every consumed module has a binding or is reached on the person's own session (edge_dependencies: %s)", strings.Join(edges, ", "))
+		}
+		r.ok(CodeConsumedWithoutBinding, message)
 		return
 	}
 	r.warn(CodeConsumedWithoutBinding,
 		fmt.Sprintf("consumed with no binding in the contract: %s", strings.Join(unbound, ", ")),
-		"correct when the module is reached with the VIEWER'S own credential or on nobody's behalf; a bug when the solution calls it on a person's behalf, and then the call is refused at runtime with nothing failing earlier. Confirm each one")
+		"correct when the module is reached on nobody's behalf; a bug when the solution calls it on a person's behalf, and then the call is refused at runtime with nothing failing earlier. A module the page reaches with the person's OWN Work Context is declared under edge_dependencies, which says so and silences this")
 }
 
 // checkPageShellHasAnApp reports a shell that is declared and has no app

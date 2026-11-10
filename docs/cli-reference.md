@@ -107,6 +107,7 @@ Subcommands:
 - [`codefly add library`](#codefly-add-library)
 - [`codefly add library-dependency`](#codefly-add-library-dependency)
 - [`codefly add module`](#codefly-add-module)
+- [`codefly add module-page`](#codefly-add-module-page)
 - [`codefly add runnable`](#codefly-add-runnable)
 - [`codefly add service`](#codefly-add-service)
 - [`codefly add solution`](#codefly-add-solution)
@@ -267,6 +268,54 @@ Flags:
       --version string    Committed version constraint recorded with a composed module's identity (default "latest")
       --worktree string   Compose an out-of-repo module by <owner/repo>@<ref>; the resolver finds your local worktree (location in codefly.local.yaml)
       --yes               Skip confirmation prompts (non-interactive/MCP mode)
+```
+
+## `codefly add module-page`
+
+Scaffold a module with a page: its Connect entry service, the page remote, and least-privilege roles
+
+```
+Scaffold a module that people reach through a page a host mounts.
+
+A module page is a module that ships NO solution.codefly.yaml and declares its
+page beside its entry service (solution.frontend.codefly.yaml). Unlike a
+solution, it is installed by composition in every organization that composes
+it, holds no standing authority (installation_role: none), and nobody can use
+it until an administrator grants one of its roles ("Set up access" in Admin).
+
+What this writes:
+
+  services/<name>    The entry: a go-grpc service serving Connect (which also
+                     carries gRPC and gRPC-Web). Its proto marks every method
+                     with what a call must hold (authority.hop.v1.policy).
+  services/fe-remote The ./Page remote. It calls the module's own procedures
+                     on the host's module edge — <moduleApiBase>/<package.Service>/<Method>,
+                     the /_browser door — through the generated client, never
+                     on apiBase, the host's relay for a solution runtime.
+  module.contract.codefly.yaml
+                     installer, editor and viewer, each granting exactly what
+                     the operations its holders call require, with the
+                     operation named beside each scope; installation_role: none.
+
+Then it regenerates the entry's code from the proto, publishes its contract,
+generates the typed permissions and the page's TypeScript client, and the
+result passes "codefly doctor solution --dir modules/<name>" with no warning.
+
+The scaffolded methods answer Unimplemented until you implement them.
+```
+
+```
+codefly add module-page [flags]
+```
+
+Flags:
+
+```
+      --minimum-codefly-version string   The Codefly range the package declares (default: the running release, open to the end of its major). Required when scaffolding with a build from source, which reports no release version
+      --order int                        The page's order in the host's shell (default 50)
+      --package-id string                The <owner>/<name> identity the module is published under. Required; nothing here can derive who publishes it
+      --title string                     The page's title in the host's shell (default: the module name, capitalised)
+      --yes                              Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add runnable`
@@ -2594,7 +2643,7 @@ Subcommands:
 
 ## `codefly doctor solution`
 
-Check a solution against the one shape a solution has, without changing anything
+Check a solution or a module page, and what each of its roles reaches, without changing anything
 
 ```
 Judge a solution module against the shape `codefly add solution` generates.
@@ -2602,6 +2651,13 @@ Judge a solution module against the shape `codefly add solution` generates.
 With no argument, every module in the workspace is judged and the ones that
 ship no solution manifest are reported as "not a solution" rather than as
 broken. Name a module to judge only that one.
+
+A MODULE PAGE — a module with no solution manifest that declares
+solution.frontend.codefly.yaml beside a service — is judged too, on what
+decides who can use it: people are entitled to a page only through a role it
+declares, so a page declaring no role is shown to nobody
+(module_page_declares_no_roles), and a page holds no standing authority
+(installation_role: none).
 
 It is strictly read-only: it opens files and writes none.
 
@@ -2638,6 +2694,30 @@ authority's own route policies are derived with. A role grant on a kind that
 comes from a BINDING is not judged: the module at the other end authorizes the
 relayed child, and its policies are not in this directory.
 
+Every role is then judged against what it REACHES, with the authority's own
+decide.AdmitMethod over the published operations — the function the local
+authority uses at boot to log "no single declared role covers this method":
+
+  operation_reached_by_no_role  an operation requires what no role carries, so
+                                no person can ever call it.
+  binding_wider_than_roles      a binding redeemed for a person (invoke,
+                                lookup) asks for what no role grants. Issuance
+                                cuts a child to the holder's grants AND the
+                                binding, so that part is never carried, and the
+                                consent an administrator reviews is wider than
+                                anyone can use.
+  installation_role_undeclared  roles, and no installation_role: a host refuses
+                                the install unless the request names one.
+
+A consumed module the contract declares under edge_dependencies is reached on
+the person's own session and needs no binding, so it is not reported as
+consumed_module_without_binding.
+
+--roles prints, per role, what a holder reaches: the unit's own operations,
+what it can carry through each binding, and the modules it reaches as the
+person. It is the directory's view; what the module at the other end of a
+binding then admits, and onward, is the composition's.
+
 What a composition's values resolve each binding to needs the composition and
 not the directory, and --env <environment> judges the rendered one: it compares
 every rendered module manifest's operation bindings against that environment's
@@ -2652,8 +2732,10 @@ Exit codes:
   1  at least one check failed, or the command itself failed
 
 With --json, a versioned report per module is printed to stdout:
-  {schema_version, module, dir, is_solution, status: ok|fail,
-   checks: [{code, status, message, remediation?}]}
+  {schema_version, module, dir, is_solution, is_module_page?, status: ok|fail,
+   checks: [{code, status, message, remediation?}],
+   roles?: [{role, operations, bindings?: [{binding, operation, carries?,
+            resolved_by_composition?, whole_binding?}], as_person?}]}
 
 Stable diagnostic codes: not_a_solution, solution_manifest_unreadable,
 consumed_api_unnamed, service_entry_missing, service_entry_not_the_entry,
@@ -2665,7 +2747,9 @@ frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
 page_shell_exported_too_widely, consumed_module_without_binding,
 page_shell_has_no_app, installer_role_missing, backend_contract_missing,
-operation_policies_unread, role_grants_unreached_scope, and with --env:
+operation_policies_unread, role_grants_unreached_scope,
+operation_reached_by_no_role, binding_wider_than_roles,
+installation_role_undeclared, module_page_declares_no_roles, and with --env:
 not_rendered_for_environment, module_envelope_not_rendered,
 module_envelope_unreadable, module_envelope_omits_binding,
 module_envelope_admits_every_binding.
@@ -2682,6 +2766,7 @@ Flags:
       --env string         Also judge what this environment's RENDERED tree would enforce: every rendered manifest's operation bindings against the rendered module envelope, naming each binding the ceiling does not admit
       --json               Print a versioned report per module to stdout
       --require-solution   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
+      --roles              Also print, per role, what a holder reaches: the unit's own operations (decided by the authority's own decide.AdmitMethod), what it carries through each binding, and the modules reached on the person's own session
 ```
 
 ## `codefly doctor workspace`

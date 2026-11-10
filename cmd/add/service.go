@@ -9,6 +9,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/communicate"
 	"github.com/codefly-dev/cli/pkg/cli/models"
+	agentscommunicate "github.com/codefly-dev/core/agents/communicate"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 
@@ -52,6 +54,14 @@ var ServiceCmd = &cobra.Command{
 }
 
 func addService(ctx context.Context, name string, agentInput string) error {
+	return addServiceAnswering(ctx, name, agentInput, nil)
+}
+
+// addServiceAnswering is addService with some of the agent's questions
+// answered by the caller: a scaffold that needs a particular shape of service
+// states it rather than taking the agent's defaults and rewriting the result.
+// Every question it does not answer is asked as addService asks it.
+func addServiceAnswering(ctx context.Context, name string, agentInput string, answers map[string]bool) error {
 	w := wool.Get(ctx).In("cmd.add.service")
 
 	cli.SetWithDefault(withDefault)
@@ -120,7 +130,7 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	}
 
-	output, err := services.Add(ctx, workspace, mod, input, communicate.NewPrompt())
+	output, err := services.Add(ctx, workspace, mod, input, &statedAnswers{confirms: answers, rest: communicate.NewPrompt()})
 	if err != nil {
 		return w.Wrapf(err, "cannot add service")
 	}
@@ -140,6 +150,21 @@ func addService(ctx context.Context, name string, agentInput string) error {
 
 	return nil
 
+}
+
+// statedAnswers answers the confirmations it states and asks rest the others.
+type statedAnswers struct {
+	confirms map[string]bool
+	rest     agentscommunicate.AnswerProvider
+}
+
+func (a *statedAnswers) Answer(ctx context.Context, question *agentv0.Question) (*agentv0.Answer, error) {
+	if _, isConfirm := question.GetValue().(*agentv0.Question_Confirm); isConfirm {
+		if confirmed, stated := a.confirms[question.GetMessage().GetName()]; stated {
+			return &agentv0.Answer{Value: &agentv0.Answer_Confirm{Confirm: &agentv0.ConfirmAnswer{Confirmed: confirmed}}}, nil
+		}
+	}
+	return a.rest.Answer(ctx, question)
 }
 
 var (
