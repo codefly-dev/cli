@@ -43,7 +43,15 @@ func TestFindGoModDirsReturnsErrorsAndSkipsGeneratedTrees(t *testing.T) {
 	}
 	root := t.TempDir()
 	want := []string{root, filepath.Join(root, "nested")}
-	for _, dir := range append(want, filepath.Join(root, "testdata", "fixture")) {
+	// Not the agent's modules: a fixture, and the Go module cache an agent's
+	// own Codefly home keeps under .codefly (two versions of one dependency).
+	notLinked := []string{
+		filepath.Join(root, "testdata", "fixture"),
+		filepath.Join(root, ".codefly", "go", "pkg", "mod", "example.test", "dep@v1.0.0"),
+		filepath.Join(root, ".codefly", "go", "pkg", "mod", "example.test", "dep@v1.1.0"),
+		filepath.Join(root, "nested", ".cache", "module"),
+	}
+	for _, dir := range append(append([]string{}, want...), notLinked...) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}

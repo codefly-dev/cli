@@ -272,7 +272,13 @@ func findGoModDirs(root string) ([]string, error) {
 		}
 		if d.IsDir() {
 			n := d.Name()
-			if n == "vendor" || n == "node_modules" || n == ".git" || n == "testdata" {
+			// A hidden directory below the root is never the agent's source:
+			// .git, and above all .codefly, where an agent's own Codefly home
+			// keeps a Go module cache (.codefly/go/pkg/mod). Every module in
+			// that cache has a go.mod; linking them put dozens of cached
+			// dependencies, several versions of each, into the shared
+			// go.work, which Go then refuses to load.
+			if n == "vendor" || n == "node_modules" || n == "testdata" || (p != root && strings.HasPrefix(n, ".")) {
 				return filepath.SkipDir
 			}
 			return nil
