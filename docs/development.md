@@ -141,6 +141,16 @@ GOPRIVATE=github.com/codefly-dev/authority \
   go install github.com/codefly-dev/cli/cmd/codefly@<version>
 ```
 
+Authority dependencies must resolve to released tags or commits merged into
+authority's `main`, never branch commits that a squash merge can orphan. The CLI
+uses `authority-client/go` and `hop/go` v0.2.0 (`414bf5f9`),
+`authority-core/go` v0.1.0 (`1f088761`, including RBAC-1), and the untagged
+`delivery/go`, `fixture-composition/go`, and `resources/go` modules at the same
+merged `1f088761` commit. It does not depend on authority's conformance module.
+When changing these pins, regenerate `go.sum` with `go mod tidy`, run
+`go test ./...` (including `pkg/gitops` and `pkg/orchestration`), and run
+`go mod verify` with `GOWORK=off` so local replacements cannot mask a broken pin.
+
 For a self-updating direct installation, use a signed release archive as
 described in [CLI releases and updates](cli-updates.md).
 
