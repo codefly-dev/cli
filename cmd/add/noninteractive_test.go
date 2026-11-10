@@ -19,7 +19,7 @@ func addTestWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	writeAddTestFile(t, filepath.Join(root, resources.WorkspaceConfigurationName),
-		"name: test\nlayout: modules\nmodules:\n    - name: app\n    - name: other\n    - name: closed\n")
+		"name: test\nlayout: modules\nmodules:\n    - name: app\n    - name: other\n    - name: closed\n    - name: partial\n")
 	service := func(module, name string) {
 		writeAddTestFile(t, filepath.Join(root, "modules", module, "services", name, "service.codefly.yaml"),
 			"name: "+name+"\nversion: 0.0.0\nagent:\n  kind: codefly:service\n  name: fixture\n  publisher: codefly.dev\n  version: 1.0.0\nendpoints:\n    - name: tcp\n")
@@ -34,6 +34,11 @@ func addTestWorkspace(t *testing.T) string {
 	service("app", "store")
 	service("other", "store")
 	service("closed", "store")
+	// A module that exports one of its service's two endpoints.
+	writeAddTestFile(t, filepath.Join(root, "modules", "partial", "module.codefly.yaml"),
+		"kind: module\nname: partial\nservices:\n    - name: api\ninterface:\n    endpoints:\n        - service: api\n          endpoint: connect\n")
+	writeAddTestFile(t, filepath.Join(root, "modules", "partial", "services", "api", "service.codefly.yaml"),
+		"name: api\nversion: 0.0.0\nagent:\n  kind: codefly:service\n  name: fixture\n  publisher: codefly.dev\n  version: 1.0.0\nendpoints:\n    - name: connect\n    - name: grpc\n")
 	t.Chdir(root)
 	t.Cleanup(func() { cli.SetWithDefault(false) })
 	return root
@@ -102,6 +107,32 @@ func TestAddServiceDependencyRefusesWhatDoesNotExist(t *testing.T) {
 	}
 	if deps := dependenciesOf(t, root, "app", "api"); deps != "" {
 		t.Fatalf("a refused dependency was written:\n%s", deps)
+	}
+}
+
+// A module may export only some of a service's endpoints. Depending on the
+// whole service is refused for the private one; naming the exported endpoint
+// links it alone.
+func TestAddServiceDependencyOnOneEndpoint(t *testing.T) {
+	root := addTestWorkspace(t)
+	setDependencyFlags(t, "partial/api", true)
+	err := addServiceDependency(context.Background(), []string{"app/api"})
+	if err == nil || !strings.Contains(err.Error(), "does not permit module") {
+		t.Fatalf("every endpoint includes the private one: %v", err)
+	}
+	previous := serviceDependencyEndpoints
+	serviceDependencyEndpoints = []string{"connect"}
+	t.Cleanup(func() { serviceDependencyEndpoints = previous })
+	if err := addServiceDependency(context.Background(), []string{"app/api"}); err != nil {
+		t.Fatal(err)
+	}
+	deps := dependenciesOf(t, root, "app", "api")
+	if !strings.Contains(deps, "name: api") || !strings.Contains(deps, "name: connect") || strings.Contains(deps, "name: grpc") {
+		t.Fatalf("only the named endpoint is linked:\n%s", deps)
+	}
+	serviceDependencyEndpoints = []string{"nope"}
+	if err := addServiceDependency(context.Background(), []string{"app/store"}); err == nil {
+		t.Fatal("an unknown endpoint is refused")
 	}
 }
 

@@ -155,6 +155,9 @@ Examples:
 
   # ...or in another module
   codefly add dependency billing/api --dependency accounts/store --yes
+
+  # Only one of its endpoints: the others may be private to its module
+  codefly add dependency billing/api --dependency accounts/store --endpoint connect --yes
 ```
 
 ```
@@ -165,6 +168,7 @@ Flags:
 
 ```
       --dependency string   Service to depend on: a service of the same module, or module/service
+      --endpoint strings    Endpoint of the dependency to consume (repeatable); every endpoint when omitted
       --yes                 Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
