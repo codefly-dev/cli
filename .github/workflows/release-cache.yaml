@@ -1,0 +1,75 @@
+name: Release build cache
+
+# The Release workflow runs on a tag, and a tag run can only restore caches that
+# were written on the default branch. This workflow writes that cache: it runs
+# the release build (the same goreleaser-cross image, targets, flags and CGO
+# toolchains) and saves the Go build and module caches, so a release does not
+# recompile the module graph and tree-sitter for four platforms from scratch.
+# It is an optimisation only: a cache miss makes a release slower, never wrong.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - go.mod
+      - go.sum
+      - .goreleaser.yaml
+      - .github/workflows/release-cache.yaml
+  pull_request:
+    paths:
+      - .github/workflows/release-cache.yaml
+  workflow_dispatch:
+
+concurrency:
+  group: release-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: Warm the release build cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Restore the cross-build Go cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gocross
+          key: gocross-${{ hashFiles('go.sum', '.goreleaser.yaml') }}
+          restore-keys: |
+            gocross-
+
+      - name: Build every release target
+        env:
+          GOCROSS_CACHE: ${{ runner.temp }}/gocross
+        run: |
+          set -euo pipefail
+          # Twice: the first run measures a cold or restored cache, the second
+          # is what the release's publication build sees after qualification.
+          for pass in 1 2; do
+            start=$SECONDS
+            docker run --rm \
+              -e GOCACHE=/gocross/build \
+              -e GOMODCACHE=/gocross/mod \
+              -v "$GITHUB_WORKSPACE:/workspace" \
+              -v "$GOCROSS_CACHE:/gocross" \
+              -w /workspace \
+              ghcr.io/goreleaser/goreleaser-cross:v1.27.3 \
+              build --snapshot --clean
+            echo "pass $pass: $((SECONDS - start))s"
+          done
+
+      - name: Save the cross-build Go cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gocross
+          key: gocross-${{ hashFiles('go.sum', '.goreleaser.yaml') }}

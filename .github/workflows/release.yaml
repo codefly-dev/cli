@@ -64,11 +64,24 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: go run ./tools/agentcontract --tag "$RELEASE_TAG" --output .release
 
+      - name: Restore the cross-build Go cache
+        # Caches written on main are readable from a tag run; release-cache.yaml
+        # warms them whenever the dependency graph moves. The qualification and
+        # publication builds below share this directory, so the second build
+        # relinks instead of recompiling the module graph and tree-sitter.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gocross
+          key: gocross-${{ hashFiles('go.sum', '.goreleaser.yaml') }}
+          restore-keys: |
+            gocross-
+
       - name: Qualify the clean tag
         env:
           CODEFLY_RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/codefly-release-signing-key.pem
           RELEASE_TAG: ${{ github.ref_name }}
           SYFT_PATH: ${{ steps.syft.outputs.cmd }}
+          GOCROSS_CACHE: ${{ runner.temp }}/gocross
         run: |
           set -euo pipefail
           manifest_version="$(sed -n 's/^version:[[:space:]]*//p' pkg/cli/info.yaml)"
@@ -81,6 +94,9 @@ jobs:
           docker run --rm \
             -e CODEFLY_RELEASE_SIGNING_KEY_PATH \
             -e RELEASE_TAG \
+            -e GOCACHE=/gocross/build \
+            -e GOMODCACHE=/gocross/mod \
+            -v "$GOCROSS_CACHE:/gocross" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -v "$SYFT_PATH:/usr/local/bin/syft:ro" \
@@ -90,6 +106,9 @@ jobs:
           docker run --rm \
             -e CODEFLY_RELEASE_SIGNING_KEY_PATH \
             -e RELEASE_TAG \
+            -e GOCACHE=/gocross/build \
+            -e GOMODCACHE=/gocross/mod \
+            -v "$GOCROSS_CACHE:/gocross" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -v "$SYFT_PATH:/usr/local/bin/syft:ro" \
@@ -129,6 +148,7 @@ jobs:
           MACOS_NOTARY_KEY: ${{ secrets.CODEFLY_MACOS_NOTARY_KEY }}
           RELEASE_TAG: ${{ github.ref_name }}
           SYFT_PATH: ${{ steps.syft.outputs.cmd }}
+          GOCROSS_CACHE: ${{ runner.temp }}/gocross
         run: |
           set -euo pipefail
           test "$(gh api "repos/codefly-dev/cli/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
@@ -143,6 +163,9 @@ jobs:
             -e MACOS_NOTARY_KEY_ID \
             -e MACOS_NOTARY_KEY \
             -e RELEASE_TAG \
+            -e GOCACHE=/gocross/build \
+            -e GOMODCACHE=/gocross/mod \
+            -v "$GOCROSS_CACHE:/gocross" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -v "$SYFT_PATH:/usr/local/bin/syft:ro" \
