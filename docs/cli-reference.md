@@ -140,7 +140,32 @@ codefly add application-dependency [flags]
 Link a service to another service it requires
 
 ```
-codefly add dependency [flags]
+Link a service to another service it requires.
+
+The service that gains the dependency is the positional argument, or the one
+the current directory belongs to. Without --dependency the service to depend
+on is chosen from a list, which needs a terminal.
+
+Examples:
+  # From the service's directory, choose the dependency from a list
+  codefly add dependency
+
+  # Without a terminal (CI, scripts, MCP): name it, in the same module...
+  codefly add dependency --dependency store --yes
+
+  # ...or in another module
+  codefly add dependency billing/api --dependency accounts/store --yes
+```
+
+```
+codefly add dependency [service]
+```
+
+Flags:
+
+```
+      --dependency string   Service to depend on: a service of the same module, or module/service
+      --yes                 Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add job`
@@ -200,6 +225,9 @@ Examples:
 
   # Add an external library as a git submodule
   codefly add library shared-models --git=git@github.com:myorg/shared-models.git
+
+  # Without a terminal (CI, scripts, MCP): skip the confirmation
+  codefly add library shared-models --languages=go --yes
 ```
 
 ```
@@ -212,6 +240,7 @@ Flags:
       --branch string       Git branch for submodule (default "main")
       --git string          Git remote URL to add as submodule
   -l, --languages strings   Languages to support (e.g., go,python,typescript)
+      --yes                 Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add library-dependency`
@@ -248,6 +277,7 @@ Flags:
       --service string      Service name
       --setup-local         Setup local development immediately
       --version string      Version constraint (e.g., ^1.0.0)
+      --yes                 Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add module`

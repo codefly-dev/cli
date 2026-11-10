@@ -2059,13 +2059,21 @@ codefly add module saas --agent=saas-starter                   # Scaffold and pi
 codefly add module host --source=../saas-host/modules/host     # Compose an out-of-repo module (location → codefly.local.yaml)
 codefly add module documents --worktree=obin-ai/module-document-store@main  # Compose by identity; the resolver finds your local worktree
 codefly add service api --agent=go-grpc                        # Add a service with an agent
-codefly add service-dependency api --dependency=backend/db     # Add a service dependency
+codefly add dependency api --dependency=backend/db             # Add a service dependency (module/service, or a service of the same module)
 codefly add library utils                                      # Add a library
-codefly add library-dependency utils --dependency=core/models  # Add a library dependency
+codefly add library-dependency utils --service=api --module=backend  # Add a library dependency
 codefly add job db-migration --agent=go-grpc                   # Add a job
 codefly add application web                                    # Add an application
 codefly add application-dependency web --dependency=backend    # Add an application dependency
 ```
+
+`add module`, `add library`, `add library-dependency` and `add dependency` ask for
+confirmation, and `add dependency` without `--dependency` offers a list to choose
+from. Both need a terminal. Without one (CI, a script, an MCP client), pass
+`--yes`, and name the dependency: `codefly add dependency api --dependency=backend/db --yes`.
+A named dependency is checked before anything is written: the service must exist,
+cannot be the service itself, and a service of another module must be exported by
+that module's interface.
 
 #### Product-Owned Selections and Approval
 
