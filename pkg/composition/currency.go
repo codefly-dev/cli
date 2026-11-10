@@ -21,8 +21,8 @@ type SourceHead struct {
 	Branch string
 	// Tip is the commit that branch points at.
 	Tip string
-	// Tags are the published tag names, as `git ls-remote --tags --refs` prints
-	// them.
+	// Tags are the published tag names, as `git ls-remote --tags` prints them
+	// (annotated tags' peeled entries dropped).
 	Tags []string
 }
 
@@ -32,7 +32,7 @@ type SourceHead struct {
 func ReadSourceHead(ctx context.Context, source string) (*SourceHead, error) {
 	url := PinnedSourceURL(source)
 	var stderr bytes.Buffer
-	command := gitCommand(ctx, "ls-remote", "--symref", url, "HEAD", "refs/tags/*")
+	command := gitCommand(ctx, "ls-remote", "--symref", "--", url, "HEAD", "refs/tags/*")
 	command.Stderr = &stderr
 	out, err := command.Output()
 	if err != nil {
@@ -124,7 +124,7 @@ type Lag struct {
 // blobs) and refreshed only when it lacks the tip or the commit, so a warm run
 // is local. An error means history could not be had.
 func CommitLag(ctx context.Context, source string, head *SourceHead, commit string) (Lag, error) {
-	repo := filepath.Join(resources.CodeflyHomeDir(), "currency", filepath.FromSlash(source)+".git")
+	repo := filepath.Join(resources.CodeflyHomeDir(), "currency", historyDirName(source))
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		return Lag{}, err
 	}
@@ -141,7 +141,7 @@ func CommitLag(ctx context.Context, source string, head *SourceHead, commit stri
 		return err == nil
 	}
 	fetch := func(refspec string) error {
-		_, err := git("fetch", "--quiet", "--no-tags", "--filter=tree:0", PinnedSourceURL(source), refspec)
+		_, err := git("fetch", "--quiet", "--no-tags", "--filter=tree:0", "--", PinnedSourceURL(source), refspec)
 		return err
 	}
 	if !has(head.Tip) {
@@ -169,6 +169,13 @@ func CommitLag(ctx context.Context, source string, head *SourceHead, commit stri
 		return Lag{}, err
 	}
 	return Lag{Behind: behind, OnBranch: true}, nil
+}
+
+// historyDirName is the one directory name a source's history lives under: the
+// URL it is fetched from with every separator flattened, so "owner/repo" and its
+// full URL share a clone and a source can never name a path outside the cache.
+func historyDirName(source string) string {
+	return strings.NewReplacer("/", "_", ":", "_", "\\", "_", "..", "_").Replace(PinnedSourceURL(source))
 }
 
 // CheckoutLag reports how a local checkout stands against its source's default

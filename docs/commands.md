@@ -2244,7 +2244,10 @@ A stale pin (`pin_stale`) is a warning locally and a failure under
 render`, which refuses to render pins that are behind. Pins that could not be
 compared because a source was unreadable are reported as
 `pin_currency_unverified`: a warning locally, a failure in a render, never a
-pass.
+pass. There is no offline mode for a render: its only escape is
+`--skip-workspace-readiness`, which skips every readiness check and says so.
+The check reads the network (bounded at 10 s, 25 s for a render); a first run
+fetches each stale source's history once.
 
 A pin may be behind on purpose. State it in `workspace.codefly.yaml` of the
 composition being checked, which may hold any module of the graph:

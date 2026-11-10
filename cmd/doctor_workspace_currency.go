@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,10 @@ const pinHoldsKey = "pin-holds"
 // whole reason the check can be on by default: nothing here may wait longer.
 const currencyTimeout = 10 * time.Second
 
+// strictCurrencyTimeout is the same bound for a render, which must not turn a
+// cold first run (every history fetched once) into a spurious refusal.
+const strictCurrencyTimeout = 25 * time.Second
+
 // pinHold states that one pin is behind deliberately. It names the exact
 // value held, so the hold ends the moment the pin moves; it must say why; and
 // it must expire. A held pin is reported on every run, never skipped.
@@ -74,6 +79,9 @@ type currencyPin struct {
 	name    string // the name a hold uses
 	source  string
 	version string
+	// declaredBy names the imported workspace that declares the pin, when it
+	// is not the one being checked: that is where the pin moves.
+	declaredBy string
 }
 
 // currencyVerdict is the judgement on one pin against its source.
@@ -83,6 +91,9 @@ type currencyVerdict struct {
 }
 
 func (p currencyPin) String() string {
+	if p.declaredBy != "" {
+		return fmt.Sprintf("%s (declared by workspace %s) pins %s at %s", p.label, p.declaredBy, p.source, shortPin(p.version))
+	}
 	return fmt.Sprintf("%s pins %s at %s", p.label, p.source, shortPin(p.version))
 }
 
@@ -128,6 +139,9 @@ func judgePin(ctx context.Context, p currencyPin, head *composition.SourceHead) 
 		if pinned.Equal(newestVersion) {
 			return currencyVerdict{true, "the newest release"}
 		}
+		if pinned.GreaterThan(newestVersion) {
+			return currencyVerdict{false, fmt.Sprintf("newer than the newest stable release, %s (a pre-release, or a tag not yet published as a release)", newest)}
+		}
 		return currencyVerdict{false, fmt.Sprintf("%s behind the newest, %s", plural(composition.ReleasesNewerThan(head.Tags, version), "release"), newest)}
 	}
 	if constraint, err := semver.NewConstraint(version); err == nil {
@@ -146,14 +160,18 @@ func judgePin(ctx context.Context, p currencyPin, head *composition.SourceHead) 
 // warning: the stance of a render, which must not ship an old pin unseen.
 func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module string, strict bool, report *workspaceReadinessReport) {
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, currencyTimeout)
+	timeout := currencyTimeout
+	if strict {
+		timeout = strictCurrencyTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// The CLI's own release check is slower than any source read; it runs beside them.
 	cliDone := make(chan workspaceDiagnostic, 1)
 	go func() { cliDone <- cliCurrency(ctx) }()
 
-	pins, overrides := currencyPins(ctx, ws, module)
+	pins, names, overrides := currencyPins(ctx, ws, module)
 	holds, err := loadPinHolds(ws.Dir())
 	if err != nil {
 		report.add(codePinHoldInvalid, pinHoldsKey, "fail", err.Error(), fmt.Sprintf("fix %s in %s", pinHoldsKey, resources.WorkspaceConfigurationName))
@@ -222,7 +240,7 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 	group.Wait()
 
 	stale, held, current := 0, 0, 0
-	usable := validPinHolds(holds, pins, time.Now().UTC(), report)
+	usable := validPinHolds(holds, names, time.Now().UTC(), report)
 	used := make([]bool, len(holds))
 	staleStatus := checkStatusWarn
 	if strict {
@@ -230,6 +248,10 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 	}
 	for i, p := range pins {
 		if sources[p.source] == nil {
+			// Not compared, so not stale and not "holding nothing": already said above.
+			if hold, index := matchingHold(holds, usable, p); hold != nil {
+				used[index] = true
+			}
 			continue
 		}
 		verdict := verdicts[i]
@@ -253,7 +275,7 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 			fmt.Sprintf("drop the hold from %s once %s is moved", pinHoldsKey, p.name))
 	}
 	for i, hold := range holds {
-		if usable[i] && !used[i] {
+		if usable[i] && !used[i] && slices.ContainsFunc(pins, func(p currencyPin) bool { return p.name == hold.Name }) {
 			report.add(codePinHoldInvalid, "pin hold "+hold.Name, checkStatusWarn,
 				fmt.Sprintf("the hold on %s at %s holds nothing: that pin is current or has moved", hold.Name, shortHold(hold.Pin)),
 				fmt.Sprintf("delete it from %s of %s", pinHoldsKey, resources.WorkspaceConfigurationName))
@@ -278,14 +300,11 @@ func shortHold(pin string) string {
 // with no reason, no end date or no pin to name is a failure — it is the
 // exception that hides things — and one past its end date applies to nothing
 // and is said so, so a stale exception never turns into silence.
-func validPinHolds(holds []pinHold, pins []currencyPin, now time.Time, report *workspaceReadinessReport) []bool {
+func validPinHolds(holds []pinHold, names []string, now time.Time, report *workspaceReadinessReport) []bool {
 	usable := make([]bool, len(holds))
 	for i, hold := range holds {
 		name := "pin hold " + hold.Name
-		named := false
-		for _, p := range pins {
-			named = named || p.name == hold.Name
-		}
+		named := slices.Contains(names, hold.Name)
 		until, err := time.Parse("2006-01-02", hold.Until)
 		switch {
 		case !named:
@@ -318,22 +337,39 @@ func matchingHold(holds []pinHold, usable []bool, p currencyPin) (*pinHold, int)
 }
 
 // currencyPins lists the pins to judge — every pinned module and imported
-// workspace of the composition — and the modules that run from a checkout
-// instead of their pin. module narrows the modules to one, as a render does.
-func currencyPins(ctx context.Context, ws *resources.Workspace, module string) ([]currencyPin, []moduleOverride) {
-	var pins []currencyPin
+// workspace of the composition — the names a hold may use, and the modules that
+// run from a checkout instead of their pin. module narrows what is judged to
+// one module, as a render does, plus the workspace that declares it; the names
+// stay whole, so a hold on a module that is not being rendered is still valid.
+func currencyPins(ctx context.Context, ws *resources.Workspace, module string) (pins []currencyPin, names []string, overrides []moduleOverride) {
+	owner := ""
+	if member, ok := ws.Member(module); ok && module != "" {
+		owner = member.Workspace
+	}
 	for _, imported := range ws.Workspaces {
-		if imported.Source != "" && imported.Version != "" {
-			pins = append(pins, currencyPin{"workspace " + imported.Name, imported.Name, imported.Source, strings.TrimSpace(imported.Version)})
+		if imported.Source == "" || imported.Version == "" {
+			continue
+		}
+		names = append(names, imported.Name)
+		if module == "" || imported.Name == owner {
+			pins = append(pins, currencyPin{label: "workspace " + imported.Name, name: imported.Name, source: imported.Source, version: strings.TrimSpace(imported.Version)})
 		}
 	}
 	for _, ref := range ws.Modules {
-		if ref.Source == "" || ref.Version == "" || (module != "" && ref.Name != module) {
+		if ref.Source == "" || ref.Version == "" {
 			continue
 		}
-		pins = append(pins, currencyPin{ref.Name, ref.Name, ref.Source, strings.TrimSpace(ref.Version)})
+		names = append(names, ref.Name)
+		if module != "" && ref.Name != module {
+			continue
+		}
+		p := currencyPin{label: ref.Name, name: ref.Name, source: ref.Source, version: strings.TrimSpace(ref.Version)}
+		if member, ok := ws.Member(ref.Name); ok && member.Workspace != ws.Name {
+			p.declaredBy = member.Workspace
+		}
+		pins = append(pins, p)
 	}
-	return pins, moduleOverrides(ctx, ws, module)
+	return pins, names, moduleOverrides(ctx, ws, module)
 }
 
 func pinSources(pins []currencyPin) []string {

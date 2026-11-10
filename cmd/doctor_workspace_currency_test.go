@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/deploy"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/stretchr/testify/require"
 )
@@ -54,11 +55,14 @@ func TestJudgePin(t *testing.T) {
 	require.False(t, judge("~1.0").current, "a range that cannot")
 	require.True(t, judge("").current)
 	require.Contains(t, judge(strings.Repeat("b", 40)).detail, "not in the history")
+	ahead := judge("2.0.0-rc1")
+	require.False(t, ahead.current)
+	require.Contains(t, ahead.detail, "newer than the newest stable release, 1.1.0")
 }
 
 func TestPinHoldsNeedAReasonAnEndDateAndANamedPin(t *testing.T) {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	pins := []currencyPin{{name: "saas", version: "v1"}}
+	names := []string{"saas"}
 	report := &workspaceReadinessReport{Status: readinessStatusReady}
 	holds := []pinHold{
 		{Name: "saas", Pin: "v1", Reason: "waiting on QA", Until: "2026-11-20"},
@@ -67,7 +71,7 @@ func TestPinHoldsNeedAReasonAnEndDateAndANamedPin(t *testing.T) {
 		{Name: "saas", Pin: "v1", Reason: "no date"},
 		{Name: "ghost", Pin: "v1", Reason: "names nothing", Until: "2026-11-20"},
 	}
-	usable := validPinHolds(holds, pins, now, report)
+	usable := validPinHolds(holds, names, now, report)
 	require.Equal(t, []bool{true, false, false, false, false}, usable)
 	require.Equal(t, readinessStatusNotReady, report.Status, "an unusable hold fails the run")
 
@@ -142,4 +146,30 @@ func failedPinChecks(report *workspaceReadinessReport) []string {
 		}
 	}
 	return failed
+}
+
+func TestDoctorWorkspaceNarrowedToOneModuleKeepsEveryHoldValid(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", t.TempDir())
+	stubSource(t, &composition.SourceHead{Branch: "main", Tip: strings.Repeat("c", 40), Tags: []string{"v0.2.0"}}, nil)
+	two := "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\n    wiki: git\nmodules:\n" +
+		"    - name: saas\n      source: owner/saas\n      version: \"0.2.0\"\n" +
+		"    - name: wiki\n      source: owner/wiki\n      version: \"0.1.0\"\n" +
+		"pin-holds:\n    - name: wiki\n      pin: \"0.1.0\"\n      reason: held\n      until: 2999-01-01\n"
+	dir := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": two})
+
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir, module: "saas", requireCurrentPins: true})
+	require.Empty(t, failedPinChecks(report), "rendering saas must not trip over a hold on wiki, nor judge wiki")
+	require.Nil(t, findCheck(report, "pin currency of wiki"))
+	require.NotNil(t, findCheck(report, "pin currency of saas"))
+}
+
+func TestRenderGateRefusesAStalePinAndShowsAHeldOne(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", t.TempDir())
+	stubSource(t, &composition.SourceHead{Branch: "main", Tip: strings.Repeat("c", 40), Tags: []string{"v0.2.0"}}, nil)
+	dir := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": fmt.Sprintf(currencyWorkspace, "0.1.0", "")})
+	t.Chdir(dir)
+
+	err := deploy.WorkspaceReadiness(context.Background(), "local", "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), codePinStale, "the delivery gate must be strict about a stale pin")
 }

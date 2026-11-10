@@ -1812,7 +1812,8 @@ of a run in that scope, as ` + "`codefly run --naming-scope`" + ` and
 ` + "`codefly generate runnable-bindings --naming-scope`" + ` read it: omitted keeps
 the environment's declared scope, empty clears it.
 
-Pin currency: every pin of the composition — each pinned module, each imported
+Pin currency (this reads the network: one git ls-remote per source, bounded at 10 s, 25 s
+under --require-current-pins): every pin of the composition — each pinned module, each imported
 workspace — is compared with its source's default branch and releases, so a
 composition that is coherent but old is seen before it is run or rendered. A
 commit pin is current at the tip of the default branch, a tag pin when it is
