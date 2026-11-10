@@ -62,9 +62,16 @@ func TestRequireWorkspaceReadyPassesAReadyWorkspace(t *testing.T) {
 }
 
 // The override exists for an operator mid-repair, whose sibling module is
-// unready. It must not evaluate the verdict at all — the point is to proceed —
-// and it must never be the default.
-func TestSkipWorkspaceReadinessBypassesTheGate(t *testing.T) {
+// unready: it lets the verb PROCEED. It skips the refusal and not the
+// evaluation, so the operator is told what they are overriding.
+//
+// It used to skip both. That made it a trap rather than an override: a render
+// succeeded while `publish` held the same precondition and refused it, so the
+// operator learned what readiness already knew one verb later, holding a rendered
+// tree that could not be published. On 2026-11-10 that happened for real — a
+// render passed under this flag with two operations missing from
+// `runnable-bindings`, and publish rejected the delivery.
+func TestSkipWorkspaceReadinessProceedsAndStillReportsTheVerdict(t *testing.T) {
 	withSkip(t, true)
 	asked := stubReadiness(t, func(context.Context, string, string) error {
 		return errors.New("workspace is not ready")
@@ -73,8 +80,35 @@ func TestSkipWorkspaceReadinessBypassesTheGate(t *testing.T) {
 	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("the override must let the verb proceed: %v", err)
 	}
-	if len(*asked) != 0 {
-		t.Fatalf("the override still evaluated readiness: %v", *asked)
+	if len(*asked) != 1 || (*asked)[0] != "staging/saas" {
+		t.Fatalf("the override must still evaluate readiness so it can be reported, asked %v", *asked)
+	}
+}
+
+// A passing workspace under the override is not silence either: the operator is
+// told the flag changed nothing, so a habit of passing it is visible.
+func TestSkipWorkspaceReadinessEvaluatesEvenWhenItWouldHavePassed(t *testing.T) {
+	withSkip(t, true)
+	asked := stubReadiness(t, func(context.Context, string, string) error { return nil })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("a ready workspace under the override must not be refused: %v", err)
+	}
+	if len(*asked) != 1 {
+		t.Fatalf("readiness was asked %v, want one question even under the override", *asked)
+	}
+}
+
+// With no engine installed the gate cannot evaluate anything, and the override
+// must not pretend it did.
+func TestSkipWorkspaceReadinessWithNoEngineProceeds(t *testing.T) {
+	withSkip(t, true)
+	previous := WorkspaceReadiness
+	WorkspaceReadiness = nil
+	t.Cleanup(func() { WorkspaceReadiness = previous })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("with no readiness engine the verb proceeds: %v", err)
 	}
 }
 

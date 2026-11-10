@@ -522,6 +522,13 @@ const latestVersion = "latest"
 // "no such tag" error.
 var commitPin = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// abbreviatedCommitPin is the near miss: hex, but not the full object name. Git
+// resolves one locally and a remote does not, so a pin spelled this way is read
+// as a REF NAME by every clone — which is why the failure arrives as
+// "Remote branch e55299311a8a not found in upstream origin", naming a branch
+// nobody wrote. AbbreviatedCommitPin exists to say that instead.
+var abbreviatedCommitPin = regexp.MustCompile(`^[0-9a-fA-F]{4,39}$`)
+
 // CommitPin reports the commit a `version:` pins, when it pins one: exactly
 // 40 lowercase hex characters. Such a pin is for validation — a cell composes
 // modules at commits, and the tag is cut once the cell is green — so a release
@@ -538,6 +545,20 @@ func CommitPin(version string) (string, bool) {
 func IsCommitPin(version string) bool {
 	_, ok := CommitPin(version)
 	return ok
+}
+
+// AbbreviatedCommitPin reports whether version is hex but shorter than the full
+// object name, the one spelling that LOOKS like a commit pin and resolves
+// nowhere: `git clone --branch <ref>` and `git ls-remote <ref>` both read it as a
+// ref name, so the clone fails naming a branch that was never written.
+//
+// It is deliberately only a shape test. A repository may publish a tag whose name
+// happens to be hex, so a caller that holds the source's tags must check those
+// first and treat a published tag as a tag; a caller with no tags in hand should
+// report this as the likely cause rather than a certainty.
+func AbbreviatedCommitPin(version string) bool {
+	version = strings.TrimSpace(version)
+	return !commitPin.MatchString(version) && abbreviatedCommitPin.MatchString(version)
 }
 
 func requestedVersionLabel(version string) string {

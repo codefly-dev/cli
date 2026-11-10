@@ -150,6 +150,16 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 		}
 		return currencyVerdict{false, fmt.Sprintf("a range that cannot reach the newest release, %s", newest)}
 	}
+	// Hex, but not the full object name, and not a tag this source publishes: an
+	// abbreviated SHA. Every clone reads a pin as a ref name, so this one fails
+	// deep inside the render as "Remote branch <pin> not found in upstream
+	// origin" — naming a branch nobody wrote. Said here instead, before anything
+	// is pulled or built, with the fix in the sentence.
+	if composition.AbbreviatedCommitPin(version) && !slices.Contains(head.Tags, version) {
+		return currencyVerdict{false, fmt.Sprintf(
+			"an abbreviated commit SHA, which resolves nowhere: a pin is read as a git ref, and only the full 40-character object name or a tag %s publishes resolves. Use the full SHA",
+			head.Branch)}
+	}
 	return currencyVerdict{false, fmt.Sprintf("neither a tag, a range nor a commit, so it was not compared with %s", branch)}
 }
 

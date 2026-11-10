@@ -41,12 +41,31 @@ var skipWorkspaceReadiness bool
 // is free once it has happened. Everything the failure used to be discovered
 // behind — the render, the builds, the pushes, the clone — still comes after.
 func requireWorkspaceReady(ctx context.Context, verb, env, module string) error {
-	if skipWorkspaceReadiness {
-		cli.Warning("--%s: workspace readiness for environment %q was NOT evaluated before `%s`", SkipWorkspaceReadinessFlag, env, verb)
-		cli.Warning("--%s: a missing configuration will surface as a failure deep inside the render instead — run `codefly doctor workspace --env %s --module %s` when it does", SkipWorkspaceReadinessFlag, env, module)
+	if WorkspaceReadiness == nil {
+		if skipWorkspaceReadiness {
+			cli.Warning("--%s: workspace readiness for environment %q was NOT evaluated before `%s`", SkipWorkspaceReadinessFlag, env, verb)
+		}
 		return nil
 	}
-	if WorkspaceReadiness == nil {
+	// The override skips the REFUSAL, not the evaluation.
+	//
+	// It used to skip both, and that made it a trap rather than an override: a
+	// render would succeed while `publish` held the same precondition and refused
+	// it, so the operator learned what readiness already knew one verb later, with
+	// a rendered tree in hand that could not be published. On 2026-11-10 that is
+	// exactly what happened — a render passed under this flag with two operations
+	// missing from `runnable-bindings`, and publish rejected it.
+	//
+	// So the report is always produced. Under the flag it is printed and the verb
+	// proceeds, naming what the next verb will refuse; without it, it refuses here
+	// as before.
+	if skipWorkspaceReadiness {
+		if err := WorkspaceReadiness(ctx, env, module); err != nil {
+			cli.Warning("--%s: workspace readiness for environment %q FAILED and was not enforced before `%s`", SkipWorkspaceReadinessFlag, env, verb)
+			cli.Warning("--%s: `publish` evaluates the same precondition and will refuse this delivery until it is fixed", SkipWorkspaceReadinessFlag)
+			return nil
+		}
+		cli.Warning("--%s: workspace readiness for environment %q passed, so the override changed nothing before `%s`", SkipWorkspaceReadinessFlag, env, verb)
 		return nil
 	}
 	if err := WorkspaceReadiness(ctx, env, module); err != nil {
