@@ -41,7 +41,8 @@ type processExitResult struct {
 	SchemaVersion int `json:"schema_version"`
 	PID           int `json:"pid"`
 	// Mode and Signal name what was REQUESTED, so a reader of the result never
-	// has to infer which of the two irreversibility contracts applied.
+	// has to infer which of the two irreversibility contracts applied. Signal is
+	// the conventional name ("SIGTERM", "SIGKILL"), never Go's description.
 	Mode              string `json:"mode"`
 	Signal            string `json:"signal"`
 	SignalAttempted   bool   `json:"signal_attempted"`
@@ -209,7 +210,7 @@ func sameProcessBirth(first, second base.ProcessIdentity) bool {
 }
 
 func requestProcessExit(ctx context.Context, expected base.ProcessIdentity, requested syscall.Signal, mode string, inspect func(int) (base.ProcessIdentity, error), signal func(context.Context, base.ProcessIdentity, syscall.Signal) error) (processExitResult, error) {
-	result := processExitResult{SchemaVersion: 2, PID: expected.PID, Mode: mode, Signal: requested.String(), Observation: processObservationUnknown}
+	result := processExitResult{SchemaVersion: 2, PID: expected.PID, Mode: mode, Signal: signalName(requested), Observation: processObservationUnknown}
 	observe := func() (base.ProcessIdentity, error) {
 		result.Observation, result.ExpectedBirthGone = processObservationUnknown, false
 		if err := ctx.Err(); err != nil {
@@ -271,5 +272,19 @@ func requestProcessExit(ctx context.Context, expected base.ProcessIdentity, requ
 			return result, errors.Join(deliveryErr, unresolved, errors.New("process exit unconfirmed within polling budget"))
 		case <-ticker.C:
 		}
+	}
+}
+
+// signalName is the conventional name of a signal this command requests. Go's
+// syscall.Signal.String() is a description ("terminated", "killed"), which a
+// reader grepping a result for SIGTERM would not find.
+func signalName(sig syscall.Signal) string {
+	switch sig {
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	case syscall.SIGKILL:
+		return "SIGKILL"
+	default:
+		return fmt.Sprintf("signal %d", int(sig))
 	}
 }

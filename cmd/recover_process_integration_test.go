@@ -204,7 +204,7 @@ func TestProcessExitGracefulLetsTheTargetWriteBeforeExit(t *testing.T) {
 	require.Equal(t, "absent", result.Observation)
 	require.True(t, result.ExpectedBirthGone)
 	require.Equal(t, "graceful", result.Mode)
-	require.Equal(t, syscall.SIGTERM.String(), result.Signal)
+	require.Equal(t, "SIGTERM", result.Signal)
 
 	select {
 	case <-done:

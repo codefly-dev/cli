@@ -5007,7 +5007,7 @@ Core binds delivery to process birth and group, not an immutable executable;
 a same-birth exec after admission can still receive the signal. One CLI owner
 call may involve Core's internal kernel-token retries.
 
-The result is `schema_version` 2 and reports the requested `mode` and `signal`
+The result is `schema_version` 2 and reports the requested `mode` (`graceful` or `force`) and `signal` (`SIGTERM` or `SIGKILL`)
 alongside `signal_attempted`, `signal_accepted`, `observation` and
 `expected_birth_gone`, so a reader never has to infer which irreversibility
 contract applied. The `--preview` receipt is unchanged at `schema_version` 1. Success requires observed absence and no delivery,

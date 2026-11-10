@@ -46,9 +46,9 @@ func TestProcessExitReceiptNativeShape(t *testing.T) {
 	_, raw := processExitTestReceipt(t, processExitTestIdentity())
 	require.Equal(t, "{\"schema_version\":1,\"process\":{\"PID\":1234567,\"PGID\":1234567,\"BootID\":\"boot\",\"StartID\":42,\"Executable\":\"fixture\"}}\n", string(raw))
 	// The result is v2 (mode/signal added); the receipt above stays v1.
-	result, err := json.Marshal(processExitResult{SchemaVersion: 2, PID: 1234567, Mode: "force", Signal: "killed", Observation: "unknown"})
+	result, err := json.Marshal(processExitResult{SchemaVersion: 2, PID: 1234567, Mode: "force", Signal: "SIGKILL", Observation: "unknown"})
 	require.NoError(t, err)
-	require.JSONEq(t, `{"schema_version":2,"pid":1234567,"mode":"force","signal":"killed","signal_attempted":false,"signal_accepted":false,"observation":"unknown","expected_birth_gone":false}`, string(result))
+	require.JSONEq(t, `{"schema_version":2,"pid":1234567,"mode":"force","signal":"SIGKILL","signal_attempted":false,"signal_accepted":false,"observation":"unknown","expected_birth_gone":false}`, string(result))
 }
 
 func TestProcessExitReceiptRejectsAlteredEvidence(t *testing.T) {
@@ -195,7 +195,7 @@ func TestProcessExitOwnerOutcomes(t *testing.T) {
 				require.ErrorIs(t, err, tc.delivery)
 			}
 			tc.want.SchemaVersion, tc.want.PID = 2, expected.PID
-			tc.want.Mode, tc.want.Signal = "force", syscall.SIGKILL.String()
+			tc.want.Mode, tc.want.Signal = "force", "SIGKILL"
 			require.Equal(t, tc.want, result)
 			require.Equal(t, len(tc.reads), reads)
 			if result.SignalAttempted {
@@ -257,7 +257,7 @@ func TestProcessExitSettlesThroughAnIncompleteInspection(t *testing.T) {
 	require.Equal(t, processObservationAbsent, result.Observation)
 	require.True(t, result.ExpectedBirthGone)
 	require.Equal(t, "graceful", result.Mode)
-	require.Equal(t, syscall.SIGTERM.String(), result.Signal)
+	require.Equal(t, "SIGTERM", result.Signal)
 
 	// A target whose inspection never resolves still reports the exit
 	// unconfirmed when the budget expires, and says what it kept seeing rather
