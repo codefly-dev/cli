@@ -124,6 +124,12 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 			return currencyVerdict{false, fmt.Sprintf("%s behind %s", plural(lag.Behind, "commit"), branch)}
 		}
 	}
+	// The full object name in the wrong case. A commit pin is lowercase, as
+	// `git rev-parse` prints it, so an uppercase paste from a web UI resolves
+	// nowhere either — and said nothing useful before this.
+	if composition.UppercaseCommitPin(version) {
+		return currencyVerdict{false, "the full object name in uppercase: a commit pin is the lowercase 40-character name, as `git rev-parse` prints it. Lowercase it"}
+	}
 	// Hex, but not the full object name, and not a tag this source publishes: an
 	// abbreviated SHA. Every clone reads a pin as a ref name, so this one fails
 	// deep inside the render as "Remote branch <pin> not found in upstream
@@ -274,6 +280,17 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 		if verdict.current {
 			current++
 			report.add("", name, "ok", fmt.Sprintf("%s: %s", p, verdict.detail), "")
+			continue
+		}
+		// A hold says "behind on purpose", and states a reason and an end date.
+		// An abbreviated pin is not behind: it names no commit any remote can
+		// resolve, so there is nothing to be behind of and nothing a hold can
+		// excuse. Refused ahead of the hold lookup so a stale entry cannot carry
+		// an unresolvable pin into a render.
+		if composition.AbbreviatedCommitPin(strings.TrimSpace(p.version)) && !slices.Contains(sources[p.source].Tags, strings.TrimSpace(p.version)) {
+			stale++
+			report.add(codePinStale, name, staleStatus, fmt.Sprintf("%s: %s", p, verdict.detail),
+				fmt.Sprintf("write the full 40-character object name of the commit in the pin of %s; a hold cannot cover a pin that resolves nowhere", p.name))
 			continue
 		}
 		hold, index := matchingHold(holds, usable, &p)

@@ -561,6 +561,20 @@ func AbbreviatedCommitPin(version string) bool {
 	return !commitPin.MatchString(version) && abbreviatedCommitPin.MatchString(version)
 }
 
+// uppercaseCommitPin is the full object name in the wrong case. commitPin is
+// lowercase-only — `git rev-parse` prints lowercase — so a SHA pasted from a web
+// UI that renders it uppercase is a 40-character near miss that is neither a
+// commit pin nor an abbreviation, and without this it got the vaguest message of
+// the three.
+var uppercaseCommitPin = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+// UppercaseCommitPin reports whether version is the full 40-character object name
+// but not in the lowercase spelling a commit pin takes.
+func UppercaseCommitPin(version string) bool {
+	version = strings.TrimSpace(version)
+	return !commitPin.MatchString(version) && uppercaseCommitPin.MatchString(version)
+}
+
 func requestedVersionLabel(version string) string {
 	if strings.TrimSpace(version) == "" {
 		return latestVersion

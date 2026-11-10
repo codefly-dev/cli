@@ -45,3 +45,28 @@ func TestAbbreviatedAndCommitPinAreDisjoint(t *testing.T) {
 		t.Fatal("a 12-character SHA is an abbreviation and not a commit pin")
 	}
 }
+
+// A commit pin is lowercase, as `git rev-parse` prints it. The full object name
+// pasted from a UI that renders it uppercase is the near miss most likely to be a
+// copy-paste, and it is neither a commit pin nor an abbreviation.
+func TestUppercaseCommitPin(t *testing.T) {
+	lower := "e55299311a8ae55299311a8ae55299311a8ae552"
+	upper := "E55299311A8AE55299311A8AE55299311A8AE552"
+	if UppercaseCommitPin(lower) {
+		t.Fatal("the lowercase object name is a commit pin, not the uppercase near miss")
+	}
+	if !UppercaseCommitPin(upper) {
+		t.Fatal("the uppercase object name must be recognised as the wrong case")
+	}
+	if IsCommitPin(upper) {
+		t.Fatal("uppercase is not a commit pin")
+	}
+	if AbbreviatedCommitPin(upper) {
+		t.Fatal("a 40-character pin is not an abbreviation, whatever its case")
+	}
+	for _, other := range []string{"v0.2.2", "main", "", ">=1.0.0", lower[:12]} {
+		if UppercaseCommitPin(other) {
+			t.Fatalf("UppercaseCommitPin(%q) must be false", other)
+		}
+	}
+}

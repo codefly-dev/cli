@@ -3,6 +3,8 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/wool"
 	"strings"
 	"testing"
 
@@ -219,5 +221,92 @@ func TestRequireWorkspaceReadyEnforcesWhenItRefuses(t *testing.T) {
 	}
 	if len(enforced) != 1 || !enforced[0] {
 		t.Fatalf("the enforcing path must ask to enforce, got %v", enforced)
+	}
+}
+
+// captureWarnings records the narration lines a call emits. The whole product of
+// the override path is what an operator reads, so the messages are the contract
+// and they are asserted: without this, a refactor could delete every warning in
+// requireWorkspaceReady and leave the suite green.
+func captureWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var lines []string
+	cli.SetOutputSink(func(_ wool.Loglevel, msg string) { lines = append(lines, msg) })
+	t.Cleanup(func() { cli.SetOutputSink(nil) })
+	return &lines
+}
+
+func joined(lines *[]string) string { return strings.Join(*lines, "\n") }
+
+// A failing verdict under the override must say three things: that readiness
+// failed, that it was not enforced, and that the next delivery verb will refuse.
+// The third is the one that was missing before and cost a render.
+func TestSkipWorkspaceReadinessWarnsThatTheNextVerbWillRefuse(t *testing.T) {
+	withSkip(t, true)
+	lines := captureWarnings(t)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("the override must let the verb proceed: %v", err)
+	}
+	out := joined(lines)
+	for _, want := range []string{SkipWorkspaceReadinessFlag, "FAILED", "not enforced", "render", "will refuse"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the override's warning does not name %q; got:\n%s", want, out)
+		}
+	}
+	// It must not name one verb as the refuser: the flag is registered on
+	// `publish` too, so "publish will refuse" is false when publish is the verb.
+	if strings.Contains(out, "`publish` evaluates") {
+		t.Errorf("the warning names a single verb as the refuser; got:\n%s", out)
+	}
+}
+
+// A passing verdict under the override still says so, which is what keeps a habit
+// of passing the flag visible rather than silent.
+func TestSkipWorkspaceReadinessWarnsWhenItChangedNothing(t *testing.T) {
+	withSkip(t, true)
+	lines := captureWarnings(t)
+	stubReadiness(t, func(context.Context, string, string) error { return nil })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("a ready workspace under the override must not be refused: %v", err)
+	}
+	out := joined(lines)
+	for _, want := range []string{SkipWorkspaceReadinessFlag, "passed", "changed nothing"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a passing override must still be announced, missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// The enforcing path refuses; it does not narrate the override.
+func TestRequireWorkspaceReadyDoesNotWarnWhenItRefuses(t *testing.T) {
+	withSkip(t, false)
+	lines := captureWarnings(t)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
+		t.Fatal("an unready workspace must be refused")
+	}
+	if out := joined(lines); strings.Contains(out, SkipWorkspaceReadinessFlag+":") {
+		t.Errorf("the enforcing path must not narrate the override; got:\n%s", out)
+	}
+}
+
+// With no engine, the override says the verdict was NOT evaluated — the one case
+// where that sentence is true.
+func TestSkipWorkspaceReadinessWithNoEngineSaysItWasNotEvaluated(t *testing.T) {
+	withSkip(t, true)
+	lines := captureWarnings(t)
+	previous := WorkspaceReadiness
+	WorkspaceReadiness = nil
+	t.Cleanup(func() { WorkspaceReadiness = previous })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("with no readiness engine the verb proceeds: %v", err)
+	}
+	if out := joined(lines); !strings.Contains(out, "NOT evaluated") {
+		t.Errorf("with no engine the warning must say the verdict was not evaluated; got:\n%s", out)
 	}
 }
