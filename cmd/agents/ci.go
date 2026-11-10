@@ -338,7 +338,11 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		if state.manifest.Kind != serviceAgentKind {
 			return nil
 		}
-		info, err := loadBuiltAgentInformation(ctx, &state.manifest)
+		var info *agentv0.AgentInformation
+		err := withLocalAgentResolution(func() (err error) {
+			info, err = loadBuiltAgentInformation(ctx, &state.manifest)
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -355,7 +359,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	} else if err := runStage(stageAudit, func() error {
 		// Audit the same source selection used for validation and packaging.
 		// The candidate's isolated home need not contain a source auditor.
-		response, err := runPreparedAgentSourceAudit(ctx, source.prepared, source.home)
+		response, err := runPreparedAgentSourceAudit(ctx, source.prepared, source.home, source.childAgentSource()...)
 		if err != nil {
 			return fmt.Errorf("audit selected agent source: %w", err)
 		}
@@ -395,6 +399,28 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	return finalizeAgentCI(state, nil), nil
+}
+
+// withLocalAgentResolution runs action with this process resolving agents
+// locally, as CODEFLY_AGENT_SOURCE=local does, and restores the selection
+// after. The candidate the build stage just installed into CI's private home
+// is a local build under its own release name: under remote resolution core
+// would fetch that release over it — inspecting the release rather than the
+// candidate when it exists, failing when it does not. Only the inspection is
+// scoped: children keep the selection their own source asks for.
+func withLocalAgentResolution(action func() error) error {
+	previous, had := os.LookupEnv(manager.AgentSourceEnv)
+	if err := os.Setenv(manager.AgentSourceEnv, "local"); err != nil {
+		return err
+	}
+	defer func() {
+		if had {
+			_ = os.Setenv(manager.AgentSourceEnv, previous)
+		} else {
+			_ = os.Unsetenv(manager.AgentSourceEnv)
+		}
+	}()
+	return action()
 }
 
 // loadBuiltAgentInformation validates the installed binary produced by the
