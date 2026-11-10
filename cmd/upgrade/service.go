@@ -35,7 +35,18 @@ var ServiceCmd = &cobra.Command{
 	Short: "Apply semver-safe dependency upgrades to one service",
 	Long: `Run the service agent's Builder.Upgrade RPC. Defaults to
 patch+minor (semver-safe) bumps. Pass --major to allow breaking
-upgrades. Pass --dry-run to preview without writing the lockfile.`,
+upgrades. Pass --dry-run to preview without writing the lockfile.
+
+--only is also how a Go service gains a dependency: a package it does not
+require yet is added at its latest version, and pkg@version selects one.
+Import the package in the source first; a package nothing imports is
+refused, because tidying the module would remove it again. This needs an
+agent built on core v0.19.23 or later.
+
+Examples:
+  codefly upgrade service api                                    # every dependency, semver-safe
+  codefly upgrade service api --only github.com/jackc/pgx/v5     # one dependency, or add it
+  codefly upgrade service api --only github.com/jackc/pgx/v5@v5.12.0`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -153,5 +164,5 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&jsonOut, "json", false, "Emit raw JSON instead of a table")
 	ServiceCmd.Flags().BoolVar(&includeMajor, "major", false, "Allow major-version bumps (breaking)")
 	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview changes without writing the lockfile")
-	ServiceCmd.Flags().StringSliceVar(&only, "only", nil, "Restrict upgrades to these packages (comma-separated)")
+	ServiceCmd.Flags().StringSliceVar(&only, "only", nil, "Restrict upgrades to these packages (comma-separated); for Go, a package not required yet is added, and pkg@version selects a version")
 }
