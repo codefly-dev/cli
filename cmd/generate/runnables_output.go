@@ -101,15 +101,15 @@ func writeDerivedTree(ctx context.Context, files map[string][]byte, output strin
 		return fmt.Errorf("cannot create output directory: %w", err)
 	}
 	if err := clearGeneratedFiles(output); err != nil {
-		return err
+		return fmt.Errorf("cannot clear the files generated before: %w", err)
 	}
 	for _, name := range sortedKeys(files) {
 		target := filepath.Join(output, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
+			return fmt.Errorf("cannot create the directory of %s: %w", name, err)
 		}
 		if err := shared.WriteFileAtomic(ctx, target, files[name], 0o644); err != nil {
-			return err
+			return fmt.Errorf("cannot write %s: %w", name, err)
 		}
 	}
 	return nil

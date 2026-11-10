@@ -2330,11 +2330,16 @@ func (flow *Flow) configureTestExecution(runner *Runner) error {
 	return nil
 }
 
-func (flow *Flow) logRunPlan(_ context.Context, dependencyUniques []string, remotes map[string]*Remote) error {
+func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, remotes map[string]*Remote) error {
 	if flow == nil || flow.originService == nil {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
+	// Whatever the mode (run, test, lint, and so every CI stage), the
+	// service this flow is for must be loadable: see ProtoNameCollisionError.
+	if err := ProtoNameCollisionError(ctx, flow.workspace, flow.originService, origin); err != nil {
+		return err
+	}
 	runSet := append([]string{}, dependencyUniques...)
 	if !flow.excludeRoot {
 		runSet = append(runSet, origin)
@@ -2351,6 +2356,9 @@ func (flow *Flow) logRunPlan(_ context.Context, dependencyUniques []string, remo
 			var err error
 			svc, err = flow.world.Dependencies.ServiceFromUnique(unique)
 			if err != nil {
+				return err
+			}
+			if err := ProtoNameCollisionError(ctx, flow.workspace, svc, unique); err != nil {
 				return err
 			}
 		}

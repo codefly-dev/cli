@@ -7,10 +7,11 @@ import (
 
 var FixCmd = &cobra.Command{
 	Use:   "fix",
-	Short: "Apply safe, plugin-owned repairs to service source code",
+	Short: "Apply safe repairs to service source code and contracts",
 }
 
 func init() {
 	FixCmd.AddCommand(sourcefix.ServiceCmd)
 	FixCmd.AddCommand(sourcefix.SourceCmd)
+	FixCmd.AddCommand(sourcefix.ProtoNamesCmd)
 }
