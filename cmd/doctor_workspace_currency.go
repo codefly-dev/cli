@@ -159,7 +159,6 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 // strict makes a stale pin, or an unreadable source, a failure instead of a
 // warning: the stance of a render, which must not ship an old pin unseen.
 func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module string, strict bool, report *workspaceReadinessReport) {
-	started := time.Now()
 	timeout := currencyTimeout
 	if strict {
 		timeout = strictCurrencyTimeout
@@ -285,8 +284,9 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 	reportOverrides(ctx, overrides, sources, report)
 	cli := <-cliDone
 	report.add(cli.Code, cli.Name, cli.Status, cli.Message, cli.Remediation)
-	report.add("", "pin currency", "ok", fmt.Sprintf("%d pins compared with their sources in %s: %d current, %d stale, %d held",
-		current+stale+held, time.Since(started).Round(10*time.Millisecond), current, stale, held), "")
+	// No duration here: a doctor report is deterministic for a given state.
+	report.add("", "pin currency", "ok", fmt.Sprintf("%d pins compared with their sources: %d current, %d stale, %d held",
+		current+stale+held, current, stale, held), "")
 }
 
 func shortHold(pin string) string {
