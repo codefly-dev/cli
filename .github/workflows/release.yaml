@@ -69,12 +69,15 @@ jobs:
         # warms them whenever the dependency graph moves. The qualification and
         # publication builds below share this directory, so the second build
         # relinks instead of recompiling the module graph and tree-sitter.
+        # Only the compiled-object cache is persisted across runs. Modules are
+        # always re-downloaded and verified against go.sum, so the signed
+        # binaries never build from an unverified extracted module tree.
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/gocross
-          key: gocross-${{ hashFiles('go.sum', '.goreleaser.yaml') }}
+          path: ${{ runner.temp }}/gocross/build
+          key: gocross-${{ runner.os }}-v1.27.3-${{ hashFiles('go.sum', '.goreleaser.yaml') }}
           restore-keys: |
-            gocross-
+            gocross-${{ runner.os }}-v1.27.3-
 
       - name: Qualify the clean tag
         env:

@@ -34,9 +34,9 @@ publishes, per tag:
 - a Homebrew **cask** in the separate Homebrew tap repo
 
 The qualification build and the publication build share one Go build and module cache
-(`$RUNNER_TEMP/gocross`, mounted into the cross image), restored from the cache that
+(`$RUNNER_TEMP/gocross`, mounted into the cross image); only the compiled-object half is persisted across runs, restored from the cache that
 `.github/workflows/release-cache.yaml` writes on `main` whenever `go.mod`, `go.sum` or
-`.goreleaser.yaml` change. A cache miss only makes a release slower.
+`.goreleaser.yaml` change. Modules are always re-downloaded and verified against go.sum. That workflow is the only writer of the `gocross-` cache family. A cache miss only makes a release slower.
 
 The version, commit, and UTC build date are injected via ldflags into `pkg/cliupdate` and
 reported by `codefly version --json`. macOS binaries are Developer ID signed and notarized.
