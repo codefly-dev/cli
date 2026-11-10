@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/timings"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -122,11 +123,19 @@ func (b *Builder) decideImageReuse(
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
 ) (imageReuse, error) {
+	defer timings.Start("image.reuse-decision")()
+	// Remembered for the length of a render only: a run that stays up for hours
+	// must see a base image tag move.
+	if b.world.Mode == SnapshotMode {
+		ctx = withProbes(ctx, b.world.registryProbes())
+	}
 	contextDir, err := recipeContext(contextRoot, recipe)
 	if err != nil {
 		return imageReuse{}, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
+	endContext := timings.Start("image.prepare-context")
 	prepared, err := b.prepareContext(ctx, contextRoot, contextDir, outputDir, recipe)
+	endContext()
 	if err != nil {
 		return imageReuse{}, w.Wrap(err)
 	}
@@ -156,7 +165,9 @@ func (b *Builder) decideImageReuse(
 	if err != nil {
 		return imageReuse{}, err
 	}
+	endIdentity := timings.Start("image.identity")
 	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, prepared.Dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors, b.imageBindings...)
+	endIdentity()
 	if err = b.checkDisposableImageIdentity(identity, identityErr); err != nil {
 		return imageReuse{}, err
 	}
@@ -626,6 +637,9 @@ func (b *Builder) buildRecipe(
 func (b *Builder) runImageBuild(
 	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, args []string,
 ) (time.Duration, error) {
+	// Pushed or not, finished or not, what the registry said about this
+	// reference before the build is no longer something to rely on.
+	defer b.world.registryProbes().forget(recipe.GetImage())
 	command := exec.CommandContext(ctx, "docker", args...)
 	var transcript *buildTranscript
 	if b.world.buildsConcurrently() {
@@ -1431,18 +1445,21 @@ var workspaceSourceRepository = func(ctx context.Context, dir string) string {
 // image agrees on (buildLabels); a label a platform lacks
 // or disagrees on is absent. A seam so a test needs no registry.
 var resolveImageBuildLabels = func(ctx context.Context, reference, builderName string) (map[string]string, error) {
-	probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
-	defer cancel()
-	args := []string{buildxCommand, "imagetools", "inspect"}
-	if builderName != "" {
-		args = append(args, "--builder", builderName)
-	}
-	args = append(args, "--format", "{{json .Image}}", reference)
-	out, err := exec.CommandContext(probe, "docker", args...).Output()
-	if err != nil {
-		return nil, err
-	}
-	return buildLabelsFromImageConfig(out), nil
+	defer timings.Start("registry.labels")()
+	return cachedProbe(ctx, "labels", reference, builderName, func() (map[string]string, error) {
+		probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
+		defer cancel()
+		args := []string{buildxCommand, "imagetools", "inspect"}
+		if builderName != "" {
+			args = append(args, "--builder", builderName)
+		}
+		args = append(args, "--format", "{{json .Image}}", reference)
+		out, err := exec.CommandContext(probe, "docker", args...).Output()
+		if err != nil {
+			return nil, err
+		}
+		return buildLabelsFromImageConfig(out), nil
+	})
 }
 
 // buildLabelsFromImageConfig reads the build labels out of `imagetools

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/asottile/dockerfile"
+	"github.com/codefly-dev/cli/pkg/timings"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
@@ -639,22 +640,25 @@ func externalBaseReferences(dockerfilePath string) ([]string, error) {
 //
 // It is a seam so a test can bind a base without a registry.
 var resolveImageManifestDigest = func(ctx context.Context, reference, builderName string) (string, error) {
-	probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
-	defer cancel()
-	args := []string{buildxCommand, "imagetools", "inspect"}
-	if builderName != "" {
-		args = append(args, "--builder", builderName)
-	}
-	args = append(args, "--raw", reference)
-	manifest, err := exec.CommandContext(probe, "docker", args...).Output()
-	if err != nil {
-		return "", classifyImageProbeError(err)
-	}
-	if len(bytes.TrimSpace(manifest)) == 0 {
-		return "", fmt.Errorf("registry served no manifest for %s", reference)
-	}
-	sum := sha256.Sum256(manifest)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	defer timings.Start("registry.manifest")()
+	return cachedProbe(ctx, "manifest", reference, builderName, func() (string, error) {
+		probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
+		defer cancel()
+		args := []string{buildxCommand, "imagetools", "inspect"}
+		if builderName != "" {
+			args = append(args, "--builder", builderName)
+		}
+		args = append(args, "--raw", reference)
+		manifest, err := exec.CommandContext(probe, "docker", args...).Output()
+		if err != nil {
+			return "", classifyImageProbeError(err)
+		}
+		if len(bytes.TrimSpace(manifest)) == 0 {
+			return "", fmt.Errorf("registry served no manifest for %s", reference)
+		}
+		sum := sha256.Sum256(manifest)
+		return "sha256:" + hex.EncodeToString(sum[:]), nil
+	})
 }
 
 // errImageNotFound is a registry's answer that a reference names nothing.

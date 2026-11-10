@@ -148,6 +148,18 @@ func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error
 	if err != nil {
 		return wool.Get(ctx).In("SnapshotPolicy.Restrict").Wrapf(err, "cannot get dependencies")
 	}
+	return policy.plan(dependencies, unique)
+}
+
+// RestrictToScope plans every service of the graph the policy holds, which a
+// run rooted in several services has already scoped to its own.
+func (policy *SnapshotPolicy) RestrictToScope(_ context.Context) error {
+	return policy.plan(policy.dependencies, "")
+}
+
+// plan lays out the phases of the snapshot of dependencies. unique is the one
+// service a stand-alone snapshot is limited to.
+func (policy *SnapshotPolicy) plan(dependencies *architecture.ServiceDependencies, unique string) error {
 	policy.actions = nil
 	// Every member of the union closure needs a builder, but only edges for
 	// the current stage constrain its order. Complete builds before rendering.
@@ -182,4 +194,5 @@ func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error
 	return nil
 }
 
+var _ ScopedPolicy = &SnapshotPolicy{}
 var _ PlaybookPolicy = &SnapshotPolicy{}

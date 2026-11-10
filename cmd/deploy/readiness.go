@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/timings"
 )
 
 // SkipWorkspaceReadinessFlag is the one name of the override, used for the flag
@@ -44,6 +45,7 @@ var skipWorkspaceReadiness bool
 // is free once it has happened. Everything the failure used to be discovered
 // behind — the render, the builds, the pushes, the clone — still comes after.
 func requireWorkspaceReady(ctx context.Context, verb, env, module string) error {
+	defer timings.Start("readiness")()
 	if WorkspaceReadiness == nil {
 		if skipWorkspaceReadiness {
 			cli.Warning("--%s: workspace readiness for environment %q was NOT evaluated before `%s`", SkipWorkspaceReadinessFlag, env, verb)

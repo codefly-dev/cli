@@ -294,6 +294,13 @@ func (tree *renderRoot) rename(source, destination string) error {
 // copyFrom reads a separately trusted source through its retained handle and
 // writes each entry through this render's handle. Neither pathname is reopened.
 func (tree *renderRoot) copyFrom(source *renderRoot, sourcePath, destination string) error {
+	return tree.copyTree(source, sourcePath, destination, false)
+}
+
+// copyTree is copyFrom, optionally giving each file the permissions it had in
+// source rather than the 0600 every write here starts with: a tree an agent
+// rendered keeps the modes the agent gave it when it is moved.
+func (tree *renderRoot) copyTree(source *renderRoot, sourcePath, destination string, keepModes bool) error {
 	return source.walk(sourcePath, func(name string, entry fs.DirEntry) error {
 		relative, err := filepath.Rel(sourcePath, name)
 		if err != nil {
@@ -313,7 +320,21 @@ func (tree *renderRoot) copyFrom(source *renderRoot, sourcePath, destination str
 		if err = tree.mkdirAll(filepath.Dir(target)); err != nil {
 			return err
 		}
-		return tree.write(filepath.Dir(target), filepath.Base(target), data)
+		if err = tree.write(filepath.Dir(target), filepath.Base(target), data); err != nil {
+			return err
+		}
+		if !keepModes {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		root, written, err := tree.access(filepath.Dir(target), filepath.Base(target))
+		if err != nil {
+			return err
+		}
+		return root.Chmod(written, info.Mode().Perm())
 	})
 }
 

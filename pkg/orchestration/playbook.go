@@ -170,6 +170,34 @@ func (playbook *Playbook) Begin(ctx context.Context, actions ...Action) error {
 	return playbook.Work(ctx)
 }
 
+// ScopedPolicy is implemented by a policy that plans from a dependency graph,
+// and can plan from the whole graph it was handed instead of the closure of one
+// service.
+type ScopedPolicy interface {
+	// RestrictToScope plans every service of the graph the policy holds.
+	RestrictToScope(ctx context.Context) error
+}
+
+// BeginScoped seeds a run rooted in several services. Restriction narrows the
+// graph to one root's closure, which would leave the other roots unresolvable,
+// so the policy plans from the graph the flow has already scoped to the run's
+// own service set (Begin's note on several roots).
+func (playbook *Playbook) BeginScoped(ctx context.Context, actions ...Action) error {
+	w := wool.Get(ctx).In("Playbook.BeginScoped")
+	if len(actions) == 0 {
+		return w.NewError("cannot begin a playbook with no actions")
+	}
+	if scoped, ok := playbook.policy.(ScopedPolicy); ok {
+		if err := scoped.RestrictToScope(ctx); err != nil {
+			return w.Wrapf(err, "cannot plan the scoped run")
+		}
+	}
+	if err := playbook.seedGroup(ctx, actions...); err != nil {
+		return w.Wrapf(err, "cannot seed")
+	}
+	return playbook.Work(ctx)
+}
+
 // Executed returns the list of actions that were executed
 // Since it is public, we lock
 func (playbook *Playbook) Executed() []Action {
