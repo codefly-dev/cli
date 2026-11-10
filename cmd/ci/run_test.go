@@ -151,6 +151,7 @@ func TestCIRuntimeAuditIsTheDefault(t *testing.T) {
 }
 
 func TestTestCommandSuiteFailurePolicy(t *testing.T) {
+	stubTestInspection(t, nil, nil)
 	for _, test := range []struct {
 		name       string
 		failFast   bool

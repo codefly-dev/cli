@@ -92,3 +92,23 @@ func validationPreflightFlow(t *testing.T, selection string, mode Mode, dependen
 	flow.WithTemporaryPorts(true)
 	return flow
 }
+
+func TestScheduledOwnershipRejectsChangedTestRuntimeBeforeDependencyCreation(t *testing.T) {
+	selection := protocoltest.Install(t, "ownership")[0]
+	t.Setenv(manager.AgentSourceEnv, "local")
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
+	// Scheduling inspected NONE, but execution now advertises a runtime suite.
+	// The dependency's deliberately missing agent must never be looked up.
+	t.Setenv("CODEFLY_TEST_PEER_VALIDATION", "dependencies")
+	flow := validationPreflightFlow(t, selection, TestMode, true)
+	flow.WithOwnedServices([]string{"app/subject"})
+	require.ErrorContains(t, flow.InitManagers(t.Context()), "app/prerequisite outside its scheduled ownership")
+	require.Equal(t, []string{"app/subject"}, flow.AgentCacheKeys())
+	for _, call := range protocoltest.Calls(t, os.Getenv("CODEFLY_TEST_PEER_ROOT")) {
+		require.Equal(t, "Agent.GetAgentInformation", call.Method)
+	}
+	require.NoError(t, flow.Stop())
+	for _, key := range flow.AgentCacheKeys() {
+		services.ClearAgent(key)
+	}
+}

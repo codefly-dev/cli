@@ -361,7 +361,11 @@ func (reporter *Reporter) registerTasks(ctx context.Context, workspace *resource
 	for index := range tasks {
 		task := &tasks[index]
 		id := reportTaskID(phase, options.Suite, task.planned.Service)
-		if _, exists := reporter.taskIndex[id]; exists {
+		if existing, exists := reporter.taskIndex[id]; exists {
+			if reporter.report.Tasks[existing].Status == reportStatusPending {
+				reporter.report.Tasks[existing].Prerequisites = cloneStrings(task.prerequisites)
+				reporter.report.Tasks[existing].RuntimeResources = cloneStrings(task.resources)
+			}
 			ids[index] = id
 			continue
 		}
@@ -802,6 +806,30 @@ func (reporter *Reporter) reuseEnvironment() string {
 		return ""
 	}
 	return reporter.reuse.environment
+}
+
+// reusable reports, without restoring anything, whether a verified result
+// exists for the task bound to id.
+func (reporter *Reporter) reusable(id string) bool {
+	reporter.mu.Lock()
+	reuse := reporter.reuse
+	task, ok := reporter.task(id)
+	if reuse == nil || !ok {
+		reporter.mu.Unlock()
+		return false
+	}
+	identity, phase := task.Cache, task.Phase
+	reporter.mu.Unlock()
+	return reuse.lookup(&identity, phase).record != nil
+}
+
+// setTaskResources records the ownership a still-pending task will run with.
+func (reporter *Reporter) setTaskResources(id string, resources []string) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if task, ok := reporter.task(id); ok && task.Status == reportStatusPending {
+		task.RuntimeResources = cloneStrings(resources)
+	}
 }
 
 // attemptReuse decides whether the task bound to id may stand on a previously

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -273,6 +274,9 @@ func TestCIWithPlanOptionsDrainsRunningTasksOnCancellation(t *testing.T) {
 // release; failing loudly keeps that from surfacing as a slow, network-bound
 // suite. Tests that need an install to succeed stub it themselves.
 func TestMain(m *testing.M) {
+	inspectTestAgent = func(context.Context, *resources.Agent) (*resources.Agent, *agentv0.AgentInformation, error) {
+		return nil, nil, errors.New("test attempted to inspect a released agent: stub inspectTestAgent")
+	}
 	installCacheAgent = func(_ context.Context, agent *resources.Agent) error {
 		return fmt.Errorf("test attempted to install %s from GitHub: stub installCacheAgent", agent.Identifier())
 	}
@@ -474,7 +478,6 @@ func TestCISchedulerRetainsConservativePrerequisites(t *testing.T) {
 		{Phase: "lint"},
 		{Phase: "compile"},
 		{Phase: "build"},
-		{Phase: "test", LockDependencyClosure: true},
 		{Phase: "build", LockDependencyClosure: true},
 	} {
 		t.Run(options.Phase, func(t *testing.T) {
@@ -519,7 +522,7 @@ func TestCIStageGraphs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				wantsEdge := kind == "" || (phase == "build" && (kind == "build" || kind == "schema")) || (phase == "test" && (kind == "runtime" || kind == "completion"))
+				wantsEdge := phase == "build" && (kind == "" || kind == "build" || kind == "schema")
 				if phase == "test" && len(tasks[1].resources) != 4 {
 					t.Fatalf("runtime ownership was weakened: %v", tasks[1].resources)
 				}

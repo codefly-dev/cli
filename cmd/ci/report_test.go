@@ -138,6 +138,7 @@ func TestCIReportIncludesLaterPhasesAfterFailFast(t *testing.T) {
 }
 
 func TestCIReportMarksRunningAndPendingTasksCancelled(t *testing.T) {
+	stubTestInspection(t, nil, nil)
 	_, workspace := loadSchedulerFixture(t)
 	plan := &Plan{SchemaVersion: planSchemaVersion, Workspace: workspace.Name, ChangedFiles: []string{}, Services: []PlannedService{
 		{Service: "management/worker"},
@@ -174,6 +175,7 @@ func TestCIReportMarksRunningAndPendingTasksCancelled(t *testing.T) {
 }
 
 func TestCIReportJSONIsStableAndWrittenRelativeToWorkspace(t *testing.T) {
+	stubTestInspection(t, nil, nil)
 	_, workspace := loadSchedulerFixture(t)
 	plan := &Plan{SchemaVersion: planSchemaVersion, Workspace: workspace.Name, ChangedFiles: []string{}, Services: []PlannedService{
 		{Service: "management/worker", Reasons: []string{}},

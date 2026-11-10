@@ -105,3 +105,11 @@ func advertisedSuiteNames(suites []*agentv0.TestSuiteCapability) string {
 	}
 	return strings.Join(names, ", ")
 }
+
+// TestDependencyMode uses the same suite selection and validation as the live
+// flow. CI inspects the peer before scheduling; it must not interpret the
+// advertisement independently from execution.
+func TestDependencyMode(info *agentv0.AgentInformation, request *runtimev0.TestRequest) (agentv0.TestDependencyMode, error) {
+	execution, err := resolveTestExecution(info, request)
+	return execution.DependencyMode, err
+}

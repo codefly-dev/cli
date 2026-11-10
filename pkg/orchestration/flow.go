@@ -172,6 +172,7 @@ type Flow struct {
 	// suite advertisement before dependency managers are selected. Legacy
 	// agents retain the dependency-free behavior they had before the contract.
 	testDependencyMode agentv0.TestDependencyMode
+	ownedServices      map[string]bool
 	temporaryPorts     bool
 	portOverrides      map[string]uint16
 
@@ -2046,6 +2047,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// and moved behind dependency managers once the run set is known, preserving
 	// target-first teardown.
 	flow.hub = &Hub{}
+	if flow.ownedServices != nil {
+		if err = flow.checkOwnedServices([]string{resources.WithUnique(flow.originService).Unique()}); err != nil {
+			return err
+		}
+	}
 	preloadedOrigin, validationSkipped, err := flow.preloadOriginForValidation(ctx, remotes)
 	if err != nil {
 		return w.Wrap(err)
@@ -2066,6 +2072,9 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			required = append(required, service.Unique)
 		}
 		w.Debug("service dependencies", wool.NameField(flow.originService.Name), wool.Field("dependencies", required))
+	}
+	if err := flow.checkOwnedServices(required); err != nil {
+		return err
 	}
 	// We run in the proper order
 	slices.Reverse(required)

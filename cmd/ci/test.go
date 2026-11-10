@@ -136,6 +136,9 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	}
 	flow.WithPortOverrides(overrides)
 	flow.WithTestRequest(testRequestForSuite(suite, failFast))
+	if owned, ok := ctx.Value(testOwnershipKey{}).([]string); ok {
+		flow.WithOwnedServices(owned)
+	}
 
 	err = flow.InitManagers(ctx)
 	if err != nil {
