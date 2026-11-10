@@ -288,6 +288,79 @@ func TestRunAgentReleaseResumesMergedPRViaList(t *testing.T) {
 	}
 }
 
+// TestRunAgentReleaseTagsMergedReleaseAfterPull reproduces a release that was
+// abandoned untagged: `--no-wait` opened the release PR for v0.1.1, a human
+// merged it, the checkout was updated to main (so the manifest already says
+// 0.1.1), and the command was re-run to tag and verify. It bumped from the
+// manifest instead, opening a PR for v0.1.2 and leaving v0.1.1 untagged.
+func TestRunAgentReleaseTagsMergedReleaseAfterPull(t *testing.T) {
+	shrinkPolls(t)
+	dir := t.TempDir()
+	// The checkout after pulling the merged release commit.
+	initAgentRepo(t, dir, "0.1.1")
+
+	var gateCalled bool
+	restore := runReleaseGate
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) {
+		gateCalled = true
+		return nil, nil
+	}
+	t.Cleanup(func() { runReleaseGate = restore })
+
+	stubReleases(t, []releaseInfo{{version: "0.1.1", platforms: []string{ciPlatform}}})
+
+	const mergeSHA = "abc123abc123abc123abc123abc123abc123abcd"
+	var tagRefSHA, tagRef string
+	server := fakeGitHub(t, fakeGitHubState{
+		capturedRefSHA: &tagRefSHA,
+		capturedRef:    &tagRef,
+		listByHead: map[string]string{
+			"release/v0.1.1": fmt.Sprintf(
+				`[{"number":5,"state":"closed","merged_at":"2021-05-05T00:00:00Z","merge_commit_sha":%q,"html_url":"https://github.com/x/y/pull/5"}]`, mergeSHA),
+		},
+	})
+	useFakeGitHub(t, server)
+
+	if err := runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch"}); err != nil {
+		t.Fatalf("runAgentRelease = %v, want it to tag the merged v0.1.1", err)
+	}
+	if gateCalled {
+		t.Fatal("gate ran; the merged release was already gated, and no new release is being cut")
+	}
+	if tagRefSHA != mergeSHA {
+		t.Fatalf("tagged at %q, want the merged PR's merge commit %q", tagRefSHA, mergeSHA)
+	}
+	if tagRef != "refs/tags/v0.1.1" {
+		t.Fatalf("created %q, want refs/tags/v0.1.1 (not a bump to v0.1.2)", tagRef)
+	}
+}
+
+// A manifest ahead of the tags for any other reason (a hand bump, a first
+// release) has no merged release PR of its own, and is bumped from as before.
+func TestRunAgentReleaseBumpsFromManifestWithoutMergedRelease(t *testing.T) {
+	shrinkPolls(t)
+	dir := t.TempDir()
+	initAgentRepo(t, dir, "0.1.1")
+
+	var gateCalled bool
+	restore := runReleaseGate
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) {
+		gateCalled = true
+		return nil, nil
+	}
+	t.Cleanup(func() { runReleaseGate = restore })
+
+	server := fakeGitHub(t, fakeGitHubState{})
+	useFakeGitHub(t, server)
+
+	if err := runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch", noWait: true}); err != nil {
+		t.Fatalf("runAgentRelease = %v", err)
+	}
+	if !gateCalled {
+		t.Fatal("a new release must run the gate")
+	}
+}
+
 // TestRunAgentReleaseResumeVerifiesUnpublishedTag reproduces the version-runaway
 // finding: after a tag was cut through this flow but its asset never published,
 // a re-run must re-verify that tag, not bump to a higher version.
@@ -527,7 +600,9 @@ type fakeGitHubState struct {
 	mergeSHA    string
 
 	capturedRefSHA *string
-	refCreated     *bool
+	// capturedRef receives the ref POST /git/refs created ("refs/tags/v0.1.1").
+	capturedRef *string
+	refCreated  *bool
 	// createRefStatus/createRefBody configure POST /git/refs (default 201).
 	createRefStatus int
 	createRefBody   string
@@ -574,10 +649,13 @@ func fakeGitHub(t *testing.T, state fakeGitHubState) *httptest.Server {
 			}
 			_, _ = io.WriteString(w, body)
 		case strings.HasSuffix(path, "/git/refs") && r.Method == http.MethodPost:
-			var body struct{ SHA string }
+			var body struct{ SHA, Ref string }
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if state.capturedRefSHA != nil {
 				*state.capturedRefSHA = body.SHA
+			}
+			if state.capturedRef != nil {
+				*state.capturedRef = body.Ref
 			}
 			if state.refCreated != nil {
 				*state.refCreated = true
