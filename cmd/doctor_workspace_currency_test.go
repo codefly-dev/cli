@@ -40,7 +40,7 @@ func TestJudgePin(t *testing.T) {
 	head, err := composition.ReadSourceHead(ctx, source)
 	require.NoError(t, err)
 	judge := func(version string) currencyVerdict {
-		return judgePin(ctx, currencyPin{label: "m", name: "m", source: source, version: version}, head)
+		return judgePin(ctx, &currencyPin{label: "m", name: "m", source: source, version: version}, head)
 	}
 
 	require.True(t, judge(commits[3]).current, "the tip is current")
@@ -75,11 +75,11 @@ func TestPinHoldsNeedAReasonAnEndDateAndANamedPin(t *testing.T) {
 	require.Equal(t, []bool{true, false, false, false, false}, usable)
 	require.Equal(t, readinessStatusNotReady, report.Status, "an unusable hold fails the run")
 
-	hold, index := matchingHold(holds, usable, currencyPin{name: "saas", version: "v1"})
+	hold, index := matchingHold(holds, usable, &currencyPin{name: "saas", version: "v1"})
 	require.Equal(t, 0, index)
 	require.Equal(t, "waiting on QA", hold.Reason)
 
-	hold, _ = matchingHold(holds, usable, currencyPin{name: "saas", version: "v2"})
+	hold, _ = matchingHold(holds, usable, &currencyPin{name: "saas", version: "v2"})
 	require.Nil(t, hold, "a hold names the exact pin: moving the pin ends it")
 }
 

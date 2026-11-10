@@ -90,7 +90,7 @@ type currencyVerdict struct {
 	detail  string
 }
 
-func (p currencyPin) String() string {
+func (p *currencyPin) String() string {
 	if p.declaredBy != "" {
 		return fmt.Sprintf("%s (declared by workspace %s) pins %s at %s", p.label, p.declaredBy, p.source, shortPin(p.version))
 	}
@@ -107,7 +107,7 @@ func shortPin(version string) string {
 // judgePin compares one pin to its source: a commit is current at the tip of
 // the default branch, a tag when it is the newest release, a range when it
 // reaches the newest release.
-func judgePin(ctx context.Context, p currencyPin, head *composition.SourceHead) currencyVerdict {
+func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead) currencyVerdict {
 	version := strings.TrimSpace(p.version)
 	branch := fmt.Sprintf("%s (%s)", head.Branch, head.Tip[:8])
 	if commit, ok := composition.CommitPin(version); ok {
@@ -231,7 +231,7 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 			judged := map[string]currencyVerdict{}
 			for _, i := range indexes {
 				if _, done := judged[pins[i].version]; !done {
-					judged[pins[i].version] = judgePin(ctx, pins[i], sources[source])
+					judged[pins[i].version] = judgePin(ctx, &pins[i], sources[source])
 				}
 				verdicts[i] = judged[pins[i].version]
 			}
@@ -249,7 +249,7 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 	for i, p := range pins {
 		if sources[p.source] == nil {
 			// Not compared, so not stale and not "holding nothing": already said above.
-			if hold, index := matchingHold(holds, usable, p); hold != nil {
+			if hold, index := matchingHold(holds, usable, &p); hold != nil {
 				used[index] = true
 			}
 			continue
@@ -261,7 +261,7 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 			report.add("", name, "ok", fmt.Sprintf("%s: %s", p, verdict.detail), "")
 			continue
 		}
-		hold, index := matchingHold(holds, usable, p)
+		hold, index := matchingHold(holds, usable, &p)
 		if hold == nil {
 			stale++
 			report.add(codePinStale, name, staleStatus, fmt.Sprintf("%s: %s", p, verdict.detail),
@@ -327,7 +327,7 @@ func validPinHolds(holds []pinHold, names []string, now time.Time, report *works
 }
 
 // matchingHold finds the usable hold on p's exact pin.
-func matchingHold(holds []pinHold, usable []bool, p currencyPin) (*pinHold, int) {
+func matchingHold(holds []pinHold, usable []bool, p *currencyPin) (*pinHold, int) {
 	for i := range holds {
 		if usable[i] && holds[i].Name == p.name && strings.TrimSpace(holds[i].Pin) == p.version {
 			return &holds[i], i
