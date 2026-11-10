@@ -667,6 +667,13 @@ type agentSourceInvocation struct {
 	bootstrapped bool
 }
 
+// childCIEnv and childNoColorEnv are what every agent CI child runs under:
+// non-interactive, and with output a report can carry verbatim.
+const (
+	childCIEnv      = "CI=1"
+	childNoColorEnv = "CODEFLY_COLOR=never"
+)
+
 // childAgentSource is the agent selection a source child runs under. A
 // bootstrapped packager is a local build under the candidate's own name and
 // version: no release stands for it yet, or one does and must not be fetched
@@ -726,8 +733,8 @@ func validateAgentSource(ctx context.Context, source *agentSourceInvocation) err
 	command.Args = append(command.Args, "--agent", fmt.Sprintf("%s/%s:%s", agent.Publisher, agent.Name, agent.Version))
 	command.Dir = source.directory
 	command.Env = agentCIChildEnvironment(source.home, append([]string{
-		"CI=1",
-		"CODEFLY_COLOR=never",
+		childCIEnv,
+		childNoColorEnv,
 	}, source.childAgentSource()...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -871,7 +878,7 @@ func runRunnableConformance(ctx context.Context, temporary, agentHome string, ma
 		if i == 0 {
 			command.Dir = temporary
 		}
-		command.Env = agentCIChildEnvironment(agentHome, "CODEFLY_AGENT_SOURCE=local", "CODEFLY_COLOR=never", "CI=1")
+		command.Env = agentCIChildEnvironment(agentHome, "CODEFLY_AGENT_SOURCE=local", childNoColorEnv, childCIEnv)
 		if output, err := command.CombinedOutput(); err != nil {
 			return nil, workspaceDir, fmt.Errorf("runnable conformance %v: %w\n%s", args, err, boundedAgentCIOutput(output))
 		}
@@ -883,8 +890,8 @@ func agentConformanceEnvironment(agentHome string) []string {
 	return dockerhost.Bind(append(os.Environ(),
 		resources.CodeflyHomeEnv+"="+agentHome,
 		"CODEFLY_AGENT_SOURCE=local",
-		"CODEFLY_COLOR=never",
-		"CI=1",
+		childNoColorEnv,
+		childCIEnv,
 	))
 }
 

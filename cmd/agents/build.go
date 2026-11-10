@@ -577,7 +577,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	if standaloneModuleGraph {
 		goWorkFile = "off"
 	}
-	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, append([]string{"CI=1", "CODEFLY_COLOR=never"}, source.childAgentSource()...)...)
+	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, append([]string{childCIEnv, childNoColorEnv}, source.childAgentSource()...)...)
 	response := &builderv0.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
 		res.err = err
@@ -975,7 +975,7 @@ func agentSourceAuditCommand(ctx context.Context, executable, directory, home st
 		"--fail-on-vuln=false",
 	)
 	command.Dir = directory
-	command.Env = agentCIChildEnvironment(home, append([]string{"CI=1", "CODEFLY_COLOR=never"}, additional...)...)
+	command.Env = agentCIChildEnvironment(home, append([]string{childCIEnv, childNoColorEnv}, additional...)...)
 	return command
 }
 
