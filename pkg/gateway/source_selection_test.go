@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/agents/manager"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,9 @@ import (
 
 func TestGatewayDiscoveryHonorsCancellationWithoutHoldingServiceLock(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	// The installed peer is a local build under a test name no release stands
+	// for: run it as such, or core fetches a release over it.
+	t.Setenv(manager.AgentSourceEnv, "local")
 	root := t.TempDir()
 	writeCodeUnitFixture(t, root, "go.mod", "module example.test/source\n")
 	binary := filepath.Join(t.TempDir(), "peer")

@@ -61,9 +61,10 @@ func TestAgentCIKeepsOnePrivateSourceSelection(t *testing.T) {
 			require.NoError(t, err, "%s", data)
 			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 			defer cancel()
+			agentSource := agentSourceFor(selection)
 			command := exec.CommandContext(ctx, cli, "agent", "ci", "--dir", root, "--native-only", "--skip-audit", "--skip-conformance", "--format", "json")
 			command.Env = agentCIChildEnvironment(home, "TEST_SOURCE_CI_RECORD="+calls, "CI_SOURCE_PEER="+peer, "CI_BOOTSTRAP_MARKER="+marker,
-				"CODEFLY_AGENT_SOURCE=local", "AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")
+				agentSource, "AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")
 			data, err = command.CombinedOutput()
 			require.Error(t, err, "controlled Package refusal must be reported")
 			require.NoError(t, ctx.Err(), "%s", data)
@@ -152,9 +153,23 @@ func writeAgentCICandidate(t *testing.T, root, home string, peerBytes []byte, se
 	return selected
 }
 
+// agentSourceFor is the agent resolution a fixture's CI run starts under. The
+// installed packagers are local builds no release stands for, so selecting one
+// runs under local resolution. A self-hosted candidate runs in the ordinary
+// environment: CI itself must run the packager it bootstrapped, inspect the
+// candidate it built and audit with that packager as the local builds they
+// are, rather than fetch a release over the candidate it qualifies.
+func agentSourceFor(selection string) string {
+	if selection == "self" {
+		return "CODEFLY_AGENT_SOURCE="
+	}
+	return "CODEFLY_AGENT_SOURCE=local"
+}
+
 // runAgentCIFixture runs a complete agent CI and returns the report alongside
 // the plugin calls the recording agent observed, in order. A run that fails
-// before reaching the agent records nothing; the report carries why.
+// before reaching the agent records nothing; the report carries why. The
+// caller states the agent resolution the run starts under (agentSourceFor).
 func runAgentCIFixture(t *testing.T, cli, root, home, peer string, environment ...string) (*civ0.AgentCIReport, []string, error) {
 	t.Helper()
 	calls := filepath.Join(t.TempDir(), "calls")
@@ -163,7 +178,7 @@ func runAgentCIFixture(t *testing.T, cli, root, home, peer string, environment .
 	command := exec.CommandContext(ctx, cli, "agent", "ci", "--dir", root, "--native-only", "--skip-conformance", "--output", t.TempDir(), "--format", "json")
 	command.Env = agentCIChildEnvironment(home, append(environment,
 		"TEST_SOURCE_CI_RECORD="+calls, "CI_SOURCE_PEER="+peer, "TEST_SOURCE_PACKAGE_EXECUTABLE="+peer,
-		"CODEFLY_AGENT_SOURCE=local", "AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")...)
+		"AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")...)
 	data, runErr := command.CombinedOutput()
 	require.NoError(t, ctx.Err(), "%s", data)
 	var report civ0.AgentCIReport
@@ -187,7 +202,7 @@ func TestAgentCIAuditStage(t *testing.T) {
 		t.Run(selection, func(t *testing.T) {
 			root, home := t.TempDir(), t.TempDir()
 			selected := writeAgentCICandidate(t, root, home, peerBytes, selection)
-			report, calls, err := runAgentCIFixture(t, cli, root, home, peer)
+			report, calls, err := runAgentCIFixture(t, cli, root, home, peer, agentSourceFor(selection))
 			require.NoError(t, err, "agent CI report: %s", report)
 			require.Equal(t, "passed", report.GetStatus())
 			require.Equal(t, "audit", report.Stages[3].GetName())
@@ -207,7 +222,7 @@ func TestAgentCIAuditStage(t *testing.T) {
 	t.Run("gates on actionable vulnerabilities", func(t *testing.T) {
 		root, home := t.TempDir(), t.TempDir()
 		writeAgentCICandidate(t, root, home, peerBytes, "older")
-		report, calls, err := runAgentCIFixture(t, cli, root, home, peer, "TEST_SOURCE_AUDIT_VULNERABLE=1")
+		report, calls, err := runAgentCIFixture(t, cli, root, home, peer, agentSourceFor("older"), "TEST_SOURCE_AUDIT_VULNERABLE=1")
 		require.Error(t, err, "an actionable HIGH finding must fail agent CI")
 		require.Equal(t, "failed", report.GetStatus())
 		require.Equal(t, "audit", report.Stages[3].GetName())

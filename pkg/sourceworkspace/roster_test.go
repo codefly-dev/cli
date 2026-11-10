@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -13,6 +14,9 @@ import (
 
 func TestSourceSelectionUsesRunningAgentsWithoutCompiledPins(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	// The installed agents are local builds under test names no release
+	// stands for: run them as such, or core fetches a release over them.
+	t.Setenv(manager.AgentSourceEnv, "local")
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/source\n"), 0o600))
 	_, err := selectPlugin(t.Context(), root)

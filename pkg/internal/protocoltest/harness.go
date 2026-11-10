@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -25,8 +26,12 @@ type Call struct {
 }
 
 // Install builds the CLI-owned protocol peer into a disposable host profile.
+// The peer is a local build under test names no release stands for, so the
+// test runs it as one deliberately (CODEFLY_AGENT_SOURCE=local): under remote
+// resolution core fetches a cached agent's release over it.
 func Install(t *testing.T, names ...string) []string {
 	t.Helper()
+	t.Setenv(manager.AgentSourceEnv, "local")
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv("CODEFLY_TEST_PEER_ROOT", t.TempDir())
 	_, source, _, ok := runtime.Caller(0)

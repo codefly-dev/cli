@@ -13,6 +13,21 @@ for reproducibility, or `publisher/name:latest` (also the omitted-version
 default). Neither selection proves compatibility. An explicitly selected
 incompatible artifact fails; it must never be replaced silently.
 
+## A cached agent is the release its name stands for
+
+Under remote resolution (the default), core holds an agent found in the cache
+to the digest its release was installed with, which the downloader records
+beside it. An executable carrying no record — a local build, or an install
+older than the record — has its release fetched over it, and is refused if
+that release cannot be fetched. An executable whose bytes differ from its
+record is refused. A deliberately rebuilt agent runs with `--local-agents`
+(`CODEFLY_AGENT_SOURCE=local`), which admits local builds and clears a stale
+record. `agent ci` and `agent build` run a self-hosted candidate's bootstrapped
+packager under local resolution themselves: it is the candidate being
+qualified, never a release to fetch over it. An explicit `source.agent`
+selection stays the release it names, and a seed copied from the user's home
+without its record is fetched again from that release.
+
 ## Source selection
 
 Without an explicit selection, the CLI enumerates installed service agents,

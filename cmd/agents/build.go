@@ -548,7 +548,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 			return res
 		}
 		defer prepared.Close()
-		source = &agentSourceInvocation{prepared: prepared, home: pluginHome}
+		source = &agentSourceInvocation{prepared: prepared, home: pluginHome, bootstrapped: isSelfHostedSourcePackager(&ag)}
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -577,7 +577,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	if standaloneModuleGraph {
 		goWorkFile = "off"
 	}
-	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
+	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, append([]string{childCIEnv, childNoColorEnv}, source.childAgentSource()...)...)
 	response := &builderv0.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
 		res.err = err
@@ -963,7 +963,10 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 	return runPreparedAgentSourceAudit(ctx, prepared, resolveSourcePluginHome())
 }
 
-func agentSourceAuditCommand(ctx context.Context, executable, directory, home string) *exec.Cmd {
+// agentSourceAuditCommand runs Builder.Audit on the source. additional carries
+// the source selection's own environment, such as a bootstrapped packager's
+// local resolution (agentSourceInvocation.childAgentSource).
+func agentSourceAuditCommand(ctx context.Context, executable, directory, home string, additional ...string) *exec.Cmd {
 	command := exec.CommandContext(ctx, executable,
 		withoutTimestamps,
 		"audit", "service", "source",
@@ -972,16 +975,16 @@ func agentSourceAuditCommand(ctx context.Context, executable, directory, home st
 		"--fail-on-vuln=false",
 	)
 	command.Dir = directory
-	command.Env = agentCIChildEnvironment(home, "CI=1", "CODEFLY_COLOR=never")
+	command.Env = agentCIChildEnvironment(home, append([]string{childCIEnv, childNoColorEnv}, additional...)...)
 	return command
 }
 
-func runPreparedAgentSourceAudit(ctx context.Context, prepared *sourceworkspace.Prepared, home string) (*builderv0.AuditResponse, error) {
+func runPreparedAgentSourceAudit(ctx context.Context, prepared *sourceworkspace.Prepared, home string, additional ...string) (*builderv0.AuditResponse, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve Codefly executable: %w", err)
 	}
-	command := agentSourceAuditCommand(ctx, executable, prepared.Dir, home)
+	command := agentSourceAuditCommand(ctx, executable, prepared.Dir, home, additional...)
 	response := &builderv0.AuditResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Audit", response); err != nil {
 		return nil, err

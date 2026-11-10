@@ -161,8 +161,10 @@ func TestRunRejectsInvalidExclusionsBeforeStartingFlow(t *testing.T) {
 }
 
 // A declared profile that names a service or workspace configuration the
-// workspace does not have is rejected when the workspace loads (core validates
-// every declared profile up front), so Run fails before starting a flow.
+// workspace does not have is rejected when it is selected: core checks a
+// profile's shape when the workspace loads and its references when the profile
+// is resolved (ResolveRunProfile), so Run fails before starting a flow — and a
+// workspace whose broken profile nobody selects still runs its other services.
 func TestRunRejectsWorkspaceWithInvalidRunProfile(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -203,7 +205,7 @@ run-profiles:
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = plane.Close() })
-			assertRunRejected(t, plane, RunRequest{Service: "backend/api"}, tt.want)
+			assertRunRejected(t, plane, RunRequest{Service: "backend/api", Profile: "local"}, tt.want)
 		})
 	}
 }

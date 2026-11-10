@@ -338,7 +338,11 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		if state.manifest.Kind != serviceAgentKind {
 			return nil
 		}
-		info, err := loadBuiltAgentInformation(ctx, &state.manifest)
+		var info *agentv0.AgentInformation
+		err := withLocalAgentResolution(func() (err error) {
+			info, err = loadBuiltAgentInformation(ctx, &state.manifest)
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -355,7 +359,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	} else if err := runStage(stageAudit, func() error {
 		// Audit the same source selection used for validation and packaging.
 		// The candidate's isolated home need not contain a source auditor.
-		response, err := runPreparedAgentSourceAudit(ctx, source.prepared, source.home)
+		response, err := runPreparedAgentSourceAudit(ctx, source.prepared, source.home, source.childAgentSource()...)
 		if err != nil {
 			return fmt.Errorf("audit selected agent source: %w", err)
 		}
@@ -395,6 +399,28 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	return finalizeAgentCI(state, nil), nil
+}
+
+// withLocalAgentResolution runs action with this process resolving agents
+// locally, as CODEFLY_AGENT_SOURCE=local does, and restores the selection
+// after. The candidate the build stage just installed into CI's private home
+// is a local build under its own release name: under remote resolution core
+// would fetch that release over it — inspecting the release rather than the
+// candidate when it exists, failing when it does not. Only the inspection is
+// scoped: children keep the selection their own source asks for.
+func withLocalAgentResolution(action func() error) error {
+	previous, had := os.LookupEnv(manager.AgentSourceEnv)
+	if err := os.Setenv(manager.AgentSourceEnv, "local"); err != nil {
+		return err
+	}
+	defer func() {
+		if had {
+			_ = os.Setenv(manager.AgentSourceEnv, previous)
+		} else {
+			_ = os.Unsetenv(manager.AgentSourceEnv)
+		}
+	}()
+	return action()
 }
 
 // loadBuiltAgentInformation validates the installed binary produced by the
@@ -635,6 +661,30 @@ type agentSourceInvocation struct {
 	prepared  *sourceworkspace.Prepared
 	directory string
 	home      string
+	// bootstrapped says the source packager was built from the candidate's own
+	// source (source.agent: self) into home, under the candidate's name and
+	// version.
+	bootstrapped bool
+}
+
+// childCIEnv and childNoColorEnv are what every agent CI child runs under:
+// non-interactive, and with output a report can carry verbatim.
+const (
+	childCIEnv      = "CI=1"
+	childNoColorEnv = "CODEFLY_COLOR=never"
+)
+
+// childAgentSource is the agent selection a source child runs under. A
+// bootstrapped packager is a local build under the candidate's own name and
+// version: no release stands for it yet, or one does and must not be fetched
+// over the candidate being qualified, so its children run it deliberately
+// (CODEFLY_AGENT_SOURCE=local). An explicit selection stays the release it
+// names, and core admits it by its release record.
+func (s *agentSourceInvocation) childAgentSource() []string {
+	if s.bootstrapped {
+		return []string{manager.AgentSourceEnv + "=local"}
+	}
+	return nil
 }
 
 func prepareAgentCISource(ctx context.Context, dir string, manifest *agentYAML, temporary string) (*agentSourceInvocation, error) {
@@ -665,7 +715,7 @@ func prepareAgentCISource(ctx context.Context, dir string, manifest *agentYAML, 
 		}
 	}
 	failed = false
-	return &agentSourceInvocation{prepared: prepared, directory: sourceDir, home: privateHome}, nil
+	return &agentSourceInvocation{prepared: prepared, directory: sourceDir, home: privateHome, bootstrapped: isSelfHostedSourcePackager(manifest)}, nil
 }
 
 func validateAgentSource(ctx context.Context, source *agentSourceInvocation) error {
@@ -682,10 +732,10 @@ func validateAgentSource(ctx context.Context, source *agentSourceInvocation) err
 	agent := source.prepared.Service.Agent
 	command.Args = append(command.Args, "--agent", fmt.Sprintf("%s/%s:%s", agent.Publisher, agent.Name, agent.Version))
 	command.Dir = source.directory
-	command.Env = agentCIChildEnvironment(source.home,
-		"CI=1",
-		"CODEFLY_COLOR=never",
-	)
+	command.Env = agentCIChildEnvironment(source.home, append([]string{
+		childCIEnv,
+		childNoColorEnv,
+	}, source.childAgentSource()...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("plugin-owned agent source validation: %w\n%s", err, boundedAgentCIOutput(output))
@@ -828,7 +878,7 @@ func runRunnableConformance(ctx context.Context, temporary, agentHome string, ma
 		if i == 0 {
 			command.Dir = temporary
 		}
-		command.Env = agentCIChildEnvironment(agentHome, "CODEFLY_AGENT_SOURCE=local", "CODEFLY_COLOR=never", "CI=1")
+		command.Env = agentCIChildEnvironment(agentHome, "CODEFLY_AGENT_SOURCE=local", childNoColorEnv, childCIEnv)
 		if output, err := command.CombinedOutput(); err != nil {
 			return nil, workspaceDir, fmt.Errorf("runnable conformance %v: %w\n%s", args, err, boundedAgentCIOutput(output))
 		}
@@ -840,8 +890,8 @@ func agentConformanceEnvironment(agentHome string) []string {
 	return dockerhost.Bind(append(os.Environ(),
 		resources.CodeflyHomeEnv+"="+agentHome,
 		"CODEFLY_AGENT_SOURCE=local",
-		"CODEFLY_COLOR=never",
-		"CI=1",
+		childNoColorEnv,
+		childCIEnv,
 	))
 }
 
