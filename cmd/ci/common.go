@@ -172,9 +172,12 @@ func CI(ctx context.Context, workspace *resources.Workspace, action Action) erro
 	return nil
 }
 
-// ScheduleOptions controls bounded affected-service execution. Test phases use
-// LockDependencyClosure so two flows cannot concurrently own one runtime
-// dependency agent. Test execution narrows this using the advertised suite.
+// ScheduleOptions controls bounded affected-service execution. Tasks of
+// LockDependencyClosure phases, and always the test phase whatever the flag
+// says, lock their runtime dependency closure so two flows cannot concurrently
+// own one runtime dependency agent. A fresh test plan then narrows this using
+// the advertised suite (see prepareTestTasks); a replayed plan keeps its saved
+// ownership.
 type ScheduleOptions struct {
 	Jobs                  int
 	FailFast              bool
@@ -245,9 +248,6 @@ func WithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan *
 	if err != nil {
 		return err
 	}
-	if options.Phase == ciPhaseTest {
-		prepareTestTasks(ctx, workspace, tasks, options.Suite)
-	}
 	if jobs > len(tasks) {
 		jobs = len(tasks)
 	}
@@ -257,6 +257,10 @@ func WithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan *
 		if err != nil {
 			return err
 		}
+	}
+	// A replayed plan binds its saved ownership; only fresh plans are narrowed.
+	if options.Phase == ciPhaseTest && plan.replay == nil {
+		prepareTestTasks(ctx, workspace, tasks, options.Suite, options.Reporter, reportTaskIDs)
 	}
 
 	scheduler := &ciScheduler{
@@ -477,6 +481,10 @@ func normalizeCIJobs(jobs int) (int, error) {
 	return jobs, nil
 }
 
+// locksClosureAlways names the phases whose tasks own their runtime closure
+// regardless of ScheduleOptions.LockDependencyClosure.
+func locksClosureAlways(phase string) bool { return phase == ciPhaseTest }
+
 func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, plan *Plan, options ScheduleOptions) ([]ciScheduledTask, error) {
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	if err != nil {
@@ -519,7 +527,7 @@ func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, 
 		}
 		selected[planned.Service] = index
 		tasks[index] = ciScheduledTask{index: index, planned: planned, resources: []string{planned.Service}}
-		if !options.LockDependencyClosure && options.Phase != ciPhaseTest {
+		if !options.LockDependencyClosure && !locksClosureAlways(options.Phase) {
 			continue
 		}
 		// Offline plans retain conservative ownership. Test execution narrows it

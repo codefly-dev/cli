@@ -18,7 +18,11 @@ type testOwnershipKey struct{}
 // Offline plans carry an upper bound on ownership. Refine it before execution
 // using the peer's suite contract, without loading or initializing a runtime.
 // Failures belong to individual tasks and still obey normal fail-fast/reporting.
-func prepareTestTasks(ctx context.Context, workspace *resources.Workspace, tasks []ciScheduledTask, suite string) {
+//
+// A task whose verified result will be reused is never inspected: it keeps the
+// conservative closure, so reuse cannot be defeated by an agent that is
+// unresolvable or unstartable.
+func prepareTestTasks(ctx context.Context, workspace *resources.Workspace, tasks []ciScheduledTask, suite string, reporter *Reporter, ids []string) {
 	type inspection struct {
 		info *agentv0.AgentInformation
 		err  error
@@ -26,6 +30,9 @@ func prepareTestTasks(ctx context.Context, workspace *resources.Workspace, tasks
 	inspected := map[string]inspection{}
 	for i := range tasks {
 		task := &tasks[i]
+		if reporter != nil && reporter.reusable(ids[i]) {
+			continue
+		}
 		_, service, err := loadPlannedService(ctx, workspace, &task.planned)
 		if err != nil {
 			task.preparationErr = err
@@ -51,6 +58,9 @@ func prepareTestTasks(ctx context.Context, workspace *resources.Workspace, tasks
 		task.preparationErr = err
 		if err == nil && mode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 			task.resources = []string{task.planned.Service}
+			if reporter != nil {
+				reporter.setTaskResources(ids[i], task.resources)
+			}
 		}
 	}
 }

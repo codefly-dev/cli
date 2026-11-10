@@ -3,6 +3,8 @@ package ci
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,4 +113,63 @@ func TestCITestSchedulingRejectsUnresolvedSuites(t *testing.T) {
 		require.ErrorContains(t, err, "not advertised")
 		require.False(t, ran.Load())
 	}
+}
+
+func TestCITestPhaseStillRejectsRuntimeCycle(t *testing.T) {
+	root, workspace := loadSchedulerFixture(t)
+	path := filepath.Join(root, "modules/management/services/organization/service.codefly.yaml")
+	content, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(content, []byte("\nservice-dependencies:\n  - name: frontend\n    module: web\n")...), 0o644))
+	stubTestInspection(t, schedulingTestInfo(), nil)
+	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "web/frontend"}}}
+	var ran atomic.Bool
+	err = WithPlanOptions(t.Context(), workspace, plan, func(context.Context, *resources.Workspace, *resources.Module, *resources.Service) error {
+		ran.Store(true)
+		return nil
+	}, ScheduleOptions{Jobs: 2, Phase: ciPhaseTest, Suite: "unit"})
+	require.ErrorContains(t, err, "cycle")
+	require.False(t, ran.Load())
+}
+
+// A fully reusable result must not need its agent: reuse wins over inspection.
+func TestCITestReuseDoesNotInspectOrFailOnInspection(t *testing.T) {
+	_, workspace := loadReuseFixture(t)
+	plan := cacheTestPlan(workspace, "management/consumer")
+	store := t.TempDir()
+	options := []reuseGateOption{withReusePhase("test"), withReuseSuite("unit")}
+	stubTestInspection(t, schedulingTestInfo(), nil)
+	cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), options...)
+	require.Equal(t, 1, cold.executed)
+
+	var inspected atomic.Int32
+	inspectTestAgent = func(context.Context, *resources.Agent) (*resources.Agent, *agentv0.AgentInformation, error) {
+		inspected.Add(1)
+		return nil, nil, errors.New("agent cannot be started")
+	}
+	warm := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), options...)
+	require.Equal(t, 0, warm.executed)
+	require.Equal(t, reportStatusReused, warm.task(t).Status)
+	require.Zero(t, inspected.Load())
+}
+
+// A replayed plan binds its saved ownership; inspection must not narrow it.
+func TestCITestReplayKeepsSavedOwnership(t *testing.T) {
+	_, workspace := loadSchedulerFixture(t)
+	stubTestInspection(t, schedulingTestInfo(), nil)
+	saved := []string{"management/organization", "web/frontend"}
+	plan := &Plan{Services: []PlannedService{{Service: "web/frontend"}}, replay: &ReplayPlan{
+		Invocation: ReplayInvocation{Phases: []string{ciPhaseTest}, Suites: []string{"unit"}},
+		Tasks:      []ReplayTask{{Phase: ciPhaseTest, Suite: "unit", Service: PlannedService{Service: "web/frontend"}, Resources: saved}},
+	}}
+	reporter := fixedCIReporter(t, plan)
+	options := ScheduleOptions{Jobs: 1, Phase: ciPhaseTest, Suite: "unit", Reporter: reporter}
+	require.NoError(t, prepareCIReportTasks(t.Context(), workspace, plan, options))
+	var owned []string
+	require.NoError(t, WithPlanOptions(t.Context(), workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
+		owned, _ = ctx.Value(testOwnershipKey{}).([]string)
+		return nil
+	}, options))
+	require.Equal(t, saved, owned)
+	require.Equal(t, saved, reporter.Finalize(nil).Tasks[0].RuntimeResources)
 }

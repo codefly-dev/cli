@@ -808,6 +808,30 @@ func (reporter *Reporter) reuseEnvironment() string {
 	return reporter.reuse.environment
 }
 
+// reusable reports, without restoring anything, whether a verified result
+// exists for the task bound to id.
+func (reporter *Reporter) reusable(id string) bool {
+	reporter.mu.Lock()
+	reuse := reporter.reuse
+	task, ok := reporter.task(id)
+	if reuse == nil || !ok {
+		reporter.mu.Unlock()
+		return false
+	}
+	identity, phase := task.Cache, task.Phase
+	reporter.mu.Unlock()
+	return reuse.lookup(&identity, phase).record != nil
+}
+
+// setTaskResources records the ownership a still-pending task will run with.
+func (reporter *Reporter) setTaskResources(id string, resources []string) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if task, ok := reporter.task(id); ok && task.Status == reportStatusPending {
+		task.RuntimeResources = cloneStrings(resources)
+	}
+}
+
 // attemptReuse decides whether the task bound to id may stand on a previously
 // verified execution, and restores its artifacts when it may. Any rejection —
 // missing, stale, untrusted, unreadable or unrestorable — leaves the task
