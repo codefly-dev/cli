@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -322,6 +323,16 @@ func actionableRoot(err error) string {
 	}
 	if root > 0 && strings.HasPrefix(chain[root-1].Error(), chain[root].Error()+": ") {
 		return layers[root-1]
+	}
+	// A bare system error ("no such file or directory") names nothing either:
+	// the file is in the layer that wraps it (*fs.PathError), and what was
+	// being done with it in the layer above that. Show both.
+	if _, bare := chain[root].(syscall.Errno); bare && root > 0 {
+		cause := chain[root-1].Error()
+		if root > 1 {
+			return layers[root-2] + ": " + cause
+		}
+		return cause
 	}
 	return layers[root]
 }

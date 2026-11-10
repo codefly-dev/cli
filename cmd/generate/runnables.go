@@ -124,7 +124,7 @@ Examples:
 
 		derived, err := deriveRunnables(ctx, workspace, module)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot derive the runnables of module %s: %w", module.Name, err)
 		}
 
 		if runnablesCheck {
@@ -140,7 +140,7 @@ Examples:
 			return refusal
 		}
 		if err = writeDerivedTree(ctx, derived.files, output); err != nil {
-			return err
+			return fmt.Errorf("cannot write the derived runnables to %s: %w", output, err)
 		}
 		derived.report()
 		cli.Header(1, "Derived %d runnable operation(s)", len(derived.index.Operations))
