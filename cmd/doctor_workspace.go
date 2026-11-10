@@ -126,6 +126,10 @@ type workspaceReadinessOptions struct {
 	// as `codefly run --naming-scope` does: the addresses the runnable
 	// bindings are checked against are those of a run in that scope.
 	namingScope *string
+	// requireCurrentPins makes a pin behind its source, or a source that could
+	// not be read, a failure rather than a warning. A render sets it: what it
+	// ships must be what the sources hold today, or a stated hold.
+	requireCurrentPins bool
 }
 
 // workspaceReadiness runs the read-only readiness validation and always
@@ -154,6 +158,7 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	checkReferencedModules(ctx, ws, report)
 	checkVendoredPins(ctx, ws, report)
 	checkModuleTrust(ctx, ws, report)
+	checkPinCurrency(ctx, ws, opts.module, opts.requireCurrentPins, report)
 	checkServiceOverrides(ctx, ws, report)
 	checkDevDeployments(ws, report)
 	materialized := checkModulesMaterialized(ctx, ws, report)
@@ -1758,11 +1763,12 @@ type machineReadableDoctorError struct{ error }
 func (machineReadableDoctorError) MachineReadable() bool { return true }
 
 var (
-	doctorWorkspaceEnv     string
-	doctorWorkspaceModule  string
-	doctorWorkspaceService string
-	doctorWorkspaceJSON    bool
-	doctorWorkspaceTimeout time.Duration
+	doctorWorkspaceEnv            string
+	doctorWorkspaceModule         string
+	doctorWorkspaceService        string
+	doctorWorkspaceJSON           bool
+	doctorWorkspaceTimeout        time.Duration
+	doctorWorkspaceRequireCurrent bool
 
 	doctorWorkspaceNamingScope string
 )
@@ -1779,7 +1785,8 @@ The check discovers the workspace, resolves the selected environment
 (default: local), validates declared secret backends and their executables,
 verifies that required workspace and service configurations exist for the
 environment, and resolves secret provider references (op://…) in memory,
-discarding the values immediately. It is strictly read-only: it never creates
+discarding the values immediately. It is strictly read-only: apart from its caches under the Codefly home (release
+metadata, commit-only histories of pinned sources) it never creates
 directories or files, never starts agents, containers, or services, and never
 prints secret values or raw references.
 
@@ -1805,7 +1812,21 @@ of a run in that scope, as ` + "`codefly run --naming-scope`" + ` and
 ` + "`codefly generate runnable-bindings --naming-scope`" + ` read it: omitted keeps
 the environment's declared scope, empty clears it.
 
-Stable diagnostic codes: workspace_not_found, workspace_invalid,
+Pin currency: every pin of the composition — each pinned module, each imported
+workspace — is compared with its source's default branch and releases, so a
+composition that is coherent but old is seen before it is run or rendered. A
+commit pin is current at the tip of the default branch, a tag pin when it is
+the newest release. A pin that is behind is a warning (a failure under
+--require-current-pins, and always in the readiness gate of a render) unless
+workspace.codefly.yaml holds it on purpose: pin-holds entries name the module,
+the exact pin held, a reason and an until date; a held pin is still reported.
+A module that runs from a checkout instead of its pin is listed with the
+checkout's commit and its distance from the source, and the running codefly is
+compared with the newest release. Pins that could not be compared (no network)
+are reported as NOT verified, never as current.
+
+Stable diagnostic codes: pin_stale, pin_held, pin_hold_invalid,
+pin_currency_unverified, checkout_override_active, cli_stale, workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
 module_reference_unresolved,
 module_trust_missing, module_checkout_version_drift,
@@ -1831,6 +1852,8 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 			module:  doctorWorkspaceModule,
 			service: doctorWorkspaceService,
 			timeout: doctorWorkspaceTimeout,
+
+			requireCurrentPins: doctorWorkspaceRequireCurrent,
 		}
 		if cmd.Flags().Changed("naming-scope") {
 			opts.namingScope = &doctorWorkspaceNamingScope
@@ -1884,6 +1907,7 @@ func init() {
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceService, "service", "", "Restrict validation to one service's declared configuration dependencies")
 	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceJSON, "json", false, "Print a machine-readable report to stdout; log lines go to stderr")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceNamingScope, "naming-scope", "", "Naming `scope` the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it")
+	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceRequireCurrent, "require-current-pins", false, "Fail, rather than warn, when a pin is behind its source's default branch or newest release (a render always does)")
 	DoctorWorkspaceCmd.Flags().DurationVar(&doctorWorkspaceTimeout, "timeout", 30*time.Second, "Overall bound; secret resolution is cancelled when it expires")
 	DoctorCmd.AddCommand(DoctorWorkspaceCmd)
 }

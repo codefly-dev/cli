@@ -26,8 +26,18 @@ func init() {
 			env:     env,
 			module:  module,
 			timeout: deployReadinessTimeout,
+
+			// A render ships what its pins name; it refuses a pin that is
+			// behind its source unless a hold states why.
+			requireCurrentPins: true,
 		})
 		if report.Status == readinessStatusReady {
+			// Held pins are deliberate, and a render is where they must be seen.
+			for i := range report.Checks {
+				if report.Checks[i].Code == codePinHeld {
+					printWorkspaceDiagnostic(&report.Checks[i])
+				}
+			}
 			return nil
 		}
 		fmt.Println(tui.RenderHeader(1, fmt.Sprintf("codefly doctor workspace --env %s --module %s", env, module)))

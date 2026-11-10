@@ -2730,7 +2730,8 @@ The check discovers the workspace, resolves the selected environment
 (default: local), validates declared secret backends and their executables,
 verifies that required workspace and service configurations exist for the
 environment, and resolves secret provider references (op://…) in memory,
-discarding the values immediately. It is strictly read-only: it never creates
+discarding the values immediately. It is strictly read-only: apart from its caches under the Codefly home (release
+metadata, commit-only histories of pinned sources) it never creates
 directories or files, never starts agents, containers, or services, and never
 prints secret values or raw references.
 
@@ -2756,7 +2757,21 @@ of a run in that scope, as `codefly run --naming-scope` and
 `codefly generate runnable-bindings --naming-scope` read it: omitted keeps
 the environment's declared scope, empty clears it.
 
-Stable diagnostic codes: workspace_not_found, workspace_invalid,
+Pin currency: every pin of the composition — each pinned module, each imported
+workspace — is compared with its source's default branch and releases, so a
+composition that is coherent but old is seen before it is run or rendered. A
+commit pin is current at the tip of the default branch, a tag pin when it is
+the newest release. A pin that is behind is a warning (a failure under
+--require-current-pins, and always in the readiness gate of a render) unless
+workspace.codefly.yaml holds it on purpose: pin-holds entries name the module,
+the exact pin held, a reason and an until date; a held pin is still reported.
+A module that runs from a checkout instead of its pin is listed with the
+checkout's commit and its distance from the source, and the running codefly is
+compared with the newest release. Pins that could not be compared (no network)
+are reported as NOT verified, never as current.
+
+Stable diagnostic codes: pin_stale, pin_held, pin_hold_invalid,
+pin_currency_unverified, checkout_override_active, cli_stale, workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
 module_reference_unresolved,
 module_trust_missing, module_checkout_version_drift,
@@ -2781,12 +2796,13 @@ codefly doctor workspace [flags]
 Flags:
 
 ```
-      --env string           Environment to validate against (default "local")
-      --json                 Print a machine-readable report to stdout; log lines go to stderr
-      --module string        Restrict validation to one module's services and their declared configuration dependencies
-      --naming-scope scope   Naming scope the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
-      --service string       Restrict validation to one service's declared configuration dependencies
-      --timeout duration     Overall bound; secret resolution is cancelled when it expires (default 30s)
+      --env string             Environment to validate against (default "local")
+      --json                   Print a machine-readable report to stdout; log lines go to stderr
+      --module string          Restrict validation to one module's services and their declared configuration dependencies
+      --naming-scope scope     Naming scope the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
+      --require-current-pins   Fail, rather than warn, when a pin is behind its source's default branch or newest release (a render always does)
+      --service string         Restrict validation to one service's declared configuration dependencies
+      --timeout duration       Overall bound; secret resolution is cancelled when it expires (default 30s)
 ```
 
 ## `codefly endpoint`
