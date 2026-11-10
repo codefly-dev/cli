@@ -289,6 +289,27 @@ Both at once is refused by name. The request is advisory: the host grants the
 envelope's grant for the principal, reports requested bindings the grant lacks
 as a reason on the binding, and never widens or narrows the grant from it.
 
+**The scopes that govern a solution's sources** ride on the same block. A
+contract may name which of its own scopes governs a data source tied to one of
+its installations:
+
+```yaml
+source_governance:
+  scopes:
+    - {resource_kind: wiki.page, actions: [write]}
+```
+
+Core validates it (one of the unit's own, unshared kinds, an action its own
+ceiling names and a role grants directly, never a wildcard or a scope reached
+through a binding) and resolves it to sorted `"<kind>:<action>"` strings,
+which the render carries verbatim as `authority.source_governance`. Absent, the
+key is not written, so a module declaring none keeps its manifest bytes and
+digest. The CLI decides nothing about it: the host reads it from the manifest
+it verified, holds it to the solution's roles, and treats a governing scope
+added or moved by a redelivery as a widening an administrator approves before
+anyone governs by it. A CLI older than this field refuses a contract declaring
+it (strict reader), and a host older than it refuses the manifest.
+
 **A module that installs prepared bindings also asks for each one.** When one
 of its services declares the `runnable-bindings` workspace configuration group
 ([Runnable](runnable.md)), the module's request gains a binding for every

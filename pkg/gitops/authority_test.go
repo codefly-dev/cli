@@ -258,6 +258,30 @@ edge_dependencies:
 	require.Equal(t, authority.EdgeDependencies, manifest.Authority.EdgeDependencies)
 }
 
+// TestTheSourceGovernanceReachesTheSignedManifest: what the contract
+// declares governs a source tied to an installation is what the delivered
+// manifest names, as core resolved it, so the host decides by the author's
+// declaration and never by an inference of its own. A module declaring none
+// carries none.
+func TestTheSourceGovernanceReachesTheSignedManifest(t *testing.T) {
+	workspace, module := writeAuthorityWorkspaceDeclaring(t, `source_governance:
+  scopes:
+    - {resource_kind: shop.orders, actions: [read]}
+`)
+	env := selectedEnvironment(t, workspace, "staging")
+	services := loadServices(t, workspace, "shop", "api")
+	authority, err := shopAuthority(t, workspace, module, services, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"shop.orders:read"}, authority.SourceGovernance)
+	_, manifest := renderShopManifest(t, workspace, module, env)
+	require.Equal(t, []string{"shop.orders:read"}, manifest.Authority.SourceGovernance)
+
+	workspace, module = writeAuthorityWorkspaceDeclaring(t, "")
+	authority, err = shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), selectedEnvironment(t, workspace, "staging"))
+	require.NoError(t, err)
+	require.Nil(t, authority.SourceGovernance)
+}
+
 // "none" is a value, not an absence: the rule treats empty and "none" as
 // different, so the CLI must deliver the literal rather than collapsing it.
 func TestTheNoneSelectorIsCarriedAsAValue(t *testing.T) {
