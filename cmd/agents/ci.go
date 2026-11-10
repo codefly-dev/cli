@@ -635,6 +635,23 @@ type agentSourceInvocation struct {
 	prepared  *sourceworkspace.Prepared
 	directory string
 	home      string
+	// bootstrapped says the source packager was built from the candidate's own
+	// source (source.agent: self) into home, under the candidate's name and
+	// version.
+	bootstrapped bool
+}
+
+// childAgentSource is the agent selection a source child runs under. A
+// bootstrapped packager is a local build under the candidate's own name and
+// version: no release stands for it yet, or one does and must not be fetched
+// over the candidate being qualified, so its children run it deliberately
+// (CODEFLY_AGENT_SOURCE=local). An explicit selection stays the release it
+// names, and core admits it by its release record.
+func (s *agentSourceInvocation) childAgentSource() []string {
+	if s.bootstrapped {
+		return []string{manager.AgentSourceEnv + "=local"}
+	}
+	return nil
 }
 
 func prepareAgentCISource(ctx context.Context, dir string, manifest *agentYAML, temporary string) (*agentSourceInvocation, error) {
@@ -665,7 +682,7 @@ func prepareAgentCISource(ctx context.Context, dir string, manifest *agentYAML, 
 		}
 	}
 	failed = false
-	return &agentSourceInvocation{prepared: prepared, directory: sourceDir, home: privateHome}, nil
+	return &agentSourceInvocation{prepared: prepared, directory: sourceDir, home: privateHome, bootstrapped: isSelfHostedSourcePackager(manifest)}, nil
 }
 
 func validateAgentSource(ctx context.Context, source *agentSourceInvocation) error {
@@ -682,10 +699,10 @@ func validateAgentSource(ctx context.Context, source *agentSourceInvocation) err
 	agent := source.prepared.Service.Agent
 	command.Args = append(command.Args, "--agent", fmt.Sprintf("%s/%s:%s", agent.Publisher, agent.Name, agent.Version))
 	command.Dir = source.directory
-	command.Env = agentCIChildEnvironment(source.home,
+	command.Env = agentCIChildEnvironment(source.home, append([]string{
 		"CI=1",
 		"CODEFLY_COLOR=never",
-	)
+	}, source.childAgentSource()...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("plugin-owned agent source validation: %w\n%s", err, boundedAgentCIOutput(output))

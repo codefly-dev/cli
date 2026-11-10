@@ -7,12 +7,16 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/agents/contract"
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSupervisorChecksExplicitSelectionBeforeCreatingSession(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	// The installed agents are local builds under test names no release
+	// stands for: run them as such, or core fetches a release over them.
+	t.Setenv(manager.AgentSourceEnv, "local")
 	binary := filepath.Join(t.TempDir(), "agent")
 	output, err := exec.Command("go", "build", "-o", binary, "../sourceworkspace/testdata/agent").CombinedOutput()
 	require.NoError(t, err, "%s", output)

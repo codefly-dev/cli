@@ -28,7 +28,10 @@ codefly self build --with-agents
 ```
 
 After installing the CLI, this rebuilds **every canonical agent repository** in the Codefly
-workspace. Flags:
+workspace. A rebuilt agent sits in the cache under a released version's name with no release
+record, so run it with `--local-agents` (`CODEFLY_AGENT_SOURCE=local`); without it, core fetches
+the release over the rebuild, or refuses it when that release cannot be fetched
+([agent compatibility](../agent-compatibility.md#a-cached-agent-is-the-release-its-name-stands-for)). Flags:
 
 - `--native-only` — build only host-platform agent binaries; skip the Linux/amd64 container
   cross-build (the local-dev fast path).

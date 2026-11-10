@@ -548,7 +548,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 			return res
 		}
 		defer prepared.Close()
-		source = &agentSourceInvocation{prepared: prepared, home: pluginHome}
+		source = &agentSourceInvocation{prepared: prepared, home: pluginHome, bootstrapped: isSelfHostedSourcePackager(&ag)}
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -577,7 +577,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	if standaloneModuleGraph {
 		goWorkFile = "off"
 	}
-	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, "CI=1", "CODEFLY_COLOR=never")
+	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, append([]string{"CI=1", "CODEFLY_COLOR=never"}, source.childAgentSource()...)...)
 	response := &builderv0.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
 		res.err = err

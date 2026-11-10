@@ -61,9 +61,18 @@ func TestAgentCIKeepsOnePrivateSourceSelection(t *testing.T) {
 			require.NoError(t, err, "%s", data)
 			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 			defer cancel()
+			// The installed packagers are local builds no release stands for, so
+			// an explicit selection of one runs under local resolution. A
+			// self-hosted candidate runs in the ordinary environment: CI itself
+			// must run the packager it bootstrapped as the local build it is,
+			// rather than fetch a release over the candidate it qualifies.
+			agentSource := "CODEFLY_AGENT_SOURCE=local"
+			if selection == "self" {
+				agentSource = "CODEFLY_AGENT_SOURCE="
+			}
 			command := exec.CommandContext(ctx, cli, "agent", "ci", "--dir", root, "--native-only", "--skip-audit", "--skip-conformance", "--format", "json")
 			command.Env = agentCIChildEnvironment(home, "TEST_SOURCE_CI_RECORD="+calls, "CI_SOURCE_PEER="+peer, "CI_BOOTSTRAP_MARKER="+marker,
-				"CODEFLY_AGENT_SOURCE=local", "AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")
+				agentSource, "AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")
 			data, err = command.CombinedOutput()
 			require.Error(t, err, "controlled Package refusal must be reported")
 			require.NoError(t, ctx.Err(), "%s", data)
