@@ -66,6 +66,7 @@ const (
 	codeAgentOverrideActive        = "agent_override_active"
 	codeAgentOverrideInvalid       = "agent_override_invalid"
 	codeAgentDevBuild              = "agent_dev_build"
+	codeProtoNameCollision         = "proto_name_collision"
 	codeTimeout                    = "timeout"
 )
 
@@ -189,6 +190,7 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	}
 
 	checkDevAgents(scope, report)
+	checkProtoNames(ctx, ws, scope, report)
 
 	checked, rootGroups, checkErr := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
 	toResolve, provided := checkConfigurationSources(ctx, ws, env, checked, opts.module != "" || opts.service != "", scope, requiredBy, report)
@@ -1032,6 +1034,25 @@ func referenceRemediation(reference *configurations.UnresolvedReference) string 
 // checkDevAgents warns about every service in scope running an agent dev build
 // (`codefly publish dev`): an unreleased agent, fine for iteration and never
 // something a workspace should ship on.
+// checkProtoNames reports a service whose binary would register a protobuf
+// file or name twice (its own contract and a client library's): it fails at
+// start, and nothing at build time says so.
+func checkProtoNames(ctx context.Context, ws *resources.Workspace, scope []*resources.Service, report *workspaceReadinessReport) {
+	for _, svc := range scope {
+		collisions, err := resources.ServiceProtoNameCollisions(ctx, ws, svc)
+		if err != nil {
+			report.add(codeProtoNameCollision, "protobuf names of "+serviceUnique(svc), "warn", err.Error(), "")
+			continue
+		}
+		if len(collisions) == 0 {
+			continue
+		}
+		report.add(codeProtoNameCollision, "protobuf names of "+serviceUnique(svc), checkStatusFail,
+			fmt.Sprintf("%s would load the same protobuf names twice and fail at start: %s", serviceUnique(svc), resources.DescribeProtoNameCollisions(collisions)),
+			orchestration.ProtoNamesRemediation)
+	}
+}
+
 func checkDevAgents(scope []*resources.Service, report *workspaceReadinessReport) {
 	for _, svc := range scope {
 		if svc.Agent == nil || !publish.IsDevVersion(svc.Agent.Version) {

@@ -3003,7 +3003,7 @@ Flags:
 
 ## `codefly fix`
 
-Apply safe, plugin-owned repairs to service source code
+Apply safe repairs to service source code and contracts
 
 ```
 codefly fix <subcommand>
@@ -3011,8 +3011,49 @@ codefly fix <subcommand>
 
 Subcommands:
 
+- [`codefly fix proto-names`](#codefly-fix-proto-names)
 - [`codefly fix service`](#codefly-fix-service)
 - [`codefly fix source`](#codefly-fix-source)
+
+## `codefly fix proto-names`
+
+Give a service's protobuf contract its own package and path
+
+```
+Give a service's protobuf contract its own package and path.
+
+A scaffolded service keeps its contract in proto/api.proto, package api. Two
+such contracts cannot be loaded in one process: a service that depends on
+another's generated client registers both, and the protobuf runtime refuses the
+second (in Go, a panic at start: proto: file "api.proto" is already registered).
+`codefly run`, `lint`, `test` and `doctor workspace` report it before that.
+
+This command moves the contract to the versioned layout:
+
+  proto/api.proto, package api
+    -> proto/<module>/<service>/v1/api.proto, package <module>.<service>.v1
+       (proto/<service>/v1, package <service>.v1 when module and service share a name)
+
+and, for a Go service, points go_package and the service's own imports at the
+bindings' new directory. The procedure paths change with the package
+(/api.Service/Method becomes /<package>.Service/Method); REST routes do not.
+
+Then regenerate what derives from the contract:
+
+  codefly sync service <service>
+  codefly generate contracts <module>
+  codefly generate client --from <module>/<service>/<endpoint>   # each client of it
+```
+
+```
+codefly fix proto-names [service]
+```
+
+Flags:
+
+```
+      --dry-run   Show what would change without changing it
+```
 
 ## `codefly fix service`
 
