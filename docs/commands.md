@@ -2223,6 +2223,53 @@ described by the workspace's tags), and a checkout with no reachable version
 tag — a shallow CI submodule clone — is left alone rather than reported as a
 version nothing established.
 
+#### Pin currency
+
+Coherent is not current: a composition whose pins fit together can still pin a
+producer's commit from last week. `codefly doctor workspace` compares every
+pin — each pinned module, each imported workspace, including the modules an
+imported workspace pins — with its source's default branch and releases (one
+`git ls-remote` per source, all at once; measuring a distance reads a
+commit-only history kept under `CODEFLY_HOME/currency`):
+
+- a **commit** pin is current at the tip of the default branch; behind, it
+  reports `saas pins codefly-dev/module-saas-starter at commit 49d5158e: 4
+  commits behind main (188b1fb2)`, or "not in the history of main" for a commit
+  no branch reaches (an unmerged PR head);
+- a **tag** pin is current when it is the newest release; a range when it
+  reaches the newest release.
+
+A stale pin (`pin_stale`) is a warning locally and a failure under
+`--require-current-pins` — and always in the readiness gate of `deploy gitops
+render`, which refuses to render pins that are behind. Pins that could not be
+compared because a source was unreadable are reported as
+`pin_currency_unverified`: a warning locally, a failure in a render, never a
+pass. There is no offline mode for a render: its only escape is
+`--skip-workspace-readiness`, which skips every readiness check and says so.
+The check reads the network (bounded at 10 s, 25 s for a render); a first run
+fetches each stale source's history once.
+
+A pin may be behind on purpose. State it in `workspace.codefly.yaml` of the
+composition being checked, which may hold any module of the graph:
+
+```yaml
+pin-holds:
+    - name: runtime                  # a module, or an imported workspace
+      pin: b1760e6a6f8d41615cd03bc8df54e0c3f6dcf93b   # the exact value held
+      reason: page commands change staging; moved after Blue QA
+      until: 2026-11-20              # a hold ends
+```
+
+A held pin (`pin_held`) is still reported with its reason, on every run and
+in a render. A hold names the exact pin, so moving the pin ends it; it ends on
+its `until` date; one without a reason or a date, or naming nothing in the
+composition, fails (`pin_hold_invalid`); one that holds nothing is reported.
+
+The same run lists every module that runs from a checkout instead of its pin
+(`checkout_override_active`) with the checkout's commit and its distance from
+the source's default branch, and compares the running `codefly` with the
+newest release (`cli_stale`) using the `codefly self update` check.
+
 Only the two tag namespaces a module package is published under are consulted:
 `v<version>` and `module-package/v<version>`. A vendored monorepo routinely
 carries per-component and nightly tags as well, and `git describe` does not
