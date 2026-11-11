@@ -390,12 +390,17 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	if plan := resp.GetResult().GetDockerBuildPlan(); plan != nil {
 		contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 		for _, recipe := range plan.GetRecipes() {
-			if len(recipe.GetGoModuleDownloads()) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
-				continue
-			}
 			// Decide reuse before fetching, on the recipe as it will be built: an
 			// image already built from exactly these inputs needs no module, so a
-			// render whose images are up to date downloads nothing.
+			// render whose images are up to date downloads nothing. In a snapshot a
+			// recipe with nothing to fetch is decided here too, because that
+			// policy runs this phase's services concurrently and the registry
+			// reads of the decision are what a render waits on; its build phase
+			// is bound by the cores. Other flows decide such a recipe at Build.
+			fetches := len(recipe.GetGoModuleDownloads()) > 0 || len(recipe.GetGitSourceDownloads()) > 0
+			if !fetches && b.world.Mode != SnapshotMode {
+				continue
+			}
 			built, err := b.recipeAsBuilt(recipe, b.world.Push)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
@@ -408,6 +413,9 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 				planned.reuse = map[string]imageReuse{}
 			}
 			planned.reuse[recipe.GetName()] = reuse
+			if !fetches {
+				continue
+			}
 			if reuse.entry != nil {
 				w.Info("no image input changed; the Go modules and git sources this recipe declares are not fetched",
 					wool.Field("recipe", recipe.GetName()), wool.Field("image", reuse.entry.Image))

@@ -143,3 +143,18 @@ func (t *buildTranscript) Report(service, image string) string {
 	fmt.Fprintf(&report, "---- end of %s build output ----\n", service)
 	return report.String()
 }
+
+// planConcurrencyDefault is how many plan-phase reuse decisions run at once. A
+// decision waits on registry round trips and computes next to nothing, so unlike
+// a build it is not bounded by the cores; it is bounded so a render does not
+// open a registry connection per service of a large composition at once.
+const planConcurrencyDefault = 12
+
+// planConcurrency is how many services one plan phase works on at once. The
+// same override as the build phase applies when set.
+func planConcurrency() (int, error) {
+	if _, ok := os.LookupEnv(buildConcurrencyEnv); ok {
+		return buildConcurrency()
+	}
+	return planConcurrencyDefault, nil
+}

@@ -69,10 +69,10 @@ func TestSnapshotPolicyEmitsTheBuildPhaseAsOneGroup(t *testing.T) {
 		group = next
 	}
 
-	// Every phase but the build phase still arrives one service at a time.
+	// Every phase but the plan and build phases still arrives one service at a time.
 	for _, phase := range []orchestration.ActionType{
 		orchestration.BuilderLoad, orchestration.BuilderInit,
-		orchestration.BuilderPlan, orchestration.BuilderDeploy,
+		orchestration.BuilderDeploy,
 	} {
 		groups := seen[phase]
 		require.Len(t, groups, 4, "%s should arrive one service at a time", phase)
@@ -80,6 +80,11 @@ func TestSnapshotPolicyEmitsTheBuildPhaseAsOneGroup(t *testing.T) {
 			require.Len(t, one, 1, "%s should arrive one service at a time", phase)
 		}
 	}
+
+	// The plan phase arrives once too: its reuse decisions wait on the registry.
+	plans := seen[orchestration.BuilderPlan]
+	require.Len(t, plans, 1, "the plan phase should be emitted once, whole")
+	require.Len(t, plans[0], 4, "the plan phase should carry every service of the closure")
 
 	// The build phase arrives once, holding every service of the closure.
 	builds := seen[orchestration.BuilderBuild]

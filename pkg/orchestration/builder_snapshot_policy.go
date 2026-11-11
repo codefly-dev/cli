@@ -97,7 +97,15 @@ func (policy *SnapshotPolicy) emit(index int) []Action {
 }
 
 // ConcurrentActions reports that this group may run its actions at the same
-// time, which it does for a build phase and nothing else.
+// time, which it does for the plan and build phases and nothing else.
+//
+// The plan phase is concurrent for the reuse decision it takes per service,
+// which is a handful of registry reads (`imagetools inspect`, 2-6 s each) and
+// was the render's wall clock when taken one service at a time. What the
+// phase shares is serialized where it is shared: the Go module and git source
+// prefetches each hold their own lock (goModulePrefetch.fetch,
+// gitSourcePrefetch.fetch), and the registry reads are one question in flight
+// per reference (probeCache).
 //
 // What makes the build phase the one safe phase is not that building is slow:
 // it is that each service's build reads and writes only its own things. Its
@@ -132,7 +140,7 @@ func (policy *SnapshotPolicy) ConcurrentActions(actions []Action) bool {
 // concurrentPhase reports whether a phase of this type runs its services at the
 // same time.
 func concurrentPhase(actionType ActionType) bool {
-	return actionType == BuilderBuild
+	return actionType == BuilderBuild || actionType == BuilderPlan
 }
 
 func (policy *SnapshotPolicy) completed(action Action) bool {
