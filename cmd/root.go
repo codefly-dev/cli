@@ -325,6 +325,7 @@ func init() {
 
 	// Audit + upgrade dependencies
 	RootCmd.AddCommand(AuditCmd)
+	RootCmd.AddCommand(AuthorityCmd)
 	RootCmd.AddCommand(SBOMCmd)
 	RootCmd.AddCommand(UpgradeCmd)
 

@@ -2843,6 +2843,42 @@ which modules it pins and at what commits, and the configuration groups those
 modules need, are the composition's to say. The command prints each of them,
 with the failure each one causes when it is skipped.
 
+### `codefly authority check` and `codefly authority trace`
+
+"Why was this call refused?" has its answer in several declarations that must
+agree: a role, the binding's ceiling, the host's envelope, the audience's
+method policy and every written copy of it. Both commands read committed files
+only — no cluster, no credential.
+
+`check` is the gate. `--env <environment>`, in a composition, reads what that
+environment delivers to its host and fails when a module's delivery does not
+hold to its own contract, when a role names a scope the composition reaches
+nowhere, or when the envelope withholds a scope a binding asks for (the host
+drops it without a record). `--module-dir <module>`, in a module's checkout,
+fails when a generated `permissions_gen.go` says something else than the
+method policies the module publishes.
+
+`trace` explains one call: every link, its verdict, the file and field that
+decided it, the value held there and the refusing decision's own words. It
+names the first link that does not admit the call and keeps walking.
+
+```bash
+codefly authority check --env blue
+codefly authority check --module-dir modules/record-store
+codefly authority trace --env blue --caller org-directory --binding records-types \
+  --method /records.v1.RecordsService/GetRecordType \
+  --module-dir ../module-record-store/modules/record-store
+```
+
+A verdict is `admitted`, `refused`, `unread` (the source could not be read) or
+`unproven` (read, and no declaration states what decides it: the handler of a
+module that checks owners). Only `admitted` is a pass. The decisions are the
+authority's own (`authority-core`'s `decide.Trace`); the CLI reads the files.
+
+Static mode is the only one built: links 1 to 3 (page registered, installed
+and entitled, role held) need a live cell and print `unread`. One hop is
+traced; what an installation consented to and a delegation are not read.
+
 ### `codefly doctor solution [module]`
 
 Judge a solution against the shape `add solution` generates, without changing

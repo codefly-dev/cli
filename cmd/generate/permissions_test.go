@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
@@ -407,4 +408,23 @@ func TestPermissionsCoverTheServedMethodsOnly(t *testing.T) {
 	// method with no policy: refused by name, as every served method is.
 	servedCatalog(t, module)
 	require.ErrorContains(t, generatePermissions(t.Context(), module, "", true), "/ledger.TargetAuthorityService/Check")
+}
+
+// The reader a trace and the authority gate use reads back exactly what this
+// generator writes: if the generated format moves, this fails here.
+func TestTheGeneratedTableReadsBackAsThePoliciesItWasWrittenFrom(t *testing.T) {
+	files, err := permissionFiles(samplePermissions())
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "permissions_gen.go")
+	require.NoError(t, os.WriteFile(path, files["permissions_gen.go"], 0o644))
+	table, err := gitops.PermissionTable(path)
+	require.NoError(t, err)
+	require.Len(t, table, 2)
+	require.True(t, table["/api/Version"].AnyCheckedCaller)
+	require.Empty(t, table["/api/Version"].Requires)
+	var required []string
+	for _, sc := range table["/api/Write"].Requires {
+		required = append(required, sc.GetResourceKind()+":"+sc.GetActions()[0])
+	}
+	require.ElementsMatch(t, []string{"ledger.entry:read", "ledger.entry:write"}, required)
 }

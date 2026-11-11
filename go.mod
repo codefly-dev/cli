@@ -12,7 +12,7 @@ require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
 	github.com/codefly-dev/authority/libraries/authority-client/go v0.2.0
-	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.0
+	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.1-0.20261111201319-a1327c2b90c9
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261109220601-1f0887616bde
 	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261109220601-1f0887616bde
 	github.com/codefly-dev/authority/libraries/hop/go v0.2.0
