@@ -115,6 +115,16 @@ type imageReuse struct {
 // not wait for the fetch: a render whose images are all up to date fetches no
 // module graph at all, where it used to download every Go service's graph into
 // a fresh cache before finding out that no image input had changed.
+// renderProbes remembers what the registry answers for the length of ONE
+// render, and only then: a run that stays up for hours must keep seeing a base
+// image tag move, so outside a snapshot the context is handed back untouched.
+func (b *Builder) renderProbes(ctx context.Context) context.Context {
+	if b.world.Mode != SnapshotMode {
+		return ctx
+	}
+	return withProbes(ctx, b.world.registryProbes())
+}
+
 func (b *Builder) decideImageReuse(
 	ctx context.Context,
 	w *wool.Wool,
@@ -124,11 +134,7 @@ func (b *Builder) decideImageReuse(
 	shouldPush bool,
 ) (imageReuse, error) {
 	defer timings.Start("image.reuse-decision")()
-	// Remembered for the length of a render only: a run that stays up for hours
-	// must see a base image tag move.
-	if b.world.Mode == SnapshotMode {
-		ctx = withProbes(ctx, b.world.registryProbes())
-	}
+	ctx = b.renderProbes(ctx)
 	contextDir, err := recipeContext(contextRoot, recipe)
 	if err != nil {
 		return imageReuse{}, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())

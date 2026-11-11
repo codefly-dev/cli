@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 
@@ -84,7 +85,7 @@ func cachedProbe[T any](ctx context.Context, kind, reference, builder string, re
 	c.mu.Lock()
 	if answer, ok := c.answers[key]; ok {
 		c.mu.Unlock()
-		return answer.(T), nil
+		return typedProbe[T](answer, kind, reference)
 	}
 	pushes := c.written[reference]
 	c.mu.Unlock()
@@ -105,7 +106,20 @@ func cachedProbe[T any](ctx context.Context, kind, reference, builder string, re
 		var none T
 		return none, err
 	}
-	return value.(T), nil
+	return typedProbe[T](value, kind, reference)
+}
+
+// typedProbe reads a remembered answer back at the type this caller asks for.
+// A mismatch is a programming error — two probes sharing a key with different
+// answer types — and it is returned rather than panicked, so a render says
+// which probe disagreed instead of dying in a goroutine.
+func typedProbe[T any](answer any, kind, reference string) (T, error) {
+	typed, ok := answer.(T)
+	if !ok {
+		var none T
+		return none, fmt.Errorf("the %s probe of %s remembered a %T, which is not what this caller reads", kind, reference, answer)
+	}
+	return typed, nil
 }
 
 // forget drops every answer about reference: this flow has just pushed it, so
