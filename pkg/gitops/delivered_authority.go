@@ -241,3 +241,16 @@ func PublishedPolicies(dir string) (map[string]domain.MethodPolicy, error) {
 	}
 	return out, nil
 }
+
+// OwnDeclaration reads, from the module contract at dir, the principal the
+// module is delivered under and whether it declares that it checks owners.
+func OwnDeclaration(dir string) (principal string, ownerAware bool, err error) {
+	contract, err := ownContract(dir)
+	if err != nil {
+		return "", false, err
+	}
+	if contract == nil {
+		return "", false, fmt.Errorf("%s publishes no module contract", dir)
+	}
+	return contract.Principal, contract.OwnerAware, nil
+}

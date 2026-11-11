@@ -835,6 +835,15 @@ permissions table (pkg/gen/permissions/permissions_gen.go) disagrees with the
 method policies the module publishes: a service's own tests then pass against
 the stale side.
 
+With both, the checkout is also held to what the environment delivers for
+the same module: a branch that moved without a delivery is a refused copy.
+
+A method open to any checked caller on a module that checks owners is listed
+UNPROVEN, every one, with no exemption: its handler decides and no declaration
+states what it asks, so declarations agreeing proves nothing about it. With
+any unproven the command does not print "ok"; --fail-on-unproven makes it
+exit 1. Agreement is not sufficiency: only calling the handler proves that.
+
 Every finding names the file and the field. A file that cannot be read is a
 finding, never a pass.
 ```
@@ -847,6 +856,7 @@ Flags:
 
 ```
       --env string          the environment whose delivered tree is read
+      --fail-on-unproven    exit 1 when a method is open on a module that checks owners
       --module-dir string   a module's checkout: its published policies and generated tables
       --root string         the composition's workspace root, holding deployments/ (default ".")
 ```

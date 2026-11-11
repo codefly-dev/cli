@@ -2870,6 +2870,14 @@ codefly authority trace --env blue --caller org-directory --binding records-type
   --module-dir ../module-record-store/modules/record-store
 ```
 
+With both flags, `check` also holds the checkout to what the environment
+delivers for the same module, so a branch that moved without a delivery is a
+refused copy. And every method open to any checked caller on a module that
+checks owners is listed `UNPROVEN`, with no exemption (a `Version` too): the
+gate then does not print `ok`, and `--fail-on-unproven` makes it exit 1.
+Declarations agreeing is not proof the handler asks what they say; only
+calling the handler proves that.
+
 A verdict is `admitted`, `refused`, `unread` (the source could not be read) or
 `unproven` (read, and no declaration states what decides it: the handler of a
 module that checks owners). Only `admitted` is a pass. The decisions are the

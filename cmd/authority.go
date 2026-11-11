@@ -18,6 +18,7 @@ import (
 
 var authorityFlags struct {
 	root, env, moduleDir, caller, binding, method, role string
+	failUnproven                                        bool
 }
 
 // AuthorityCmd groups the read-only answers about what declarations admit.
@@ -45,6 +46,15 @@ permissions table (pkg/gen/permissions/permissions_gen.go) disagrees with the
 method policies the module publishes: a service's own tests then pass against
 the stale side.
 
+With both, the checkout is also held to what the environment delivers for
+the same module: a branch that moved without a delivery is a refused copy.
+
+A method open to any checked caller on a module that checks owners is listed
+UNPROVEN, every one, with no exemption: its handler decides and no declaration
+states what it asks, so declarations agreeing proves nothing about it. With
+any unproven the command does not print "ok"; --fail-on-unproven makes it
+exit 1. Agreement is not sufficiency: only calling the handler proves that.
+
 Every finding names the file and the field. A file that cannot be read is a
 finding, never a pass.`,
 	Example: "codefly authority check --env blue\ncodefly authority check --module-dir modules/record-store",
@@ -52,26 +62,89 @@ finding, never a pass.`,
 		if authorityFlags.env == "" && authorityFlags.moduleDir == "" {
 			return errors.New("name what to check: --env <environment>, --module-dir <module>, or both")
 		}
-		var findings []string
+		var findings, unproven []string
+		var delivered *gitops.DeliveredAuthority
 		if authorityFlags.env != "" {
-			delivered, err := gitops.ReadDeliveredAuthority(authorityFlags.root, authorityFlags.env)
-			if err != nil {
+			var err error
+			if delivered, err = gitops.ReadDeliveredAuthority(authorityFlags.root, authorityFlags.env); err != nil {
 				return err
 			}
 			findings = append(findings, deliveredFindings(delivered)...)
+			for _, principal := range slices.Sorted(maps.Keys(delivered.Modules)) {
+				if entry := delivered.Modules[principal]; entry.Unread == "" {
+					unproven = append(unproven, unstated(entry.File, &entry.Module)...)
+				}
+			}
 		}
-		if authorityFlags.moduleDir != "" {
-			findings = append(findings, tableFindings(authorityFlags.moduleDir)...)
+		if dir := authorityFlags.moduleDir; dir != "" {
+			findings = append(findings, tableFindings(dir)...)
+			principal, ownerAware, err := gitops.OwnDeclaration(dir)
+			published, publishedErr := gitops.PublishedPolicies(dir)
+			switch {
+			case err != nil:
+				findings = append(findings, fmt.Sprintf("%s: its module contract could not be read, so whether it checks owners is unknown: %v", dir, err))
+			case publishedErr == nil:
+				unproven = append(unproven, unstated(dir, &domain.Module{Name: principal, Principal: principal, OwnerAware: ownerAware, Methods: published})...)
+			}
+			if delivered != nil && err == nil {
+				findings = append(findings, undeliveredFindings(delivered, principal, dir)...)
+			}
 		}
+		out := command.OutOrStdout()
 		for _, finding := range findings {
-			fmt.Fprintln(command.OutOrStdout(), "FAIL "+finding)
+			fmt.Fprintln(out, "FAIL "+finding)
 		}
-		if len(findings) > 0 {
+		for _, link := range unproven {
+			fmt.Fprintln(out, "UNPROVEN "+link)
+		}
+		if len(unproven) > 0 {
+			fmt.Fprintf(out, "%d method(s) unproven: agreement between declarations is not proof the handler asks what they say. Not a pass.\n", len(unproven))
+		}
+		switch {
+		case len(findings) > 0:
 			return fmt.Errorf("%d authority declaration(s) disagree", len(findings))
+		case len(unproven) > 0 && authorityFlags.failUnproven:
+			return fmt.Errorf("%d method(s) unproven", len(unproven))
+		case len(unproven) == 0:
+			fmt.Fprintln(out, "ok: every declaration read agrees")
 		}
-		fmt.Fprintln(command.OutOrStdout(), "ok: every declaration read agrees")
 		return nil
 	},
+}
+
+// unstated is every method of m whose owner link no declaration decides
+// (decide.Trace's own verdict): open to any checked caller on a module that
+// checks owners. It is listed whatever the method is; nothing is exempt.
+func unstated(where string, m *domain.Module) []string {
+	var out []string
+	for _, method := range slices.Sorted(maps.Keys(m.Methods)) {
+		for _, link := range decide.Trace(decide.Call{Audience: *m, Method: method}) {
+			if link.Name == decide.LinkOwner && link.Verdict == decide.Unproven {
+				out = append(out, fmt.Sprintf("%s: methods[%s]: %s", where, method, link.Reason))
+			}
+		}
+	}
+	return out
+}
+
+// undeliveredFindings holds the checkout at dir to what the environment
+// delivers for the same module, method by method: a checkout that moved
+// without a delivery, or a delivery the checkout never held, is a refused copy.
+func undeliveredFindings(d *gitops.DeliveredAuthority, principal, dir string) []string {
+	entry, held := d.Modules[principal]
+	if !held || entry.Unread != "" {
+		return []string{fmt.Sprintf("%s: the environment delivers no readable module %q to hold this checkout to (%s %s)", dir, principal, entry.File, entry.Unread)}
+	}
+	of, _ := policyCopies(dir)
+	var out []string
+	for _, method := range slices.Sorted(maps.Keys(entry.Module.Methods)) {
+		for _, link := range decide.Copies(entry.Module.Methods[method], true, of(method)) {
+			if link.Verdict != decide.Admitted {
+				out = append(out, fmt.Sprintf("%s: %s: %s (delivered by %s)", link.Field, method, link.Reason, entry.File))
+			}
+		}
+	}
+	return out
 }
 
 // deliveredFindings is every disagreement in what an environment delivers.
@@ -291,6 +364,7 @@ func init() {
 		command.Flags().StringVar(&authorityFlags.moduleDir, "module-dir", "", "a module's checkout: its published policies and generated tables")
 		AuthorityCmd.AddCommand(command)
 	}
+	authorityCheckCmd.Flags().BoolVar(&authorityFlags.failUnproven, "fail-on-unproven", false, "exit 1 when a method is open on a module that checks owners")
 	authorityTraceCmd.Flags().StringVar(&authorityFlags.caller, "caller", "", "the calling module's principal")
 	authorityTraceCmd.Flags().StringVar(&authorityFlags.binding, "binding", "", "the caller's binding the call goes through")
 	authorityTraceCmd.Flags().StringVar(&authorityFlags.method, "method", "", "the audience's method, as its policy names it")

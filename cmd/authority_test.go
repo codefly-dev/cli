@@ -98,3 +98,31 @@ func TestAGeneratedTableIsHeldToThePublishedPolicies(t *testing.T) {
 	require.Equal(t, decide.Refused, links[0].Verdict)
 	require.Contains(t, links[0].Reason, `it says "any checked caller" and the policy it must equal says "requires a.things:read"`)
 }
+
+// Open on a module that checks owners is listed, every method, Version too:
+// an honest unproven, never a filtered ok. A module checking no owner has none.
+func TestTheGateListsEveryMethodNoDeclarationDecides(t *testing.T) {
+	shelf := deliveredFixture().Modules["shelf"].Module
+	shelf.Methods["/store.v1.Store/Version"] = domain.MethodPolicy{AnyCheckedCaller: true}
+	listed := unstated("shelf-paired.yaml", &shelf)
+	require.Len(t, listed, 1, "a method that requires a scope is decided by its declaration")
+	require.Contains(t, listed[0], "shelf-paired.yaml: methods[/store.v1.Store/Version]: shelf checks owners and declares")
+	shelf.OwnerAware = false
+	require.Empty(t, unstated("shelf-paired.yaml", &shelf))
+}
+
+// A checkout whose table says something else than what the environment
+// delivers is a refused copy: the branch moved and the delivery did not.
+func TestACheckoutIsHeldToWhatTheEnvironmentDelivers(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "permissions_gen.go"),
+		[]byte("\t\"/store.v1.Store/GetType\": {AnyCheckedCaller: true, Requires: []Permission{}},\n"), 0o644))
+	findings := strings.Join(undeliveredFindings(deliveredFixture(), "shelf", dir), "\n")
+	require.Contains(t, findings, `permissions_gen.go: /store.v1.Store/GetType: it says "any checked caller" and the policy it must equal says "requires store.types:read"`)
+	require.Contains(t, findings, "(delivered by shelf-paired.yaml)")
+	require.Contains(t, findings, "publishes no method policies", "the unread contract is its own finding")
+
+	absent := undeliveredFindings(deliveredFixture(), "elsewhere", dir)
+	require.Len(t, absent, 1)
+	require.Contains(t, absent[0], `delivers no readable module "elsewhere"`)
+}
