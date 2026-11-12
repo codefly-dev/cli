@@ -83,7 +83,11 @@ type launcher struct {
 	composition                       sync.RWMutex
 	hostIdentityAnchor, hostAnchorDir string
 
-	mu sync.Mutex
+	mu             sync.Mutex
+	lanes          map[string]*moduleLane
+	closed         bool
+	active         sync.WaitGroup
+	watchFrontends bool
 	// running are the identity workloads that reached Running: the ones a
 	// module's manifest lists.
 	running map[string]bool
@@ -125,6 +129,9 @@ var (
 // attachLauncher wires the run as the composition's cluster when its
 // environment declares a host and the run is native. It is a no-op otherwise.
 func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
+	if watchFrontends && (runtimeContext == resources.RuntimeContextContainer || env == nil || env.Host == nil) {
+		return fmt.Errorf("--watch-frontends requires a native controller with a declared host")
+	}
 	launcherMu.Lock()
 	defer launcherMu.Unlock()
 	if launcherActive != nil {
@@ -134,6 +141,9 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	cluster, err := newNativeLauncher(ctx, flow, workspace, env, runtimeContext, fixture)
 	if err != nil {
 		return err
+	}
+	if cluster != nil {
+		cluster.watchFrontends = watchFrontends
 	}
 	launcherActive = cluster
 	return nil
@@ -211,10 +221,19 @@ func stopLauncher() {
 
 func (cluster *launcher) close() {
 	cluster.stopOnce.Do(func() {
+		cluster.mu.Lock()
+		cluster.closed = true
+		for _, lane := range cluster.lanes {
+			if lane.watch != nil {
+				lane.watch.StopWatcher()
+			}
+		}
 		if cluster.stop != nil {
 			close(cluster.stop)
 		}
+		cluster.mu.Unlock()
 	})
+	cluster.active.Wait()
 	cluster.host.close()
 	// A run torn down keeps no staged frontend copy: the next run stages and
 	// installs again, and reuses every bundle still retained.
@@ -361,7 +380,12 @@ func (cluster *launcher) admit(ctx context.Context, workspace *resources.Workspa
 		cluster.identities[unique] = identities[unique]
 		newcomers[unique] = identities[unique]
 	}
+	cluster.mu.Lock()
 	cluster.workspace = workspace
+	for _, identity := range identities {
+		cluster.invalidateLocked(identity.Module)
+	}
+	cluster.mu.Unlock()
 	cluster.declare(newcomers)
 	if cluster.vouch != nil && cluster.hostIdentityAnchor != "" && len(added) > 0 {
 		// The host re-reads the anchor: a newcomer is vouched for from now on.
@@ -759,6 +783,35 @@ func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]stri
 // settles to the same generation, which the host replays. A module this run
 // never delivered has nothing to withdraw.
 func (cluster *launcher) withdrawModule(ctx context.Context, module string) (bool, error) {
+	cluster.mu.Lock()
+	lane := cluster.laneLocked(module)
+	if !lane.terminal {
+		lane.terminal = true
+		cluster.invalidateLocked(module)
+		if lane.watch != nil {
+			lane.watch.StopWatcher()
+		}
+	}
+	cluster.mu.Unlock()
+	schedule := cluster.schedule
+	if schedule.Deadline == 0 {
+		schedule = nativeDeliverySchedule
+	}
+	var done bool
+	err := hostDelivery{schedule: schedule, stop: cluster.stop, ready: func(context.Context) error { return nil }, log: wool.Get(ctx), deliver: func(ctx context.Context) error {
+		var err error
+		done, err = cluster.withdrawOnce(ctx, module)
+		return err
+	}}.run(ctx)
+	return done, err
+}
+
+func (cluster *launcher) withdrawOnce(ctx context.Context, module string) (bool, error) {
+	ctx, fences, unlock, err := cluster.lockModules(ctx, []string{module})
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	if err := cluster.acquireDelivery(ctx); err != nil {
 		return false, err
 	}
@@ -778,6 +831,9 @@ func (cluster *launcher) withdrawModule(ctx context.Context, module string) (boo
 	}
 	deliverer, _, err := cluster.newDeliverer(ctx)
 	if err != nil {
+		return false, err
+	}
+	if err := cluster.checkFences(fences, true); err != nil {
 		return false, err
 	}
 	receipt, err := deliverer.Deliver(ctx, withdrawal)
@@ -807,14 +863,17 @@ func (cluster *launcher) withdrawModule(ctx context.Context, module string) (boo
 // run's authority is touched.
 func (cluster *launcher) forget(unique string) {
 	cluster.composition.Lock()
+	cluster.mu.Lock()
+	if identity, ok := cluster.identities[unique]; ok {
+		cluster.invalidateLocked(identity.Module)
+	}
 	delete(cluster.identities, unique)
+	delete(cluster.running, unique)
+	cluster.mu.Unlock()
 	cluster.composition.Unlock()
 	if cluster.vouch != nil {
 		cluster.vouch.Forget(unique)
 	}
-	cluster.mu.Lock()
-	delete(cluster.running, unique)
-	cluster.mu.Unlock()
 }
 
 // delivers reports whether this run delivers a manifest for an identity's
@@ -854,6 +913,18 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 // no other module's delivery; an early one (after a failed start) builds
 // nothing.
 func (cluster *launcher) deliverReadiness(ctx context.Context, module string, early bool) error {
+	return cluster.reconcileReadiness(ctx, module, early, false)
+}
+
+func (cluster *launcher) reconcileReadiness(ctx context.Context, module string, early, frontendOnly bool) error {
+	ctx, fences, unlock, err := cluster.lockModules(ctx, []string{module})
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := cluster.checkFences(fences, false); err != nil {
+		return err
+	}
 	if len(cluster.declaredIdentities(module)) == 0 {
 		return nil
 	}
@@ -862,7 +933,18 @@ func (cluster *launcher) deliverReadiness(ctx context.Context, module string, ea
 		return err
 	}
 	var bundle *solutionhost.FrontendPayload
+	var inputs string
 	if !early {
+		inputs, err = cluster.frontendInputDigest(ctx, loaded)
+		if err != nil {
+			return err
+		}
+		cluster.mu.Lock()
+		unchanged := cluster.laneLocked(module).inputs == inputs
+		cluster.mu.Unlock()
+		if frontendOnly && unchanged {
+			return nil
+		}
 		if bundle, err = cluster.frontendBundle(ctx, loaded); err != nil {
 			return err
 		}
@@ -890,7 +972,23 @@ func (cluster *launcher) deliverReadiness(ctx context.Context, module string, ea
 	if err != nil {
 		return err
 	}
-	return cluster.applyDelivery(ctx, deliverer, gatewayURL, module, manifest)
+	if !early {
+		if err := cluster.checkFrontendInputs(ctx, loaded, inputs); err != nil {
+			return err
+		}
+	}
+	if err := cluster.checkFences(fences, false); err != nil {
+		return err
+	}
+	if err := cluster.applyDelivery(ctx, deliverer, gatewayURL, module, manifest); err != nil {
+		return err
+	}
+	if !early {
+		cluster.mu.Lock()
+		cluster.laneLocked(module).inputs = inputs
+		cluster.mu.Unlock()
+	}
+	return cluster.checkFences(fences, false)
 }
 
 // renderDelivery renders a loaded module's manifest. An early delivery keeps

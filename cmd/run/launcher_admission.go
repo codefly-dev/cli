@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -30,6 +31,7 @@ func (cluster *launcher) beginRuntimeStart(ctx context.Context, service *resourc
 	}
 	cluster.mu.Lock()
 	delete(cluster.running, unique)
+	cluster.invalidateLocked(identity.Module)
 	waiter := cluster.waitFor(unique)
 	var projectErr error
 	if cluster.vouch != nil {
@@ -41,6 +43,7 @@ func (cluster *launcher) beginRuntimeStart(ctx context.Context, service *resourc
 		cluster.waitersMu.Lock()
 		current := cluster.waiters[unique] == waiter
 		if current {
+			cluster.invalidateLocked(identity.Module)
 			if started {
 				cluster.running[unique] = true
 			} else {
@@ -96,6 +99,14 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		names = append(names, module)
 	}
 	sort.Strings(names)
+	ctx, fences, unlock, err := cluster.lockModules(ctx, names)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := cluster.checkFences(fences, false); err != nil {
+		return err
+	}
 	// A declared page is part of what a module is: the authority admits a
 	// module's roles only beside its page, so admission names the page's
 	// bundle as a ready delivery does. It is built here, before the delivery
@@ -103,13 +114,18 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 	// reuses the bundle retained for unchanged inputs.
 	loadedModules := make([]*resources.Module, len(names))
 	bundles := make([]*solutionhost.FrontendPayload, len(names))
+	inputs := make([]string, len(names))
 	for n, module := range names {
 		loaded, err := cluster.composed().LoadModuleFromName(ctx, module)
 		if err != nil {
 			return err
 		}
+		inputs[n], err = cluster.frontendInputDigest(ctx, loaded)
+		if err != nil {
+			return cluster.waitFrontendRepair(ctx, fences[n], err)
+		}
 		if bundles[n], err = cluster.frontendBundle(ctx, loaded); err != nil {
-			return err
+			return cluster.waitFrontendRepair(ctx, fences[n], err)
 		}
 		loadedModules[n] = loaded
 	}
@@ -136,11 +152,29 @@ func (cluster *launcher) admitSelected(ctx context.Context) error {
 		manifests = append(manifests, manifest)
 	}
 	for n, manifest := range manifests {
+		if err := cluster.checkRoutingSnapshot(ctx); err != nil {
+			return err
+		}
+		for i, loaded := range loadedModules {
+			if err := cluster.checkFrontendInputs(ctx, loaded, inputs[i]); err != nil {
+				if errors.Is(err, errDeliveryChanged) {
+					return err
+				}
+				return cluster.waitFrontendRepair(ctx, fences[i], err)
+			}
+		}
+		if err := cluster.checkFences(fences, false); err != nil {
+			return err
+		}
 		if err := cluster.applyDelivery(ctx, deliverer, gatewayURL, names[n], manifest); err != nil {
 			return err
 		}
+		cluster.mu.Lock()
+		cluster.laneLocked(names[n]).admitted = true
+		cluster.laneLocked(names[n]).inputs = inputs[n]
+		cluster.mu.Unlock()
 	}
-	return nil
+	return cluster.checkFences(fences, false)
 }
 
 // checkBindingTargets decides, at admission, a module's bindings by where they

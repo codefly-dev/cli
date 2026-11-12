@@ -298,13 +298,19 @@ A component declaring `solution.frontend.codefly.yaml` has its remote built
 before native delivery, only when what the build reads changed: its npm
 project's files, tracked or new (never an untracked `.env`), the local
 packages it depends on, and its lockfile. It builds a staged copy of exactly
-those files with the remote's own `npm ci` (when the lockfile changed) and
+those files with the remote's own `npm ci` (`npm install` without a lockfile)
+when its manifest, lockfile, npm configuration or local dependency contents
+changed, and
 `npm run build`, natively, or in the pinned Node image when the service owning
 the page runs in a container, and before the run-wide delivery lock. Failure
 names the component and includes the build's output; an old dist is never
 delivered instead. The complete generated bundle is retained by digest in the
 existing artifact cache. See [module manifests](module-manifests.md) for
 source and cache semantics.
+
+A changed installation starts with an empty staged `node_modules`. Its success
+marker is separate from the retained bundle: a failed or interrupted install
+is retried, and reverting source can still reuse a matching retained bundle.
 
 ### `codefly run service [name...]`
 
@@ -320,6 +326,24 @@ resolve).
 
 `--service-path`, `--stand-alone` and `--exclude-root` each select or carve out a
 single service, so naming more than one root with any of them is rejected.
+
+Automatic stale-process recovery on entry and exit is limited to the resolved
+composing workspace. It retains the existing authenticated-owner checks; it does
+not signal groups attributed to another workspace or groups whose workspace is
+unknown. A failure before workspace resolution performs no automatic sweep.
+The shared workspace host used by MCP and gateway callers applies the same bound
+after validating its root; a standalone source tree without a containing workspace
+skips automatic recovery. Such orphans need explicitly scoped operator recovery.
+This is a workspace boundary, not isolation between sessions sharing that root.
+Dead registry metadata may still be reconciled outside it. Explicit machine-wide
+maintenance retains its existing behavior.
+
+Independently embedded hosts still rely on the process-wide launch attribution:
+an explicit host root does not yet carry independent provenance into Core's
+process registration. Concurrent hosts for different roots can therefore leave
+orphans attributed to the wrong workspace, which scoped recovery can skip or
+select under that recorded root. This change does not qualify recovery for those
+embedders; they need per-launch attribution before relying on that behavior.
 
 ```bash
 codefly run service api
