@@ -32,9 +32,11 @@ import (
 // ordinary `argocd app sync`, and a sync that changes nothing else re-POSTs a
 // generation the host answers "current" to. BeforeHookCreation deletes a hook
 // of the SAME NAME before creating it again; the Job's name carries its set's
-// content, so a changed set is a new name, and completed Jobs of earlier
-// generations accumulate until an operator prunes them — retention this
-// renderer does not do.
+// content, so a changed set is a new name, which no hook policy ever deletes.
+// Retention is therefore the Job's own: ttlSecondsAfterFinished
+// (deliveryRetentionSeconds) has the cluster delete a finished Job and its pod,
+// so an earlier generation's Job is gone a day after it ran instead of standing
+// Completed for the life of the namespace.
 //
 // Reachability is a retry, not a sync wave. A per-module Application cannot
 // express "after the host's delivery API is reachable", because the host is
@@ -156,6 +158,19 @@ const (
 	deliveryBudgetSeconds = 1500
 	deliveryMaxPause      = 60
 	deliveryBackoffLimit  = 6
+	// deliveryRetentionSeconds is how long a FINISHED Job — complete or failed —
+	// and its pod stay before the cluster's TTL controller deletes them. Nothing
+	// else retires one: the Job is a hook, so Argo never prunes it, and its name
+	// changes with its set, so BeforeHookCreation never meets the earlier
+	// generation's. A day keeps the receipts, or the refusal, of the last
+	// delivery readable for whoever is asked why it failed.
+	//
+	// It is NOT a number to tune toward zero. What reads a finished Job reads it
+	// AFTER it finishes — Argo to end the sync, `run cluster` to print the
+	// receipts — and a hook deleted before Argo has read its completion leaves
+	// that sync running for ever: the engine updates a running hook only while
+	// its object exists. The floor is held in the test, beside the deadline.
+	deliveryRetentionSeconds = 24 * 60 * 60
 
 	argoHookAnnotation         = "argocd.argoproj.io/hook"
 	argoHookDeletePolicy       = "argocd.argoproj.io/hook-delete-policy"
@@ -214,9 +229,10 @@ type deliveryJobMetadata struct {
 }
 
 type deliveryJobSpec struct {
-	BackoffLimit          int                 `yaml:"backoffLimit"`
-	ActiveDeadlineSeconds int                 `yaml:"activeDeadlineSeconds"`
-	Template              deliveryPodTemplate `yaml:"template"`
+	BackoffLimit            int                 `yaml:"backoffLimit"`
+	ActiveDeadlineSeconds   int                 `yaml:"activeDeadlineSeconds"`
+	TTLSecondsAfterFinished int                 `yaml:"ttlSecondsAfterFinished"`
+	Template                deliveryPodTemplate `yaml:"template"`
 }
 
 type deliveryPodTemplate struct {
@@ -529,7 +545,10 @@ func renderDeliveryJob(directory, name, namespace, kind, path string, target *De
 				argoSyncWaveAnnotation: deliveryWave,
 			},
 		},
-		Spec: deliveryJobSpec{BackoffLimit: deliveryBackoffLimit, ActiveDeadlineSeconds: deliveryDeadlineSeconds},
+		Spec: deliveryJobSpec{
+			BackoffLimit: deliveryBackoffLimit, ActiveDeadlineSeconds: deliveryDeadlineSeconds,
+			TTLSecondsAfterFinished: deliveryRetentionSeconds,
+		},
 	}
 	job.Spec.Template.Metadata.Labels = carrier.Labels
 	job.Spec.Template.Spec = deliveryPodSpec{
@@ -613,8 +632,9 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 // deliveryJobName names the Job that delivers one settled set: the kind, the
 // module, the environment and a digest of the carriers it posts, bounded to a
 // Kubernetes name. The digest makes the Job per generation — a changed set is
-// a new Job under a new name (the previous one stays, completed, until pruned:
-// BeforeHookCreation replaces a hook of the same name only), and an unchanged
+// a new Job under a new name (the previous one stays, finished, until its
+// ttlSecondsAfterFinished removes it: BeforeHookCreation replaces a hook of the
+// same name only), and an unchanged
 // set is the same Job, which every sync RE-RUNS as a Sync hook: a re-sync
 // re-POSTs a generation the host answers "current" to. The environment keeps
 // two environments of one workspace on one cluster from replacing each other's

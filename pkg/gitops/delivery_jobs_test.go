@@ -95,6 +95,17 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	if deliveryBudgetSeconds+deliveryMaxPause >= deliveryDeadlineSeconds {
 		t.Fatalf("budget %d + pause %d does not fit the Job's deadline %d", deliveryBudgetSeconds, deliveryMaxPause, deliveryDeadlineSeconds)
 	}
+	// A finished Job retires itself. Its name changes with its set, so no hook
+	// policy ever deletes an earlier generation's, and they stood Completed for
+	// the life of the namespace. The floor is what reads a finished Job: a hook
+	// deleted before Argo reads its completion leaves the sync running for ever,
+	// and `run cluster` reads the receipts after the Job is done.
+	if job.Spec.TTLSecondsAfterFinished != deliveryRetentionSeconds {
+		t.Fatalf("ttlSecondsAfterFinished = %d, want %d", job.Spec.TTLSecondsAfterFinished, deliveryRetentionSeconds)
+	}
+	if deliveryRetentionSeconds < deliveryDeadlineSeconds {
+		t.Fatalf("a finished Job is deleted after %d seconds, sooner than one run may take (%d): too soon for whoever reads how it ended", deliveryRetentionSeconds, deliveryDeadlineSeconds)
+	}
 	if deliveryDocumentBound*deliveryRequestSeconds > deliveryBudgetSeconds {
 		t.Fatalf("%d documents at %d seconds each do not fit the first round's budget %d", deliveryDocumentBound, deliveryRequestSeconds, deliveryBudgetSeconds)
 	}
