@@ -1160,18 +1160,22 @@ reads it back through its own reader.
 
 Because absence is removal, **the cell file is never written without a module
 the workspace composes.** The per-module render records
-(`.codefly/renders/<env>/modules/<module>/.codefly-render.json`) are the file's
-only source, and they are uncommitted render outputs under the gitignored
-`.codefly/` directory: removing `.codefly/renders` removes them. A render that finds a composed module with no
-record for the environment — none at all, or one rendered for another
-environment — writes no cell file, leaves the one on disk as it was, and names
-each such module with the command that renders it (`codefly deploy gitops
-render <module> --env <env>`, or `render --all`). It does not keep that
-module's entries from the file already on disk: an entry is derived from the
-whole composition (its consumers are other modules' dependencies, its bindings
-and egress the environment's), so an entry carried over is a claim about a
-composition that may no longer exist, and no digest is invented for a module
-that was not rendered.
+(`.codefly/renders/<env>/modules/<module>/.codefly-render.json`) are what each
+module's entries are derived from, and they are uncommitted render outputs
+under the gitignored `.codefly/` directory: removing `.codefly/renders`
+removes them, and a fresh checkout holds none. So a render that finds a
+composed module with no record for the environment — none at all, or one
+rendered for another environment — keeps that module's entries from the cell
+file already on disk, exactly as the file had them, and moves only the
+rendered modules' entries to the render's: the same rule a publish applies
+against the delivery base's file (below), one step earlier. The render names
+the modules it kept (`Cell file keeps the entries of <modules> as it had
+them`). It never invents a digest: a module that no record and no file on
+disk describes stops the render, which names each such module with the
+command that renders it (`codefly deploy gitops render <module> --env <env>`,
+or `render --all`) and leaves the file on disk as it was. A whole render
+(`--all`) keeps nothing, and writes what the single-module render would have
+written had every record been present.
 
 The file is derived from the **composition**, not from whatever records the
 checkout holds. A module removed from `modules:` leaves its render record
@@ -1264,6 +1268,21 @@ hold the workspace's to. The file held is the file carried — the same bytes,
 read once — and the hold runs first, so a cell file whose removals nobody named
 never reaches the promotion.
 
+**A publish holds the module tree to the cell file.** The cell's execution
+admission is derived from the file the promotion leaves on the base branch —
+the one it carries, scoped to its module, or the base's own when the checkout
+holds none — so a forward `plan` or `publish` reads the working render's
+workloads exactly as the cell derivation does and refuses when a container of
+them runs an image that file does not approve, naming the workload, the
+container, the digest the tree runs and the one the file approves. Such a
+promotion would merge and create no pod (`a container of this pod does not
+run an approved digest`) while the old pods kept serving, so it is never
+opened. The file lags the tree only when a render did not re-derive it, so
+the refusal says to render the module again. `--allow-cell-removal` does not
+reach this: it explains what the file withdraws, not what the tree runs. A
+rollback moves no cell file and is not held here (its plan says what to do
+when the base's file does not name the restored build).
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
@@ -1312,11 +1331,14 @@ health is awaited as before, and the timeout says the events were unreadable.
 and derives the environment's cell file once at the end from all of them, so
 one command renders one composition and a stale sibling tree is never a reason
 to run the render again. A single-module `render` re-derives the cell file
-from its own tree and the sibling trees already rendered; a sibling the cell
-file cannot read, or one left at another inventory schema, is reported as
-stale by name rather than failing the render, and so is a composed module with
-no render at all: the module's tree is written, the cell file is not, and the
-warning names the renders still owed. An image whose inputs did not
+from its own tree, the sibling trees already rendered, and — for a composed
+module with no render in the checkout — the entries the file on disk already
+had for it, so it moves its own module's approvals and nothing else's. The
+cell file is the render's output as much as the tree is: a cell file that
+cannot be derived (a sibling render the file cannot read, one left at another
+inventory schema, or a module nothing describes) fails the render, naming the
+render still owed, as it fails `render --all`; the module's tree stays
+written. An image whose inputs did not
 change is kept rather than rebuilt, and that decision is taken before any Go
 module graph is fetched, so a render of an up-to-date composition fetches
 nothing; `--rebuild` builds every image regardless. A service that declares

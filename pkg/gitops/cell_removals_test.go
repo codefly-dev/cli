@@ -43,7 +43,7 @@ func publicationCellOf(t *testing.T, workspace *resources.Workspace, env *enviro
 // claim given.
 func holdAgainst(t *testing.T, ctx context.Context, cell *publicationCell, env *environments.Environment, repo, baseRevision string, allowed []string, claim *compositionClaim) (named, explained []string, err error) {
 	t.Helper()
-	base, err := baseCellFile(ctx, cell, repo, "main", baseRevision)
+	base, err := baseCellFile(ctx, cell.delivered, repo, "main", baseRevision)
 	require.NoError(t, err)
 	return holdCellToBase(cell, env, "main", base, allowed, claim)
 }

@@ -32,13 +32,23 @@ package gitops
 //     branch, write a signed commit, open the promotion. It would also be a
 //     step to forget, which is the defect itself.
 //
-// The render still writes the file whole, and refuses to write it while any
-// composed module has no render for the environment (refuseUnrenderedModules):
-// it is what each module's entries are read from. Publishing every module of
-// one `render --all`, in any order, delivers that render's whole file. Two
+// The render writes the file after every module render — the rendered
+// modules' entries from their trees, a composed module this checkout holds no
+// render of from the file on disk (carryUnrenderedModules) — so it is what
+// each module's entries are read from. Publishing every module of one
+// `render --all`, in any order, delivers that render's whole file. Two
 // promotions open at once each change their own module's lines, never the
 // other's builds; promotions of different renders also differ on the source
 // revision line, which git reports as the conflict it is.
+//
+// AND THE TREE IS HELD TO IT. The cell's execution admission is derived from
+// the file, so a promotion whose module tree runs a build the file it carries
+// (or, carrying none, the base's) does not approve merges and then creates no
+// pod — "a container of this pod does not run an approved digest" — while the
+// old pods keep serving, and the delivery reads Synced and Degraded. That is
+// what a render that did not re-derive the file left behind, twice in one
+// day; the publication refuses it instead, by container and both digests
+// (holdTreeToCell), and says to render again.
 //
 // IT IS NOT SIGNED, and belongs in no signed set. The signed documents — the
 // module manifests, the module envelope and the paired declarations — are
@@ -52,12 +62,15 @@ package gitops
 // signature nothing checks would only look like one.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
@@ -151,13 +164,106 @@ func cellNotice(env *environments.Environment, cell *publicationCell, restoreRev
 		// A rollback restores the module's delivered tree from a revision; the
 		// workspace's cell file names the builds rendered NOW, so delivering
 		// it would approve the builds being rolled back AWAY from. The file is
-		// derived from the rendered trees and never spliced from a delivered
-		// one (refuseUnrenderedModules says why), so the restored build is
-		// approved by rendering the module at the restored source and
-		// publishing forward.
+		// derived from the rendered trees, so the restored build is approved
+		// by rendering the module at the restored source and publishing
+		// forward.
 		return fmt.Sprintf("this rollback restores %s's delivered tree and moves no cell file: %s admits only the builds its cell file names, so if the file on the base branch does not name the restored build, render %s at the restored source and publish it forward",
 			module, env.Name, module)
 	}
 	return fmt.Sprintf("environment %s declares a host and this checkout holds no cell file for it, so this promotion moves no approved-build list: render the composition for it (`codefly deploy gitops render --all --env %s`) and publish again",
 		env.Name, env.Name)
+}
+
+// holdTreeToCell refuses a forward publication of base.module whose rendered
+// tree runs a build the cell will not approve: the cell file this publication
+// carries, already scoped to the module (scopeToModule) and held to the
+// base's (holdCellToBase), or, when it carries none, the delivery base's file
+// read here — the one the cell reads either way once the promotion merges.
+// Nothing yet approving anything (no file on either side) holds nothing. The
+// tree is read from the working render exactly as the cell derivation reads
+// it (renderedWorkloads), unit by unit, so what is held is what the render
+// described and publish copies. A mismatch is named per
+// container, with the digest the tree runs and the one the cell approves; a
+// workload the file does not name at all is named too. The cell file lags the
+// tree only when a render did not re-derive it, so the refusal says to render
+// again. The delivery Job is not a workload of the tree (cellDelivery) and is
+// not held here.
+func holdTreeToCell(ctx context.Context, env *environments.Environment, rendered string, inventory *Inventory, cell *publicationCell, base *compositionBase) error {
+	// A rollback restores a delivered tree and moves no cell file
+	// (cellNotice says so, and what it asks for); the working render is not
+	// what it delivers.
+	if env == nil || env.Host == nil || base.restoreRevision != "" {
+		return nil
+	}
+	module := base.module
+	var approved *cellfile.File
+	var origin string
+	if cell != nil {
+		approved, origin = cell.file, fmt.Sprintf("the cell file this promotion carries (%s)", cell.source)
+	} else {
+		delivered := deliveryCellPath(base.gitopsPath, env.Name)
+		var err error
+		if approved, err = baseCellFile(ctx, delivered, base.repo, base.branch, base.revision); err != nil {
+			return err
+		}
+		origin = fmt.Sprintf("the delivery base's cell file (%s on %s), which this checkout holds no cell file to move", delivered, base.branch)
+	}
+	if approved == nil {
+		return nil
+	}
+	index := map[string]*cellfile.Workload{}
+	for n := range approved.Namespaces {
+		namespace := &approved.Namespaces[n]
+		if namespace.Module != module {
+			continue
+		}
+		for w := range namespace.Workloads {
+			workload := &namespace.Workloads[w]
+			index[workload.Kind+" "+workload.Name] = workload
+		}
+	}
+	var refused []string
+	for u := range inventory.Units {
+		unit := &inventory.Units[u]
+		if unit.Path == "" {
+			continue
+		}
+		workloads, err := renderedWorkloads(filepath.Join(rendered, filepath.FromSlash(unit.Path)), env.Name)
+		if err != nil {
+			return fmt.Errorf("unit %s/%s: %w", module, unit.Name, err)
+		}
+		for w := range workloads {
+			workload := &workloads[w]
+			name := workload.Kind + " " + workload.Name
+			entry, named := index[name]
+			if !named {
+				refused = append(refused, fmt.Sprintf("workload %s is not in the file at all", name))
+				continue
+			}
+			refused = append(refused, unapprovedContainers(name, "container", workload.Containers, entry.Containers)...)
+			refused = append(refused, unapprovedContainers(name, "init container", workload.InitContainers, entry.InitContainers)...)
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("environment %s's cell admits only the builds its cell file names, and %s does not name what module %s's tree runs: %s. The promotion would merge and create no pod (\"a container of this pod does not run an approved digest\") while the old ones keep serving, so it is not opened. The cell file is derived from the rendered trees and this one is behind them: render again (`codefly deploy gitops render %s --env %s`), which re-derives it, then publish",
+		env.Name, origin, module, strings.Join(refused, "; "), module, env.Name)
+}
+
+// unapprovedContainers names each of workload's rendered containers whose
+// image the approved entry does not name as the tree runs it.
+func unapprovedContainers(workload, kind string, rendered []renderedContainer, approved []cellfile.Container) []string {
+	var refused []string
+	for _, container := range rendered {
+		at := slices.IndexFunc(approved, func(candidate cellfile.Container) bool { return candidate.Name == container.Name })
+		if at < 0 {
+			refused = append(refused, fmt.Sprintf("workload %s %s %s runs %s@%s, which the file does not name", workload, kind, container.Name, container.Repository, container.Digest))
+			continue
+		}
+		if image := approved[at].Image; image.Digest != container.Digest || image.Repository != container.Repository {
+			refused = append(refused, fmt.Sprintf("workload %s %s %s runs %s@%s, the file approves %s@%s", workload, kind, container.Name, container.Repository, container.Digest, image.Repository, image.Digest))
+		}
+	}
+	return refused
 }

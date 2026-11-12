@@ -33,11 +33,14 @@ import (
 // by the render from the composition and the trees it has rendered, for one
 // environment, in the shape the consumer reads (pkg/gitops/cellfile).
 //
-// It is regenerated whole after every module render, so absence is correct: a
-// workload not in the file is not delivered. That is why it is never written
-// while a module the workspace composes has no render for the environment
-// (refuseUnrenderedModules), and why a publication holds it to the delivery
-// base branch's file (holdCellToBase). It cannot live in a module's owned
+// It is derived again after every module render, so absence is correct: a
+// workload not in the file is not delivered. A module render moves its own
+// module's entries; a composed module this checkout holds no render of keeps
+// the entries the file on disk had (carryUnrenderedModules), and when no file
+// describes it either, nothing is written (refuseUnrenderedModules). A
+// publication then holds the file to the delivery base branch's
+// (holdCellToBase) and the module tree to the file (holdTreeToCell). It
+// cannot live in a module's owned
 // tree, where the promotable ruleset admits only Kubernetes manifests and
 // Kustomizations; it lives beside the module trees, under
 // <gitops path>/cells/<environment>/cell.yaml, and is committed with them.
@@ -50,6 +53,10 @@ type CellResult struct {
 	Path string
 	// Modules are the modules whose rendered trees the file covers.
 	Modules []string
+	// Carried are the composed modules this checkout holds no render of for
+	// the environment, whose entries the file keeps from the cell file that
+	// was on disk before this render (carryUnrenderedModules).
+	Carried []string
 	// Skipped names module trees rendered for another environment, which
 	// describe another cell.
 	Skipped []string
@@ -244,55 +251,107 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if len(file.Namespaces) == 0 {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
 	}
-	if err = refuseUnrenderedModules(ctx, workspace, env, result.Modules); err != nil {
-		return cellfile.File{}, CellResult{}, err
-	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
 	if result.Path, err = CellPath(workspace, env); err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
-	return file, result, nil
+	completed, carried, err := carryUnrenderedModules(ctx, workspace, env, &file, result.Path, result.Modules)
+	if err != nil {
+		return cellfile.File{}, CellResult{}, err
+	}
+	result.Carried = carried
+	return *completed, result, nil
 }
 
-// refuseUnrenderedModules refuses a cell file that would leave out a module
-// the workspace composes because no render of it for this environment is in
-// the checkout: the record is missing (never rendered, or cleaned away with
-// the rest of the uncommitted render outputs) or describes another
-// environment. The file is regenerated whole and absence is removal, so such
-// a file would withdraw every workload that module delivers from the cell's
-// admission set, and nothing would say so.
+// carryUnrenderedModules completes the cell file derived from the renders
+// this checkout holds when a composed module has no render for the
+// environment. A working render is scoped to its checkout and never committed
+// (workingrender), so on a fresh checkout a single-module render is the
+// common case: it must move that module's approvals and leave every other
+// module's as they are. The file written is therefore the cell file already
+// on disk — the one the last render wrote, or the delivery's own when the
+// workspace is the delivery repository — with every rendered module's entries
+// moved to the render's (promotedCell: the rule a publication applies against
+// the delivery base's file, applied here one step earlier), and a module the
+// composition no longer declares dropped. The derived file is what a whole
+// render would write when every module is rendered, so nothing is carried
+// then and `render --all` is unchanged. It answers the modules carried.
 //
-// It refuses rather than keeping the module's entries from the cell file
-// already on disk: an entry is derived from the composition as a whole — its
-// consumers are other modules' declared dependencies, its bindings and egress
-// the environment's — so an entry carried over from an earlier render is a
-// claim about a composition that may no longer exist, and the file it was
-// read from is as likely to have been cleaned as the records were. No digest
-// is invented either: the render of the module is what knows it.
-func refuseUnrenderedModules(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, rendered []string) error {
+// It refuses (refuseUnrenderedModules) when no file on disk describes a
+// module either: nothing then says what that module delivers, and a file
+// written without it would withdraw every workload it delivers from the cell.
+// No digest is invented: the render of the module is what knows it.
+func carryUnrenderedModules(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, derived *cellfile.File, path string, rendered []string) (*cellfile.File, []string, error) {
+	missing := unrenderedModules(ctx, workspace, env, rendered)
+	if len(missing) == 0 {
+		return derived, nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, refuseUnrenderedModules(env, missing)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read environment %s's cell file: %w", env.Name, err)
+	}
+	onDisk, err := cellfile.Parse(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("environment %s's cell file %s cannot be read, and this checkout holds no render of %s to derive it from again: %w", env.Name, path, strings.Join(missing, ", "), err)
+	}
+	var undescribed []string
+	for _, module := range missing {
+		if !slices.ContainsFunc(onDisk.Namespaces, func(namespace cellfile.Namespace) bool { return namespace.Module == module }) {
+			undescribed = append(undescribed, module)
+		}
+	}
+	if len(undescribed) > 0 {
+		return nil, nil, refuseUnrenderedModules(env, undescribed)
+	}
+	declared := composedModules(workspace)
+	withdraws := func(other string) bool { return !declared[other] }
+	next := onDisk
+	for _, module := range rendered {
+		if next, err = promotedCell(next, derived, module, withdraws, true); err != nil {
+			return nil, nil, fmt.Errorf("environment %s's cell file %s: %w", env.Name, path, err)
+		}
+	}
+	return next, missing, nil
+}
+
+// unrenderedModules names, sorted, every module the workspace composes that
+// rendered does not name: no render of it for this environment is in the
+// checkout (never rendered here, or cleaned away with the rest of the
+// uncommitted render outputs) or the render describes another environment.
+// A module the environment withdraws whole has no render here and owes none
+// (render refuses it): it delivers nothing to the cell.
+func unrenderedModules(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, rendered []string) []string {
 	var missing []string
 	for _, reference := range workspace.Modules {
 		if reference == nil || slices.Contains(rendered, reference.Name) {
 			continue
 		}
-		// A module the environment withdraws whole has no render here and
-		// owes none (render refuses it): it delivers nothing to the cell.
 		if module, err := workspace.LoadModuleFromName(ctx, reference.Name); err == nil && env.WithdrawsModule(module) {
 			continue
 		}
 		missing = append(missing, reference.Name)
 	}
-	if len(missing) == 0 {
-		return nil
-	}
 	sort.Strings(missing)
+	return missing
+}
+
+// refuseUnrenderedModules refuses a cell file that would leave out the
+// composed modules missing: no render of them for this environment is in the
+// checkout, and no cell file on disk describes them either
+// (carryUnrenderedModules). The file is derived whole and absence is removal,
+// so such a file would withdraw every workload those modules deliver from the
+// cell's admission set, and nothing would say so.
+func refuseUnrenderedModules(env *environments.Environment, missing []string) error {
 	commands := make([]string, 0, len(missing))
 	for _, module := range missing {
 		commands = append(commands, fmt.Sprintf("codefly deploy gitops render %s --env %s", module, env.Name))
 	}
-	return fmt.Errorf("environment %s's cell file is not written: this checkout holds no render for %s of the composed module(s) %s, and a cell file without them would withdraw every workload they deliver from the cell; render them (%s), or every module at once with `codefly deploy gitops render --all --env %s`",
+	return fmt.Errorf("environment %s's cell file is not written: this checkout holds no render for %s of the composed module(s) %s and no cell file describing them, and a cell file without them would withdraw every workload they deliver from the cell; render them (%s), or every module at once with `codefly deploy gitops render --all --env %s`",
 		env.Name, env.Name, strings.Join(missing, ", "), strings.Join(commands, "; "), env.Name)
 }
 

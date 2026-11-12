@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -520,6 +521,33 @@ func TestPublishHoldsTheCellFileItCarriesToTheBaseBranch(t *testing.T) {
 		t.Fatalf("the refused cell file was carried to the delivery repository anyway:\n%s", head)
 	}
 
+	// Naming the module does not let a workload the tree still runs out of
+	// the file: the cell would refuse its every pod (holdTreeToCell).
+	request.AllowCellRemovals = []string{"payments"}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "workload Deployment host is not in the file at all") {
+		t.Fatalf("an allowed removal of a workload the tree still runs was not refused: %v", err)
+	}
+
+	// A removal the tree does not contradict — an endpoint the file no longer
+	// names — goes through once named, and the plan reports it.
+	if len(workloads[1].Endpoints) == 0 {
+		t.Fatalf("the fixture's host workload serves no endpoint: %+v", workloads[1])
+	}
+	endpoint := workloads[1].Endpoints[0].Name
+	file.Namespaces[0].Workloads = workloads
+	file.Namespaces[0].Workloads[1].Endpoints = workloads[1].Endpoints[1:]
+	if dropped, err = file.Encode(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(cell.Path, dropped, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.AllowCellRemovals = nil
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "endpoint payments/host/"+endpoint) {
+		t.Fatalf("a cell file removing an endpoint the base admits was not refused: %v", err)
+	}
 	request.AllowCellRemovals = []string{"payments"}
 	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
@@ -528,7 +556,7 @@ func TestPublishHoldsTheCellFileItCarriesToTheBaseBranch(t *testing.T) {
 	if plan.CellFile != deliveryCellPath("environments", "production") {
 		t.Fatalf("the allowed removal did not carry the cell file: %q", plan.CellFile)
 	}
-	if len(plan.CellRemovals) != 1 || !strings.Contains(plan.CellRemovals[0], "workload payments/Deployment host") {
+	if len(plan.CellRemovals) != 1 || !strings.Contains(plan.CellRemovals[0], "endpoint payments/host/"+endpoint) {
 		t.Fatalf("the plan does not report the removal it let through: %v", plan.CellRemovals)
 	}
 }
@@ -612,5 +640,82 @@ func TestOnlyAPromotionThatDerivedTheCellFileCarriesIt(t *testing.T) {
 	}
 	if notice := cellNotice(&environments.Environment{Name: "staging"}, nil, "", "payments"); notice != "" {
 		t.Fatalf("an environment with no host has no cell to report: %q", notice)
+	}
+}
+
+// TestPublishRefusesATreeTheCellDoesNotApprove is the Blue incident of
+// 2026-11-12: a single-module render had left the cell file approving the
+// module's old digests, the promotion carried the module tree at the new ones
+// and the cell file unchanged, admission refused every new pod, and the old
+// pods kept serving. A publication whose tree runs a build the cell file it
+// carries does not approve is refused before any pull request exists, naming
+// the container and both digests and saying to render again; the same when
+// the checkout holds no cell file and the base's does not approve the tree;
+// and a consistent pair passes.
+func TestPublishRefusesATreeTheCellDoesNotApprove(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	env := selectedEnvironment(t, workspace, "production")
+	cell, data := renderedCell(t, ctx, workspace, env)
+	seedCellFile(t, remote, "environments", "production", data)
+	rendered, err := cellfile.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workload := rendered.Namespaces[0].Workloads[0]
+	built := workload.Containers[0].Image.Digest
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+
+	// The cell file a render that did not re-derive it leaves: payments
+	// approved at the build before this one.
+	stale, err := cellfile.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Namespaces[0].Workloads[0].Containers[0].Image.Digest = digest("9")
+	if err = os.WriteFile(cell.Path, encodeCell(t, stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil {
+		t.Fatal("a promotion whose tree the carried cell file does not approve was planned")
+	}
+	for _, want := range []string{
+		"the cell file this promotion carries",
+		fmt.Sprintf("workload %s %s container %s runs %s@%s, the file approves %s@%s", workload.Kind, workload.Name, workload.Containers[0].Name, workload.Containers[0].Image.Repository, built, workload.Containers[0].Image.Repository, digest("9")),
+		"does not run an approved digest",
+		"codefly deploy gitops render payments --env production",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not say %q: %v", want, err)
+		}
+	}
+	if gitOutput(t, "", "--git-dir", remote, "for-each-ref", "refs/heads/codefly/promote-payments-production") != "" {
+		t.Fatal("the refused promotion was pushed")
+	}
+
+	// No cell file in the checkout: the base's is what the cell reads, and it
+	// approves the old build.
+	seedCellFile(t, remote, "environments", "production", encodeCell(t, stale))
+	if err = os.Remove(cell.Path); err != nil {
+		t.Fatal(err)
+	}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "the delivery base's cell file") || !strings.Contains(err.Error(), digest("9")) || !strings.Contains(err.Error(), built) {
+		t.Fatalf("a promotion carrying no cell file whose tree the base's does not approve was not refused by both digests: %v", err)
+	}
+
+	// The render's own file approves the tree it was derived from.
+	if err = os.WriteFile(cell.Path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CellFile != deliveryCellPath("environments", "production") {
+		t.Fatalf("the consistent pair does not carry the cell file: %q", plan.CellFile)
 	}
 }

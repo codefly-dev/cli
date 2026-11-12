@@ -220,10 +220,11 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
-	baseCell, claim, removals, err := judgeCompositionRemovals(ctx, workspace, env, cell, &compositionBase{
+	base := &compositionBase{
 		repo: repo, gitopsPath: pathRoot, branch: baseBranch, revision: baseRevision,
 		module: request.Module, restoreRevision: restoreRevision, hostsDelivery: inventory.HostsDelivery,
-	})
+	}
+	baseCell, claim, removals, err := judgeCompositionRemovals(ctx, workspace, env, cell, base)
 	if err != nil {
 		return fail(err)
 	}
@@ -250,16 +251,18 @@ func preparePublish(
 		return fail(err)
 	}
 	contractChecks := checkContracts(&inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
-	staleOnBase, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
+	staleConsumers, err := holdBaseConsumers(ctx, workspace, request, repo, baseBranch, pathRoot, &inventory)
 	if err != nil {
 		return fail(err)
 	}
-	if err = refuseStaleBaseConsumers(workspace.Dir(), request.Environment, baseBranch, staleOnBase); err != nil {
-		return fail(err)
-	}
-	staleConsumers := describeStaleConsumers(staleOnBase)
 	allowedRemovals, undeclaredRemovals, err := scopeAndHoldCell(cell, carriedCell != "", env, baseBranch, baseCell, request, claim)
 	if err != nil {
+		return fail(err)
+	}
+	// What the module's tree runs is held to what the cell will approve once
+	// this merges: a promotion the cell's admission would refuse is refused
+	// here, before a pull request exists.
+	if err = holdTreeToCell(ctx, env, rendered, &inventory, cell, base); err != nil {
 		return fail(err)
 	}
 	// The cell file is carried only once it has been held to the base branch's,
@@ -306,6 +309,21 @@ func preparePublish(
 	return &preparedRepository{
 		dir: repo, cleanup: cleanup, plan: plan,
 	}, nil
+}
+
+// holdBaseConsumers refuses the publication while a module on the delivery
+// base reads a workspace configuration group at a digest this render moved
+// (refuseStaleBaseConsumers), and otherwise describes, for the plan, the
+// base's consumers that are stale against it.
+func holdBaseConsumers(ctx context.Context, workspace *resources.Workspace, request *PublishRequest, repo, baseBranch, pathRoot string, inventory *Inventory) ([]string, error) {
+	staleOnBase, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
+	if err != nil {
+		return nil, err
+	}
+	if err = refuseStaleBaseConsumers(workspace.Dir(), request.Environment, baseBranch, staleOnBase); err != nil {
+		return nil, err
+	}
+	return describeStaleConsumers(staleOnBase), nil
 }
 
 // newDeliveryPublication selects the custody and reuse rules for this publish.
