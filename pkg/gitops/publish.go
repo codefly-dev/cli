@@ -2446,7 +2446,7 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 	}
 	baseBranch := strings.TrimSpace(config.Branch)
 	if baseBranch == "" {
-		baseBranch = "main"
+		baseBranch = DefaultDeliveryBranch
 	}
 	pathRoot, err := validateRelativePath(config.Path)
 	if err != nil {

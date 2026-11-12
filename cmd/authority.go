@@ -378,7 +378,8 @@ func init() {
 // root: its own module trees only (gitops.EnvironmentModuleTrees), never a
 // tree another environment delivers from.
 func readDeliveredAuthority(root, environment string) (*gitops.DeliveredAuthority, error) {
-	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
 	if err != nil {
 		return nil, fmt.Errorf("load the workspace at %s: %w", root, err)
 	}
@@ -386,7 +387,7 @@ func readDeliveredAuthority(root, environment string) (*gitops.DeliveredAuthorit
 	if err != nil {
 		return nil, err
 	}
-	trees, err := gitops.EnvironmentModuleTrees(workspace, env)
+	trees, err := gitops.EnvironmentModuleTrees(ctx, workspace, env)
 	if err != nil {
 		return nil, err
 	}

@@ -152,6 +152,13 @@ func renderModuleTree(
 // keeps its delivered tree out of every render's reach.
 const DefaultGitopsPath = "deployments"
 
+// DefaultDeliveryBranch is the branch a delivery repository is read and
+// written on when neither the environment's gitops block nor the workspace
+// default names one. resolveGitops holds the publication to it and
+// deliveryRepositoryOf decides against it, so the branch a publish writes and
+// the branch a reader accepts a checkout's tree from are the same one.
+const DefaultDeliveryBranch = "main"
+
 // gitopsPathOf is the one selection of an environment's gitops path, shared
 // by the render (moduleOwnedPath) and the publish (resolveGitops) so the two
 // never lay the tree out differently: the environment's own path when its

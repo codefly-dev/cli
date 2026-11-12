@@ -182,7 +182,7 @@ module_envelope_admits_every_binding.`,
 			if selectErr != nil {
 				return selectErr
 			}
-			if deliveredTrees, err = gitops.EnvironmentModuleTrees(workspace, env); err != nil {
+			if deliveredTrees, err = gitops.EnvironmentModuleTrees(ctx, workspace, env); err != nil {
 				return err
 			}
 		}

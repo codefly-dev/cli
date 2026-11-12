@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,10 +85,10 @@ func TestAnotherEnvironmentsTreeNeverSpeaksForThisOne(t *testing.T) {
 	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "environments:\n",
 		"environments:\n  - name: blue\n    namespace: acme\n    gitops:\n      path: deployments/environments/blue\n"})
 	root := workspace.Dir()
-	blue, err := EnvironmentModuleTrees(workspace, selectedEnvironment(t, workspace, "blue"))
+	blue, err := EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "blue"))
 	require.NoError(t, err)
 	require.Equal(t, []string{workingrender.Modules(root, "blue"), filepath.Join(root, "deployments", "environments", "blue", "modules")}, blue)
-	staging, err := EnvironmentModuleTrees(workspace, selectedEnvironment(t, workspace, "staging"))
+	staging, err := EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.NoError(t, err)
 	require.Equal(t, []string{workingrender.Modules(root, "staging"), filepath.Join(root, "deployments", "modules")}, staging)
 
@@ -107,4 +108,71 @@ func TestAPermissionTableThisCannotReadIsAnErrorNotAnEmptyTable(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("\t\"/a/B\": {AnyCheckedCaller: false, Requires: []Permission{Undefined}},\n"), 0o644))
 	_, err = PermissionTable(path)
 	require.ErrorContains(t, err, "which the file does not define")
+}
+
+// The condition this replaced could only decide anything when the workspace
+// declared a top-level `gitops:` default to compare an environment's own
+// repo-url against: with none, the checkout's tree was appended for every
+// environment, and appended last, which is the position that wins. That is
+// not a hypothetical workspace — environments commonly deliver into the very
+// repository they are declared in, each on its own branch, and declare no
+// default at all. TestAnotherEnvironmentsTreeNeverSpeaksForThisOne cannot
+// reach it: its fixture declares no repo-url, so it never evaluates the
+// branch. This one declares one.
+func TestAnEnvironmentsCheckoutTreeIsReadOnlyOnItsDeliveryBranch(t *testing.T) {
+	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "environments:\n",
+		"environments:\n  - name: blue\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/example.git\n      path: deployments/environments/blue\n      branch: blue-delivery\n"})
+	root := workspace.Dir()
+	runGit(t, root, "init", "-q", "--initial-branch=main")
+	blue := selectedEnvironment(t, workspace, "blue")
+
+	trees, err := EnvironmentModuleTrees(context.Background(), workspace, blue)
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(root, "blue")}, trees,
+		"a checkout on main holds no Blue delivery, so nothing under Blue's gitops path speaks for Blue")
+
+	// The whole point of excluding it: what the checkout committed must not
+	// outrank what was just rendered.
+	declaration := &compositionv1.AuthorityManifestV1{InstallationRole: "none"}
+	deliverInto(t, filepath.Join(root, "deployments", "environments", "blue", "modules"), "blue", preparedPairManifest("compute", 1), declaration)
+	fresh := deliverInto(t, workingrender.Modules(root, "blue"), "blue", preparedPairManifest("compute", 2), declaration)
+	delivered, err := ReadDeliveredAuthority(trees, "blue")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(fresh, "compute-paired.yaml"), delivered.Modules["compute"].File,
+		"the tree main committed spoke for Blue ahead of a fresh Blue render")
+
+	// On Blue's own delivery branch the same tree is Blue's delivered tree,
+	// and is read.
+	runGit(t, root, "checkout", "-q", "-b", "blue-delivery")
+	trees, err = EnvironmentModuleTrees(context.Background(), workspace, blue)
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(root, "blue"),
+		filepath.Join(root, "deployments", "environments", "blue", "modules")}, trees)
+
+	// An environment naming no delivery repository, in a workspace declaring
+	// no default, delivers nowhere else: its tree on disk is read as before,
+	// and no branch is consulted for it.
+	staging, err := EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(root, "staging"), filepath.Join(root, "deployments", "modules")}, staging)
+}
+
+// A branch that cannot be read is refused by name. Answering either way would
+// decide silently what the reader asked about: include a tree that may be
+// another branch's, or hide the only tree there is.
+func TestADeliveryBranchThatCannotBeReadIsRefusedNotGuessed(t *testing.T) {
+	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "environments:\n",
+		"environments:\n  - name: blue\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/example.git\n      path: deployments/environments/blue\n      branch: blue-delivery\n"})
+	_, err := EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "blue"))
+	require.ErrorContains(t, err, `environment "blue" delivers to https://github.com/acme/example.git on branch "blue-delivery"`)
+	require.ErrorContains(t, err, "this checkout's own branch could not be read")
+
+	// A detached HEAD is the same refusal: git names it "HEAD", which is no
+	// branch an environment can declare.
+	runGit(t, workspace.Dir(), "init", "-q", "--initial-branch=main")
+	runGit(t, workspace.Dir(), "add", "-A")
+	runGit(t, workspace.Dir(), "commit", "-q", "-m", "the workspace")
+	runGit(t, workspace.Dir(), "checkout", "-q", "--detach", "HEAD")
+	_, err = EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "blue"))
+	require.ErrorContains(t, err, "this checkout's own branch could not be read")
 }
