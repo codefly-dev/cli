@@ -452,6 +452,29 @@ func TestEngine_Release_DryRunReportsAStrandedRelease(t *testing.T) {
 	require.Equal(t, "v0.1.0", tag, "dry-run must report the release that needs finishing, not a new bump")
 }
 
+// TestEngine_Release_DryRunReportsAStrandedReleaseBehindAMergeCommit covers the
+// release pull request a merge queue landed with a merge commit instead of the
+// squash publish asked for: the release commit is HEAD's second parent, the
+// manifest at HEAD carries the version, and nothing tags it. v0.1.246 of the
+// CLI was stranded exactly this way; a re-run must finish it, not cut v0.1.247.
+func TestEngine_Release_DryRunReportsAStrandedReleaseBehindAMergeCommit(t *testing.T) {
+	dir, origin, manifest := releaseRepo(t, "0.1.0")
+	gitIn(t, dir, "checkout", "-b", "release-0.1.0")
+	gitIn(t, dir, "commit", "--allow-empty", "-m", "release: v0.1.0")
+	gitIn(t, dir, "checkout", "main")
+	gitIn(t, dir, "merge", "--no-ff", "-m", "Merge pull request #7 from codefly-dev/release-0.1.0", "release-0.1.0")
+	gitIn(t, dir, "push", "origin", "main")
+	contents, err := os.ReadFile(manifest)
+	require.NoError(t, err)
+	require.Equal(t, "version: 0.1.0\n", string(contents))
+
+	engine := landingEngine(t, dir, &fakeGitHubPullRequests{t: t, origin: origin})
+	engine.DryRun = true
+	tag, err := engine.Release(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "v0.1.0", tag, "a release merged by the queue behind a merge commit is still the release to finish")
+}
+
 func TestOriginRepository(t *testing.T) {
 	for _, tc := range []struct {
 		remote      string
