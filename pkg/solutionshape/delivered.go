@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"gopkg.in/yaml.v3"
 )
 
@@ -145,12 +146,18 @@ func (r *Report) InspectDelivered(root, environment string) {
 	// tree (deployments/environments/<env>/modules/...) is what the cell reads,
 	// and it is the only one the envelope appears in at all: `publish` writes
 	// the envelope, `render` does not. The RENDERED tree answers the same
-	// question before a publish. Read both, and let the delivered one win where
-	// they disagree, because that is what the host enforces.
-	delivered, _ := filepath.Glob(filepath.Join(root, "deployments", "environments", environment, "modules", "*", "module-manifests", "overlays", environment, "*.yaml"))
-	rendered, _ := filepath.Glob(filepath.Join(root, "deployments", "modules", "*", "module-manifests", "overlays", environment, "*.yaml"))
-	overlays := make([]string, 0, len(rendered)+len(delivered))
+	// question before a publish: the environment's working render
+	// (workingrender.Modules). Read both, and let the delivered one win where
+	// they disagree, because that is what the host enforces. deployments/modules
+	// is a delivered tree too, for an environment that delivers from the
+	// default gitops path; a render never writes it.
+	overlay := filepath.Join("*", "module-manifests", "overlays", environment, "*.yaml")
+	rendered, _ := filepath.Glob(filepath.Join(workingrender.Modules(root, environment), overlay))
+	committed, _ := filepath.Glob(filepath.Join(root, "deployments", "modules", overlay))
+	delivered, _ := filepath.Glob(filepath.Join(root, "deployments", "environments", environment, "modules", overlay))
+	overlays := make([]string, 0, len(rendered)+len(committed)+len(delivered))
 	overlays = append(overlays, rendered...)
+	overlays = append(overlays, committed...)
 	overlays = append(overlays, delivered...)
 	if len(overlays) == 0 {
 		r.fail(CodeNotRenderedForEnvironment,

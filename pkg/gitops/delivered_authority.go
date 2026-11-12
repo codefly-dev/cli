@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/authority/libraries/authority-core/go/decide"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/delivered"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -41,14 +42,15 @@ type DeliveredModule struct {
 
 // ReadDeliveredAuthority reads environment's module manifests and envelope
 // under root. It reads committed files only: no cluster and no credential.
-// The delivered tree (deployments/environments/<env>) is what the cell reads
-// and wins over the rendered one (deployments/modules), which answers the
-// same question before a publish.
+// The environment's working render (workingrender.Modules) answers the
+// question before a publish; the committed trees (deployments/modules and
+// deployments/environments/<env>/modules) are what the cell reads, and win
+// because they are read after it.
 func ReadDeliveredAuthority(root, environment string) (*DeliveredAuthority, error) {
 	out := &DeliveredAuthority{Modules: map[string]DeliveredModule{}}
 	var files []string
-	for _, tree := range []string{filepath.Join("deployments", "modules"), filepath.Join("deployments", "environments", environment, "modules")} {
-		found, _ := filepath.Glob(filepath.Join(root, tree, "*", "module-manifests", "overlays", environment, "*.yaml"))
+	for _, tree := range []string{workingrender.Modules(root, environment), filepath.Join(root, "deployments", "modules"), filepath.Join(root, "deployments", "environments", environment, "modules")} {
+		found, _ := filepath.Glob(filepath.Join(tree, "*", "module-manifests", "overlays", environment, "*.yaml"))
 		files = append(files, found...)
 	}
 	for _, file := range files {

@@ -43,7 +43,7 @@ func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Servi
 		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
 			d.deployments = append(d.deployments, Deployment{
 				Service:    service,
-				OutputPath: deployments.KustomizeDir(ctx, d.workspace, module, service),
+				OutputPath: deployments.KustomizeDir(ctx, d.workspace, module, service, d.env),
 				ModuleRoot: module.Dir(),
 			})
 		}

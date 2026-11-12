@@ -12,6 +12,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 )
@@ -215,7 +216,7 @@ func TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered(t *testing.T) {
 	}
 	env := selectedEnvironment(t, workspace, "production")
 	renderHostedPayments(t, workspace, env, pinnedDeployment, hostedPaymentsInstances())
-	inventory, err := LoadInventory(filepath.Join(workspace.Dir(), "deployments", "modules", "payments"))
+	inventory, err := LoadInventory(workingrender.Module(workspace.Dir(), "production", "payments"))
 	if err != nil {
 		t.Fatal(err)
 	}

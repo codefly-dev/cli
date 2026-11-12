@@ -25,6 +25,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -185,7 +186,7 @@ func digestImages(root string) ([]string, error) {
 // DeployDev builds one service from its dev source and re-pins its image in the
 // already-rendered tree of the requested environment.
 func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
-	root := moduleRenderDestination(request.Workspace, request.Module.Name)
+	root := moduleRenderDestination(request.Workspace, request.Environment.Name, request.Module.Name)
 	inventory, unit, err := loadDevTarget(root, request.Module.Name, request.Service, request.Environment.Name, request.AppProject)
 	if err != nil {
 		return DevResult{}, err
@@ -265,9 +266,11 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	return DevResult{Root: root, Changed: relative, Entry: entry, Cell: cell}, nil
 }
 
-// moduleRenderDestination is where a full module render writes its owned tree.
-func moduleRenderDestination(workspace *resources.Workspace, module string) string {
-	return filepath.Join(workspace.Dir(), "deployments", "modules", module)
+// moduleRenderDestination is where a full module render for environment writes
+// its owned tree: the module's working render (workingrender.Module), never a
+// path any environment delivers from.
+func moduleRenderDestination(workspace *resources.Workspace, environment, module string) string {
+	return workingrender.Module(workspace.Dir(), environment, module)
 }
 
 // loadDevTarget refuses a dev deployment onto anything but a complete, intact
@@ -276,7 +279,7 @@ func loadDevTarget(root, module, service, environment, appProject string) (Inven
 	renderFirst := fmt.Sprintf("run `codefly deploy gitops render %s --env %s` first", module, environment)
 	inventory, err := LoadInventory(root)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Inventory{}, InventoryUnit{}, fmt.Errorf("module %s has never been rendered (no %s): %s", module, filepath.Join(root, InventoryFilename), renderFirst)
+		return Inventory{}, InventoryUnit{}, fmt.Errorf("module %s has never been rendered for environment %s (no %s): %s", module, environment, filepath.Join(root, InventoryFilename), renderFirst)
 	}
 	if err != nil {
 		return Inventory{}, InventoryUnit{}, err
@@ -468,7 +471,7 @@ func imageRepositoryPattern(image string) *regexp.Regexp {
 	return regexp.MustCompile(`(^|[^A-Za-z0-9._/:@-])` + regexp.QuoteMeta(name) + `(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@sha256:[a-fA-F0-9]{64}`)
 }
 
-// DevCommitTitle is the commit title a dev deployment is recorded under.
+// DevCommitTitle is the commit title a dev deployment is published under.
 func DevCommitTitle(module string, entry *InventoryDevDeployment) string {
 	revision := entry.Commit
 	if revision == "" {
@@ -483,24 +486,3 @@ func DevCommitTitle(module string, entry *InventoryDevDeployment) string {
 }
 
 const gitAddVerb = "add"
-
-// StageDevDeployment stages the files a dev deployment changed and, when asked,
-// commits them and pushes the current branch. It never pushes on its own.
-func StageDevDeployment(ctx context.Context, workspaceDir, module string, result *DevResult, commit, push bool) error {
-	args := append([]string{gitAddVerb, "--"}, result.Changed...)
-	if _, err := gitCommand(ctx, workspaceDir, args...); err != nil {
-		return err
-	}
-	if !commit {
-		return nil
-	}
-	args = append([]string{"commit", "-m", DevCommitTitle(module, &result.Entry), "--"}, result.Changed...)
-	if _, err := gitCommand(ctx, workspaceDir, args...); err != nil {
-		return err
-	}
-	if !push {
-		return nil
-	}
-	_, err := gitCommand(ctx, workspaceDir, "push")
-	return err
-}

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"gopkg.in/yaml.v3"
 )
 
@@ -75,11 +76,12 @@ type RenderedEnvironment struct {
 
 // RenderedServiceSecrets reads the ExternalSecrets `deploy gitops render`
 // projected into every module rendered under the workspace for environment,
-// grouped by remote key. A module whose inventory records another environment is
-// skipped rather than read: `deployments/modules/<module>` holds one render, and
-// the overlay of a different environment would name that environment's keys.
+// grouped by remote key. It reads the environment's working render only
+// (workingrender.Modules); a module whose inventory still records another
+// environment is skipped rather than read, since that overlay would name the
+// other environment's keys.
 func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironment, error) {
-	modulesRoot := filepath.Join(workspaceDir, "deployments", "modules")
+	modulesRoot := workingrender.Modules(workspaceDir, environment)
 	entries, err := os.ReadDir(modulesRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		return RenderedEnvironment{}, fmt.Errorf("no rendered modules under %s: run `codefly deploy gitops render <module> --env %s` first", modulesRoot, environment)

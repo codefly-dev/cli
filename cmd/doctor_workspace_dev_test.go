@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 )
 
 func TestDoctorWorkspaceWarnsAboutAnActiveDevDeployment(t *testing.T) {
@@ -29,7 +30,7 @@ func TestDoctorWorkspaceWarnsAboutAnActiveDevDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := singleServiceWorkspace(t, testWorkspaceYAMLLocalDeclared, nil, map[string]string{
-		filepath.Join("deployments", "modules", "backend", gitops.InventoryFilename): string(data) + "\n",
+		filepath.Join(workingrender.Dir, "staging", "modules", "backend", gitops.InventoryFilename): string(data) + "\n",
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diagnostic := requireCode(t, report, codeGitOpsDevDeploymentActive, "warn")

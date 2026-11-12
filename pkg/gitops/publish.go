@@ -186,7 +186,7 @@ func preparePublish(
 	if err = publication.addressHost(ctx, workspace, env); err != nil {
 		return nil, err
 	}
-	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
+	rendered := moduleRenderDestination(workspace, request.Environment, request.Module)
 	var inventory Inventory
 	if restoreRevision == "" {
 		if inventory, err = loadRenderedPublication(ctx, workspace, request, env, rendered, pathRoot); err != nil {
@@ -916,18 +916,16 @@ func loadPublicationInventory(
 	pathRoot string,
 ) (Inventory, error) {
 	// The render record is read before the tree is held to its own graph.
-	// `deployments/modules/<module>` is one working tree for every
-	// environment: the last render of ANY environment is what it holds, a
-	// `render --all` that stopped at an earlier module leaves it as it was,
-	// and a reset of the working tree puts the committed render back. A tree
-	// rendered for another environment is then the real finding, named with
-	// the one command that lifts it; validating its unit graph first reports
-	// whatever that other render's layout disagrees about ("unexpected unit
-	// object-storage") and hides which render this is.
+	// rendered is this environment's own working render (workingrender), so
+	// another environment's render is never in reach: the path answers which
+	// render this is. The record is still held to the request, so a tree that
+	// was moved or copied there is named with the one command that lifts it
+	// rather than validated, which would report whatever its layout disagrees
+	// about ("unexpected unit object-storage") and hide which render this is.
 	renderFirst := fmt.Sprintf("run `codefly deploy gitops render %s --env %s` first", request.Module, request.Environment)
 	inventory, err := LoadInventory(rendered)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Inventory{}, fmt.Errorf("module %s has never been rendered (no %s): %s", request.Module, filepath.Join(rendered, InventoryFilename), renderFirst)
+		return Inventory{}, fmt.Errorf("module %s has never been rendered for environment %s (no %s): %s", request.Module, request.Environment, filepath.Join(rendered, InventoryFilename), renderFirst)
 	}
 	if err != nil {
 		return Inventory{}, err

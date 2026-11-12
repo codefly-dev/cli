@@ -2344,13 +2344,15 @@ DEV ESCAPE HATCH: push one service's local code into an already-rendered GitOps 
 ```
 Build and push ONE service from local code — --path, else its machine-local
 service override — through the same build path `deploy gitops render` uses, then
-re-pin only that service's image digest in the environment's rendered tree.
+re-pin only that service's image digest in the environment's working render.
 When the environment declares a host, its cell file is re-derived as well: the
 cell admits only the builds that file names, so the new digest goes with it.
 It refuses, before building, when the re-derived file would move anything but
 this service's images against the file the branch carries.
 
-The environment then runs code no release describes. The render inventory
+The working render is never committed: `codefly deploy gitops publish` delivers
+the re-pinned tree and the cell file together, as it delivers any render. The
+environment then runs code no release describes. The render inventory
 records it under "dev", `codefly doctor workspace` warns while it is active, and
 the next full `codefly deploy gitops render <module> --env <env>` clears it.
 ```
@@ -2362,12 +2364,10 @@ codefly deploy dev <module>/<service>
 Flags:
 
 ```
-      --app-project string                                         AppProject the environment was rendered for (checked against the render)
-      --commit dev: <module>/<service> from <path>@<sha>[-dirty]   Commit the change as dev: <module>/<service> from <path>@<sha>[-dirty]
-      --env string                                                 Environment whose rendered tree to patch (required)
-      --path string                                                Service source directory to deploy (default: the machine-local service override)
-      --push                                                       Push the commit (requires --commit)
-      --rebuild                                                    Build the image even when no input of it changed, instead of keeping the image already built from those inputs
+      --app-project string   AppProject the environment was rendered for (checked against the render)
+      --env string           Environment whose working render to patch (required)
+      --path string          Service source directory to deploy (default: the machine-local service override)
+      --rebuild              Build the image even when no input of it changed, instead of keeping the image already built from those inputs
 ```
 
 ## `codefly deploy gitops`
@@ -2617,10 +2617,11 @@ Flags:
 Plan and write the secret-store values a rendered environment's ExternalSecrets read
 
 ```
-Reads every ExternalSecret `deploy gitops render` projected for --env under
-deployments/modules, and resolves each remote property to a source: kept (already
-stored), propagated (a configuration value another remote key already holds),
-configured (the environment's own configurations/<profile>/<group>.secret.env
+Reads every ExternalSecret `deploy gitops render` projected into
+the working render of --env (.codefly/renders/<env>/modules), and resolves each
+remote property to a source: kept (already stored), propagated (a
+configuration value another remote key already holds), configured (the
+environment's own configurations/<profile>/<group>.secret.env
 holds the value, as written by `codefly config set`), generated (declared random
 by the environment's service-secrets.generate), or required (supplied by the
 operator, and named). The store is the backend behind the SecretStore the render
@@ -5412,10 +5413,10 @@ here rather than declaring them.
 --rendered adds each endpoint's container port: the port its pods listen on,
 which the service's agent decides and which differs from the deployed port when
 the agent keeps an engine port (5432, 6379, 3000) behind the Service. No agent
-reports it before rendering, so it is read from the module render committed at
-deployments/modules/<module>: the targetPort of the rendered Service port that
-publishes the endpoint's deployed port. A service whose module has no render
-carries none; a render for another environment is an error.
+reports it before rendering, so it is read from the module's working render
+for --env, .codefly/renders/<env>/modules/<module>: the targetPort of the rendered Service
+port that publishes the endpoint's deployed port. A service whose module has no
+render for --env carries none.
 ```
 
 ```

@@ -108,6 +108,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		b.world.Workspace,
 		b.instance.Module,
 		b.instance.Service,
+		b.world.Env,
 		namespace,
 		profile,
 		secretReferences,

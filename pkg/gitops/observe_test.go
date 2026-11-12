@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/workingrender"
 )
 
 const (
@@ -300,7 +302,7 @@ func observedPublication(t *testing.T) ObserveRequest {
 	t.Helper()
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	destination := workingrender.Module(workspace.Dir(), "local", "payments")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"}, Environment: "local",
 		AppProject: "payments", OwnedPath: "environments/modules/payments",

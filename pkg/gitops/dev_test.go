@@ -76,7 +76,7 @@ func writeDevWorkspace(t *testing.T) (*resources.Workspace, *resources.Module) {
 func renderDevFixture(t *testing.T, workspace *resources.Workspace) RenderResult {
 	t.Helper()
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "shop"),
+		Destination: moduleRenderDestination(workspace, "staging", "shop"),
 		Module:      "shop", Environment: "staging", Namespace: "acme", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/shop",
 		Units: promotableServiceGraph("shop", []string{"api", "worker"}),
@@ -178,7 +178,7 @@ func TestResolveDevSourcePrecedence(t *testing.T) {
 func TestDeployDevRepinsOnlyTheServiceImage(t *testing.T) {
 	workspace, module := writeDevWorkspace(t)
 	renderDevFixture(t, workspace)
-	root := moduleRenderDestination(workspace, "shop")
+	root := moduleRenderDestination(workspace, "staging", "shop")
 	before := snapshotTree(t, root)
 
 	// A source checkout of the api service with an uncommitted change.
@@ -203,7 +203,7 @@ func TestDeployDevRepinsOnlyTheServiceImage(t *testing.T) {
 	require.Equal(t, 1, *calls)
 	require.Equal(t, source, built, "the build runs from the dev source")
 
-	require.Equal(t, []string{"deployments/modules/shop/services/api/deployment.yaml", "deployments/modules/shop/" + InventoryFilename}, result.Changed)
+	require.Equal(t, []string{".codefly/renders/staging/modules/shop/services/api/deployment.yaml", ".codefly/renders/staging/modules/shop/" + InventoryFilename}, result.Changed)
 	after := snapshotTree(t, root)
 	for path, content := range before {
 		switch path {
@@ -241,10 +241,13 @@ func TestDeployDevRefusesWithoutAFullRenderOfThatEnvironment(t *testing.T) {
 	require.ErrorContains(t, err, "module shop has never been rendered")
 	require.ErrorContains(t, err, "run `codefly deploy gitops render shop --env staging` first")
 
+	// Another environment's render is not this one's: production's working
+	// render is its own path, so staging's never stands in for it.
 	renderDevFixture(t, workspace)
 	request.Environment = environmentNamed("production")
 	_, err = DeployDev(context.Background(), request)
-	require.ErrorContains(t, err, "rendered for environment staging, not production")
+	require.ErrorContains(t, err, "module shop has never been rendered for environment production")
+	require.ErrorContains(t, err, "run `codefly deploy gitops render shop --env production` first")
 
 	request.Environment = environmentNamed("staging")
 	request.AppProject = "other"
@@ -262,7 +265,7 @@ func TestDeployDevRefusesWithoutAFullRenderOfThatEnvironment(t *testing.T) {
 func TestDeployDevRefusesAnImageTheRenderDoesNotPin(t *testing.T) {
 	workspace, module := writeDevWorkspace(t)
 	renderDevFixture(t, workspace)
-	root := moduleRenderDestination(workspace, "shop")
+	root := moduleRenderDestination(workspace, "staging", "shop")
 	before := snapshotTree(t, root)
 	stubBuild(t, []string{"registry.example.com/acme/renamed@" + devNewDigest}, nil)
 
@@ -290,43 +293,12 @@ func TestFullRenderClearsDevDeployment(t *testing.T) {
 	require.Len(t, result.ClearedDev, 1)
 	require.Equal(t, "worker", result.ClearedDev[0].Service)
 	require.Empty(t, result.Inventory.Dev)
-	inventory, err := LoadInventory(moduleRenderDestination(workspace, "shop"))
+	inventory, err := LoadInventory(moduleRenderDestination(workspace, "staging", "shop"))
 	require.NoError(t, err)
 	require.Empty(t, inventory.Dev)
 
 	again := renderDevFixture(t, workspace)
 	require.Empty(t, again.ClearedDev, "a render of a clean tree clears nothing")
-}
-
-func TestStageDevDeploymentStagesAndCommitsWithoutPushing(t *testing.T) {
-	// The commit goes through the user's git; isolate it from this machine's.
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	t.Setenv("GIT_AUTHOR_NAME", "Jane Doe")
-	t.Setenv("GIT_AUTHOR_EMAIL", "user@example.com")
-	t.Setenv("GIT_COMMITTER_NAME", "Jane Doe")
-	t.Setenv("GIT_COMMITTER_EMAIL", "user@example.com")
-	workspace, module := writeDevWorkspace(t)
-	renderDevFixture(t, workspace)
-	runGit(t, workspace.Dir(), "init", "-q")
-	runGit(t, workspace.Dir(), "add", ".")
-	runGit(t, workspace.Dir(), "commit", "-q", "-m", "render")
-	stubBuild(t, []string{"registry.example.com/acme/api@" + devNewDigest}, nil)
-	source := filepath.Join(workspace.Dir(), "modules", "shop", "services", "api")
-	result, err := DeployDev(context.Background(), &DevRequest{
-		Workspace: workspace, Module: module, Service: "api", Environment: environmentNamed("staging"),
-		Source: DevSource{Dir: source, Origin: DevSourceOverride},
-	})
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	require.NoError(t, StageDevDeployment(ctx, workspace.Dir(), "shop", &result, false, false))
-	staged := runGit(t, workspace.Dir(), "diff", "--cached", "--name-only")
-	require.ElementsMatch(t, result.Changed, strings.Split(staged, "\n"))
-
-	require.NoError(t, StageDevDeployment(ctx, workspace.Dir(), "shop", &result, true, false))
-	require.Equal(t, DevCommitTitle("shop", &result.Entry), runGit(t, workspace.Dir(), "log", "-1", "--format=%s"))
-	require.Empty(t, runGit(t, workspace.Dir(), "status", "--porcelain", "--", "deployments"))
 }
 
 func TestDigestImagesReadsWhatTheServiceRenderPinned(t *testing.T) {
@@ -348,7 +320,7 @@ func TestDigestImagesReadsWhatTheServiceRenderPinned(t *testing.T) {
 func TestDeployDevRefusesATreeEditedSinceItsRender(t *testing.T) {
 	workspace, module := writeDevWorkspace(t)
 	renderDevFixture(t, workspace)
-	edited := filepath.Join(moduleRenderDestination(workspace, "shop"), "services", "api", "config.yaml")
+	edited := filepath.Join(moduleRenderDestination(workspace, "staging", "shop"), "services", "api", "config.yaml")
 	require.NoError(t, os.WriteFile(edited, []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: api\n"), 0o644))
 	calls := stubBuild(t, []string{"registry.example.com/acme/api@" + devNewDigest}, nil)
 	_, err := DeployDev(context.Background(), &DevRequest{
@@ -451,18 +423,15 @@ func TestDeployDevIntoAHostedEnvironmentRederivesTheCellFile(t *testing.T) {
 	result, err := DeployDev(context.Background(), request)
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		"deployments/modules/shop/services/api/overlays/staging/deployment.yaml",
-		"deployments/modules/shop/" + InventoryFilename,
+		".codefly/renders/staging/modules/shop/services/api/overlays/staging/deployment.yaml",
+		".codefly/renders/staging/modules/shop/" + InventoryFilename,
 		"deployments/cells/staging/cell.yaml",
-	}, result.Changed, "the cell file is committed with the digest it now admits")
+	}, result.Changed, "the cell file moves with the digest it now admits, for publish to carry")
 	require.Equal(t, cellfile.Image{Repository: "registry.example.test/acme/api", Digest: devNewDigest}, cellWorkloadImage(t, cellPath, "api"))
 	require.Equal(t, "sha256:"+strings.Repeat("a", 64), cellWorkloadImage(t, cellPath, "ledger").Digest, "no other workload moves")
 	require.NotNil(t, result.Cell)
 	require.Equal(t, cellPath, result.Cell.Path)
 
-	require.NoError(t, StageDevDeployment(context.Background(), workspace.Dir(), "shop", &result, true, false))
-	committed := runGit(t, workspace.Dir(), "show", "--name-only", "--format=", "HEAD")
-	require.ElementsMatch(t, result.Changed, strings.Split(committed, "\n"), "the commit carries the cell file with the re-pin")
 }
 
 // The cell file is re-derived from the whole workspace, so a dev deployment
@@ -554,7 +523,7 @@ func TestDeployDevRefusesAnUncommittedCellFile(t *testing.T) {
 func TestDeployDevCarriesThePublishedDeliveryOverlayAsFound(t *testing.T) {
 	workspace, module := writeDevWorkspace(t)
 	renderDevFixture(t, workspace)
-	root := moduleRenderDestination(workspace, "shop")
+	root := moduleRenderDestination(workspace, "staging", "shop")
 	inventory, err := LoadInventory(root)
 	require.NoError(t, err)
 	inventory.ModuleManifestPath = moduleManifestDir

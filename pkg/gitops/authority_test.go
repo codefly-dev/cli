@@ -164,7 +164,7 @@ func shopAuthority(t *testing.T, workspace *resources.Workspace, module *resourc
 func renderShopManifest(t *testing.T, workspace *resources.Workspace, module *resources.Module, env *environments.Environment) (string, *solutionhost.ModuleManifest) {
 	t.Helper()
 	ctx := context.Background()
-	destination := moduleRenderDestination(workspace, "shop")
+	destination := moduleRenderDestination(workspace, "staging", "shop")
 	render := &moduleRender{workspace: workspace, module: module, env: env, options: &RenderOptions{
 		Destination: destination, Module: "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,

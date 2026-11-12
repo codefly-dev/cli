@@ -43,7 +43,7 @@ func TestTheDeclarationDigestFollowsTheModulesOwnRows(t *testing.T) {
 func TestAPublishRefusesATreeRenderedBeforeTheDeclarationMoved(t *testing.T) {
 	workspace, env := declaredWorkspace(t, "a", "shop@example.test")
 	result := renderCellTreeWith(t, &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "shop"),
+		Destination: moduleRenderDestination(workspace, "staging", "shop"),
 		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/shop",
 		Units:  unitsWithPorts("shop", "api"),

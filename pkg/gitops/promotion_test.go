@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -60,7 +61,7 @@ func (f fakeManifestProducer) Produce(ctx context.Context, request *ProduceReque
 	if err != nil {
 		return RenderResult{}, err
 	}
-	destination := filepath.Join(request.Workspace.Dir(), "deployments", "modules", f.module)
+	destination := workingrender.Module(request.Workspace.Dir(), f.environment, f.module)
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: f.module, Environment: f.environment,
 		AppProject: f.appProject, Promotable: true,

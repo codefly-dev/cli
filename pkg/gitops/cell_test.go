@@ -178,7 +178,7 @@ func unitsWithPorts(module, service string) []InventoryUnit {
 func renderCellTree(t *testing.T, workspace *resources.Workspace, module, service, namespace, environment string) RenderResult {
 	t.Helper()
 	return renderCellTreeWith(t, &RenderOptions{
-		Destination: moduleRenderDestination(workspace, module),
+		Destination: moduleRenderDestination(workspace, environment, module),
 		Module:      module, Environment: environment, Namespace: namespace, AppProject: "acme-" + environment,
 		Promotable: true, OwnedPath: "deployments/modules/" + module,
 		Units:   unitsWithPorts(module, service),
@@ -311,7 +311,7 @@ func TestCellFileRefusesToDropAComposedModuleWithNoRender(t *testing.T) {
 	before, err := os.ReadFile(full.Path)
 	require.NoError(t, err)
 
-	require.NoError(t, os.RemoveAll(moduleRenderDestination(workspace, "billing")))
+	require.NoError(t, os.RemoveAll(moduleRenderDestination(workspace, "staging", "billing")))
 	_, err = RenderCell(context.Background(), workspace, env)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cell file is not written")
@@ -340,14 +340,16 @@ func TestRenderCellPrunesTheRecordOfAModuleTheCompositionNoLongerDeclares(t *tes
 	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
 	// Records left by modules the composition does not declare: one for this
-	// environment, one rendered for another. Neither can be rendered again.
+	// environment, one rendered for another. Neither can be rendered again, but
+	// the other environment's lives in that environment's working render: this
+	// environment's cell neither reads nor prunes it.
 	renderCellTreeWith(t, &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "proposals"),
+		Destination: moduleRenderDestination(workspace, "staging", "proposals"),
 		Module:      "proposals", Environment: "staging", Namespace: "acme-proposals", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/proposals", Units: unitsWithPorts("proposals", "web"),
 	}, "web", "staging")
 	renderCellTreeWith(t, &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "compute"),
+		Destination: moduleRenderDestination(workspace, "production", "compute"),
 		Module:      "compute", Environment: "production", Namespace: "acme-compute", AppProject: "acme-production",
 		Promotable: true, OwnedPath: "deployments/modules/compute", Units: unitsWithPorts("compute", "worker"),
 	}, "worker", "production")
@@ -356,10 +358,10 @@ func TestRenderCellPrunesTheRecordOfAModuleTheCompositionNoLongerDeclares(t *tes
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "shop"}, result.Modules)
 	require.Empty(t, result.Skipped, "a record of an undeclared module is pruned, not reported as another environment's")
-	require.Equal(t, []string{"deployments/modules/compute", "deployments/modules/proposals"}, result.Removed)
-	require.NoDirExists(t, moduleRenderDestination(workspace, "proposals"))
-	require.NoDirExists(t, moduleRenderDestination(workspace, "compute"))
-	require.DirExists(t, moduleRenderDestination(workspace, "shop"))
+	require.Equal(t, []string{".codefly/renders/staging/modules/proposals"}, result.Removed)
+	require.NoDirExists(t, moduleRenderDestination(workspace, "staging", "proposals"))
+	require.DirExists(t, moduleRenderDestination(workspace, "production", "compute"), "another environment's render is never touched")
+	require.DirExists(t, moduleRenderDestination(workspace, "staging", "shop"))
 
 	data, err := os.ReadFile(result.Path)
 	require.NoError(t, err)
@@ -397,7 +399,7 @@ func TestAnOlderSiblingRenderIsReportedStaleNotFatal(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "staging")
 	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
-	older := filepath.Join(moduleRenderDestination(workspace, "billing"), InventoryFilename)
+	older := filepath.Join(moduleRenderDestination(workspace, "staging", "billing"), InventoryFilename)
 	data, err := os.ReadFile(older)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(older, []byte(strings.Replace(string(data), `"schemaVersion": `+strconvItoa(SchemaVersion), `"schemaVersion": 7`, 1)), 0o644))
@@ -512,7 +514,7 @@ func TestCellFileDeclaresTheCarrierOfEveryModuleThatRendersAManifest(t *testing.
 	workspace := writeCellWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
 	result := renderCellTreeWith(t, &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "shop"),
+		Destination: moduleRenderDestination(workspace, "staging", "shop"),
 		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,
 		Units:   unitsWithPorts("shop", "api"),
@@ -852,6 +854,6 @@ func TestCellFileRefusesATreeOfAModuleTheWorkspaceDoesNotCompose(t *testing.T) {
 	again, err := RenderCell(context.Background(), workspace, env)
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "shop"}, again.Modules)
-	require.Equal(t, []string{"deployments/modules/proposals"}, again.Removed)
+	require.Equal(t, []string{".codefly/renders/staging/modules/proposals"}, again.Removed)
 	require.NoDirExists(t, withdrawn.Path)
 }

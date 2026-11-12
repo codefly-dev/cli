@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/genproto/googleapis/api/annotations"
@@ -154,7 +155,7 @@ func TestACompositionHostRefusesAnUnmarkedMethodByName(t *testing.T) {
 	require.ErrorContains(t, CheckCompositionPermissions(t.Context(), workspace, env, true, "shop"), "/api.ApiService/Plain declares no permission policy")
 	_, err = RenderModule(t.Context(), workspace, module, env, "", nil)
 	require.ErrorContains(t, err, "/api.ApiService/Plain")
-	_, err = os.Stat(filepath.Join(workspace.Dir(), "deployments", "modules", module.Name))
+	_, err = os.Stat(workingrender.Module(workspace.Dir(), "staging", module.Name))
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 

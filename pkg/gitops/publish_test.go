@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 )
@@ -381,7 +382,7 @@ func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
 		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
 		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
 	}}
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	destination := workingrender.Module(workspace.Dir(), "production", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
 		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
@@ -486,7 +487,7 @@ func TestPublishRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
 		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
 	}}
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	destination := workingrender.Module(workspace.Dir(), "production", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
 		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
@@ -1415,7 +1416,7 @@ func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 		Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
 		Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0",
 	}}
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	destination := workingrender.Module(workspace.Dir(), "production", "payments")
 	// Each promotion is reviewed and merged; the rollback then targets the
 	// first while the base delivers the second, so it has a tree to re-promote.
 	promote := func(service string) PublishResult {
@@ -1778,7 +1779,7 @@ services:
 
 func renderPublishFixture(t *testing.T, root, module, environment, name string) {
 	t.Helper()
-	destination := filepath.Join(root, "deployments", "modules", module)
+	destination := workingrender.Module(root, environment, module)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: module, UnitNames: []string{"api"},
 		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", module)),
@@ -1804,7 +1805,7 @@ func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Work
 		t.Fatal(err)
 	}
 	graph := promotableServiceGraph(moduleName, []string{"api"})
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", moduleName)
+	destination := workingrender.Module(workspace.Dir(), environmentName, moduleName)
 	_, err = RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: moduleName, UnitNames: []string{"api"},
 		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", moduleName)),

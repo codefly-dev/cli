@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
@@ -94,7 +95,7 @@ func CellPath(workspace *resources.Workspace, env *environments.Environment) (st
 // composition that produced them, and writes it. It runs after a module
 // render, so the file always describes the trees as they stand.
 func RenderCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (CellResult, error) {
-	removed, err := pruneUndeclaredRecords(workspace)
+	removed, err := pruneUndeclaredRecords(workspace, env.Name)
 	if err != nil {
 		return CellResult{}, err
 	}
@@ -109,8 +110,8 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	return result, nil
 }
 
-// pruneUndeclaredRecords deletes, before the cell file is derived, the render
-// records of modules the composition no longer declares, for any environment.
+// pruneUndeclaredRecords deletes, before the cell file is derived, the
+// environment's render records of modules the composition no longer declares.
 // Nothing could render such a module again (a render refuses a module the
 // workspace does not compose), so its record describes a composition that no
 // longer exists; left in place it was read back into every cell file derived
@@ -120,8 +121,8 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 // the tree, which is what that refusal asks for, and answers the paths it
 // removed, relative to the workspace, for the render to print. A record that
 // cannot be read is left for the derivation to name.
-func pruneUndeclaredRecords(workspace *resources.Workspace) ([]string, error) {
-	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
+func pruneUndeclaredRecords(workspace *resources.Workspace, environment string) ([]string, error) {
+	modulesDir := workingrender.Modules(workspace.Dir(), environment)
 	entries, err := os.ReadDir(modulesDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -175,7 +176,7 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if env.Host == nil {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("environment %s declares no host, so it has no cell to describe", env.Name)
 	}
-	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
+	modulesDir := workingrender.Modules(workspace.Dir(), env.Name)
 	entries, err := os.ReadDir(modulesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module has been rendered under %s", modulesDir)

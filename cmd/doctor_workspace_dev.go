@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -14,9 +15,10 @@ import (
 const codeGitOpsDevDeploymentActive = "gitops_dev_deployment_active"
 
 // checkDevDeployments warns about every dev deployment recorded in the
-// workspace's rendered module trees. It reads only the render inventories.
+// workspace's working renders, every environment's. It reads only the render
+// inventories.
 func checkDevDeployments(ws *resources.Workspace, report *workspaceReadinessReport) {
-	inventories, err := filepath.Glob(filepath.Join(ws.Dir(), "deployments", "modules", "*", gitops.InventoryFilename))
+	inventories, err := filepath.Glob(filepath.Join(workingrender.Modules(ws.Dir(), "*"), "*", gitops.InventoryFilename))
 	if err != nil {
 		return
 	}
