@@ -335,6 +335,79 @@ func TestRunAgentReleaseTagsMergedReleaseAfterPull(t *testing.T) {
 	}
 }
 
+// closedUnmergedList is the list-endpoint body of a release PR closed unmerged.
+const closedUnmergedList = `[{"number":230,"state":"closed","merged_at":null,"html_url":"https://github.com/x/y/pull/230"}]`
+
+func noGate(t *testing.T) {
+	restore := runReleaseGate
+	runReleaseGate = func(context.Context, *releaseTarget, releaseOptions) (*releaseSourceReport, error) { return nil, nil }
+	t.Cleanup(func() { runReleaseGate = restore })
+}
+
+// A closed-unmerged release PR whose branch is gone is a start-over state: the
+// tool opens a fresh PR for the same version rather than refusing.
+func TestRunAgentReleaseClosedUnmergedBranchGoneOpensNewPR(t *testing.T) {
+	shrinkPolls(t)
+	dir := t.TempDir()
+	initAgentRepo(t, dir, "0.1.0")
+	noGate(t)
+
+	server := fakeGitHub(t, fakeGitHubState{
+		listByHead: map[string]string{"release/v0.1.1": closedUnmergedList},
+		createPR:   `{"number":231,"state":"open","html_url":"https://github.com/x/y/pull/231"}`,
+	})
+	useFakeGitHub(t, server)
+
+	if err := runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch", noWait: true}); err != nil {
+		t.Fatalf("runAgentRelease = %v, want a fresh PR for v0.1.1 when the closed PR's branch is gone", err)
+	}
+}
+
+// With the branch still on origin the state is ambiguous: refuse, and say that
+// the branch is what is left to delete.
+func TestRunAgentReleaseClosedUnmergedBranchPresentRefuses(t *testing.T) {
+	shrinkPolls(t)
+	dir := t.TempDir()
+	initAgentRepo(t, dir, "0.1.0")
+	noGate(t)
+
+	server := fakeGitHub(t, fakeGitHubState{
+		listByHead:      map[string]string{"release/v0.1.1": closedUnmergedList},
+		branchesPresent: []string{"release/v0.1.1"},
+	})
+	useFakeGitHub(t, server)
+
+	err := runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch", noWait: true})
+	if err == nil {
+		t.Fatal("runAgentRelease = nil, want a refusal while the branch exists")
+	}
+	if !strings.Contains(err.Error(), "still exists; delete the branch") || strings.Contains(err.Error(), "close it out") {
+		t.Fatalf("error %q does not name the outstanding remedy (delete the branch)", err)
+	}
+}
+
+// An open release PR is resumed (not replaced), without consulting the branch.
+func TestRunAgentReleaseOpenPRIsResumed(t *testing.T) {
+	shrinkPolls(t)
+	dir := t.TempDir()
+	initAgentRepo(t, dir, "0.1.0")
+	noGate(t)
+
+	var refCreated bool
+	server := fakeGitHub(t, fakeGitHubState{
+		refCreated: &refCreated,
+		listByHead: map[string]string{"release/v0.1.1": `[{"number":9,"state":"open","html_url":"https://github.com/x/y/pull/9"}]`},
+	})
+	useFakeGitHub(t, server)
+
+	if err := runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch", noWait: true}); err != nil {
+		t.Fatalf("runAgentRelease = %v, want the open PR resumed", err)
+	}
+	if refCreated {
+		t.Fatal("tagged while the PR was still open")
+	}
+}
+
 // A manifest ahead of the tags for any other reason (a hand bump, a first
 // release) has no merged release PR of its own, and is bumped from as before.
 func TestRunAgentReleaseBumpsFromManifestWithoutMergedRelease(t *testing.T) {
@@ -608,6 +681,9 @@ type fakeGitHubState struct {
 	createRefBody   string
 	// getRefBody is the JSON for GET /git/ref/tags/{tag} (the 422 already-exists path).
 	getRefBody string
+	// branchesPresent lists branches that exist on origin; GET /git/ref/heads/{b}
+	// is 404 for any other.
+	branchesPresent []string
 }
 
 // fakeGitHub serves the platform calls a release makes: list + create PR, get
@@ -670,6 +746,16 @@ func fakeGitHub(t *testing.T, state fakeGitHubState) *httptest.Server {
 				out = `{"ref":"refs/tags/v0.1.1"}`
 			}
 			_, _ = io.WriteString(w, out)
+		case strings.Contains(path, "/git/ref/heads/") && r.Method == http.MethodGet:
+			_, branch, _ := strings.Cut(path, "/git/ref/heads/")
+			for _, b := range state.branchesPresent {
+				if b == branch {
+					_, _ = io.WriteString(w, `{"ref":"refs/heads/`+b+`","object":{"sha":"abc"}}`)
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 		case strings.Contains(path, "/git/ref/") && r.Method == http.MethodGet:
 			_, _ = io.WriteString(w, state.getRefBody)
 		default:
