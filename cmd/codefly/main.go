@@ -11,10 +11,15 @@ import (
 
 	"github.com/codefly-dev/cli/cmd"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/timings"
 )
 
 func main() {
-	if err := cmd.Execute(); err != nil {
+	// The released binary is built from here, so the CODEFLY_TIMINGS report is
+	// printed here too, exactly as the repository root's main prints it.
+	err := cmd.Execute()
+	timings.Report(os.Stderr)
+	if err != nil {
 		if cmd.ShouldRenderError(err) {
 			cli.ErrorChain(err, "cannot execute command")
 		}

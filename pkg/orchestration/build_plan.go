@@ -1452,6 +1452,14 @@ var workspaceSourceRepository = func(ctx context.Context, dir string) string {
 // or disagrees on is absent. A seam so a test needs no registry.
 var resolveImageBuildLabels = func(ctx context.Context, reference, builderName string) (map[string]string, error) {
 	defer timings.Start("registry.labels")()
+	if builderName == "" {
+		manifest, err := registryManifestOf(ctx, reference)
+		if err != nil {
+			return nil, err
+		}
+		labels, err := imageLabels(ctx, reference, manifest)
+		return onlyBuildLabels(labels), err
+	}
 	return cachedProbe(ctx, "labels", reference, builderName, func() (map[string]string, error) {
 		probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
 		defer cancel()
