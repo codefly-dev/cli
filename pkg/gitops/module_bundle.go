@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -436,10 +437,12 @@ func validateTransportNeutralModuleBundleInTree(tree *renderRoot, root string) e
 
 // retainManagedBundle assembles a managed service's promotable bundle from the
 // two things a managed service contributes to the cluster: the bootstrap Jobs its
-// agent emitted (a one-shot handoff) and the ExternalSecret projection its
-// environment declares. It reports whether a bundle was produced; when the service
-// contributes neither, its rendered tree is removed and false is returned so the
-// caller records it as an unrendered managed unit.
+// agent emitted (a one-shot handoff), with the ServiceAccount each runs as when
+// the agent bound one — the Job's cloud identity, which the agent decides from
+// the environment's declaration (codefly-dev/cli#1346) — and the ExternalSecret
+// projection its environment declares. It reports whether a bundle was produced;
+// when the service contributes neither, its rendered tree is removed and false is
+// returned so the caller records it as an unrendered managed unit.
 func retainManagedBundle(
 	root, service, environment, namespace string,
 	secretRefs []environments.EnvironmentManagedSecretReference,
@@ -458,6 +461,7 @@ func retainManagedBundleInTree(
 	secretRefs []environments.EnvironmentManagedSecretReference,
 ) (bool, error) {
 	var jobs []map[string]any
+	accounts := map[string]map[string]any{}
 	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := filepath.Ext(relative)
 		if extension != yamlExtension && extension != ymlExtension {
@@ -472,10 +476,16 @@ func retainManagedBundleInTree(
 			return err
 		}
 		for _, item := range manifests {
+			metadata, _ := item.value["metadata"].(map[string]any)
+			if item.group == "" && item.kind == "ServiceAccount" {
+				if name, _ := metadata["name"].(string); name != "" {
+					accounts[name] = item.value
+				}
+				continue
+			}
 			if item.group != "batch" || item.kind != "Job" {
 				continue
 			}
-			metadata, _ := item.value["metadata"].(map[string]any)
 			labels, _ := metadata["labels"].(map[string]any)
 			if labels["codefly.dev/bootstrap-service"] == service {
 				jobs = append(jobs, item.value)
@@ -485,6 +495,22 @@ func retainManagedBundleInTree(
 	})
 	if err != nil {
 		return false, err
+	}
+	// Only an account a retained Job names travels with it: a Job bound to an
+	// account the bundle does not carry would run as nothing the cluster knows.
+	var retainedAccounts []map[string]any
+	for _, job := range jobs {
+		name, _ := mapField(mapField(mapField(job, "spec"), "template"), "spec")["serviceAccountName"].(string)
+		if name == "" {
+			continue
+		}
+		account, rendered := accounts[name]
+		if !rendered {
+			return false, fmt.Errorf("managed service %s: its bootstrap Job runs as ServiceAccount %q, which its render does not emit", service, name)
+		}
+		if !slices.ContainsFunc(retainedAccounts, func(kept map[string]any) bool { return mapField(kept, "metadata")["name"] == name }) {
+			retainedAccounts = append(retainedAccounts, account)
+		}
 	}
 	projection, err := managedSecretProjection(service, namespace, secretRefs)
 	if err != nil {
@@ -512,6 +538,17 @@ func retainManagedBundleInTree(
 		return false, err
 	}
 	var resourcesList []string
+	for index, account := range retainedAccounts {
+		name := fmt.Sprintf("service-account-%d.yaml", index+1)
+		encoded, marshalErr := yaml.Marshal(account)
+		if marshalErr != nil {
+			return false, marshalErr
+		}
+		if err = tree.write(base, name, encoded); err != nil {
+			return false, err
+		}
+		resourcesList = append(resourcesList, name)
+	}
 	for index, job := range jobs {
 		name := fmt.Sprintf("job-%d.yaml", index+1)
 		encoded, marshalErr := yaml.Marshal(job)

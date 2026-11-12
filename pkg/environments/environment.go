@@ -410,6 +410,18 @@ func (env *Environment) ManagedService(module, service string) (EnvironmentManag
 	return managed, declared
 }
 
+// InCluster reports whether the environment declares a module's service
+// deployed in the cluster as the module declares it (in-cluster-services),
+// resolved the way ManagedService resolves its keys: a module-qualified entry
+// or a bare one naming the service.
+func (env *Environment) InCluster(module, service string) bool {
+	if env == nil {
+		return false
+	}
+	return slices.Contains(env.InClusterServices, resources.ServiceUnique(module, service)) ||
+		slices.Contains(env.InClusterServices, service)
+}
+
 // validateManagedServiceKey accepts either shape a managed-services key takes: a
 // module-qualified "<module>/<service>" or a bare "<service>".
 func validateManagedServiceKey(key string) error {
@@ -1558,6 +1570,15 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// InClusterServices names the services this environment deploys in the
+	// cluster as their module declares them: the explicit counterpart of
+	// ManagedServices for a service an environment could replace — a store. A
+	// store's agent refuses a render for an environment that declares neither
+	// (codefly-dev/service-postgres, managed.go), so no environment deploys a
+	// database server because it forgot to say where the server lives. Keys
+	// take the shape managed-services keys take and are held to the same
+	// rules; a key in both blocks is refused. Read it through InCluster.
+	InClusterServices []string `yaml:"in-cluster-services,omitempty"`
 	// ExcludeServices withdraws named services of composed modules from this
 	// environment (EnvironmentExcludedService). Read it through Excludes.
 	ExcludeServices []EnvironmentExcludedService `yaml:"exclude-services,omitempty"`
