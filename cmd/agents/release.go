@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -46,11 +45,17 @@ var ReleaseCmd = &cobra.Command{
   4. tag the merge commit, then verify the release published a downloadable
      asset — failing loudly if the tag shipped no artifact
 
-It is safe to re-run: an open PR is waited on, a merged PR is tagged (also one
-this command did not open, when the manifest on main is above the latest tag
-and CI passed on the commit that set it), and a release already tagged through this flow whose asset has not published yet is
+It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
+release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
+
+A merged PR is tagged even when this command did not open it: when the manifest
+on main is above the latest tag, the commit that set that version is tagged,
+provided the checkout is level with origin/main and the ci workflow succeeded
+on that commit. Otherwise the command refuses and says why; it never bumps
+again on top of an untagged version. This path runs no gate, so --pin and
+--no-attestation do not apply to it.
 
 Successful CI for the exact checkout HEAD can attest source tests; the release
 report records the workflow, run ID and SHA. Otherwise source tests run locally.
@@ -160,9 +165,11 @@ func runAgentRelease(ctx context.Context, o releaseOptions) error {
 	// checkout is updated to main, and the command is re-run "to tag and
 	// verify". The manifest is then one version above the latest tag, and
 	// bumping from it would open a second release PR for the next version and
-	// abandon the merged one untagged. The manifest version is only resumed
-	// when this tool released it (its release/<tag> PR is merged); a manifest
-	// ahead of the tags for any other reason is bumped from as before.
+	// abandon the merged one untagged. A merged release PR of this tool is
+	// tagged at its merge commit; with no such PR, a manifest above a real tag
+	// was merged by something else, and tagMergedElsewhere tags the commit that
+	// set it or refuses. Only a repo with no tags yet (a first release) bumps
+	// from its manifest.
 	if latest == nil || manifest.Version.GreaterThan(latest) {
 		pendingTag := "v" + manifest.Version.String()
 		pr, ferr := target.findPRForBranch(ctx, releaseBranch(pendingTag))
@@ -272,34 +279,70 @@ func (t *releaseTarget) tagMergedElsewhere(ctx context.Context, version, latest 
 	return t.verifyPublishedAsset(ctx, version.String(), extraPlatform)
 }
 
-// mergedManifestCommit finds the commit on origin/main (first-parent) where the
-// manifest moved to version, for a bump merged outside this flow, and requires
-// CI to have passed on it: this flow's gates never ran for that commit, so the
-// attestation is the evidence it may be tagged. It errors, naming the remedy,
-// when the commit cannot be identified or was never attested.
+// mergedManifestCommit finds the commit on origin/main (first-parent) that moved
+// the manifest to version, for a bump merged outside this flow, and requires CI
+// to have passed on it: this flow's gates never ran for that commit, so the
+// attestation is the evidence it may be tagged. The checkout must be level with
+// origin/main on the manifest version, and the commit is chosen by comparing
+// the manifest blob of each first-parent commit with its parent's, so a later
+// bump (which removes the version) or a later touch (a pin) cannot be mistaken
+// for it. It errors, with the remedy for its cause, when it cannot comply.
 func (t *releaseTarget) mergedManifestCommit(ctx context.Context, version, latest *semver.Version) (string, error) {
-	refuse := func(why string) (string, error) {
-		return "", fmt.Errorf("manifest version %s is above the latest tag v%s but %s; not bumping again. Check that main's history for agent.codefly.yaml holds the intended release, then tag v%s on its commit by hand or delete the stray bump", version, latest, why, version)
+	refuse := func(why, remedy string) (string, error) {
+		return "", fmt.Errorf("manifest version %s is above the latest tag v%s but %s; not bumping again: %s", version, latest, why, remedy)
 	}
 	if _, err := t.git(ctx, "fetch", "origin", "main", "--quiet"); err != nil {
-		return refuse("origin/main cannot be fetched: " + err.Error())
+		return refuse("origin/main cannot be fetched ("+err.Error()+")", "fix access to origin and re-run")
 	}
-	pattern := `^version:[[:space:]]*["']?` + regexp.QuoteMeta(version.String()) + `["']?[[:space:]]*$`
-	// Run from the agent directory so the pathspec is relative to it.
-	out, err := gitRun(ctx, t.dir, "log", "origin/main", "--first-parent", "-m", "-n1", "--format=%H", "-G"+pattern, "--", "agent.codefly.yaml")
+	rel, err := gitRun(ctx, t.dir, "rev-parse", "--show-prefix")
 	if err != nil {
-		return refuse("its commit cannot be searched: " + err.Error())
+		return refuse("the manifest path cannot be resolved ("+err.Error()+")", "run from inside the agent repository")
 	}
-	sha := strings.TrimSpace(out)
+	path := strings.TrimSpace(rel) + "agent.codefly.yaml"
+	at := func(rev string) (*semver.Version, error) {
+		blob, gerr := t.git(ctx, "show", rev+":"+path)
+		if gerr != nil {
+			return nil, gerr
+		}
+		var m struct {
+			Version string `yaml:"version"`
+		}
+		if yerr := yaml.Unmarshal([]byte(blob), &m); yerr != nil {
+			return nil, yerr
+		}
+		return semver.NewVersion(m.Version)
+	}
+	remote, err := at("origin/main")
+	if err != nil {
+		return refuse("origin/main's manifest cannot be read ("+err.Error()+")", "check that origin/main carries agent.codefly.yaml and re-run")
+	}
+	if !remote.Equal(version) {
+		return refuse(fmt.Sprintf("the checkout is not level with origin/main (origin has %s, local has %s)", remote, version), "update the checkout to origin/main and re-run")
+	}
+	out, err := t.git(ctx, "rev-list", "--first-parent", "origin/main", "--", path)
+	if err != nil {
+		return refuse("main's history cannot be listed ("+err.Error()+")", "re-run")
+	}
+	sha := ""
+	for _, c := range strings.Fields(out) { // newest first
+		if v, verr := at(c); verr != nil || !v.Equal(version) {
+			continue
+		}
+		if pv, perr := at(c + "^"); perr == nil && pv.Equal(version) {
+			continue // the version was already there: a later touch, not the bump
+		}
+		sha = c
+		break
+	}
 	if sha == "" {
-		return refuse("no commit on origin/main sets that version")
+		return refuse("main's history for agent.codefly.yaml holds no commit setting v"+version.String(), "check that the bump landed on main")
 	}
 	ok, err := attestMergedCommit(ctx, t, sha)
 	if err != nil {
-		return refuse("CI for " + shortSHA(sha) + " cannot be read: " + err.Error())
+		return refuse("CI for "+shortSHA(sha)+" cannot be read ("+err.Error()+")", "re-run once GitHub is reachable")
 	}
 	if !ok {
-		return refuse("no successful CI run is attested for its commit " + shortSHA(sha))
+		return refuse("no successful ci workflow is attested for "+shortSHA(sha), "re-run once the `ci` workflow is green on "+shortSHA(sha))
 	}
 	return sha, nil
 }

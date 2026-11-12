@@ -660,11 +660,17 @@ release turns the manual per-repo release cascade into one verb:
   4. tag the merge commit, then verify the release published a downloadable
      asset — failing loudly if the tag shipped no artifact
 
-It is safe to re-run: an open PR is waited on, a merged PR is tagged (also one
-this command did not open, when the manifest on main is above the latest tag
-and CI passed on the commit that set it), and a release already tagged through this flow whose asset has not published yet is
+It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
+release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
+
+A merged PR is tagged even when this command did not open it: when the manifest
+on main is above the latest tag, the commit that set that version is tagged,
+provided the checkout is level with origin/main and the ci workflow succeeded
+on that commit. Otherwise the command refuses and says why; it never bumps
+again on top of an untagged version. This path runs no gate, so --pin and
+--no-attestation do not apply to it.
 
 Successful CI for the exact checkout HEAD can attest source tests; the release
 report records the workflow, run ID and SHA. Otherwise source tests run locally.

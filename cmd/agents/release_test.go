@@ -900,8 +900,8 @@ func TestRunAgentReleaseMergedBumpRefusesWhenUnresumable(t *testing.T) {
 		pushed, attested bool
 		want             string
 	}{
-		"commit not on origin/main": {pushed: false, attested: true, want: "no commit on origin/main sets that version"},
-		"gates never attested":      {pushed: true, attested: false, want: "no successful CI run is attested"},
+		"bump not on origin/main": {pushed: false, attested: true, want: "not level with origin/main"},
+		"gates never attested":    {pushed: true, attested: false, want: "ci workflow is attested"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			shrinkPolls(t)
@@ -924,5 +924,78 @@ func TestRunAgentReleaseMergedBumpRefusesWhenUnresumable(t *testing.T) {
 				t.Fatalf("gateCalled=%v refCreated=%v, want neither a bump nor a tag", gateCalled, refCreated)
 			}
 		})
+	}
+}
+
+func writeManifest(t *testing.T, dir, version, extra string) {
+	t.Helper()
+	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), "publisher: codefly.dev\nkind: "+serviceAgentKind+"\nname: go\nversion: "+version+"\n"+extra)
+}
+
+func head(t *testing.T, dir string) string {
+	return strings.TrimSpace(gitInRepo(t, dir, "rev-parse", "HEAD"))
+}
+
+func tagMerged(t *testing.T, dir string) (tagged string, err error) {
+	shrinkPolls(t)
+	noGate(t)
+	attest(t, true)
+	stubReleases(t, []releaseInfo{{version: "0.1.1", platforms: []string{ciPlatform}}})
+	var sha string
+	useFakeGitHub(t, fakeGitHub(t, fakeGitHubState{capturedRefSHA: &sha}))
+	err = runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch"})
+	return sha, err
+}
+
+// A --no-ff merge of the bump branch is a first-parent merge commit; it, not
+// the branch's own commit, is what main moved to.
+func TestRunAgentReleaseMergedBumpMergeCommit(t *testing.T) {
+	dir := t.TempDir()
+	initAgentRepo(t, dir, "0.1.0")
+	gitInRepo(t, dir, "tag", "v0.1.0")
+	gitInRepo(t, dir, "push", "origin", "v0.1.0")
+	gitInRepo(t, dir, "checkout", "-q", "-b", "bump")
+	writeManifest(t, dir, "0.1.1", "")
+	gitInRepo(t, dir, "commit", "-qam", "release: v0.1.1")
+	gitInRepo(t, dir, "checkout", "-q", "main")
+	gitInRepo(t, dir, "merge", "--no-ff", "-q", "-m", "Merge bump", "bump")
+	gitInRepo(t, dir, "push", "origin", "main")
+	got, err := tagMerged(t, dir)
+	if err != nil || got != head(t, dir) {
+		t.Fatalf("tagged %q, err %v; want the merge commit %q", got, err, head(t, dir))
+	}
+}
+
+// A later commit that touches the manifest without moving the version (a core
+// pin) must not be mistaken for the bump.
+func TestRunAgentReleaseMergedBumpIgnoresLaterPin(t *testing.T) {
+	dir, bumpSHA := mergedBumpRepo(t, "v0.1.0", true)
+	writeManifest(t, dir, "0.1.1", "# pin\n")
+	gitInRepo(t, dir, "commit", "-qam", "pin: core")
+	gitInRepo(t, dir, "push", "origin", "main")
+	got, err := tagMerged(t, dir)
+	if err != nil || got != bumpSHA {
+		t.Fatalf("tagged %q, err %v; want the bump commit %q, not the later pin", got, err, bumpSHA)
+	}
+}
+
+// The checkout still says 0.1.1 while main already moved to 0.1.2: the commit
+// that REMOVED 0.1.1 must not be tagged as v0.1.1.
+func TestRunAgentReleaseMergedBumpRefusesStaleCheckout(t *testing.T) {
+	dir, _ := mergedBumpRepo(t, "v0.1.0", true)
+	other := t.TempDir()
+	gitInRepo(t, other, "clone", "-q", strings.TrimSpace(gitInRepo(t, dir, "remote", "get-url", "origin")), ".")
+	gitInRepo(t, other, "config", "commit.gpgsign", "false")
+	writeManifest(t, other, "0.1.2", "")
+	gitInRepo(t, other, "commit", "-qam", "release: v0.1.2")
+	gitInRepo(t, other, "push", "-q", "origin", "main")
+	var refCreated bool
+	shrinkPolls(t)
+	noGate(t)
+	attest(t, true)
+	useFakeGitHub(t, fakeGitHub(t, fakeGitHubState{refCreated: &refCreated}))
+	err := runAgentRelease(context.Background(), releaseOptions{dir: dir, bump: "patch", noWait: true})
+	if err == nil || !strings.Contains(err.Error(), "origin has 0.1.2, local has 0.1.1") || refCreated {
+		t.Fatalf("err %v refCreated %v; want a stale-checkout refusal and no tag", err, refCreated)
 	}
 }
