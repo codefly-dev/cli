@@ -83,7 +83,7 @@ func TestManagedStoreAgentIsHandedTheEnvironmentsDeclaration(t *testing.T) {
 	own := &basev0.Configuration{Origin: "records/store", Infos: []*basev0.ConfigurationInformation{{Name: "postgres"}}}
 	original := proto.CloneOf(own)
 
-	declared, err := withEnvironmentServiceDeclaration(ctx, own, store, world)
+	declared, err := withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
 	require.NoError(t, err)
 	require.True(t, proto.Equal(original, own), "the service's own configuration was widened")
 	require.Len(t, declared.GetInfos(), 2)
@@ -103,13 +103,13 @@ func TestManagedStoreAgentIsHandedTheEnvironmentsDeclaration(t *testing.T) {
 	consumers := world.Env.ManagedServices["records/store"]
 	consumers.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "consumers@obin-blue-data.iam.gserviceaccount.com"}
 	world.Env.ManagedServices["records/store"] = consumers
-	declared, err = withEnvironmentServiceDeclaration(ctx, nil, store, world)
+	declared, err = withEnvironmentServiceDeclaration(ctx, nil, store, postgresAgent(), world)
 	require.NoError(t, err)
 	require.Equal(t, "consumers@obin-blue-data.iam.gserviceaccount.com", declarationValues(t, declared, ManagedServiceInformation)["runtime-principals"])
 
 	// A service nothing declares gets its configuration back as it was.
 	bystander := &resources.ServiceIdentity{Module: "records", Name: "bystander"}
-	unchanged, err := withEnvironmentServiceDeclaration(ctx, own, bystander, world)
+	unchanged, err := withEnvironmentServiceDeclaration(ctx, own, bystander, peerAgent(), world)
 	require.NoError(t, err)
 	require.Same(t, own, unchanged)
 }
@@ -120,7 +120,7 @@ func TestInClusterStoreAgentIsToldSo(t *testing.T) {
 	world := storeWorkspace(t)
 	world.Env = &environments.Environment{Name: "dev", InClusterServices: []string{"records/store"}}
 	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
-	declared, err := withEnvironmentServiceDeclaration(t.Context(), nil, store, world)
+	declared, err := withEnvironmentServiceDeclaration(t.Context(), nil, store, postgresAgent(), world)
 	require.NoError(t, err)
 	require.Equal(t, "records/store", declared.GetOrigin())
 	require.Empty(t, declarationValues(t, declared, InClusterServiceInformation))
@@ -135,14 +135,14 @@ func TestManagedStoreWithoutAnIdentityIsRefusedByName(t *testing.T) {
 	world := storeWorkspace(t)
 	world.Env = managedStoreEnvironment()
 	delete(world.Env.ServiceIdentity.Services, "records/store")
-	_, err := withEnvironmentServiceDeclaration(ctx, nil, store, world)
+	_, err := withEnvironmentServiceDeclaration(ctx, nil, store, postgresAgent(), world)
 	require.ErrorContains(t, err, "declares no service-identity for it")
 	require.ErrorContains(t, err, "records/store")
 
 	world = storeWorkspace(t)
 	world.Env = managedStoreEnvironment()
 	delete(world.Env.ServiceIdentity.Services, "records/records")
-	_, err = withEnvironmentServiceDeclaration(ctx, nil, store, world)
+	_, err = withEnvironmentServiceDeclaration(ctx, nil, store, postgresAgent(), world)
 	require.ErrorContains(t, err, "records/records depends on managed service records/store at run time but declares no identity")
 
 	// A password-mode managed service names no principal: the identities are
@@ -153,7 +153,73 @@ func TestManagedStoreWithoutAnIdentityIsRefusedByName(t *testing.T) {
 	entry.Carried = environments.Carried{"auth-mode": yamlScalar("password")}
 	world.Env.ManagedServices["records/store"] = entry
 	world.Env.ServiceIdentity = nil
-	declared, err := withEnvironmentServiceDeclaration(ctx, nil, store, world)
+	declared, err := withEnvironmentServiceDeclaration(ctx, nil, store, postgresAgent(), world)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"login-mode": "password"}, declarationValues(t, declared, ManagedServiceInformation))
+}
+
+// postgresAgent is the agent that deploys a database server, at the version a
+// module might pin; peerAgent is any other service agent.
+func postgresAgent() *resources.Agent {
+	return &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres", Version: "0.0.149"}
+}
+
+func peerAgent() *resources.Agent {
+	return &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "missing-peer", Version: "0.0.1"}
+}
+
+// A store the environment places nowhere is refused by the CLI, by name — the
+// service, the environment, its agent and the two blocks one of which would
+// declare it — whatever agent version the module pins; a store declared either
+// way is rendered and told what was decided.
+func TestAStoreTheEnvironmentPlacesNowhereIsRefusedByTheCLI(t *testing.T) {
+	ctx := t.Context()
+	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
+	own := &basev0.Configuration{Origin: "records/store", Infos: []*basev0.ConfigurationInformation{{Name: "postgres"}}}
+
+	world := storeWorkspace(t)
+	world.Env = &environments.Environment{Name: "blue"}
+	_, err := withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
+	require.Error(t, err)
+	for _, named := range []string{"records/store", `environment "blue"`, "managed-services", "in-cluster-services", "codefly.dev/postgres:0.0.149"} {
+		require.ErrorContains(t, err, named)
+	}
+
+	// Declared in-cluster: rendered, and told so.
+	world.Env = &environments.Environment{Name: "blue", InClusterServices: []string{"records/store"}}
+	declared, err := withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
+	require.NoError(t, err)
+	require.Empty(t, declarationValues(t, declared, InClusterServiceInformation))
+
+	// Declared managed: rendered, and told the entry.
+	world.Env = managedStoreEnvironment()
+	declared, err = withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
+	require.NoError(t, err)
+	require.Equal(t, "external-identity", declarationValues(t, declared, ManagedServiceInformation)["login-mode"])
+}
+
+// The refusal is decided by the agent's reference — publisher, kind and name —
+// never by what the service is called: a service named store whose agent
+// deploys no server passes undeclared, as does one with no agent known yet,
+// and another publisher's agent called postgres is not the one.
+func TestAStoreServerAgentIsKnownByItsReferenceNotItsName(t *testing.T) {
+	ctx := t.Context()
+	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
+	own := &basev0.Configuration{Origin: "records/store"}
+	world := storeWorkspace(t)
+	world.Env = &environments.Environment{Name: "blue"}
+
+	for _, agent := range []*resources.Agent{
+		peerAgent(),
+		nil,
+		{Kind: resources.ServiceAgent, Publisher: "someone.else", Name: "postgres", Version: "1.0.0"},
+		{Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "postgres", Version: "1.0.0"},
+	} {
+		unchanged, err := withEnvironmentServiceDeclaration(ctx, own, store, agent, world)
+		require.NoError(t, err, "%v", agent)
+		require.Same(t, own, unchanged)
+	}
+	for _, version := range []string{"0.0.128", "0.0.149"} {
+		require.True(t, deploysAStoreServer(&resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres", Version: version}), version)
+	}
 }

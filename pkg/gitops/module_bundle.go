@@ -455,11 +455,11 @@ func retainManagedBundle(
 	return retainManagedBundleInTree(tree, root, service, environment, namespace, secretRefs)
 }
 
-func retainManagedBundleInTree(
-	tree *renderRoot,
-	root, service, environment, namespace string,
-	secretRefs []environments.EnvironmentManagedSecretReference,
-) (bool, error) {
+// managedBootstrapManifests reads a managed service's rendered tree for the
+// two kinds of manifest its bundle may carry: the bootstrap Jobs labelled for
+// the service, in the order met, and every ServiceAccount the render emitted,
+// by name, for the Jobs to be matched against.
+func managedBootstrapManifests(tree *renderRoot, root, service string) ([]map[string]any, map[string]map[string]any, error) {
 	var jobs []map[string]any
 	accounts := map[string]map[string]any{}
 	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
@@ -494,11 +494,17 @@ func retainManagedBundleInTree(
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return nil, nil, err
 	}
-	// Only an account a retained Job names travels with it: a Job bound to an
-	// account the bundle does not carry would run as nothing the cluster knows.
-	var retainedAccounts []map[string]any
+	return jobs, accounts, nil
+}
+
+// accountsRetainedByJobs picks, from the accounts the render emitted, the ones
+// a retained Job names, each once. Only an account a retained Job names
+// travels with it, and a Job bound to an account the render did not emit is
+// refused: it would run as nothing the cluster knows.
+func accountsRetainedByJobs(service string, jobs []map[string]any, accounts map[string]map[string]any) ([]map[string]any, error) {
+	var retained []map[string]any
 	for _, job := range jobs {
 		name, _ := mapField(mapField(mapField(job, "spec"), "template"), "spec")["serviceAccountName"].(string)
 		if name == "" {
@@ -506,11 +512,69 @@ func retainManagedBundleInTree(
 		}
 		account, rendered := accounts[name]
 		if !rendered {
-			return false, fmt.Errorf("managed service %s: its bootstrap Job runs as ServiceAccount %q, which its render does not emit", service, name)
+			return nil, fmt.Errorf("managed service %s: its bootstrap Job runs as ServiceAccount %q, which its render does not emit", service, name)
 		}
-		if !slices.ContainsFunc(retainedAccounts, func(kept map[string]any) bool { return mapField(kept, "metadata")["name"] == name }) {
-			retainedAccounts = append(retainedAccounts, account)
+		if !slices.ContainsFunc(retained, func(kept map[string]any) bool { return mapField(kept, "metadata")["name"] == name }) {
+			retained = append(retained, account)
 		}
+	}
+	return retained, nil
+}
+
+// writeManagedBundleBase writes the bundle's base: the retained accounts, then
+// the Jobs, then the ExternalSecret projection when there is one, and returns
+// the file names in that order for the base kustomization.
+func writeManagedBundleBase(tree *renderRoot, base string, accounts, jobs []map[string]any, projection *externalSecret) ([]string, error) {
+	var resourcesList []string
+	for index, account := range accounts {
+		name := fmt.Sprintf("service-account-%d.yaml", index+1)
+		encoded, err := yaml.Marshal(account)
+		if err != nil {
+			return nil, err
+		}
+		if err = tree.write(base, name, encoded); err != nil {
+			return nil, err
+		}
+		resourcesList = append(resourcesList, name)
+	}
+	for index, job := range jobs {
+		name := fmt.Sprintf("job-%d.yaml", index+1)
+		encoded, err := yaml.Marshal(job)
+		if err != nil {
+			return nil, err
+		}
+		if err = tree.write(base, name, encoded); err != nil {
+			return nil, err
+		}
+		resourcesList = append(resourcesList, name)
+	}
+	if projection != nil {
+		projected, err := yaml.Marshal(projection)
+		if err != nil {
+			return nil, err
+		}
+		// The projection is an ExternalSecret — a reference to remote keys, never a
+		// secret value — so it stays a world-readable manifest like its siblings.
+		if err = tree.write(base, "external-secret.yaml", projected); err != nil {
+			return nil, err
+		}
+		resourcesList = append(resourcesList, "external-secret.yaml")
+	}
+	return resourcesList, nil
+}
+
+func retainManagedBundleInTree(
+	tree *renderRoot,
+	root, service, environment, namespace string,
+	secretRefs []environments.EnvironmentManagedSecretReference,
+) (bool, error) {
+	jobs, accounts, err := managedBootstrapManifests(tree, root, service)
+	if err != nil {
+		return false, err
+	}
+	retainedAccounts, err := accountsRetainedByJobs(service, jobs, accounts)
+	if err != nil {
+		return false, err
 	}
 	projection, err := managedSecretProjection(service, namespace, secretRefs)
 	if err != nil {
@@ -537,40 +601,9 @@ func retainManagedBundleInTree(
 	if err = tree.mkdirAll(overlay); err != nil {
 		return false, err
 	}
-	var resourcesList []string
-	for index, account := range retainedAccounts {
-		name := fmt.Sprintf("service-account-%d.yaml", index+1)
-		encoded, marshalErr := yaml.Marshal(account)
-		if marshalErr != nil {
-			return false, marshalErr
-		}
-		if err = tree.write(base, name, encoded); err != nil {
-			return false, err
-		}
-		resourcesList = append(resourcesList, name)
-	}
-	for index, job := range jobs {
-		name := fmt.Sprintf("job-%d.yaml", index+1)
-		encoded, marshalErr := yaml.Marshal(job)
-		if marshalErr != nil {
-			return false, marshalErr
-		}
-		if err = tree.write(base, name, encoded); err != nil {
-			return false, err
-		}
-		resourcesList = append(resourcesList, name)
-	}
-	if projection != nil {
-		projected, marshalErr := yaml.Marshal(projection)
-		if marshalErr != nil {
-			return false, marshalErr
-		}
-		// The projection is an ExternalSecret — a reference to remote keys, never a
-		// secret value — so it stays a world-readable manifest like its siblings.
-		if writeErr := tree.write(base, "external-secret.yaml", projected); writeErr != nil {
-			return false, writeErr
-		}
-		resourcesList = append(resourcesList, "external-secret.yaml")
+	resourcesList, err := writeManagedBundleBase(tree, base, retainedAccounts, jobs, projection)
+	if err != nil {
+		return false, err
 	}
 	baseKustomization := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",

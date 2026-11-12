@@ -269,10 +269,13 @@ identity to reach it as.
 
 `in-cluster-services` is the explicit counterpart of `managed-services`: a list
 of services, keyed the same way and held to the same graph rules, whose server
-this environment deploys as the module declares it. A store's agent refuses a
-render for an environment that declares neither
-(codefly-dev/service-postgres), so no environment deploys a database server
-because it forgot to say where the server lives.
+this environment deploys as the module declares it. A render of a service whose
+agent deploys a database server (`codefly.dev/postgres`) for an environment that
+declares it in neither block is refused by the CLI, naming the service, the
+environment and the two blocks — whatever agent version the module pins — and
+the store's agent refuses the same request itself (codefly-dev/service-postgres
+>= 0.0.149), so no environment deploys a database server because it forgot to
+say where the server lives.
 
 ```yaml
 environments:

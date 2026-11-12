@@ -61,28 +61,15 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	profile := kubernetesOutputProfile(b.world)
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
 	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
-		secretName := "secret-" + b.instance.Service.Name
-		conf = withEnvironmentDeclaredSecrets(ctx, conf, b.instance.Identity, b.world.Env)
-		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
-			conf,
-			dependenciesConfigurations,
-			secretName,
-		)
+		conf, dependenciesConfigurations, secretReferences, err = b.promotableConfigurations(ctx, conf, dependenciesConfigurations)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot prepare promotable configuration")
 		}
-		// Key names only: this records which secret keys this service's own
-		// ExternalSecret fetches, never any value.
-		b.deployedSecretKeys = make([]string, 0, len(secretReferences))
-		for key := range secretReferences {
-			b.deployedSecretKeys = append(b.deployedSecretKeys, key)
-		}
-		sort.Strings(b.deployedSecretKeys)
 	}
 
 	// Last, after the secret split: the declaration carries no secret, and it
 	// is what a store's agent decides its whole render on.
-	conf, err = withEnvironmentServiceDeclaration(ctx, conf, b.instance.Identity, b.world)
+	conf, err = withEnvironmentServiceDeclaration(ctx, conf, b.instance.Identity, b.deployingAgent(), b.world)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot hand the environment's declaration for the service to its agent")
 	}
@@ -126,15 +113,9 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if b.world.DeploymentDestination != nil {
 		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
 	}
-	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
+	validation, err := b.clusterValidation(ctx, w, profile, namespace)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot resolve promotable GitOps validation target")
-	}
-	if validation.Skipped != "" {
-		w.Warn(validation.Skipped)
-		if b.world.OutputSink != nil {
-			b.world.OutputSink.Info("%s", validation.Skipped)
-		}
 	}
 	deploy.GetKubernetes().ValidateServerSide = validation.Enabled()
 	deploy.GetKubernetes().ValidationKubeconfig = validation.Kubeconfig
@@ -400,6 +381,63 @@ func kubernetesValidationTarget(ctx context.Context, environment *environments.E
 		return "", "", fmt.Errorf("resolve kubeconfig %q: %w", kubeconfig, err)
 	}
 	return kubeconfig, environment.Cluster.Context, nil
+}
+
+// promotableConfigurations splits the service's configuration and its
+// dependencies' for a restricted render: the environment's declared secrets
+// are added, every secret value becomes a reference into the service's own
+// Secret, and the keys that Secret fetches are recorded — key names only,
+// never a value.
+func (b *Builder) promotableConfigurations(
+	ctx context.Context,
+	conf *basev0.Configuration,
+	dependencies []*basev0.Configuration,
+) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	secretName := "secret-" + b.instance.Service.Name
+	conf = withEnvironmentDeclaredSecrets(ctx, conf, b.instance.Identity, b.world.Env)
+	conf, dependencies, secretReferences, err := promotableDeploymentConfigurations(conf, dependencies, secretName)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	b.deployedSecretKeys = make([]string, 0, len(secretReferences))
+	for key := range secretReferences {
+		b.deployedSecretKeys = append(b.deployedSecretKeys, key)
+	}
+	sort.Strings(b.deployedSecretKeys)
+	return conf, dependencies, secretReferences, nil
+}
+
+// clusterValidation resolves the server-side validation target for the
+// render and says, on the log and the output sink, why an opted-in validation
+// cannot run when it cannot.
+func (b *Builder) clusterValidation(ctx context.Context, w *wool.Wool, profile builderv0.KubernetesOutputProfile, namespace string) (clusterValidation, error) {
+	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
+	if err != nil {
+		return clusterValidation{}, err
+	}
+	if validation.Skipped != "" {
+		w.Warn(validation.Skipped)
+		if b.world.OutputSink != nil {
+			b.world.OutputSink.Info("%s", validation.Skipped)
+		}
+	}
+	return validation, nil
+}
+
+// deployingAgent is the agent this service's Deploy is sent to: the one the
+// workspace loaded for it, or, before any is loaded, the one its service
+// declaration names. They share a reference; only the version may differ.
+func (b *Builder) deployingAgent() *resources.Agent {
+	if b.instance == nil {
+		return nil
+	}
+	if b.instance.Agent != nil && b.instance.Agent.Agent != nil {
+		return b.instance.Agent.Agent
+	}
+	if b.instance.Service != nil {
+		return b.instance.Service.Agent
+	}
+	return nil
 }
 
 func kubernetesOutputProfile(world *World) builderv0.KubernetesOutputProfile {

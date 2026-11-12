@@ -49,9 +49,41 @@ var managedCarriedKeys = map[string]string{
 	"instance-connection-name": managedInstanceKey,
 }
 
+// storeServerAgents are the service agents that deploy a database server when
+// an environment lets them: the owner's rule (2026-11-12) — "for postgres
+// service in codefly, we should have 'managed' vs non-managed, so when render a
+// managed, we ONLY render and build the migration so we are SURE we don't
+// deploy PG in k8s" — is held here as well as by the agent, so that it does
+// not depend on which agent version a module pins (an agent older than
+// service-postgres v0.0.149 renders the server for an environment that says
+// nothing). The reference is the agent's own (agent.codefly.yaml: publisher,
+// kind, name); the version is whatever the module pins.
+var storeServerAgents = []resources.Agent{
+	{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres"},
+}
+
+// deploysAStoreServer reports whether the agent is one of storeServerAgents,
+// by its reference — publisher, kind and name — never by what the service or
+// the agent happens to be called.
+func deploysAStoreServer(agent *resources.Agent) bool {
+	if agent == nil {
+		return false
+	}
+	return slices.ContainsFunc(storeServerAgents, func(known resources.Agent) bool {
+		return agent.Publisher == known.Publisher && agent.Kind == known.Kind && agent.Name == known.Name
+	})
+}
+
 // withEnvironmentServiceDeclaration returns the service's configuration with
 // the environment's declaration for it appended, or the configuration as it was
 // when the environment declares nothing. The result is a copy.
+//
+// A service whose agent deploys a database server (storeServerAgents) is
+// refused by name when the environment declares it in neither block: the CLI
+// never lets an environment that forgot to say where the server lives hand the
+// agent a Deploy it might answer with a server. The agent refuses the same
+// request itself (codefly-dev/service-postgres, managed.go) — that is the
+// second line of defence; this one holds for every agent version.
 //
 // A managed service authenticating as its own identity (auth-mode
 // external-identity) is handed two more values the entry cannot carry because
@@ -62,17 +94,20 @@ var managedCarriedKeys = map[string]string{
 // A managed service with no identity is refused by name: a Job with no identity
 // cannot log in, and the refusal belongs here, where the environment is, not in
 // the Job's logs.
-func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev0.Configuration, identity *resources.ServiceIdentity, world *World) (*basev0.Configuration, error) {
+func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev0.Configuration, identity *resources.ServiceIdentity, agent *resources.Agent, world *World) (*basev0.Configuration, error) {
 	if world == nil || world.Env == nil || identity == nil {
 		return configuration, nil
 	}
 	env := world.Env
 	managed, declared := env.ManagedService(identity.Module, identity.Name)
 	inCluster := env.InCluster(identity.Module, identity.Name)
+	unique := identity.Unique()
 	if !declared && !inCluster {
+		if deploysAStoreServer(agent) {
+			return nil, fmt.Errorf("environment %q declares %s in neither managed-services nor in-cluster-services, and its agent %s deploys a database server: declare the service under in-cluster-services (the server runs in the cluster, as the module declares it) or under managed-services (the environment owns the server, and the render carries the migration alone) on environment %q in workspace.codefly.yaml — a render never deploys a Postgres server by default", env.Name, unique, agent.Identifier(), env.Name)
+		}
 		return configuration, nil
 	}
-	unique := identity.Unique()
 	if declared && inCluster {
 		return nil, fmt.Errorf("environment %q declares %s both managed and in-cluster", env.Name, unique)
 	}
@@ -108,7 +143,7 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 		if owner == nil || strings.TrimSpace(owner.Principal) == "" {
 			return nil, fmt.Errorf("environment %q manages %s as its own identity (auth-mode %s) but declares no service-identity for it: its bootstrap Job would have no principal to log in as", env.Name, unique, managedAuthModeValue)
 		}
-		principals, err := runtimePrincipals(ctx, world, identity, managed)
+		principals, err := runtimePrincipals(ctx, world, identity, &managed)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +162,7 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 // declares for its consumers — the resolution the render's identity projection
 // applies to its pods (gitops.soleWorkloadIdentity) — and a dependent with
 // neither is refused by name: it would reach the instance as nobody.
-func runtimePrincipals(ctx context.Context, world *World, identity *resources.ServiceIdentity, managed environments.EnvironmentManagedService) ([]string, error) {
+func runtimePrincipals(ctx context.Context, world *World, identity *resources.ServiceIdentity, managed *environments.EnvironmentManagedService) ([]string, error) {
 	unique := identity.Unique()
 	if world.Dependencies == nil {
 		return nil, fmt.Errorf("managed service %s: the dependency graph is not loaded, so its runtime principals cannot be named", unique)

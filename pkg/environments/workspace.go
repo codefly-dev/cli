@@ -168,6 +168,16 @@ func (env *Environment) Validate() error {
 	if err := env.validateAdmittedSources(); err != nil {
 		return err
 	}
+	if err := env.validateServicePlacements(); err != nil {
+		return err
+	}
+	return env.ResourceQuota.Validate()
+}
+
+// validateServicePlacements holds the two blocks that say where a service's
+// server lives — managed-services and in-cluster-services — to the key shape
+// both take, and refuses a service named in both: a server is one or the other.
+func (env *Environment) validateServicePlacements() error {
 	for name, managed := range env.ManagedServices {
 		if err := validateManagedServiceKey(name); err != nil {
 			return err
@@ -184,7 +194,7 @@ func (env *Environment) Validate() error {
 			return fmt.Errorf("environment %q declares %q both managed (managed-services) and in-cluster (in-cluster-services): a service's server is one or the other", env.Name, name)
 		}
 	}
-	return env.ResourceQuota.Validate()
+	return nil
 }
 
 func validateResourcePathComponent(kind, name string) error {
