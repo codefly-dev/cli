@@ -3,6 +3,8 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/core/wool"
 	"strings"
 	"testing"
 
@@ -16,13 +18,21 @@ func stubReadiness(t *testing.T, verdict func(ctx context.Context, env, module s
 	t.Helper()
 	previous := WorkspaceReadiness
 	t.Cleanup(func() { WorkspaceReadiness = previous })
+	enforced = nil
+	t.Cleanup(func() { enforced = nil })
 	var asked []string
-	WorkspaceReadiness = func(ctx context.Context, env, module string) error {
+	WorkspaceReadiness = func(ctx context.Context, env, module string, enforcing bool) error {
 		asked = append(asked, env+"/"+module)
+		enforced = append(enforced, enforcing)
 		return verdict(ctx, env, module)
 	}
 	return &asked
 }
+
+// enforced records, per question, whether the engine was asked to enforce. The
+// override must report without enforcing, so the engine does not print a refusal
+// banner on a verb that proceeds.
+var enforced []bool
 
 func withSkip(t *testing.T, value bool) {
 	t.Helper()
@@ -62,9 +72,16 @@ func TestRequireWorkspaceReadyPassesAReadyWorkspace(t *testing.T) {
 }
 
 // The override exists for an operator mid-repair, whose sibling module is
-// unready. It must not evaluate the verdict at all — the point is to proceed —
-// and it must never be the default.
-func TestSkipWorkspaceReadinessBypassesTheGate(t *testing.T) {
+// unready: it lets the verb PROCEED. It skips the refusal and not the
+// evaluation, so the operator is told what they are overriding.
+//
+// It used to skip both. That made it a trap rather than an override: a render
+// succeeded while `publish` held the same precondition and refused it, so the
+// operator learned what readiness already knew one verb later, holding a rendered
+// tree that could not be published. On 2026-11-10 that happened for real — a
+// render passed under this flag with two operations missing from
+// `runnable-bindings`, and publish rejected the delivery.
+func TestSkipWorkspaceReadinessProceedsAndStillReportsTheVerdict(t *testing.T) {
 	withSkip(t, true)
 	asked := stubReadiness(t, func(context.Context, string, string) error {
 		return errors.New("workspace is not ready")
@@ -73,8 +90,35 @@ func TestSkipWorkspaceReadinessBypassesTheGate(t *testing.T) {
 	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("the override must let the verb proceed: %v", err)
 	}
-	if len(*asked) != 0 {
-		t.Fatalf("the override still evaluated readiness: %v", *asked)
+	if len(*asked) != 1 || (*asked)[0] != "staging/saas" {
+		t.Fatalf("the override must still evaluate readiness so it can be reported, asked %v", *asked)
+	}
+}
+
+// A passing workspace under the override is not silence either: the operator is
+// told the flag changed nothing, so a habit of passing it is visible.
+func TestSkipWorkspaceReadinessEvaluatesEvenWhenItWouldHavePassed(t *testing.T) {
+	withSkip(t, true)
+	asked := stubReadiness(t, func(context.Context, string, string) error { return nil })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("a ready workspace under the override must not be refused: %v", err)
+	}
+	if len(*asked) != 1 {
+		t.Fatalf("readiness was asked %v, want one question even under the override", *asked)
+	}
+}
+
+// With no engine installed the gate cannot evaluate anything, and the override
+// must not pretend it did.
+func TestSkipWorkspaceReadinessWithNoEngineProceeds(t *testing.T) {
+	withSkip(t, true)
+	previous := WorkspaceReadiness
+	WorkspaceReadiness = nil
+	t.Cleanup(func() { WorkspaceReadiness = previous })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("with no readiness engine the verb proceeds: %v", err)
 	}
 }
 
@@ -149,5 +193,120 @@ func stubModuleLoader(t *testing.T) func(ctx context.Context, args []string) (*r
 		workspace := &resources.Workspace{Name: "demo"}
 		workspace.WithDir(t.TempDir())
 		return workspace, &resources.Module{Name: name}, nil
+	}
+}
+
+// The override reports without enforcing, so the engine prints its diagnostics
+// and not the refusal banner: a verb that proceeds and exits 0 must not leave
+// "Workspace is NOT ready" in the log for a scraper to read as a failure.
+func TestSkipWorkspaceReadinessReportsWithoutEnforcing(t *testing.T) {
+	withSkip(t, true)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("the override must let the verb proceed: %v", err)
+	}
+	if len(enforced) != 1 || enforced[0] {
+		t.Fatalf("the override must ask without enforcing, got %v", enforced)
+	}
+}
+
+// Enforcing asks to enforce, so the banner is printed by the verb that refuses.
+func TestRequireWorkspaceReadyEnforcesWhenItRefuses(t *testing.T) {
+	withSkip(t, false)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
+		t.Fatal("an unready workspace must be refused")
+	}
+	if len(enforced) != 1 || !enforced[0] {
+		t.Fatalf("the enforcing path must ask to enforce, got %v", enforced)
+	}
+}
+
+// captureWarnings records the narration lines a call emits. The whole product of
+// the override path is what an operator reads, so the messages are the contract
+// and they are asserted: without this, a refactor could delete every warning in
+// requireWorkspaceReady and leave the suite green.
+func captureWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var lines []string
+	cli.SetOutputSink(func(_ wool.Loglevel, msg string) { lines = append(lines, msg) })
+	t.Cleanup(func() { cli.SetOutputSink(nil) })
+	return &lines
+}
+
+func joined(lines *[]string) string { return strings.Join(*lines, "\n") }
+
+// A failing verdict under the override must say three things: that readiness
+// failed, that it was not enforced, and that the next delivery verb will refuse.
+// The third is the one that was missing before and cost a render.
+func TestSkipWorkspaceReadinessWarnsThatTheNextVerbWillRefuse(t *testing.T) {
+	withSkip(t, true)
+	lines := captureWarnings(t)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("the override must let the verb proceed: %v", err)
+	}
+	out := joined(lines)
+	for _, want := range []string{SkipWorkspaceReadinessFlag, "FAILED", "not enforced", "render", "will refuse"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the override's warning does not name %q; got:\n%s", want, out)
+		}
+	}
+	// It must not name one verb as the refuser: the flag is registered on
+	// `publish` too, so "publish will refuse" is false when publish is the verb.
+	if strings.Contains(out, "`publish` evaluates") {
+		t.Errorf("the warning names a single verb as the refuser; got:\n%s", out)
+	}
+}
+
+// A passing verdict under the override still says so, which is what keeps a habit
+// of passing the flag visible rather than silent.
+func TestSkipWorkspaceReadinessWarnsWhenItChangedNothing(t *testing.T) {
+	withSkip(t, true)
+	lines := captureWarnings(t)
+	stubReadiness(t, func(context.Context, string, string) error { return nil })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("a ready workspace under the override must not be refused: %v", err)
+	}
+	out := joined(lines)
+	for _, want := range []string{SkipWorkspaceReadinessFlag, "passed", "changed nothing"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a passing override must still be announced, missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// The enforcing path refuses; it does not narrate the override.
+func TestRequireWorkspaceReadyDoesNotWarnWhenItRefuses(t *testing.T) {
+	withSkip(t, false)
+	lines := captureWarnings(t)
+	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
+		t.Fatal("an unready workspace must be refused")
+	}
+	if out := joined(lines); strings.Contains(out, SkipWorkspaceReadinessFlag+":") {
+		t.Errorf("the enforcing path must not narrate the override; got:\n%s", out)
+	}
+}
+
+// With no engine, the override says the verdict was NOT evaluated — the one case
+// where that sentence is true.
+func TestSkipWorkspaceReadinessWithNoEngineSaysItWasNotEvaluated(t *testing.T) {
+	withSkip(t, true)
+	lines := captureWarnings(t)
+	previous := WorkspaceReadiness
+	WorkspaceReadiness = nil
+	t.Cleanup(func() { WorkspaceReadiness = previous })
+
+	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+		t.Fatalf("with no readiness engine the verb proceeds: %v", err)
+	}
+	if out := joined(lines); !strings.Contains(out, "NOT evaluated") {
+		t.Errorf("with no engine the warning must say the verdict was not evaluated; got:\n%s", out)
 	}
 }

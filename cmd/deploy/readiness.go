@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/timings"
 )
 
 // SkipWorkspaceReadinessFlag is the one name of the override, used for the flag
@@ -23,7 +24,10 @@ const SkipWorkspaceReadinessFlag = "skip-workspace-readiness"
 // so this package cannot import cmd back. It is nil in this package's unit
 // tests unless one installs a stand-in, which is how the gate's behaviour is
 // exercised without the engine.
-var WorkspaceReadiness func(ctx context.Context, env, module string) error
+// enforcing is false when the operator took the override: the engine then
+// reports its verdict without printing the refusal banner a verb that proceeds
+// has not earned.
+var WorkspaceReadiness func(ctx context.Context, env, module string, enforcing bool) error
 
 // skipWorkspaceReadiness is the operator's explicit override. It exists for one
 // situation: a workspace mid-repair, where the module being delivered is fine
@@ -41,16 +45,36 @@ var skipWorkspaceReadiness bool
 // is free once it has happened. Everything the failure used to be discovered
 // behind — the render, the builds, the pushes, the clone — still comes after.
 func requireWorkspaceReady(ctx context.Context, verb, env, module string) error {
-	if skipWorkspaceReadiness {
-		cli.Warning("--%s: workspace readiness for environment %q was NOT evaluated before `%s`", SkipWorkspaceReadinessFlag, env, verb)
-		cli.Warning("--%s: a missing configuration will surface as a failure deep inside the render instead — run `codefly doctor workspace --env %s --module %s` when it does", SkipWorkspaceReadinessFlag, env, module)
-		return nil
-	}
+	defer timings.Start("readiness")()
 	if WorkspaceReadiness == nil {
+		if skipWorkspaceReadiness {
+			cli.Warning("--%s: workspace readiness for environment %q was NOT evaluated before `%s`", SkipWorkspaceReadinessFlag, env, verb)
+		}
 		return nil
 	}
-	if err := WorkspaceReadiness(ctx, env, module); err != nil {
-		return fmt.Errorf("%w — refusing to %s (override with --%s)", err, verb, SkipWorkspaceReadinessFlag)
+	if !skipWorkspaceReadiness {
+		if err := WorkspaceReadiness(ctx, env, module, true); err != nil {
+			return fmt.Errorf("%w — refusing to %s (override with --%s)", err, verb, SkipWorkspaceReadinessFlag)
+		}
+		return nil
 	}
+	// The override skips the REFUSAL, not the evaluation.
+	//
+	// It used to skip both, and that made it a trap rather than an override: a
+	// render would succeed while `publish` held the same precondition and refused
+	// it, so the operator learned what readiness already knew one verb later, with
+	// a rendered tree in hand that could not be published. On 2026-11-10 that is
+	// exactly what happened — a render passed under this flag with two operations
+	// missing from `runnable-bindings`, and publish rejected it.
+	//
+	// So the report is always produced. Under the flag it is printed and the verb
+	// proceeds, naming what the next verb will refuse; without it, it refuses here
+	// as before.
+	if err := WorkspaceReadiness(ctx, env, module, false); err != nil {
+		cli.Warning("--%s: workspace readiness for environment %q FAILED and was not enforced before `%s`", SkipWorkspaceReadinessFlag, env, verb)
+		cli.Warning("--%s: every delivery verb evaluates this precondition, so the next one will refuse until it is fixed", SkipWorkspaceReadinessFlag)
+		return nil
+	}
+	cli.Warning("--%s: workspace readiness for environment %q passed, so the override changed nothing before `%s`", SkipWorkspaceReadinessFlag, env, verb)
 	return nil
 }

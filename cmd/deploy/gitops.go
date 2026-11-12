@@ -806,6 +806,10 @@ func renderComposition(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Once for the composition: every module's render is held to exactly these.
+	if err = environments.ValidateWorkspace(ctx, workspace, env); err != nil {
+		return err
+	}
 	if err = gitops.CheckCompositionPermissions(ctx, workspace, env, true); err != nil {
 		return err
 	}
@@ -818,15 +822,27 @@ func renderComposition(ctx context.Context) error {
 	for _, name := range withdrawn {
 		cli.Info("Skipped %s: environment %s withdraws every service of it (exclude-services)", name, env.Name)
 	}
-	for index, module := range rendered {
+	// Every module is held to its readiness before the first image is built.
+	for _, module := range rendered {
 		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
+	}
+	// The composition's services are deployed once, here, and each module's
+	// render reads its share: a render per module deployed the closure of its
+	// roots again, and the closures overlap almost entirely.
+	deployed, err := gitops.DeployComposition(ctx, workspace, env, rendered,
+		gitOpsValidateCluster, gitOpsRebuild, cli.NewOutputSink())
+	if err != nil {
+		return fmt.Errorf("render the composition: %w%s", err, unrenderedModules(rendered))
+	}
+	defer func() { _ = deployed.Close() }()
+	for index, module := range rendered {
 		result, renderErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 			Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
-			Progress: os.Stdout,
+			Progress: os.Stdout, Deployed: deployed,
 		})
 		if renderErr != nil {
 			// The modules after this one keep whatever render their tree

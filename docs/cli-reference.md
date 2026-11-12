@@ -39,6 +39,7 @@ Subcommands:
 - [`codefly add`](#codefly-add)
 - [`codefly agent`](#codefly-agent)
 - [`codefly audit`](#codefly-audit)
+- [`codefly authority`](#codefly-authority)
 - [`codefly build`](#codefly-build)
 - [`codefly ci`](#codefly-ci)
 - [`codefly clear`](#codefly-clear)
@@ -799,6 +800,108 @@ Flags:
       --include-dev    Include development/test-only dependencies
       --json           Emit raw JSON instead of a table
       --outdated       Also report outdated patch+minor releases (default true)
+```
+
+## `codefly authority`
+
+Check what the authority's declarations admit, and explain why a call is refused
+
+```
+codefly authority <subcommand>
+```
+
+Subcommands:
+
+- [`codefly authority check`](#codefly-authority-check)
+- [`codefly authority trace`](#codefly-authority-trace)
+
+## `codefly authority check`
+
+Fail when declarations that must agree do not: roles, ceilings, the envelope, generated policy tables
+
+```
+A static gate over committed files: no cluster, no credential, no network.
+
+--env <environment>, in a composition, reads what that environment delivers to
+its host (each module's paired delivery document, and the module envelope) and
+fails when a module's declaration does not hold to its own contract (a role
+granting beyond its ceiling refuses the whole delivery), when a role names a
+scope the composition reaches nowhere, or when the envelope withholds a scope
+a binding asks for: the host drops that scope without a record, so the first
+symptom is a refused call.
+
+--module-dir <module>, in a module's checkout, fails when a generated
+permissions table (pkg/gen/permissions/permissions_gen.go) disagrees with the
+method policies the module publishes: a service's own tests then pass against
+the stale side.
+
+With both, the checkout is also held to what the environment delivers for
+the same module: a branch that moved without a delivery is a refused copy.
+
+A method open to any checked caller on a module that checks owners is listed
+UNPROVEN, every one, with no exemption: its handler decides and no declaration
+states what it asks, so declarations agreeing proves nothing about it. With
+any unproven the command does not print "ok"; --fail-on-unproven makes it
+exit 1. Agreement is not sufficiency: only calling the handler proves that.
+
+Every finding names the file and the field. A file that cannot be read is a
+finding, never a pass.
+```
+
+```
+codefly authority check [flags]
+```
+
+Flags:
+
+```
+      --env string          the environment whose delivered tree is read
+      --fail-on-unproven    exit 1 when a method is open on a module that checks owners
+      --module-dir string   a module's checkout: its published policies and generated tables
+      --root string         the composition's workspace root, holding deployments/ (default ".")
+```
+
+## `codefly authority trace`
+
+Answer why a call is admitted or refused, link by link, naming the file and field that decide each
+
+```
+Walk the chain one call travels and print every link with its verdict, the
+file and field it was read from, the value held there, and the refusing
+decision's own reason. It names the first link that does not admit the call
+and keeps walking, so everything wrong is shown, not only the earliest.
+
+The call: a holder of --role on --caller's installation (omit --role for the
+module acting alone, on its headless scopes) reaching --method of the module
+--binding is addressed to.
+
+Static mode, the only one built: links 4 to 8 are read from the committed tree
+of --env (the paired delivery documents and the module envelope), with no
+cluster. --module-dir <the audience's checkout> adds every other written copy
+of the method's policy there: its published contract and generated tables.
+Links 1 to 3 (page registered, installed and entitled, role held) need a live
+cell and are printed "unread", never as passed.
+
+A verdict is one of: admitted; refused; unread (the source could not be read);
+unproven (read, and no declaration states what decides it — the handler of a
+module that checks owners). Only "admitted" is a pass. Exit 1 unless links 4
+to 8 all admit.
+```
+
+```
+codefly authority trace [flags]
+```
+
+Flags:
+
+```
+      --binding string      the caller's binding the call goes through
+      --caller string       the calling module's principal
+      --env string          the environment whose delivered tree is read
+      --method string       the audience's method, as its policy names it
+      --module-dir string   a module's checkout: its published policies and generated tables
+      --role string         the role held on the caller's installation; omit for the module acting alone
+      --root string         the composition's workspace root, holding deployments/ (default ".")
 ```
 
 ## `codefly build`

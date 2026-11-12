@@ -77,7 +77,7 @@ func TestOpenOrUpdatePullRequestRejectsHeadCommitDrift(t *testing.T) {
 	t.Setenv("GITHUB_API_URL", server.URL)
 
 	if _, _, err := openOrUpdatePullRequest(context.Background(), prepared, &PublishRequest{}, commit); err == nil ||
-		!strings.Contains(err.Error(), "pull request head is") {
+		!strings.Contains(err.Error(), "is stale: its head is") {
 		t.Fatalf("head drift error = %v", err)
 	}
 }

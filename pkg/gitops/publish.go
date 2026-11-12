@@ -2278,6 +2278,15 @@ func changedPathsBetween(ctx context.Context, repo, baseRevision, branchRevision
 	return paths, nil
 }
 
+// shortRevision abbreviates a commit for a message, defensively: a refusal must
+// never panic on a value it is only reporting.
+func shortRevision(revision string) string {
+	if len(revision) <= 12 {
+		return revision
+	}
+	return revision[:12]
+}
+
 func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, request *PublishRequest, commit string) (string, int, error) {
 	if prepared.plan.RepositorySlug == "" {
 		reviewRef := localReviewRef(prepared.plan.PromotionBranch, commit)
@@ -2328,7 +2337,21 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 	if len(existing) == 1 {
 		pr := existing[0]
 		if pr.GetHead().GetSHA() != commit {
-			return "", 0, fmt.Errorf("pull request head is %s, expected %s", pr.GetHead().GetSHA(), commit)
+			// The open pull request's head is not the commit this publish just
+			// pushed — and the push WAS verified: twenty lines up,
+			// publicationRemoteRef confirmed refs/heads/<promotion> resolves to
+			// exactly this commit, and a promotion branch moved under us is
+			// refused by the force-with-lease path with its own error.
+			//
+			// So this says what it can establish and no more: the two differ, and
+			// re-running publish regenerates the promotion. It deliberately does
+			// NOT name a cause. The earlier version blamed "another promotion
+			// moved the base", which the ref check above rules out — asserting a
+			// cause the control flow denies is the defect this branch exists to
+			// remove, and it was committed here first.
+			return "", 0, fmt.Errorf(
+				"promotion pull request #%d for %s is stale: its head is %s and this publish pushed %s to that branch. Re-run publish for %s to regenerate the promotion",
+				pr.GetNumber(), prepared.plan.PromotionBranch, shortRevision(pr.GetHead().GetSHA()), shortRevision(commit), prepared.plan.PromotionBranch)
 		}
 		if _, _, editErr := client.PullRequests.Edit(ctx, owner, repo, pr.GetNumber(), &github.PullRequest{
 			Title: github.Ptr(title),

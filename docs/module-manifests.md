@@ -772,8 +772,12 @@ The Job is an Argo CD **Sync hook** (`argocd.argoproj.io/hook: Sync`,
 `hook-delete-policy: BeforeHookCreation`), not a tracked resource: a hook runs
 on every sync from state that still exists, so a replay after a restore is an
 ordinary sync, and a sync that changes nothing re-POSTs a generation the host
-replays. Its token is projected for the host's audience and re-read per
-request; it runs codefly's own base companion image
+replays. A changed set is a Job under a new name, which no hook policy deletes,
+so the Job retires itself: `ttlSecondsAfterFinished` is one day, after which
+the cluster deletes a finished Job and its pod — long enough to read the
+receipts or the refusal of the last delivery, and never short, because a hook
+deleted before Argo has read its completion leaves that sync running. Its
+token is projected for the host's audience and re-read per request; it runs codefly's own base companion image
 (`ghcr.io/codefly-dev/codefly`, pinned by digest — never a Docker Hub image),
 read-only, as a non-root user with every capability dropped. The cell file
 declares that same image as the namespace's delivery carrier, so moving its

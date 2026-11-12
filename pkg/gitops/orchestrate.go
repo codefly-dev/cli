@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/timings"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -32,6 +33,9 @@ type renderBuild struct {
 	// progress is the operator's stdout, where each build phase reports its
 	// image builds and pushes starting and finishing; nil reports nothing.
 	progress io.Writer
+	// deployed is the composition's services already deployed, once, for every
+	// module a whole-composition render renders; nil deploys this module's own.
+	deployed *CompositionDeploy
 }
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -48,19 +52,36 @@ func renderModuleTree(
 	includeBootstrap bool,
 	build renderBuild,
 ) (RenderResult, error) {
+	defer timings.Start("module.total")()
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
 	}
-	if err := environments.ValidateWorkspace(ctx, workspace, env); err != nil {
-		return RenderResult{}, err
+	// A whole-composition render has validated the workspace and held every
+	// module to its permissions once, before it deployed anything; the module's
+	// own checks are a subset of those.
+	if build.deployed == nil {
+		endValidate := timings.Start("module.validate-workspace")
+		err := environments.ValidateWorkspace(ctx, workspace, env)
+		endValidate()
+		if err != nil {
+			return RenderResult{}, err
+		}
 	}
 	if env.WithdrawsModule(module) {
 		return RenderResult{}, fmt.Errorf("environment %s withdraws every service of module %s (exclude-services), so nothing of it renders there", env.Name, module.Name)
 	}
-	if err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name); err != nil {
-		return RenderResult{}, err
+	if build.deployed == nil {
+		endPermissions := timings.Start("module.composition-permissions")
+		err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name)
+		endPermissions()
+		if err != nil {
+			return RenderResult{}, err
+		}
 	}
-	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
+	endAuthored := timings.Start("module.authored-configurations")
+	err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime())
+	endAuthored()
+	if err != nil {
 		return RenderResult{}, err
 	}
 	ownedPath, err := moduleOwnedPath(workspace, env, module.Name)
@@ -200,6 +221,7 @@ type moduleRender struct {
 // agent, the units inventoried, the module's instance declared,
 // and the module bundle or the environment bootstrap staged beside them.
 func (r *moduleRender) stage(ctx context.Context, stage string) error {
+	defer timings.Start("module.stage")()
 	services, err := loadModuleServices(ctx, r.module, r.env)
 	if err != nil {
 		return err
@@ -208,7 +230,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	// Publish holds this tree and its sibling consumers to them; the render
 	// only reports the siblings that are stale now, so they are rendered
 	// next rather than found at publish.
+	endDigests := timings.Start("module.group-digests")
 	digests, err := currentGroupDigests(ctx, r.workspace, r.env, r.module)
+	endDigests()
 	if err != nil {
 		return err
 	}
@@ -220,11 +244,15 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	// On a meshed environment every service runs as the account its principal
 	// names; the ones that did not before are reported, not flipped silently.
 	r.meshAccounts = meshNamedAccounts(r.module.Name, services, r.env)
+	endResolve := timings.Start("module.resolve-inputs")
 	catalog, roots, err := r.resolveInputs(ctx, services)
+	endResolve()
 	if err != nil {
 		return err
 	}
+	endRoots := timings.Start("module.render-roots")
 	rendered, err := r.renderRoots(ctx, roots, stage)
+	endRoots()
 	if err != nil {
 		return err
 	}
@@ -236,11 +264,16 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	for unique := range rendered.outputs {
 		uniques = append(uniques, unique)
 	}
+	endInjections := timings.Start("module.injections")
 	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, rendered.hostRoutes, telemetryCarriersForRender(r.env, uniques), r.sink)
+	endInjections()
 	if err != nil {
 		return err
 	}
-	if err = r.inventoryUnits(ctx, services, catalog, stage, rendered, injections); err != nil {
+	endUnits := timings.Start("module.inventory-units")
+	err = r.inventoryUnits(ctx, services, catalog, stage, rendered, injections)
+	endUnits()
+	if err != nil {
 		return err
 	}
 	// The edges into this module's workloads, from the ports the render
@@ -274,13 +307,23 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if len(rendered.endpointCarriers) > 0 {
 		r.options.EndpointCarriers = rendered.endpointCarriers
 	}
-	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts, containerPorts, selfConsuming); err != nil {
+	endMesh := timings.Start("module.mesh-edges")
+	index, err := r.build.deployed.meshIndex(ctx, r.workspace, r.env)
+	if err != nil {
+		return fmt.Errorf("derive the mesh edges of %s: %w", r.module.Name, err)
+	}
+	r.options.MeshEdges, err = deriveMeshEdgesFrom(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts, containerPorts, selfConsuming, index)
+	endMesh()
+	if err != nil {
 		return err
 	}
 	if err = bindGatewayServiceEvidence(r.options.MeshEdges, r.options.renderRoot, stage, r.env.Name, r.options.Units, r.env.RunnableCallEndpoint); err != nil {
 		return err
 	}
-	if err = r.declareInstances(ctx, services); err != nil {
+	endInstances := timings.Start("module.declare-instances")
+	err = r.declareInstances(ctx, services)
+	endInstances()
+	if err != nil {
 		return err
 	}
 	if r.module.Agent != nil {
@@ -335,6 +378,11 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 	}
 	// A configuration error refuses the render before any image is built or
 	// pushed, listing every unresolved reference of every root's graph.
+	// A composition deploy has checked every root's references and prepared the
+	// registry already, before it built anything.
+	if r.build.deployed != nil {
+		return catalog, roots, nil
+	}
 	if err = orchestration.PlanConfigurationReferences(ctx, r.workspace, r.env, roots, false); err != nil {
 		return nil, nil, err
 	}
@@ -376,6 +424,9 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 		deployed:         make(map[string]*basev0.Configuration),
 		secretKeys:       make(map[string][]string),
 		inClusterPorts:   make(map[string]map[string]uint32),
+	}
+	if r.build.deployed != nil {
+		return rendered, r.build.deployed.stageInto(r.module.Name, stage, r.options.renderRoot, rendered)
 	}
 	destinations := moduleStageDestinations(r.workspace, r.module, stage)
 	for _, service := range roots {
@@ -780,6 +831,69 @@ func prepareSnapshotRegistry(ctx context.Context, env *environments.Environment)
 // serviceFlow renders one root service's dependency graph through its service
 // agents. It is a variable so a test can stand an in-process agent in for the
 // flow, the way stubBuild stands in for the image build boundary.
+// deploySnapshot deploys service through one flow, and with it every co-root
+// (module-qualified uniques): the roots seed the same playbook, so a service
+// several of them reach is deployed once. The caller stops the flow it gets
+// back; on an error it has been stopped already.
+func deploySnapshot(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	module *resources.Module,
+	service *resources.Service,
+	coRoots []string,
+	env *environments.Environment,
+	build renderBuild,
+	sink orchestration.OutputSink,
+	destination func(*resources.Module, *resources.Service) string,
+) (_ *orchestration.Flow, err error) {
+	if err = selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
+		return nil, err
+	}
+	endNew := timings.Start("flow.new")
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
+	endNew()
+	if err != nil {
+		return nil, err
+	}
+	// The flow, not the named result: a return of nil, err sets the result
+	// before this runs, and the flow it must stop is the one just made.
+	defer func() {
+		if err != nil {
+			_ = flow.Stop()
+		}
+	}()
+	flow.WithPush(true)
+	if sink != nil {
+		flow.WithOutputSink(sink)
+	}
+	flow.WithBuildProgress(build.progress)
+	flow.WithStandAlone(build.standAlone)
+	flow.WithClusterValidation(build.validateCluster)
+	flow.WithRebuild(build.rebuild)
+	flow.WithCoRoots(coRoots...)
+	endInit := timings.Start("flow.init-managers")
+	err = flow.InitManagers(ctx)
+	endInit()
+	if err != nil {
+		return nil, err
+	}
+	endLoad := timings.Start("flow.load")
+	err = flow.Load(ctx)
+	endLoad()
+	if err != nil {
+		return nil, err
+	}
+	flow.WithDeploymentManager(gitOpsDeploymentOutputManager{})
+	flow.WithDeploymentDestination(destination)
+	endDeploy := timings.Start("flow.deploy")
+	err = flow.Deploy(ctx)
+	endDeploy()
+	if err != nil {
+		return nil, err
+	}
+	return flow, nil
+}
+
 var serviceFlow = renderServiceFlow
 
 func renderServiceFlow(
@@ -799,37 +913,16 @@ func renderServiceFlow(
 	recordInClusterPorts func(map[string]map[string]uint32),
 	recordEndpointCarriers func(map[string]string),
 ) (result error) {
-	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
-		return err
-	}
-	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
+	defer timings.Start("flow.total")()
+	flow, err := deploySnapshot(ctx, workspace, module, service, nil, env, build, sink, destination)
 	if err != nil {
 		return err
 	}
-	flow.WithPush(true)
-	if sink != nil {
-		flow.WithOutputSink(sink)
-	}
-	flow.WithBuildProgress(build.progress)
-	flow.WithStandAlone(build.standAlone)
-	flow.WithClusterValidation(build.validateCluster)
-	flow.WithRebuild(build.rebuild)
 	defer func() {
 		if stopErr := flow.Stop(); result == nil && stopErr != nil {
 			result = stopErr
 		}
 	}()
-	if err := flow.InitManagers(ctx); err != nil {
-		return err
-	}
-	if err := flow.Load(ctx); err != nil {
-		return err
-	}
-	flow.WithDeploymentManager(gitOpsDeploymentOutputManager{})
-	flow.WithDeploymentDestination(destination)
-	if err := flow.Deploy(ctx); err != nil {
-		return err
-	}
 	if record != nil {
 		record(flow.DeploymentOutputs())
 	}

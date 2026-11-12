@@ -727,12 +727,49 @@ func deriveMeshEdges(
 	ports, containerPorts map[string]map[string]uint32,
 	selfConsuming map[string]bool,
 ) (*MeshEdges, error) {
-	if env == nil || env.Host == nil {
-		return nil, nil
+	return deriveMeshEdgesFrom(ctx, workspace, env, module, services, ports, containerPorts, selfConsuming, nil)
+}
+
+// meshIndexFor hands back the index the caller already holds, or indexes the
+// composition here when it holds none. A render of every module indexes once
+// and passes it down; a render of one module indexes for itself.
+func meshIndexFor(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	env *environments.Environment,
+	module *resources.Module,
+	held *meshComposition,
+) (*meshComposition, error) {
+	if held != nil {
+		return held, nil
 	}
 	index, err := indexMeshComposition(ctx, workspace, env)
 	if err != nil {
 		return nil, fmt.Errorf("derive the mesh edges of %s: %w", module.Name, err)
+	}
+	return index, nil
+}
+
+// deriveMeshEdgesFrom is deriveMeshEdges over an index of the composition the
+// caller already holds; nil indexes it here. The index is a function of the
+// workspace and the environment alone, so a render of every module indexes
+// once (CompositionDeploy.meshIndex).
+func deriveMeshEdgesFrom(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	env *environments.Environment,
+	module *resources.Module,
+	services []*resources.Service,
+	ports, containerPorts map[string]map[string]uint32,
+	selfConsuming map[string]bool,
+	index *meshComposition,
+) (*MeshEdges, error) {
+	if env == nil || env.Host == nil {
+		return nil, nil
+	}
+	index, err := meshIndexFor(ctx, workspace, env, module, index)
+	if err != nil {
+		return nil, err
 	}
 	namespace := env.ModuleNamespace(workspace, module.Name)
 	// Behind a hop, each endpoint of this module's services admits the hop and

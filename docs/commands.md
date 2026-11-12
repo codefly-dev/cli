@@ -2245,7 +2245,11 @@ render`, which refuses to render pins that are behind. Pins that could not be
 compared because a source was unreadable are reported as
 `pin_currency_unverified`: a warning locally, a failure in a render, never a
 pass. There is no offline mode for a render: its only escape is
-`--skip-workspace-readiness`, which skips every readiness check and says so.
+`--skip-workspace-readiness`, which skips the **refusal** and not the
+evaluation — the verdict is still produced and printed, and the verb proceeds
+naming that the next delivery verb will refuse until it is fixed. So the override
+does not make a render offline: it still spends the currency timeout before
+proceeding.
 The check reads the network (bounded at 10 s, 25 s for a render); a first run
 fetches each stale source's history once.
 
@@ -2838,6 +2842,50 @@ The **composition** is not scaffolded: which workspace composes the solution,
 which modules it pins and at what commits, and the configuration groups those
 modules need, are the composition's to say. The command prints each of them,
 with the failure each one causes when it is skipped.
+
+### `codefly authority check` and `codefly authority trace`
+
+"Why was this call refused?" has its answer in several declarations that must
+agree: a role, the binding's ceiling, the host's envelope, the audience's
+method policy and every written copy of it. Both commands read committed files
+only — no cluster, no credential.
+
+`check` is the gate. `--env <environment>`, in a composition, reads what that
+environment delivers to its host and fails when a module's delivery does not
+hold to its own contract, when a role names a scope the composition reaches
+nowhere, or when the envelope withholds a scope a binding asks for (the host
+drops it without a record). `--module-dir <module>`, in a module's checkout,
+fails when a generated `permissions_gen.go` says something else than the
+method policies the module publishes.
+
+`trace` explains one call: every link, its verdict, the file and field that
+decided it, the value held there and the refusing decision's own words. It
+names the first link that does not admit the call and keeps walking.
+
+```bash
+codefly authority check --env blue
+codefly authority check --module-dir modules/record-store
+codefly authority trace --env blue --caller org-directory --binding records-types \
+  --method /records.v1.RecordsService/GetRecordType \
+  --module-dir ../module-record-store/modules/record-store
+```
+
+With both flags, `check` also holds the checkout to what the environment
+delivers for the same module, so a branch that moved without a delivery is a
+refused copy. And every method open to any checked caller on a module that
+checks owners is listed `UNPROVEN`, with no exemption (a `Version` too): the
+gate then does not print `ok`, and `--fail-on-unproven` makes it exit 1.
+Declarations agreeing is not proof the handler asks what they say; only
+calling the handler proves that.
+
+A verdict is `admitted`, `refused`, `unread` (the source could not be read) or
+`unproven` (read, and no declaration states what decides it: the handler of a
+module that checks owners). Only `admitted` is a pass. The decisions are the
+authority's own (`authority-core`'s `decide.Trace`); the CLI reads the files.
+
+Static mode is the only one built: links 1 to 3 (page registered, installed
+and entitled, role held) need a live cell and print `unread`. One hop is
+traced; what an installation consented to and a delegation are not read.
 
 ### `codefly doctor solution [module]`
 

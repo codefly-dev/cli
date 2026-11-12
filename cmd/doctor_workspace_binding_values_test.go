@@ -81,10 +81,10 @@ func TestDoctorUsesEffectiveRunnableValueAndPreservesAuthoredFile(t *testing.T) 
 			report := runReadiness(t, workspaceReadinessOptions{dir: dir, module: "backend"})
 			if validOverride {
 				require.Equal(t, readinessStatusReady, report.Status, reportJSON(t, report))
-				require.NoError(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend"))
+				require.NoError(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend", true))
 			} else {
 				requireCode(t, report, codeConfigurationInvalid, checkStatusFail)
-				require.ErrorContains(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend"), "out of date")
+				require.ErrorContains(t, deploy.WorkspaceReadiness(context.Background(), "local", "backend", true), "out of date")
 			}
 			after, err := os.ReadFile(path)
 			require.NoError(t, err)

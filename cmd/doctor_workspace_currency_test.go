@@ -169,7 +169,46 @@ func TestRenderGateRefusesAStalePinAndShowsAHeldOne(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": fmt.Sprintf(currencyWorkspace, "0.1.0", "")})
 	t.Chdir(dir)
 
-	err := deploy.WorkspaceReadiness(context.Background(), "local", "")
+	err := deploy.WorkspaceReadiness(context.Background(), "local", "", true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), codePinStale, "the delivery gate must be strict about a stale pin")
+}
+
+// An abbreviated SHA resolves nowhere: git resolves one locally and a remote does
+// not, so every clone reads it as a ref name and the render dies with
+// "Remote branch <pin> not found in upstream origin".
+//
+// The second case is the one that matters, and the first version of this check
+// got it wrong. A commit pin is exactly what a source that has not cut a tag yet
+// is pinned by, and the release comparison answers "no release to compare with"
+// as CURRENT — so judged below it, an unresolvable pin on a tagless source
+// reported GREEN and the render still died fifteen minutes later.
+func TestJudgePinNamesAnAbbreviatedCommitSHA(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", t.TempDir())
+	source, commits := currencySource(t)
+	ctx := context.Background()
+	head, err := composition.ReadSourceHead(ctx, source)
+	require.NoError(t, err)
+	judge := func(h *composition.SourceHead, version string) currencyVerdict {
+		return judgePin(ctx, &currencyPin{label: "m", name: "m", source: source, version: version}, h)
+	}
+
+	short := commits[3][:12]
+	verdict := judge(head, short)
+	require.False(t, verdict.current, "an abbreviated SHA resolves nowhere, so it is never current")
+	require.Contains(t, verdict.detail, "abbreviated commit SHA")
+	require.Contains(t, verdict.detail, "Use the full SHA")
+
+	// The regression: a source that publishes no release must still be judged.
+	tagless := &composition.SourceHead{Branch: head.Branch, Tip: head.Tip}
+	verdict = judge(tagless, short)
+	require.False(t, verdict.current, "a tagless source must not report an unresolvable pin as current")
+	require.Contains(t, verdict.detail, "abbreviated commit SHA")
+
+	// A tag whose name happens to be hex is a tag, not a near miss.
+	hexTag := &composition.SourceHead{Branch: head.Branch, Tip: head.Tip, Tags: []string{"deadbeef"}}
+	require.NotContains(t, judge(hexTag, "deadbeef").detail, "abbreviated commit SHA")
+
+	// The full object name is a commit pin and judged against the branch.
+	require.True(t, judge(head, commits[3]).current, "the tip is current")
 }

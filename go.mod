@@ -1,6 +1,6 @@
 module github.com/codefly-dev/cli
 
-go 1.27.3
+go 1.27.4
 
 require (
 	connectrpc.com/connect v1.21.1
@@ -12,10 +12,10 @@ require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
 	github.com/codefly-dev/authority/libraries/authority-client/go v0.2.0
-	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.0
+	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.1-0.20261112001640-6ec380ea8d52
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261109220601-1f0887616bde
 	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261109220601-1f0887616bde
-	github.com/codefly-dev/authority/libraries/hop/go v0.2.0
+	github.com/codefly-dev/authority/libraries/hop/go v0.2.1-0.20261112001640-6ec380ea8d52
 	github.com/codefly-dev/core v0.19.24
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7

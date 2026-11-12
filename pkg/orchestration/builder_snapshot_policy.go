@@ -97,7 +97,15 @@ func (policy *SnapshotPolicy) emit(index int) []Action {
 }
 
 // ConcurrentActions reports that this group may run its actions at the same
-// time, which it does for a build phase and nothing else.
+// time, which it does for the plan and build phases and nothing else.
+//
+// The plan phase is concurrent for the reuse decision it takes per service,
+// which is a handful of registry reads (`imagetools inspect`, 2-6 s each) and
+// was the render's wall clock when taken one service at a time. What the
+// phase shares is serialized where it is shared: the Go module and git source
+// prefetches each hold their own lock (goModulePrefetch.fetch,
+// gitSourcePrefetch.fetch), and the registry reads are one question in flight
+// per reference (probeCache).
 //
 // What makes the build phase the one safe phase is not that building is slow:
 // it is that each service's build reads and writes only its own things. Its
@@ -132,7 +140,7 @@ func (policy *SnapshotPolicy) ConcurrentActions(actions []Action) bool {
 // concurrentPhase reports whether a phase of this type runs its services at the
 // same time.
 func concurrentPhase(actionType ActionType) bool {
-	return actionType == BuilderBuild
+	return actionType == BuilderBuild || actionType == BuilderPlan
 }
 
 func (policy *SnapshotPolicy) completed(action Action) bool {
@@ -148,6 +156,18 @@ func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error
 	if err != nil {
 		return wool.Get(ctx).In("SnapshotPolicy.Restrict").Wrapf(err, "cannot get dependencies")
 	}
+	return policy.plan(dependencies, unique)
+}
+
+// RestrictToScope plans every service of the graph the policy holds, which a
+// run rooted in several services has already scoped to its own.
+func (policy *SnapshotPolicy) RestrictToScope(_ context.Context) error {
+	return policy.plan(policy.dependencies, "")
+}
+
+// plan lays out the phases of the snapshot of dependencies. unique is the one
+// service a stand-alone snapshot is limited to.
+func (policy *SnapshotPolicy) plan(dependencies *architecture.ServiceDependencies, unique string) error {
 	policy.actions = nil
 	// Every member of the union closure needs a builder, but only edges for
 	// the current stage constrain its order. Complete builds before rendering.
@@ -182,4 +202,5 @@ func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error
 	return nil
 }
 
+var _ ScopedPolicy = &SnapshotPolicy{}
 var _ PlaybookPolicy = &SnapshotPolicy{}

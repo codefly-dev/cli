@@ -314,9 +314,17 @@ type World struct {
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
 	goModulePrefetch *goModulePrefetch
+	// prefetchOnce and gitOnce guard the two lazy prefetches above, which the
+	// plan phase now reaches from several services at once.
+	prefetchOnce sync.Once
+	gitOnce      sync.Once
 	// gitSourcePrefetch holds the git source mirrors this flow's recipes
 	// declared, fetched the same way (see gitSourcePrefetch).
 	gitSourcePrefetch *gitSourcePrefetch
+
+	// probes holds what this flow has read from a registry (see probeCache).
+	probesMu sync.Mutex
+	probes   *probeCache
 
 	// hostArchitecture reads the container engine's architecture, which a
 	// local cluster's nodes run; nil selects `docker info`.
@@ -1353,8 +1361,18 @@ func (flow *Flow) Deploy(ctx context.Context) error {
 			return action.Service != resources.WithUnique(flow.originService).Unique()
 		})
 	}
-	err := flow.playbook.Begin(ctx, Action{Type: BuilderBegin, Service: resources.WithUnique(flow.originService).Unique()})
-	if err != nil {
+	// Every root is seeded together, each driving its own closure through the
+	// same playbook, so a service several roots reach is deployed once.
+	roots := flow.rootUniques()
+	seeds := make([]Action, 0, len(roots))
+	for _, root := range roots {
+		seeds = append(seeds, Action{Type: BuilderBegin, Service: root})
+	}
+	begin := flow.playbook.Begin
+	if len(roots) > 1 {
+		begin = flow.playbook.BeginScoped
+	}
+	if err := begin(ctx, seeds...); err != nil {
 		return w.Wrapf(err, "cannot execute deploy playbook")
 	}
 	return nil
@@ -1987,12 +2005,37 @@ func (flow *Flow) scopeDependenciesToRun(ctx context.Context, required []string,
 }
 
 // managerDependencies chooses membership independently of snapshot stage order.
+//
+// A snapshot's members are the build-stage closure of every root, each closure
+// listed dependencies-first and the union keeping the first occurrence of every
+// service, which carries that order across roots as runClosure does. With one
+// root it is exactly that root's closure.
 func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Service, error) {
 	origin := resources.WithUnique(flow.originService).Unique()
 	if flow.world.Mode != SnapshotMode {
 		return flow.runClosure(ctx)
 	}
-	closure, err := flow.world.Dependencies.Restrict(ctx, origin)
+	seen := map[string]bool{origin: true}
+	var required []architecture.Service
+	for _, root := range flow.rootUniques() {
+		order, err := snapshotClosure(ctx, flow.world.Dependencies, root)
+		if err != nil {
+			return nil, err
+		}
+		for _, unique := range order {
+			if !seen[unique] {
+				seen[unique] = true
+				required = append(required, architecture.Service{Unique: unique})
+			}
+		}
+	}
+	return required, nil
+}
+
+// snapshotClosure is the services a snapshot of root builds, root included,
+// dependencies first.
+func snapshotClosure(ctx context.Context, dependencies *architecture.ServiceDependencies, root string) ([]string, error) {
+	closure, err := dependencies.Restrict(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -2000,17 +2043,29 @@ func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Servi
 	if err != nil {
 		return nil, err
 	}
-	order, err := build.Graph().TopologicalSort()
-	if err != nil {
-		return nil, err
-	}
-	var required []architecture.Service
-	for _, unique := range order {
-		if unique != origin {
-			required = append(required, architecture.Service{Unique: unique})
+	return build.Graph().TopologicalSort()
+}
+
+// SnapshotClosure is the services a snapshot rooted at roots holds, in the
+// order a snapshot of them builds: what a render of those roots alone would
+// have deployed, so a render of many roots at once can say which of the
+// services it deployed belong to which.
+func (flow *Flow) SnapshotClosure(ctx context.Context, roots ...string) ([]string, error) {
+	seen := map[string]bool{}
+	var members []string
+	for _, root := range roots {
+		order, err := snapshotClosure(ctx, flow.world.Dependencies, root)
+		if err != nil {
+			return nil, err
+		}
+		for _, unique := range order {
+			if !seen[unique] {
+				seen[unique] = true
+				members = append(members, unique)
+			}
 		}
 	}
-	return required, nil
+	return members, nil
 }
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
@@ -2729,19 +2784,28 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 
 var _ ExecutorManager = &Flow{}
 
-// goModules is the flow's Go module prefetch, created on first use.
+// goModules is the flow's Go module prefetch, created once however many
+// services ask for it. The plan phase runs its services concurrently, so the
+// bare lazy initializer this replaced raced: two goroutines could each see nil
+// and each build a prefetch, which fetches the same modules twice and leaks
+// the temp directory of whichever assignment loses.
 func (world *World) goModules() *goModulePrefetch {
-	if world.goModulePrefetch == nil {
-		world.goModulePrefetch = newGoModulePrefetch()
-	}
+	world.prefetchOnce.Do(func() {
+		if world.goModulePrefetch == nil {
+			world.goModulePrefetch = newGoModulePrefetch()
+		}
+	})
 	return world.goModulePrefetch
 }
 
-// gitSources is the flow's git source prefetch, created on first use.
+// gitSources is the flow's git source prefetch, created once, for the same
+// reason as goModules.
 func (world *World) gitSources() *gitSourcePrefetch {
-	if world.gitSourcePrefetch == nil {
-		world.gitSourcePrefetch = newGitSourcePrefetch()
-	}
+	world.gitOnce.Do(func() {
+		if world.gitSourcePrefetch == nil {
+			world.gitSourcePrefetch = newGitSourcePrefetch()
+		}
+	})
 	return world.gitSourcePrefetch
 }
 

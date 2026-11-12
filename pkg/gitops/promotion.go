@@ -38,7 +38,11 @@ type ProduceRequest struct {
 	// WithoutCell leaves the environment's cell file to the caller: a
 	// whole-composition render derives it once, after every module.
 	WithoutCell bool
-	Sink        orchestration.OutputSink
+	// Deployed is the composition's services deployed once for every module of
+	// a whole-composition render (DeployComposition). Nil: the module deploys
+	// the services its own roots reach.
+	Deployed *CompositionDeploy
+	Sink     orchestration.OutputSink
 	// Progress is the operator's stdout, where each build phase reports its
 	// image builds and pushes starting and finishing, and the images it kept.
 	// Nil reports nothing.
@@ -126,7 +130,7 @@ func (c *Coordinator) Observe(ctx context.Context, request *ObserveRequest) (Obs
 type flowProducer struct{}
 
 func (flowProducer) Produce(ctx context.Context, request *ProduceRequest) (RenderResult, error) {
-	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild, withoutCell: request.WithoutCell, progress: request.Progress}
+	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild, withoutCell: request.WithoutCell, progress: request.Progress, deployed: request.Deployed}
 	if request.Service == nil {
 		return renderModuleTree(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, !request.Snapshot, build)
 	}

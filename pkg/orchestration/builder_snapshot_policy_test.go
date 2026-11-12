@@ -69,10 +69,10 @@ func TestSnapshotPolicyEmitsTheBuildPhaseAsOneGroup(t *testing.T) {
 		group = next
 	}
 
-	// Every phase but the build phase still arrives one service at a time.
+	// Every phase but the plan and build phases still arrives one service at a time.
 	for _, phase := range []orchestration.ActionType{
 		orchestration.BuilderLoad, orchestration.BuilderInit,
-		orchestration.BuilderPlan, orchestration.BuilderDeploy,
+		orchestration.BuilderDeploy,
 	} {
 		groups := seen[phase]
 		require.Len(t, groups, 4, "%s should arrive one service at a time", phase)
@@ -80,6 +80,11 @@ func TestSnapshotPolicyEmitsTheBuildPhaseAsOneGroup(t *testing.T) {
 			require.Len(t, one, 1, "%s should arrive one service at a time", phase)
 		}
 	}
+
+	// The plan phase arrives once too: its reuse decisions wait on the registry.
+	plans := seen[orchestration.BuilderPlan]
+	require.Len(t, plans, 1, "the plan phase should be emitted once, whole")
+	require.Len(t, plans[0], 4, "the plan phase should carry every service of the closure")
 
 	// The build phase arrives once, holding every service of the closure.
 	builds := seen[orchestration.BuilderBuild]
@@ -107,4 +112,54 @@ func containsAction(actions []orchestration.Action, candidate orchestration.Acti
 		}
 	}
 	return false
+}
+
+// A run rooted in several services plans the whole graph it was scoped to, once:
+// the services two roots share are in the plan one time each, and every service
+// either root reaches is in it.
+func TestSnapshotPolicyPlansTheWholeScopedGraphForSeveralRoots(t *testing.T) {
+	ctx := context.Background()
+	data := setup(t, orchestration.BuilderSync, execOnInit())
+
+	plan := func(restrict func(*orchestration.SnapshotPolicy) error) []orchestration.Action {
+		policy, err := orchestration.NewSnapshotPolicy(ctx, data.world.Dependencies, execOnInit())
+		require.NoError(t, err)
+		require.NoError(t, restrict(policy))
+		var planned []orchestration.Action
+		group := []orchestration.Action{{Type: orchestration.BuilderBegin, Service: "web/frontend"}}
+		for range 64 {
+			var next []orchestration.Action
+			for _, action := range group {
+				emitted, execErr := policy.Execute(ctx, action)
+				require.NoError(t, execErr)
+				for _, candidate := range emitted {
+					if !containsAction(next, candidate) {
+						next = append(next, candidate)
+					}
+				}
+			}
+			if len(next) == 0 {
+				break
+			}
+			planned = append(planned, next...)
+			group = next
+		}
+		return planned
+	}
+
+	single := plan(func(policy *orchestration.SnapshotPolicy) error { return policy.Restrict(ctx, "web/frontend") })
+	scoped := plan(func(policy *orchestration.SnapshotPolicy) error { return policy.RestrictToScope(ctx) })
+
+	// web/frontend reaches the whole test graph, so scoping to it and scoping to
+	// nothing narrower plan the same services in the same phases.
+	require.Len(t, scoped, len(single))
+	for _, action := range single {
+		require.True(t, containsAction(scoped, action), "%s on %s is missing from the scoped plan", action.Type, action.Service)
+	}
+	seen := map[orchestration.Action]bool{}
+	for _, action := range scoped {
+		key := orchestration.Action{Type: action.Type, Service: action.Service}
+		require.False(t, seen[key], "%s on %s is planned twice", action.Type, action.Service)
+		seen[key] = true
+	}
 }

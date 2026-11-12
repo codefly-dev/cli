@@ -124,6 +124,19 @@ func judgePin(ctx context.Context, p *currencyPin, head *composition.SourceHead)
 			return currencyVerdict{false, fmt.Sprintf("%s behind %s", plural(lag.Behind, "commit"), branch)}
 		}
 	}
+	// A pin that can never name anything, whatever its spelling: one predicate
+	// answers it, and the hold bypass below reads the same answer rather than
+	// deriving the question a second time.
+	//
+	// ABOVE the release comparison on purpose. A pin's shape has nothing to do
+	// with whether its source has cut a release, and the comparison below answers
+	// "no release to compare with" as CURRENT — so judged there, an unresolvable
+	// pin on a tagless source reported green and the render still died. A commit
+	// pin is exactly what a source that has not cut a tag yet is pinned by, so
+	// that is not a rare case; it is the common one.
+	if detail, unresolvable := composition.UnresolvablePin(version, head.Tags); unresolvable {
+		return currencyVerdict{false, detail}
+	}
 	newest := composition.NewestRelease(head.Tags)
 	if version == "" || version == "latest" {
 		return currencyVerdict{true, "follows the newest release"}
@@ -261,6 +274,25 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 			continue
 		}
 		hold, index := matchingHold(holds, usable, &p)
+		// A hold says "behind on purpose", and states a reason and an end date.
+		// An unresolvable pin is not behind: it names nothing any remote can
+		// resolve, so there is nothing to be behind of and nothing a hold can
+		// excuse. The SAME predicate judgePin used answers it — re-deriving the
+		// question here is how the uppercase spelling ended up protected in one
+		// place and refused in the other.
+		//
+		// A matching hold is still marked used: it is not "holding nothing", it is
+		// holding something that cannot resolve, and telling an operator both at
+		// once sends them to the wrong file.
+		if _, unresolvable := composition.UnresolvablePin(p.version, sources[p.source].Tags); unresolvable {
+			if hold != nil {
+				used[index] = true
+			}
+			stale++
+			report.add(codePinStale, name, staleStatus, fmt.Sprintf("%s: %s", p, verdict.detail),
+				fmt.Sprintf("write the pin of %s so it resolves — the lowercase 40-character object name, or a tag its source publishes; a hold cannot cover a pin that resolves nowhere", p.name))
+			continue
+		}
 		if hold == nil {
 			stale++
 			report.add(codePinStale, name, staleStatus, fmt.Sprintf("%s: %s", p, verdict.detail),

@@ -21,7 +21,7 @@ const deployReadinessTimeout = 30 * time.Second
 // cmd back to call workspaceReadiness directly. It is the same seam
 // `environment.PostImportValidate` uses, for the same reason.
 func init() {
-	deploy.WorkspaceReadiness = func(ctx context.Context, env, module string) error {
+	deploy.WorkspaceReadiness = func(ctx context.Context, env, module string, enforcing bool) error {
 		report := workspaceReadiness(ctx, &workspaceReadinessOptions{
 			env:     env,
 			module:  module,
@@ -44,7 +44,14 @@ func init() {
 		for i := range report.Checks {
 			printWorkspaceDiagnostic(&report.Checks[i])
 		}
-		fmt.Println(tui.RenderError(fmt.Sprintf("Workspace is NOT ready for environment %q — fix the items marked ✗ above.", env)))
+		// The banner is a refusal, so only the verb that refuses prints it. Under
+		// the operator's override the verdict is still reported — header and
+		// diagnostics above — and the caller warns that the next verb will refuse;
+		// printing "Workspace is NOT ready" on a run that then succeeds and exits 0
+		// would make every log scraper read a failure where there was none.
+		if enforcing {
+			fmt.Println(tui.RenderError(fmt.Sprintf("Workspace is NOT ready for environment %q — fix the items marked ✗ above.", env)))
+		}
 		return fmt.Errorf("workspace is not ready for environment %q: %s", env, firstReadinessFailure(report))
 	}
 }
