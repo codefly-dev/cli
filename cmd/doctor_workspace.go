@@ -160,7 +160,7 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	checkModuleTrust(ctx, ws, report)
 	checkPinCurrency(ctx, ws, opts.module, opts.requireCurrentPins, report)
 	checkServiceOverrides(ctx, ws, report)
-	checkDevDeployments(ws, report)
+	checkDevDeployments(ctx, ws, report)
 	materialized := checkModulesMaterialized(ctx, ws, report)
 	checkAgentOverrides(ctx, ws, report)
 

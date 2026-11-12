@@ -149,8 +149,8 @@ func TestARemovalTheCompositionExplainsNeedsNoNaming(t *testing.T) {
 	rendered, err := RenderCell(ctx, workspace, env)
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "shop"}, rendered.Modules)
-	require.Equal(t, []string{"deployments/modules/legacy"}, rendered.Removed)
-	require.NoDirExists(t, moduleRenderDestination(workspace, "legacy"))
+	require.Equal(t, []string{".codefly/renders/staging/modules/legacy"}, rendered.Removed)
+	require.NoDirExists(t, moduleRenderDestination(workspace, "staging", "legacy"))
 
 	named, explained, err := holdAgainst(t, ctx, publicationCellOf(t, workspace, env), env, repo, base, nil, advancedClaim(workspace, "legacy"))
 	require.NoError(t, err, "a removal the composition explains needs no --allow-cell-removal")

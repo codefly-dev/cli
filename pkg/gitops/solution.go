@@ -9,6 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
@@ -24,10 +25,10 @@ import (
 // SolutionRenderRequest names a codefly:solution executor and the environment
 // whose packaged anatomy it renders into the owned gitops tree.
 //
-// A solution is deployed like a single-unit module: it renders to
-// deployments/modules/<name> and carries one solution unit, so the existing
-// publish/observe/ApplicationSet pipeline stamps its Application and syncs its
-// namespace without any transport changes.
+// A solution is deployed like a single-unit module: it renders to its working
+// render for the environment (workingrender.Module) and carries one solution
+// unit, so the existing publish/observe/ApplicationSet pipeline stamps its
+// Application and syncs its namespace without any transport changes.
 //
 // Each solution renders into its own namespace, derived from its id, rather than
 // the shared host namespace, so solutions are isolatable from the platform and
@@ -68,7 +69,10 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 	if err != nil {
 		return RenderResult{}, err
 	}
-	destination := filepath.Join(req.Workspace.Dir(), "deployments", "modules", req.Name)
+	if err = workingrender.Prepare(req.Workspace.Dir(), env.Name); err != nil {
+		return RenderResult{}, err
+	}
+	destination := moduleRenderDestination(req.Workspace, env.Name, req.Name)
 	ownedPath, err := moduleOwnedPath(req.Workspace, env, req.Name)
 	if err != nil {
 		return RenderResult{}, err

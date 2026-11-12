@@ -19,6 +19,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/timings"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 )
 
 // CompositionDeploy is every service a composition renders, deployed once.
@@ -142,10 +143,10 @@ func DeployComposition(
 		return nil, err
 	}
 
-	parent := filepath.Dir(moduleRenderDestination(workspace, origin.module.Name))
-	if err = os.MkdirAll(parent, 0o755); err != nil {
-		return nil, fmt.Errorf("create the composition deploy parent: %w", err)
+	if err = workingrender.Prepare(workspace.Dir(), env.Name); err != nil {
+		return nil, err
 	}
+	parent := workingrender.Modules(workspace.Dir(), env.Name)
 	scratch := filepath.Join(parent, ".codefly-composition-"+uuid.NewString())
 	if err = os.Mkdir(scratch, 0o755); err != nil {
 		return nil, err

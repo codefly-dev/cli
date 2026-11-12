@@ -10,18 +10,19 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/stretchr/testify/require"
 )
 
-// renderAccounts commits a render of module "saas" for environment env whose
-// accounts unit publishes grpc and the named authority endpoint on their
-// deployed ports, targets rest's container port by name, and publishes no
-// port for connect.
+// renderAccounts renders module "saas" for environment env into that
+// environment's working render. Its accounts unit publishes grpc and the named
+// authority endpoint on their deployed ports, targets rest's container port by
+// name, and publishes no port for connect.
 func renderAccounts(t *testing.T, root, env string) {
 	t.Helper()
 	unit := filepath.Join("services", "accounts")
 	_, err := gitops.RenderOwnedTree(context.Background(), &gitops.RenderOptions{
-		Destination: filepath.Join(root, "deployments", "modules", "saas"),
+		Destination: workingrender.Module(root, env, "saas"),
 		Module:      "saas", Environment: env, Namespace: "acme", Promotable: true,
 		OwnedPath: "deployments/modules/saas",
 		Units: []gitops.InventoryUnit{{
@@ -127,7 +128,7 @@ func TestShowNetworkJSONRenderedReportsContainerPorts(t *testing.T) {
 	report, err := runNetworkRenderedJSON(t, root, "staging")
 	require.NoError(t, err)
 	require.Len(t, report.Services, 1)
-	require.Equal(t, "deployments/modules/saas", report.Services[0].Render)
+	require.Equal(t, ".codefly/renders/staging/modules/saas", report.Services[0].Render)
 	container := map[string]uint32{}
 	for _, endpoint := range report.Services[0].Endpoints {
 		require.NotNil(t, endpoint.DeployedPort, endpoint.Name)
@@ -147,11 +148,17 @@ func TestShowNetworkJSONRenderedWithoutARenderCarriesNoContainerPort(t *testing.
 	}
 }
 
-func TestShowNetworkJSONRenderedRefusesARenderForAnotherEnvironment(t *testing.T) {
+// A render is scoped to its environment's path, so another environment's
+// render is never read: staging has no render, and says so by carrying none.
+func TestShowNetworkJSONRenderedNeverReadsAnotherEnvironmentsRender(t *testing.T) {
 	root := writeNetworkWorkspace(t, "saas")
 	renderAccounts(t, root, "local")
-	_, err := runNetworkRenderedJSON(t, root, "staging")
-	require.ErrorContains(t, err, "is for environment local, not staging")
+	report, err := runNetworkRenderedJSON(t, root, "staging")
+	require.NoError(t, err)
+	require.Empty(t, report.Services[0].Render)
+	for _, endpoint := range report.Services[0].Endpoints {
+		require.Nil(t, endpoint.ContainerPort, endpoint.Name)
+	}
 }
 
 func TestShowNetworkRenderedNeedsJSON(t *testing.T) {

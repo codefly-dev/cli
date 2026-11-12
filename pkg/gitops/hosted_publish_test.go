@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 )
@@ -27,7 +28,7 @@ func hostedPaymentsInstances() *ModuleInstance {
 // declares; nil declares none, which withdraws it.
 func renderHostedPayments(t *testing.T, workspace *resources.Workspace, env *environments.Environment, deployment string, instance *ModuleInstance) {
 	t.Helper()
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	destination := workingrender.Module(workspace.Dir(), env.Name, "payments")
 	// The owned path is the render's own rule, so the fixture follows the
 	// workspace's gitops path exactly as a real render does.
 	ownedPath, err := moduleOwnedPath(workspace, env, "payments")

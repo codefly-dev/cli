@@ -11,9 +11,9 @@ import (
 
 // probeCache remembers what one flow has already read from a registry.
 //
-// Every probe is a `docker buildx imagetools inspect` process and a network
-// round trip, a couple of seconds each, and the reuse decision makes several
-// per recipe. One render decides the same recipe once per root that reaches it,
+// Every probe is a network round trip (registry_client.go), or a `docker
+// buildx imagetools inspect` process on a caller-named builder, and the reuse
+// decision makes several per recipe. One render decides the same recipe once per root that reaches it,
 // and every recipe built FROM the same base asks the registry about that base
 // again: the same question, asked of the same registry within one command.
 //
@@ -28,9 +28,10 @@ import (
 //   - one question in flight at a time: concurrent identical probes share the
 //     single read instead of each starting a process.
 //
-// The cache belongs to the flow (World) and dies with it. Nothing is written to
-// disk, so a registry change between two commands, or two flows, is always seen
-// by the second.
+// The cache belongs to the flow (World) and dies with it. Nothing it holds is
+// written to disk, so a registry change between two commands, or two flows, is
+// always seen by the second; only what a manifest digest's bytes say is kept
+// across commands (digestLabels), because those bytes cannot change.
 
 type probeKey struct {
 	kind      string

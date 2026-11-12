@@ -17,8 +17,6 @@ var (
 	devEnv        string
 	devPath       string
 	devAppProject string
-	devCommit     bool
-	devPush       bool
 	devRebuild    bool
 )
 
@@ -29,20 +27,19 @@ var DevCmd = &cobra.Command{
 	Short: "DEV ESCAPE HATCH: push one service's local code into an already-rendered GitOps environment",
 	Long: `Build and push ONE service from local code — --path, else its machine-local
 service override — through the same build path ` + "`deploy gitops render`" + ` uses, then
-re-pin only that service's image digest in the environment's rendered tree.
+re-pin only that service's image digest in the environment's working render.
 When the environment declares a host, its cell file is re-derived as well: the
 cell admits only the builds that file names, so the new digest goes with it.
 It refuses, before building, when the re-derived file would move anything but
 this service's images against the file the branch carries.
 
-The environment then runs code no release describes. The render inventory
+The working render is never committed: ` + "`codefly deploy gitops publish`" + ` delivers
+the re-pinned tree and the cell file together, as it delivers any render. The
+environment then runs code no release describes. The render inventory
 records it under "dev", ` + "`codefly doctor workspace`" + ` warns while it is active, and
 the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clears it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		if devPush && !devCommit {
-			return fmt.Errorf("--push needs --commit: a dev deployment is pushed only as its own commit")
-		}
 		target, err := resources.ParseServiceWithOptionalModule(args[0])
 		if err != nil || target.Module == "" || strings.Contains(target.Module, "/") {
 			return fmt.Errorf("name the service as <module>/<service>, got %q", args[0])
@@ -88,30 +85,17 @@ the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clea
 			cli.Info("  changed %s", path)
 		}
 		printCell(result.Cell)
-		if err := gitops.StageDevDeployment(ctx, workspace.Dir(), module.Name, &result, devCommit, devPush); err != nil {
-			return err
-		}
 		title := gitops.DevCommitTitle(module.Name, &result.Entry)
-		switch {
-		case devPush:
-			cli.Info("Committed and pushed %q; Argo CD syncs the new digest", title)
-		case devCommit:
-			cli.Info("Committed %q. Push it for Argo CD to sync:\n  git -C %s push", title, workspace.Dir())
-		default:
-			cli.Info("Staged. Commit and push it for Argo CD to sync:\n  git -C %s commit -m %q -- %s && git -C %s push",
-				workspace.Dir(), title, strings.Join(result.Changed, " "), workspace.Dir())
-		}
+		cli.Info("Deliver it as any render is delivered:\n  codefly deploy gitops publish %s --env %s --message %q", module.Name, env.Name, title)
 		cli.Info("Leave dev mode with a full render: codefly deploy gitops render %s --env %s", module.Name, env.Name)
 		return nil
 	},
 }
 
 func init() {
-	DevCmd.Flags().StringVar(&devEnv, "env", "", "Environment whose rendered tree to patch (required)")
+	DevCmd.Flags().StringVar(&devEnv, "env", "", "Environment whose working render to patch (required)")
 	DevCmd.Flags().StringVar(&devPath, "path", "", "Service source directory to deploy (default: the machine-local service override)")
 	DevCmd.Flags().StringVar(&devAppProject, "app-project", "", "AppProject the environment was rendered for (checked against the render)")
-	DevCmd.Flags().BoolVar(&devCommit, "commit", false, "Commit the change as `dev: <module>/<service> from <path>@<sha>[-dirty]`")
-	DevCmd.Flags().BoolVar(&devPush, "push", false, "Push the commit (requires --commit)")
 	DevCmd.Flags().BoolVar(&devRebuild, "rebuild", false, "Build the image even when no input of it changed, instead of keeping the image already built from those inputs")
 	_ = DevCmd.MarkFlagRequired("env")
 }

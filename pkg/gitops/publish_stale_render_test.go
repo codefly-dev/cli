@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -19,11 +20,11 @@ import (
 func TestPublishNamesARenderForAnotherEnvironmentBeforeItsGraph(t *testing.T) {
 	workspace := &resources.Workspace{Name: "platform"}
 	workspace.WithDir(t.TempDir())
-	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", "saas")
+	rendered := workingrender.Module(workspace.Dir(), "blue", "saas")
 	request := &PublishRequest{Module: "saas", Environment: "blue"}
 
 	_, err := loadPublicationInventory(t.Context(), workspace, request, rendered, "")
-	require.ErrorContains(t, err, "module saas has never been rendered")
+	require.ErrorContains(t, err, "module saas has never been rendered for environment blue")
 	require.ErrorContains(t, err, "run `codefly deploy gitops render saas --env blue` first")
 
 	inventory := Inventory{SchemaVersion: SchemaVersion, Module: "saas", Environment: "staging", OwnedPath: "deployments/modules/saas",

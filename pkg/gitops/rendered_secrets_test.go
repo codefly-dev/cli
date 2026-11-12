@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 )
 
 const renderedExternalSecret = `apiVersion: external-secrets.io/v1
@@ -34,7 +35,7 @@ spec:
 // recording each service's projected ExternalSecret with its digest.
 func writeRenderedModule(t *testing.T, workspace, module, environment string, services map[string][]string) string {
 	t.Helper()
-	root := filepath.Join(workspace, "deployments", "modules", module)
+	root := workingrender.Module(workspace, environment, module)
 	inventory := Inventory{SchemaVersion: SchemaVersion, Module: module, Environment: environment, AppProject: "example", OwnedPath: "deployments/modules/" + module}
 	for service, properties := range services {
 		var data strings.Builder
@@ -69,7 +70,7 @@ func TestRenderedServiceSecretsReadsTheEnvironmentsProjections(t *testing.T) {
 	writeRenderedModule(t, workspace, "billing", "staging", map[string][]string{"api": {"B_KEY", "A_KEY"}})
 	writeRenderedModule(t, workspace, "search", "production", map[string][]string{"api": {"C_KEY"}})
 	// A render's staging directory is never a module.
-	if err := os.MkdirAll(filepath.Join(workspace, "deployments", "modules", ".codefly-render-123"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(workingrender.Modules(workspace, "staging"), ".codefly-render-123"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,8 +78,17 @@ func TestRenderedServiceSecretsReadsTheEnvironmentsProjections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(rendered.Modules, []string{"billing"}) || !reflect.DeepEqual(rendered.Skipped, []string{"search"}) {
+	// Another environment's render is not in this environment's path at all,
+	// so it is neither read nor even seen to be skipped.
+	if !reflect.DeepEqual(rendered.Modules, []string{"billing"}) || len(rendered.Skipped) != 0 {
 		t.Fatalf("modules %v skipped %v", rendered.Modules, rendered.Skipped)
+	}
+	production, err := RenderedServiceSecrets(workspace, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(production.Modules, []string{"search"}) {
+		t.Fatalf("production modules %v, want its own render", production.Modules)
 	}
 	if len(rendered.Secrets) != 1 {
 		t.Fatalf("secrets = %+v", rendered.Secrets)
@@ -113,7 +123,7 @@ func TestRenderedServiceSecretsRefusesAnEditedProjection(t *testing.T) {
 // the environment overlay only includes it.
 func writeManagedProjection(t *testing.T, workspace, module, environment, service, remoteKey string, properties []string) string {
 	t.Helper()
-	root := filepath.Join(workspace, "deployments", "modules", module)
+	root := workingrender.Module(workspace, environment, module)
 	var data strings.Builder
 	for _, property := range properties {
 		data.WriteString("        - secretKey: " + property + "\n          remoteRef:\n            key: " + remoteKey + "\n            property: " + property + "\n")
@@ -187,7 +197,7 @@ func TestRenderedServiceSecretsRefusesADeletedProjection(t *testing.T) {
 func TestRenderedServiceSecretsRefusesOneKeyThroughTwoNamespacedStores(t *testing.T) {
 	workspace := t.TempDir()
 	for _, module := range []string{"billing", "search"} {
-		root := filepath.Join(workspace, "deployments", "modules", module)
+		root := workingrender.Module(workspace, "staging", module)
 		content := []byte(strings.ReplaceAll(
 			fmt.Sprintf(renderedExternalSecret, "api", module, "api",
 				"        - secretKey: A_KEY\n          remoteRef:\n            key: shared\n            property: A_KEY\n"),
@@ -224,7 +234,7 @@ func TestRenderedServiceSecretsRefusesOneKeyThroughTwoNamespacedStores(t *testin
 // property are then different strings for every entry.
 func writeMappedRender(t *testing.T, workspace, module, service, environment, remoteKey string, keysByProperty map[string][]string) {
 	t.Helper()
-	root := filepath.Join(workspace, "deployments", "modules", module)
+	root := workingrender.Module(workspace, environment, module)
 	var data strings.Builder
 	properties := make([]string, 0, len(keysByProperty))
 	for property := range keysByProperty {
@@ -349,7 +359,7 @@ func TestRenderedSecretsKeepActualServicePropertyBindings(t *testing.T) {
 // store: the read-back groups it under the store the item reads through.
 func TestRenderedServiceSecretsReadsAnItemThroughItsOwnStore(t *testing.T) {
 	workspace := t.TempDir()
-	root := filepath.Join(workspace, "deployments", "modules", "billing")
+	root := workingrender.Module(workspace, "staging", "billing")
 	data := "        - secretKey: A_KEY\n          remoteRef:\n            key: example-billing-api\n            property: A_KEY\n" +
 		"        - secretKey: IDENTITY_CLIENT_SECRET\n          remoteRef:\n            key: workos-app\n            property: client_secret\n" +
 		"          sourceRef:\n            storeRef:\n              name: platform-identity\n              kind: ClusterSecretStore\n"

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +16,7 @@ import (
 // edges across unchanged, or the cell admits nothing.
 func TestPublishCarriesTheRendersMeshEdges(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
-	path := filepath.Join(workspace.Dir(), "deployments", "modules", "payments", InventoryFilename)
+	path := filepath.Join(workingrender.Module(workspace.Dir(), "production", "payments"), InventoryFilename)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var rendered Inventory

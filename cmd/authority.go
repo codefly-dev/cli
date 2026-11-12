@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/codefly-dev/authority/libraries/authority-core/go/decide"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
@@ -66,7 +69,7 @@ finding, never a pass.`,
 		var delivered *gitops.DeliveredAuthority
 		if authorityFlags.env != "" {
 			var err error
-			if delivered, err = gitops.ReadDeliveredAuthority(authorityFlags.root, authorityFlags.env); err != nil {
+			if delivered, err = readDeliveredAuthority(authorityFlags.root, authorityFlags.env); err != nil {
 				return err
 			}
 			findings = append(findings, deliveredFindings(delivered)...)
@@ -298,7 +301,7 @@ to 8 all admit.`,
 		if f.env == "" || f.caller == "" || f.binding == "" || f.method == "" {
 			return errors.New("a trace names --env, --caller, --binding and --method")
 		}
-		d, err := gitops.ReadDeliveredAuthority(f.root, f.env)
+		d, err := readDeliveredAuthority(f.root, f.env)
 		if err != nil {
 			return err
 		}
@@ -359,7 +362,7 @@ func printTrace(w io.Writer, call *decide.Call, links []decide.Link, files map[s
 
 func init() {
 	for _, command := range []*cobra.Command{authorityCheckCmd, authorityTraceCmd} {
-		command.Flags().StringVar(&authorityFlags.root, "root", ".", "the composition's workspace root, holding deployments/")
+		command.Flags().StringVar(&authorityFlags.root, "root", ".", "the composition's workspace root: the environment's working render and its own delivered tree are read there")
 		command.Flags().StringVar(&authorityFlags.env, "env", "", "the environment whose delivered tree is read")
 		command.Flags().StringVar(&authorityFlags.moduleDir, "module-dir", "", "a module's checkout: its published policies and generated tables")
 		AuthorityCmd.AddCommand(command)
@@ -369,4 +372,24 @@ func init() {
 	authorityTraceCmd.Flags().StringVar(&authorityFlags.binding, "binding", "", "the caller's binding the call goes through")
 	authorityTraceCmd.Flags().StringVar(&authorityFlags.method, "method", "", "the audience's method, as its policy names it")
 	authorityTraceCmd.Flags().StringVar(&authorityFlags.role, "role", "", "the role held on the caller's installation; omit for the module acting alone")
+}
+
+// readDeliveredAuthority reads what environment delivers from the workspace at
+// root: its own module trees only (gitops.EnvironmentModuleTrees), never a
+// tree another environment delivers from.
+func readDeliveredAuthority(root, environment string) (*gitops.DeliveredAuthority, error) {
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("load the workspace at %s: %w", root, err)
+	}
+	env, err := environments.Select(workspace, environment)
+	if err != nil {
+		return nil, err
+	}
+	trees, err := gitops.EnvironmentModuleTrees(ctx, workspace, env)
+	if err != nil {
+		return nil, err
+	}
+	return gitops.ReadDeliveredAuthority(trees, environment)
 }

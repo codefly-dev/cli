@@ -254,12 +254,12 @@ func inClusterEndpointList(inCluster map[string]uint32) string {
 }
 
 // ServiceContainerPorts reads the container ports of one service from the
-// module render committed at <workspace>/deployments/modules/<module>. rendered
+// module's working render for environment (workingrender.Module). rendered
 // is that render's directory, empty when the module has no render or the render
 // carries no unit for the service (a managed service renders none). A render for
 // another environment is an error: its ports would silently be the wrong ones.
 func ServiceContainerPorts(workspace *resources.Workspace, module, service, environment string, inCluster map[string]uint32) (ports map[string]uint32, rendered string, err error) {
-	root := moduleRenderDestination(workspace, module)
+	root := moduleRenderDestination(workspace, environment, module)
 	inventory, err := LoadInventory(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, "", nil

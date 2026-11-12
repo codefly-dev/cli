@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-// rendered writes a module-manifest overlay the way `gitops render` emits one.
-func rendered(t *testing.T, root, module, environment, document string) {
+// rendered writes a module-manifest overlay into the module tree at tree the
+// way `gitops render` emits one.
+func rendered(t *testing.T, tree, module, environment, document string) {
 	t.Helper()
-	dir := filepath.Join(root, "deployments", "modules", module, "module-manifests", "overlays", environment)
+	dir := filepath.Join(tree, module, "module-manifests", "overlays", environment)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +70,11 @@ func TestACeilingThatOmitsADeclaredBindingFails(t *testing.T) {
 	root := t.TempDir()
 	rendered(t, root, "evaluation", "blue", manifestDocument("evaluation", 5, "score", "tracing-read"))
 	rendered(t, root, "wiki", "blue", manifestDocument("wiki", 3, "documents"))
-	write(t, filepath.Join(root, "deployments", "modules", "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
+	write(t, filepath.Join(root, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
 		envelopeDocument(`{"principals":{"evaluation":{"resources":["evaluation.runs"]},"wiki":{"operation_audiences":{"documents":{}}}}}`))
 
 	report := reportFor("wiki")
-	report.InspectDelivered(root, "blue")
+	report.InspectDelivered([]string{root}, "blue")
 
 	check := checkFor(t, report, CodeEnvelopeOmitsBinding)
 	if check.Status != StatusFail {
@@ -95,11 +96,11 @@ func TestACeilingThatOmitsADeclaredBindingFails(t *testing.T) {
 func TestACeilingThatAdmitsEveryBindingPasses(t *testing.T) {
 	root := t.TempDir()
 	rendered(t, root, "wiki", "blue", manifestDocument("wiki", 3, "documents", "runtime"))
-	write(t, filepath.Join(root, "deployments", "modules", "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
+	write(t, filepath.Join(root, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
 		envelopeDocument(`{"principals":{"wiki":{"operation_audiences":{"documents":{},"runtime":{}}}}}`))
 
 	report := reportFor("wiki")
-	report.InspectDelivered(root, "blue")
+	report.InspectDelivered([]string{root}, "blue")
 
 	if checkFor(t, report, CodeEnvelopeAdmitsEveryBinding).Status != StatusOK {
 		t.Error("every declared binding is admitted, so the check must pass")
@@ -113,7 +114,7 @@ func TestACeilingThatAdmitsEveryBindingPasses(t *testing.T) {
 // wrong: that is the vacuous pass this command refuses elsewhere too.
 func TestAnUnrenderedEnvironmentFails(t *testing.T) {
 	report := reportFor("wiki")
-	report.InspectDelivered(t.TempDir(), "blue")
+	report.InspectDelivered([]string{t.TempDir()}, "blue")
 	if checkFor(t, report, CodeNotRenderedForEnvironment).Status != StatusFail {
 		t.Error("an environment with no rendered manifest must fail, not pass silently")
 	}
@@ -125,9 +126,27 @@ func TestManifestsWithNoEnvelopeFails(t *testing.T) {
 	root := t.TempDir()
 	rendered(t, root, "wiki", "blue", manifestDocument("wiki", 3, "documents"))
 	report := reportFor("wiki")
-	report.InspectDelivered(root, "blue")
+	report.InspectDelivered([]string{root}, "blue")
 	if checkFor(t, report, CodeEnvelopeNotRendered).Status != StatusFail {
 		t.Error("no envelope means no binding is admitted; that must fail by its own name")
+	}
+}
+
+// The trees are read in order and the later wins: the delivered tree, read
+// after the working render, is what the host enforces. Only the trees given
+// are read, so another environment's tree, never among them, cannot speak.
+func TestTheLaterTreeWinsAndNoOtherIsRead(t *testing.T) {
+	working, delivered, foreign := t.TempDir(), t.TempDir(), t.TempDir()
+	rendered(t, working, "wiki", "blue", manifestDocument("wiki", 3, "documents"))
+	write(t, filepath.Join(working, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"), envelopeDocument(`{"principals":{}}`))
+	write(t, filepath.Join(delivered, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
+		envelopeDocument(`{"principals":{"wiki":{"operation_audiences":{"documents":{}}}}}`))
+	write(t, filepath.Join(foreign, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"), envelopeDocument(`{"principals":{}}`))
+
+	report := reportFor("wiki")
+	report.InspectDelivered([]string{working, delivered}, "blue")
+	if checkFor(t, report, CodeEnvelopeAdmitsEveryBinding).Status != StatusOK {
+		t.Error("the delivered envelope admits the binding and is read last, so it must win")
 	}
 }
 

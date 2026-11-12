@@ -12,6 +12,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -113,16 +114,20 @@ func GetKubernetesDeployment(
 	workspace *resources.Workspace,
 	module *resources.Module,
 	service *resources.Service,
+	env *environments.Environment,
 	namespace string,
 	profile builderv0.KubernetesOutputProfile,
 	secretReferences map[string]*builderv0.KubernetesSecretKeyReference,
 ) (*builderv0.Deployment, error) {
+	if err := workingrender.Prepare(workspace.Dir(), env.Name); err != nil {
+		return nil, err
+	}
 	return &builderv0.Deployment{
 		Kind: &builderv0.Deployment_Kubernetes{
 			Kubernetes: &builderv0.KubernetesDeployment{
 				BuildContext:       dockerBuildContext,
 				Namespace:          namespace,
-				Destination:        KustomizeDir(ctx, workspace, module, service),
+				Destination:        KustomizeDir(ctx, workspace, module, service, env),
 				Profile:            profile,
 				SecretReferences:   secretReferences,
 				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
@@ -246,7 +251,7 @@ func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Servi
 				return w.Wrapf(err, "cannot verify Kubernetes target before image import")
 			}
 
-			tree := KustomizeDir(ctx, l.Workspace, module, service)
+			tree := KustomizeDir(ctx, l.Workspace, module, service, l.Env)
 			digest, err := RenderedTreeDigest(tree)
 			if err != nil {
 				return w.Wrapf(err, "cannot digest rendered deployment tree")
@@ -410,7 +415,7 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 		if v.Kubernetes.Kind != builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
 			return nil
 		}
-		tree := KustomizeDir(ctx, r.Workspace, module, service)
+		tree := KustomizeDir(ctx, r.Workspace, module, service, r.Env)
 		digest, err := RenderedTreeDigest(tree)
 		if err != nil {
 			return w.Wrapf(err, "cannot digest rendered deployment tree")

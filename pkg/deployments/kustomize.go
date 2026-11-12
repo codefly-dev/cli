@@ -14,15 +14,20 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
-func KustomizeDir(_ context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) string {
-	return path.Join(workspace.Dir(), "deployments", "modules", module.Name, "services", service.Name)
+// KustomizeDir is where a service's kustomize tree is rendered for env: inside
+// the module's working render for that environment (workingrender.Module), so
+// a render for one environment never lands on a path another one delivers
+// from.
+func KustomizeDir(_ context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment) string {
+	return path.Join(workingrender.Module(workspace.Dir(), env.Name, module.Name), "services", service.Name)
 }
 
 func KustomizeDirForEnv(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment) string {
-	return path.Join(KustomizeDir(ctx, workspace, module, service), "overlays", env.Name)
+	return path.Join(KustomizeDir(ctx, workspace, module, service, env), "overlays", env.Name)
 }
 
 func renderKustomize(ctx context.Context, tree, treeDigest, dir string) (string, []string, error) {
