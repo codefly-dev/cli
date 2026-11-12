@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -137,11 +138,11 @@ spec:
 `
 
 // renderHostedTree renders module's one-service tree for staging, the way a
-// module render leaves it under deployments/modules.
+// module render leaves it in the environment's working render.
 func renderHostedTree(t *testing.T, workspace *resources.Workspace, module, service, namespace string, digests map[string]string) RenderResult {
 	t.Helper()
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: moduleRenderDestination(workspace, module),
+		Destination: moduleRenderDestination(workspace, "staging", module),
 		Module:      module, Environment: "staging", Namespace: namespace, AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/" + module,
 		Units:                         promotableServiceGraph(module, []string{service}),
@@ -168,7 +169,7 @@ func renderHostedTree(t *testing.T, workspace *resources.Workspace, module, serv
 func TestRenderRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *testing.T) {
 	workspace := writeHostedWorkspace(t)
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "shop"),
+		Destination: moduleRenderDestination(workspace, "staging", "shop"),
 		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/shop",
 		Units:   promotableServiceGraph("shop", []string{"api"}),
@@ -284,7 +285,7 @@ spec:
 	// derives its workloads with.
 	workspace := writeHostedWorkspace(t)
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: moduleRenderDestination(workspace, "shop"),
+		Destination: moduleRenderDestination(workspace, "staging", "shop"),
 		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
 		Promotable: true, OwnedPath: "deployments/modules/shop",
 		Units:   promotableServiceGraph("shop", []string{"api"}),
@@ -359,7 +360,7 @@ func TestGroupChangeIsReportedAtRenderAndRefusedAtPublish(t *testing.T) {
 	require.NoError(t, refuseStaleGroupConsumers(workspace.Dir(), "billing", "staging", after))
 
 	// An unreadable sibling inventory is an error, never "it agrees".
-	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "deployments", "modules", "billing", InventoryFilename), []byte("{not json"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workingrender.Module(workspace.Dir(), "staging", "billing"), InventoryFilename), []byte("{not json"), 0o644))
 	_, err = staleGroupConsumers(workspace.Dir(), "shop", "staging", after)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the rendered tree of module billing cannot be read")
@@ -405,7 +406,7 @@ func TestPublishRefusesAStaleConsumerWithoutItsCurrentRender(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "billing (group shared)")
 
-	dir := filepath.Join(workspace, "deployments", "modules", "billing")
+	dir := workingrender.Module(workspace, "prod", "billing")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	inventory := Inventory{SchemaVersion: SchemaVersion, Module: "billing", Environment: "prod", WorkspaceConfigurationDigests: map[string]string{"shared": "old"}}
 	require.NoError(t, writeCanonicalInventory(filepath.Join(dir, InventoryFilename), &inventory))
@@ -418,7 +419,7 @@ func TestPublishRefusesAStaleConsumerWithoutItsCurrentRender(t *testing.T) {
 
 	// A sibling directory with no inventory is unreadable evidence, never
 	// agreement.
-	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "deployments", "modules", "ledger"), 0o755))
+	require.NoError(t, os.MkdirAll(workingrender.Module(workspace, "prod", "ledger"), 0o755))
 	_, err = staleGroupConsumers(workspace, "billing", "prod", map[string]string{"shared": "abc"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ledger carries no inventory")

@@ -15,6 +15,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
@@ -167,15 +168,15 @@ func (err *StaleGroupConsumersError) Error() string {
 }
 
 // staleGroupConsumers compares the group digests a render recorded with the
-// ones every sibling module tree under deployments/modules recorded for the
-// same environment, and returns, per group they both consume, the siblings
+// ones every sibling module tree in the environment's working render recorded
+// for it, and returns, per group they both consume, the siblings
 // whose digest differs. A sibling tree that cannot be read is an error, not
 // an absence: an unreadable inventory is no evidence that its module agrees.
 func staleGroupConsumers(workspaceDir, module, environment string, digests map[string]string) (map[string][]string, error) {
 	if len(digests) == 0 {
 		return nil, nil
 	}
-	modulesDir := filepath.Join(workspaceDir, "deployments", "modules")
+	modulesDir := workingrender.Modules(workspaceDir, environment)
 	entries, err := os.ReadDir(modulesDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -339,7 +340,7 @@ func describeStaleConsumers(stale []staleBaseConsumer) []string {
 func refuseStaleBaseConsumers(workspaceDir, environment, baseBranch string, stale []staleBaseConsumer) error {
 	var unrendered []string
 	for _, consumer := range stale {
-		inventory, err := LoadInventory(filepath.Join(workspaceDir, "deployments", "modules", consumer.Module))
+		inventory, err := LoadInventory(workingrender.Module(workspaceDir, environment, consumer.Module))
 		if errors.Is(err, fs.ErrNotExist) {
 			unrendered = append(unrendered, fmt.Sprintf("%s (group %s)", consumer.Module, consumer.Group))
 			continue

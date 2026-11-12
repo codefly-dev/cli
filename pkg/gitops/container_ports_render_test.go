@@ -341,7 +341,7 @@ func TestRenderModuleRefusesADeclarationDisagreeingWithTheAgentsContainerPort(t 
 	require.Contains(t, err.Error(), "service shop/api: spec.deployment.endpoint-ports disagrees with the manifests its agent rendered for environment staging:\n"+
 		fmt.Sprintf("  authority = 9091, but its pods listen on container port %d (the Service publishes port %d with targetPort %d)", authorityPort, authorityPort, authorityPort))
 	require.NotContains(t, err.Error(), "grpc = 9090", "a matching declaration is not reported")
-	_, statErr := os.Stat(moduleRenderDestination(workspace, "shop"))
+	_, statErr := os.Stat(moduleRenderDestination(workspace, env.Name, "shop"))
 	require.True(t, os.IsNotExist(statErr), "a refused render installs nothing")
 }
 

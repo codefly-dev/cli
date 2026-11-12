@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/routing"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -279,13 +280,13 @@ func TestTheRenderNamesTheWorkloadsWhoseAccountChanges(t *testing.T) {
 // principals it makes meaningful.
 func TestThePostureLayerIsPromotedAsItsOwnApplication(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
-	overlay := filepath.Join(workspace.Dir(), "deployments", "modules", "payments", meshPostureDir, "overlays", "production")
+	overlay := filepath.Join(workingrender.Module(workspace.Dir(), "production", "payments"), meshPostureDir, "overlays", "production")
 	manifests, err := overlayManifests(overlay)
 	require.NoError(t, err)
 	require.Len(t, manifests, 1)
 	require.Equal(t, routing.MeshNamespacePolicyName, metadataString(manifests[0].value, keyName))
 
-	inventory, err := LoadInventory(filepath.Join(workspace.Dir(), "deployments", "modules", "payments"))
+	inventory, err := LoadInventory(workingrender.Module(workspace.Dir(), "production", "payments"))
 	require.NoError(t, err)
 	require.Equal(t, meshPostureDir, inventory.MeshPath, "the inventory records the delivered layer")
 
@@ -320,7 +321,7 @@ func TestThePostureLayerIsPromotedAsItsOwnApplication(t *testing.T) {
 // check runs on every promotable pass.
 func TestAVerifierHoldsARenderedTreeToItsRecordedPosture(t *testing.T) {
 	_, workspace, _ := developerPublishWorkspace(t)
-	tree := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	tree := workingrender.Module(workspace.Dir(), "production", "payments")
 	require.NoError(t, ValidateRenderedTree(tree, "", true), "the render's own tree verifies")
 
 	inventory, err := LoadInventory(tree)

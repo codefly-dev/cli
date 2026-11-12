@@ -34,10 +34,11 @@ var (
 var SecretsCmd = &cobra.Command{
 	Use:   "secrets",
 	Short: "Plan and write the secret-store values a rendered environment's ExternalSecrets read",
-	Long: `Reads every ExternalSecret ` + "`deploy gitops render`" + ` projected for --env under
-deployments/modules, and resolves each remote property to a source: kept (already
-stored), propagated (a configuration value another remote key already holds),
-configured (the environment's own configurations/<profile>/<group>.secret.env
+	Long: `Reads every ExternalSecret ` + "`deploy gitops render`" + ` projected into
+the working render of --env (.codefly/renders/<env>/modules), and resolves each
+remote property to a source: kept (already stored), propagated (a
+configuration value another remote key already holds), configured (the
+environment's own configurations/<profile>/<group>.secret.env
 holds the value, as written by ` + "`codefly config set`" + `), generated (declared random
 by the environment's service-secrets.generate), or required (supplied by the
 operator, and named). The store is the backend behind the SecretStore the render

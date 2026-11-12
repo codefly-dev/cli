@@ -1,11 +1,11 @@
 package gitops
 
 // A dev deployment into a hosted environment carries the environment's cell
-// file with it: a cell admits only the builds that file names, and a
-// validation cell takes that approval from the branch head's file. The file is
-// re-derived from the whole workspace, so before a dev deployment commits it,
-// the re-derived file must approve nothing the branch's file does not already
-// approve except the one service's new build.
+// file with it: a cell admits only the builds that file names. The file is
+// re-derived from the environment's working renders, and publish delivers it
+// held to the file the delivery base branch carries, so before a dev
+// deployment re-derives it, the re-derived file must approve nothing the base
+// branch's file does not already approve except the one service's new build.
 
 import (
 	"context"
@@ -23,9 +23,10 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-// devCell is the cell file a dev deployment starts from: the one the branch
-// approves (the workspace's HEAD), or, in a workspace that is not a git
-// checkout, the one on disk.
+// devCell is the cell file a dev deployment starts from: the one the
+// environment's delivery base branch carries — the file publish holds the
+// publication to — or, for an environment that declares no delivery
+// repository, the one on disk.
 type devCell struct {
 	path   string
 	origin string
@@ -46,14 +47,23 @@ func loadDevCell(ctx context.Context, workspace *resources.Workspace, env *envir
 	renderFirst := fmt.Sprintf("render the environment first: codefly deploy gitops render --all --env %s", env.Name)
 	cell := devCell{path: path}
 	var data []byte
-	if _, gitErr := gitCommand(ctx, workspace.Dir(), "rev-parse", "--is-inside-work-tree"); gitErr == nil {
-		cell.origin = "committed"
-		data, err = gitCommandBytes(ctx, workspace.Dir(), "show", "HEAD:./"+filepath.ToSlash(rel))
+	delivers, err := declaresDeliveryRepository(workspace, env)
+	if err != nil {
+		return devCell{}, err
+	}
+	if delivers {
+		config, _, baseBranch, pathRoot, resolveErr := resolveGitops(workspace, env.Name, true)
+		if resolveErr != nil {
+			return devCell{}, resolveErr
+		}
+		delivered := deliveryCellPath(pathRoot, env.Name)
+		cell.origin = fmt.Sprintf("the cell file %s on the delivery base branch %s", delivered, baseBranch)
+		data, err = baseBranchFile(ctx, config.RepoURL, baseBranch, delivered)
 		if err != nil {
-			return devCell{}, fmt.Errorf("environment %s's cell file %s is not committed, so the branch approves no build to replace (%w): commit the render that wrote it, or %s", env.Name, rel, err, renderFirst)
+			return devCell{}, fmt.Errorf("environment %s's delivery base branch %s carries no readable cell file at %s, so it approves no build to replace (%w): publish the environment's modules first (codefly deploy gitops publish <module> --env %s)", env.Name, baseBranch, delivered, err, env.Name)
 		}
 	} else {
-		cell.origin = "on-disk"
+		cell.origin = "the cell file on disk"
 		data, err = os.ReadFile(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			return devCell{}, fmt.Errorf("environment %s has no cell file at %s: %s", env.Name, rel, renderFirst)
@@ -63,16 +73,50 @@ func loadDevCell(ctx context.Context, workspace *resources.Workspace, env *envir
 		}
 	}
 	if cell.file, err = cellfile.Parse(data); err != nil {
-		return devCell{}, fmt.Errorf("environment %s's %s cell file %s cannot be read: %w: %s", env.Name, cell.origin, rel, err, renderFirst)
+		return devCell{}, fmt.Errorf("environment %s's starting cell file (%s) cannot be read: %w: %s", env.Name, cell.origin, err, renderFirst)
 	}
 	return cell, nil
+}
+
+// declaresDeliveryRepository reports whether env delivers to a gitops
+// repository, its own or the workspace default, as publish resolves it.
+func declaresDeliveryRepository(workspace *resources.Workspace, env *environments.Environment) (bool, error) {
+	if env.Gitops != nil && strings.TrimSpace(env.Gitops.RepoURL) != "" {
+		return true, nil
+	}
+	defaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		return false, err
+	}
+	return defaults != nil && strings.TrimSpace(defaults.RepoURL) != "", nil
+}
+
+// baseBranchFile reads one file of branch as the delivery repository holds it
+// now, through a throwaway shallow fetch: the same base a publish clones.
+func baseBranchFile(ctx context.Context, repository, branch, path string) ([]byte, error) {
+	temp, err := os.MkdirTemp("", "codefly-delivery-base-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(temp) }()
+	if _, err = gitCommand(ctx, temp, "init", "--quiet", "--bare"); err != nil {
+		return nil, err
+	}
+	if _, err = gitCommand(ctx, temp, "check-ref-format", "--branch", branch); err != nil {
+		return nil, fmt.Errorf("invalid delivery base branch %q: %w", branch, err)
+	}
+	if _, err = gitCommand(ctx, temp, "fetch", "--quiet", "--no-tags", "--depth=1", "--", repository, "refs/heads/"+branch); err != nil {
+		return nil, err
+	}
+	return gitCommandBytes(ctx, temp, "show", "FETCH_HEAD:"+path)
 }
 
 // deriveDevCell re-derives the environment's cell file from the workspace and
 // refuses it, naming what moved, when it differs from the starting file by
 // anything but the image digests of service's own workloads and the source
 // revision: anything else is a render or a configuration change the branch
-// does not carry, which the dev deployment's commit would approve with it.
+// does not carry, which the publication of the dev deployment would approve
+// with it.
 // Given the images the dev build produced, only digests of those repositories
 // may move; before the build, when they are not known yet, any of the
 // service's may.
@@ -98,7 +142,7 @@ func deriveDevCell(ctx context.Context, workspace *resources.Workspace, env *env
 	}
 	if len(moved) > 0 {
 		return cellfile.File{}, CellResult{}, fmt.Errorf(
-			"re-deriving environment %s's cell file from this workspace changes more than %s's images — %s differ from the %s cell file — so committing it would approve renders, dev deployments or configuration the branch does not carry: commit them first (after `codefly deploy gitops render --all --env %s` if the trees are stale), then deploy again",
+			"re-deriving environment %s's cell file from its working renders changes more than %s's images — %s differ from %s — so publishing it would approve renders, dev deployments or configuration the delivery base does not carry: publish them first (after `codefly deploy gitops render --all --env %s` if the renders are stale), then deploy again",
 			env.Name, service, strings.Join(moved, ", "), start.origin, env.Name)
 	}
 	return derived, result, nil

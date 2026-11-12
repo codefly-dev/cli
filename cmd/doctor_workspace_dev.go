@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/core/resources"
 )
@@ -13,14 +14,29 @@ import (
 // deployment (`codefly deploy dev`): it runs code no release describes.
 const codeGitOpsDevDeploymentActive = "gitops_dev_deployment_active"
 
-// checkDevDeployments warns about every dev deployment recorded in the
-// workspace's rendered module trees. It reads only the render inventories.
+// checkDevDeployments warns about every dev deployment recorded in a tree that
+// says what an environment delivers: its working render, and its own
+// delivered tree in this checkout (gitops.EnvironmentModuleTrees), so a dev
+// deployment published from another clone is reported as well. It reads only
+// the render inventories, and reports each deployment once.
 func checkDevDeployments(ws *resources.Workspace, report *workspaceReadinessReport) {
-	inventories, err := filepath.Glob(filepath.Join(ws.Dir(), "deployments", "modules", "*", gitops.InventoryFilename))
+	declared, err := environments.FromWorkspace(ws)
 	if err != nil {
 		return
 	}
+	var inventories []string
+	for _, env := range declared {
+		trees, treesErr := gitops.EnvironmentModuleTrees(ws, env)
+		if treesErr != nil {
+			continue
+		}
+		for _, tree := range trees {
+			found, _ := filepath.Glob(filepath.Join(tree, "*", gitops.InventoryFilename))
+			inventories = append(inventories, found...)
+		}
+	}
 	sort.Strings(inventories)
+	reported := map[string]bool{}
 	for _, path := range inventories {
 		// An unreadable inventory is the render's own concern; this check only
 		// surfaces dev deployments a readable one records.
@@ -30,6 +46,11 @@ func checkDevDeployments(ws *resources.Workspace, report *workspaceReadinessRepo
 		}
 		for i := range inventory.Dev {
 			dev := &inventory.Dev[i]
+			key := inventory.Environment + "/" + inventory.Module + "/" + dev.Service + "@" + dev.Digest
+			if reported[key] {
+				continue
+			}
+			reported[key] = true
 			revision := dev.Commit
 			if revision == "" {
 				revision = "untracked"

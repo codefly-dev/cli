@@ -25,6 +25,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -185,7 +186,7 @@ func digestImages(root string) ([]string, error) {
 // DeployDev builds one service from its dev source and re-pins its image in the
 // already-rendered tree of the requested environment.
 func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
-	root := moduleRenderDestination(request.Workspace, request.Module.Name)
+	root := moduleRenderDestination(request.Workspace, request.Environment.Name, request.Module.Name)
 	inventory, unit, err := loadDevTarget(root, request.Module.Name, request.Service, request.Environment.Name, request.AppProject)
 	if err != nil {
 		return DevResult{}, err
@@ -202,8 +203,9 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		return DevResult{}, err
 	}
 	// A hosted cell admits only the builds its cell file names, so the file is
-	// committed with the new digest. Whether it can be — re-derived, and moving
-	// nothing but this service's images — is settled before anything is built.
+	// published with the new digest. Whether it can be — re-derived, and moving
+	// nothing but this service's images against the delivery base's file — is
+	// settled before anything is built.
 	hosted := request.Environment.Host != nil
 	cellService := request.Module.Name + "/" + request.Service
 	var startCell devCell
@@ -240,11 +242,10 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		}
 		relative = append(relative, filepath.ToSlash(rel))
 	}
-	// A cell admits only the builds its cell file names: a validation cell takes
-	// that approval from the branch head's file, so a new digest the file does
-	// not carry is refused at admission and the deployment never runs. The cell
-	// file is re-derived from the rendered trees exactly as a render does, and
-	// committed with the digest it now approves.
+	// A cell admits only the builds its cell file names, so a new digest the
+	// delivered file does not carry is refused at admission and the deployment
+	// never runs. The cell file is re-derived from the working renders exactly
+	// as a render does, for publish to deliver with the digest it now approves.
 	var cell *CellResult
 	if hosted {
 		file, derived, cellErr := deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, images)
@@ -252,7 +253,7 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 			cellErr = writeCell(&file, derived.Path)
 		}
 		if cellErr != nil {
-			return DevResult{}, fmt.Errorf("the dev image is pushed and re-pinned in %s, but nothing is staged: %w", strings.Join(relative, ", "), cellErr)
+			return DevResult{}, fmt.Errorf("the dev image is pushed and re-pinned in %s, but the cell file that would approve it is not written, so there is nothing to publish: %w", strings.Join(relative, ", "), cellErr)
 		}
 		rel, relErr := filepath.Rel(request.Workspace.Dir(), derived.Path)
 		if relErr != nil {
@@ -265,9 +266,11 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	return DevResult{Root: root, Changed: relative, Entry: entry, Cell: cell}, nil
 }
 
-// moduleRenderDestination is where a full module render writes its owned tree.
-func moduleRenderDestination(workspace *resources.Workspace, module string) string {
-	return filepath.Join(workspace.Dir(), "deployments", "modules", module)
+// moduleRenderDestination is where a full module render for environment writes
+// its owned tree: the module's working render (workingrender.Module), never a
+// path any environment delivers from.
+func moduleRenderDestination(workspace *resources.Workspace, environment, module string) string {
+	return workingrender.Module(workspace.Dir(), environment, module)
 }
 
 // loadDevTarget refuses a dev deployment onto anything but a complete, intact
@@ -276,7 +279,7 @@ func loadDevTarget(root, module, service, environment, appProject string) (Inven
 	renderFirst := fmt.Sprintf("run `codefly deploy gitops render %s --env %s` first", module, environment)
 	inventory, err := LoadInventory(root)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Inventory{}, InventoryUnit{}, fmt.Errorf("module %s has never been rendered (no %s): %s", module, filepath.Join(root, InventoryFilename), renderFirst)
+		return Inventory{}, InventoryUnit{}, fmt.Errorf("module %s has never been rendered for environment %s (no %s): %s", module, environment, filepath.Join(root, InventoryFilename), renderFirst)
 	}
 	if err != nil {
 		return Inventory{}, InventoryUnit{}, err
@@ -468,7 +471,7 @@ func imageRepositoryPattern(image string) *regexp.Regexp {
 	return regexp.MustCompile(`(^|[^A-Za-z0-9._/:@-])` + regexp.QuoteMeta(name) + `(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?@sha256:[a-fA-F0-9]{64}`)
 }
 
-// DevCommitTitle is the commit title a dev deployment is recorded under.
+// DevCommitTitle is the commit title a dev deployment is published under.
 func DevCommitTitle(module string, entry *InventoryDevDeployment) string {
 	revision := entry.Commit
 	if revision == "" {
@@ -480,27 +483,4 @@ func DevCommitTitle(module string, entry *InventoryDevDeployment) string {
 		revision += "-dirty"
 	}
 	return fmt.Sprintf("dev: %s/%s from %s@%s", module, entry.Service, entry.Source, revision)
-}
-
-const gitAddVerb = "add"
-
-// StageDevDeployment stages the files a dev deployment changed and, when asked,
-// commits them and pushes the current branch. It never pushes on its own.
-func StageDevDeployment(ctx context.Context, workspaceDir, module string, result *DevResult, commit, push bool) error {
-	args := append([]string{gitAddVerb, "--"}, result.Changed...)
-	if _, err := gitCommand(ctx, workspaceDir, args...); err != nil {
-		return err
-	}
-	if !commit {
-		return nil
-	}
-	args = append([]string{"commit", "-m", DevCommitTitle(module, &result.Entry), "--"}, result.Changed...)
-	if _, err := gitCommand(ctx, workspaceDir, args...); err != nil {
-		return err
-	}
-	if !push {
-		return nil
-	}
-	_, err := gitCommand(ctx, workspaceDir, "push")
-	return err
 }

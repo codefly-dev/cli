@@ -137,21 +137,22 @@ type Gap struct {
 // directory cannot answer: a solution's shape can be perfect while the cell's
 // ceiling admits none of the bindings its modules declare.
 //
-// root is the workspace root; environment names the rendered overlay. Both the
-// manifests and the envelope are render output, so this stays read-only and
-// needs no cluster and no credential.
-func (r *Report) InspectDelivered(root, environment string) {
-	// Two trees hold this, and they answer different questions. The DELIVERED
-	// tree (deployments/environments/<env>/modules/...) is what the cell reads,
-	// and it is the only one the envelope appears in at all: `publish` writes
-	// the envelope, `render` does not. The RENDERED tree answers the same
-	// question before a publish. Read both, and let the delivered one win where
-	// they disagree, because that is what the host enforces.
-	delivered, _ := filepath.Glob(filepath.Join(root, "deployments", "environments", environment, "modules", "*", "module-manifests", "overlays", environment, "*.yaml"))
-	rendered, _ := filepath.Glob(filepath.Join(root, "deployments", "modules", "*", "module-manifests", "overlays", environment, "*.yaml"))
-	overlays := make([]string, 0, len(rendered)+len(delivered))
-	overlays = append(overlays, rendered...)
-	overlays = append(overlays, delivered...)
+// trees are the environment's own module trees, its working render and then
+// its delivered tree (gitops.EnvironmentModuleTrees), and environment names
+// the overlay. Both the manifests and the envelope are render or publish
+// output, so this stays read-only and needs no cluster and no credential.
+func (r *Report) InspectDelivered(trees []string, environment string) {
+	// The DELIVERED tree is what the cell reads, and it is the only one the
+	// envelope appears in at all: `publish` writes the envelope, `render` does
+	// not. The working render answers the same question before a publish.
+	// Read them in order, and let the later win where they disagree: the
+	// delivered one is what the host enforces. A tree of another environment
+	// is never read, so its leftover overlays cannot speak for this one.
+	var overlays []string
+	for _, tree := range trees {
+		found, _ := filepath.Glob(filepath.Join(tree, "*", "module-manifests", "overlays", environment, "*.yaml"))
+		overlays = append(overlays, found...)
+	}
 	if len(overlays) == 0 {
 		r.fail(CodeNotRenderedForEnvironment,
 			fmt.Sprintf("no module manifest is rendered for environment %q, so nothing can be said about what that cell would enforce", environment),

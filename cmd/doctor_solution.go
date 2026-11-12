@@ -8,6 +8,8 @@ import (
 	"sort"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/solutionshape"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
@@ -174,6 +176,17 @@ module_envelope_admits_every_binding.`,
 			return fmt.Errorf("cannot load workspace: %w", err)
 		}
 
+		var deliveredTrees []string
+		if doctorSolutionEnv != "" {
+			env, selectErr := environments.Select(workspace, doctorSolutionEnv)
+			if selectErr != nil {
+				return selectErr
+			}
+			if deliveredTrees, err = gitops.EnvironmentModuleTrees(workspace, env); err != nil {
+				return err
+			}
+		}
+
 		var reports []*solutionshape.Report
 		if len(args) == 1 {
 			module, loadErr := workspace.LoadModuleFromName(ctx, args[0])
@@ -182,7 +195,7 @@ module_envelope_admits_every_binding.`,
 			}
 			report := solutionshape.Inspect(module.Name, module.Dir())
 			if doctorSolutionEnv != "" && report.IsSolution {
-				report.InspectDelivered(workspace.Dir(), doctorSolutionEnv)
+				report.InspectDelivered(deliveredTrees, doctorSolutionEnv)
 			}
 			reports = append(reports, report)
 		} else {
@@ -202,7 +215,7 @@ module_envelope_admits_every_binding.`,
 				}
 				report := solutionshape.Inspect(module.Name, module.Dir())
 				if doctorSolutionEnv != "" && report.IsSolution {
-					report.InspectDelivered(workspace.Dir(), doctorSolutionEnv)
+					report.InspectDelivered(deliveredTrees, doctorSolutionEnv)
 				}
 				reports = append(reports, report)
 			}

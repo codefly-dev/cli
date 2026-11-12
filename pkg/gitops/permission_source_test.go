@@ -12,6 +12,7 @@ import (
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
 	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/generators"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -77,7 +78,7 @@ func TestPreflightDetectsUnexportedPermissionSourceBeforeRender(t *testing.T) {
 	require.ErrorContains(t, err, "codefly generate contracts shop")
 	_, err = RenderModule(t.Context(), workspace, module, env, "", nil)
 	require.ErrorContains(t, err, "api.proto")
-	_, err = os.Stat(filepath.Join(workspace.Dir(), "deployments/modules/shop"))
+	_, err = os.Stat(workingrender.Module(workspace.Dir(), "staging", "shop"))
 	require.ErrorIs(t, err, os.ErrNotExist)
 	require.NoError(t, os.WriteFile(path, original, 0644))
 	require.NoError(t, ValidateModulePermissions(t.Context(), workspace, module, env))

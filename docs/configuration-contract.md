@@ -370,7 +370,7 @@ including already imported exclusions omitted from the producer's contract.
 
 In that environment an excluded service is not in the dependency graph: it is
 not built, published, rendered or started, has no unit in the render
-inventory, no tree under `deployments/modules/<module>/services/`, no workload
+inventory, no tree under `.codefly/renders/<env>/modules/<module>/services/`, no workload
 in the cell file and no mesh principal; `build module` and `deploy module`
 skip it there. A tree of the excluded service's own module rendered before the
 exclusion is refused by name — by the cell file and by publish — until that

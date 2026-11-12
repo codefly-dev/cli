@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/timings"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -88,6 +89,9 @@ func renderModuleTree(
 	if err != nil {
 		return RenderResult{}, err
 	}
+	if err = workingrender.Prepare(workspace.Dir(), env.Name); err != nil {
+		return RenderResult{}, err
+	}
 	// The module's namespace, not the environment's: a workspace composing
 	// several modules gives each its own, and the render record, the Argo
 	// destinations derived from it, the quota and the secret projections all
@@ -101,7 +105,7 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	options := &RenderOptions{
-		Destination:    moduleRenderDestination(workspace, module.Name),
+		Destination:    moduleRenderDestination(workspace, env.Name, module.Name),
 		Module:         module.Name,
 		Environment:    env.Name,
 		Namespace:      scope.Namespace,
@@ -141,10 +145,11 @@ func renderModuleTree(
 }
 
 // DefaultGitopsPath is the directory a delivery repository holds its modules
-// tree under when the environment's gitops block names no path. It is the
-// layout a render leaves in the workspace (deployments/modules/<module>), so a
-// workspace delivering into its own repository delivers exactly where it
-// rendered.
+// tree under when the environment's gitops block names no path. A render
+// never writes there: it writes the environment's working render
+// (workingrender.Module), and publish copies that into the delivery
+// repository at this path, so a workspace delivering into its own repository
+// keeps its delivered tree out of every render's reach.
 const DefaultGitopsPath = "deployments"
 
 // gitopsPathOf is the one selection of an environment's gitops path, shared
@@ -690,8 +695,11 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
 		return RenderResult{}, err
 	}
+	if err := workingrender.Prepare(workspace.Dir(), env.Name); err != nil {
+		return RenderResult{}, err
+	}
 	serviceDir, _ := unitDirectory(UnitKindService)
-	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
+	destination := filepath.Join(workingrender.Environment(workspace.Dir(), env.Name), serviceDir, module.Name, service.Name)
 	pkg, artifacts, err := modulePackage(module.Dir())
 	if err != nil {
 		return RenderResult{}, err
@@ -775,7 +783,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 //
 // The module under render keeps the committed layout "services/<name>": the
 // workspace and module halves of its key are already carried by the owned
-// tree's own location, <workspace>/deployments/modules/<module>, and the
+// tree's own location, the module's working render for the environment, and the
 // inventory contract pins that relative path (see validateInventoryUnits).
 // Every other module's services stage outside the owned tree, under the
 // render's scratch root, so they cannot collide with the module's own units,

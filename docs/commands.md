@@ -1160,9 +1160,9 @@ reads it back through its own reader.
 
 Because absence is removal, **the cell file is never written without a module
 the workspace composes.** The per-module render records
-(`deployments/modules/<module>/.codefly-render.json`) are the file's only
-source, and they are uncommitted render outputs: a `git clean` of
-`deployments/` removes them. A render that finds a composed module with no
+(`.codefly/renders/<env>/modules/<module>/.codefly-render.json`) are the file's
+only source, and they are uncommitted render outputs under the gitignored
+`.codefly/` directory: removing `.codefly/renders` removes them. A render that finds a composed module with no
 record for the environment — none at all, or one rendered for another
 environment — writes no cell file, leaves the one on disk as it was, and names
 each such module with the command that renders it (`codefly deploy gitops
@@ -1178,8 +1178,8 @@ checkout holds. A module removed from `modules:` leaves its render record
 behind, and so does one that was never composed here; such a record is left
 out of the file and deleted by the render that derives it — nothing could
 render that module again — and the render says so, one line per record
-(`removed deployments/modules/<module>: the composition no longer declares
-it`). Every render that re-derives the cell file prunes this way, a single
+(`removed .codefly/renders/<env>/modules/<module>: the composition no longer
+declares it`). Every render that re-derives the cell file prunes this way, a single
 module's and `--all` alike, because that is where the claim about the cell is
 made; an environment with no `host:` has no cell file and nothing is pruned.
 
@@ -1582,9 +1582,25 @@ gitops:
 
 Render first writes to a temporary sibling, rejects unsafe or non-promotable
 manifests, invokes module agents for transport-neutral topology bundles, and
-installs the selected environment resources and exact service graph under
-`deployments/modules/<module>`. The installed
+installs the selected environment resources and exact service graph under the
+module's **working render** for that environment,
+`.codefly/renders/<env>/modules/<module>`. The installed
 `.codefly-render.json` contains the sorted file inventory and aggregate digest.
+
+The working render is scoped to its environment and never written into
+`deployments/`. A workspace's `deployments/` tree is what its environments
+deliver from — `deployments/modules` for an environment on the default gitops
+path, `deployments/environments/<env>/modules` for one that declares its own —
+and an Argo application follows it. A render written there would put one
+environment's tree on another's delivery path, and two environments rendered in
+one checkout would overwrite each other. Rendering `blue` and then `staging`
+leaves `.codefly/renders/blue/…` and `.codefly/renders/staging/…` side by side;
+`publish --env <env>` reads only `.codefly/renders/<env>/modules/<module>`
+(refusing with the render command when there is none), and a delivered tree
+changes only through publish, which copies the working render into a clone of
+the delivery repository at the environment's gitops path. `.codefly/renders`
+carries its own `.gitignore`, so a working render cannot be committed.
+
 Publish clones the selected GitOps repository, commits and advertises the
 immutable service/module snapshot, derives exact AppProject authority from that
 snapshot, and adds CLI-owned Applications pinned to its commit and paths. It
@@ -1675,8 +1691,8 @@ codefly deploy secrets --env staging --module runtime --dry-run  # one module's 
 codefly deploy secrets --env staging --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD  # rotate a generated key
 ```
 
-It reads every `ExternalSecret` the render projected for `--env` under
-`deployments/modules` (refusing one edited after the render), resolves the store
+It reads every `ExternalSecret` the render projected for `--env` into its
+working render, `.codefly/renders/<env>/modules` (refusing one edited after the render), resolves the store
 behind the `SecretStore`/`ClusterSecretStore` it names from the environment's
 cluster (today: `gcpsm`, written through the operator's own `gcloud` login), and
 resolves every remote property to a source, never printing a value:
@@ -1959,8 +1975,7 @@ from the deployment workspace the render writes into:
 ```bash
 codefly deploy dev payments/api --env staging --path ../payments/services/api
 codefly deploy dev payments/api --env staging            # uses the service override
-codefly deploy dev payments/api --env staging --commit   # commit it
-codefly deploy dev payments/api --env staging --commit --push
+codefly deploy gitops publish payments --env staging     # deliver it
 ```
 
 1. **Source.** `--path <dir>` if given; else the machine-local service override
@@ -1974,7 +1989,7 @@ codefly deploy dev payments/api --env staging --commit --push
    push, and the same `@sha256:` digest capture. `DOCKER_HOST` is honoured the
    way every build honours it.
 3. **Patch.** Only that service's digest pin changes, inside its own rendered
-   unit (`deployments/modules/<module>/services/<service>/`); every other byte of
+   unit (`.codefly/renders/<env>/modules/<module>/services/<service>/`); every other byte of
    the tree is left as the render wrote it, and the render inventory is
    re-derived so the tree still matches it. It refuses when the module was never
    rendered, was rendered for another environment (or another `--app-project`,
@@ -1987,32 +2002,35 @@ codefly deploy dev payments/api --env staging --commit --push
 
    When the environment declares a `host:` block, the environment's cell file
    (`<gitops path>/cells/<environment>/cell.yaml`) is re-derived from the
-   rendered trees exactly as a render derives it, written, and is among the
-   changed files. A cell admits only the builds its cell file names — a
-   validation cell takes that approval from the branch head's file — so a
-   re-pin the file did not carry would be refused at admission and never run.
-   Because the file is derived from the whole workspace, it may move nothing
-   but the service's own image digests and the `source` revision against the
-   file the branch carries (the workspace's `HEAD`; the file on disk when the
-   workspace is not a git checkout). Anything else — a sibling module rendered
-   and not committed, an uncommitted environment change, a sibling tree at
-   another inventory schema — would be approved by the dev deployment's
-   commit, so it is refused, naming each namespace that moved, before the image
-   is built: commit those changes (after `codefly deploy gitops render --all
-   --env <env>` if the trees are stale), then deploy again. That includes an
-   earlier dev deployment of another service left uncommitted: commit it
-   before the next. After the build, only digests of the repositories it
-   produced may move. With no committed cell file there is no approval to
+   environment's working renders exactly as a render derives it, written, and is
+   among the changed files. A cell admits only the builds its cell file names,
+   so a re-pin the file did not carry would be refused at admission and never
+   run. The file is held to the one publish holds it to: the cell file on the
+   environment's **delivery base branch** (`gitops.branch` of its delivery
+   repository), read afresh from that repository, never the workspace's own
+   `HEAD`, which a publication does not move. It may move nothing but the
+   service's own image digests and the `source` revision against that file (an
+   environment that declares no delivery repository is held to the file on
+   disk). Anything else — a sibling module rendered and not published, an
+   environment change not yet delivered, a sibling tree at another inventory
+   schema — would be approved by the dev deployment's publication, so it is
+   refused, naming each namespace that moved, before the image is built:
+   publish those changes (after `codefly deploy gitops render --all --env
+   <env>` if the renders are stale) and let the promotion land, then deploy
+   again. That includes an earlier dev deployment of another service not yet
+   delivered. After the build, only digests of the repositories it produced may
+   move. With no cell file on the delivery base branch there is no approval to
    replace, and it refuses the same way.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as
    a `gitops_dev_deployment_active` warning.
-5. **Git.** The changed files are staged and the exact commit and push commands
-   printed. `--commit` commits them as
-   `dev: <module>/<service> from <path>@<sha>[-dirty]`; `--push` (which needs
-   `--commit`) pushes the current branch. Nothing is pushed otherwise. Argo CD
-   then syncs the new digest.
+5. **Deliver.** Nothing is committed: the working render is gitignored, and a
+   delivered tree changes only through publish. The exact command is printed —
+   `codefly deploy gitops publish <module> --env <env> --message "dev:
+   <module>/<service> from <path>@<sha>[-dirty]"` — and the publish carries the
+   re-pinned tree and the cell file together, signed and settled like any
+   render. Argo CD then syncs the new digest.
 
 **Leaving dev mode** is a full render: `codefly deploy gitops render <module>
 --env <env>` re-derives every image from the workspace, drops the `dev` entries
@@ -2851,7 +2869,9 @@ method policy and every written copy of it. Both commands read committed files
 only — no cluster, no credential.
 
 `check` is the gate. `--env <environment>`, in a composition, reads what that
-environment delivers to its host and fails when a module's delivery does not
+environment delivers to its host — from its working render and then its own
+delivered tree (`<gitops path>/modules`), never a tree another environment
+delivers from — and fails when a module's delivery does not
 hold to its own contract, when a role names a scope the composition reaches
 nowhere, or when the envelope withholds a scope a binding asks for (the host
 drops it without a record). `--module-dir <module>`, in a module's checkout,
@@ -3423,7 +3443,8 @@ environment.
 
 `--rendered` (with `--json`) adds each endpoint's `container_port`: the port its
 pods listen on. The agent decides it when it renders, so it is not known before
-a render and is read from the render committed at `deployments/modules/<module>`
+a render and is read from the module's working render for `--env`,
+`.codefly/renders/<env>/modules/<module>`
 (recorded per service as `render`, relative to the workspace), exactly as
 `deploy gitops render` reads it to check `spec.deployment.endpoint-ports`: the
 `targetPort` of the rendered Service port that publishes the endpoint's

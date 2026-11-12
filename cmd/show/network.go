@@ -43,10 +43,10 @@ here rather than declaring them.
 --rendered adds each endpoint's container port: the port its pods listen on,
 which the service's agent decides and which differs from the deployed port when
 the agent keeps an engine port (5432, 6379, 3000) behind the Service. No agent
-reports it before rendering, so it is read from the module render committed at
-deployments/modules/<module>: the targetPort of the rendered Service port that
-publishes the endpoint's deployed port. A service whose module has no render
-carries none; a render for another environment is an error.`,
+reports it before rendering, so it is read from the module's working render
+for --env, .codefly/renders/<env>/modules/<module>: the targetPort of the rendered Service
+port that publishes the endpoint's deployed port. A service whose module has no
+render for --env carries none.`,
 	Example: `  codefly show network
   codefly show network --json --env staging
   codefly show network --json --env staging --rendered`,

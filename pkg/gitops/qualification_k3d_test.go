@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -558,7 +559,7 @@ func renderMindShapedFixture(t *testing.T, root, environment string) {
 		}
 	}
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(root, "deployments", "modules", "payments"),
+		Destination: workingrender.Module(root, environment, "payments"),
 		Module:      "payments", UnitNames: services, Environment: environment,
 		AppProject: "payments", OwnedPath: "environments/modules/payments",
 		Units: graph, Promotable: true,

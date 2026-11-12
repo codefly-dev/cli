@@ -11,6 +11,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -683,7 +684,7 @@ agent:
   version: 0.0.0
   publisher: codefly.dev
 `)
-	writeTestFile(t, filepath.Join(root, "deployments", "modules", "backend", "services", "api", "overlays", "local", "kustomization.yaml"), `images:
+	writeTestFile(t, filepath.Join(workingrender.Module(root, "local", "backend"), "services", "api", "overlays", "local", "kustomization.yaml"), `images:
   - name: app
     newName: app
     newTag: test
