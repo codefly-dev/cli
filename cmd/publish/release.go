@@ -514,6 +514,28 @@ func (e *Engine) adoptMergedMain(ctx context.Context, tag string) error {
 	return nil
 }
 
+// headCarriesReleaseCommit reports whether HEAD is the release commit for tag,
+// or a merge commit that brought it in. The squash landing leaves the release
+// commit as HEAD; a merge queue that lands the same release pull request with
+// a merge commit leaves it one hop behind, as HEAD's second parent, with the
+// manifest at HEAD already carrying the version. Both are the same stranded
+// release and a re-run must finish either rather than bump past it.
+func (e *Engine) headCarriesReleaseCommit(ctx context.Context, tag string) (bool, error) {
+	subject, err := e.git(ctx, "log", "-1", "--format=%s")
+	if err != nil {
+		return false, fmt.Errorf("read HEAD subject: %w", err)
+	}
+	if isReleaseCommitFor(subject, tag) {
+		return true, nil
+	}
+	// A non-merge HEAD has no second parent; git then fails and the answer is no.
+	merged, err := e.git(ctx, "log", "-1", "--format=%s", "HEAD^2")
+	if err != nil {
+		return false, nil
+	}
+	return isReleaseCommitFor(merged, tag), nil
+}
+
 // resumeStrandedRelease finishes a release whose version bump reached main but
 // whose tag never did — the one window a pull-request landing leaves open,
 // where a re-run would otherwise bump again and burn the version.
@@ -522,12 +544,9 @@ func (e *Engine) adoptMergedMain(ctx context.Context, tag string) error {
 // version, and that version is untagged on origin.
 func (e *Engine) resumeStrandedRelease(ctx context.Context) (string, bool, error) {
 	tag := e.Manifest.Tag()
-	subject, err := e.git(ctx, "log", "-1", "--format=%s")
-	if err != nil {
-		return "", false, fmt.Errorf("read HEAD subject: %w", err)
-	}
-	if !isReleaseCommitFor(subject, tag) {
-		return "", false, nil
+	stranded, err := e.headCarriesReleaseCommit(ctx, tag)
+	if err != nil || !stranded {
+		return "", false, err
 	}
 	published, err := e.tagExistsRemotely(ctx, tag)
 	if err != nil || published {
