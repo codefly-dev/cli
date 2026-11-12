@@ -165,8 +165,9 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	}
 	// The bundle this run built outranks the release's artifact metadata: a
 	// native run delivers what runs, and the host reads the bytes from the
-	// cache by the digest named here. A declared page without it is refused:
-	// a host admits no frontend without its signed payload.
+	// cache by the digest named here. A declared remote without it is
+	// refused: a host admits no remote without its signed payload. A page the
+	// host bundles has none: the host builds it from the release's package.
 	switch {
 	case workload.DeferFrontend && workload.FrontendBundle != nil:
 		return nil, fmt.Errorf("module %s cannot both defer and publish a frontend bundle", workload.Module.Name)
@@ -174,6 +175,11 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 		instance.Frontend = nil
 	case workload.FrontendBundle != nil && instance.Frontend == nil:
 		return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
+	case workload.FrontendBundle != nil && instance.Frontend.Bundled != nil:
+		return nil, fmt.Errorf("module %s built a frontend bundle and declares a page the host bundles (%s); the host builds what it serves, so such a page has no bundle of its own", workload.Module.Name, instance.Frontend.Bundled.Package)
+	case instance.Frontend != nil && instance.Frontend.Bundled != nil:
+		// The host builds the page from the release's package: nothing to
+		// carry, and no payload to name.
 	case workload.FrontendBundle != nil:
 		payload := *workload.FrontendBundle
 		instance.Frontend.Payload = &payload

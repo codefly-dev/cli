@@ -284,7 +284,9 @@ func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace,
 			if frontendErr != nil {
 				return nil, frontendErr
 			}
-			if frontend == nil {
+			if frontend == nil || frontend.Bundled != nil {
+				// Headless, or a page the host builds into its own frontend
+				// and reaches through the hop: nothing for the host to forward.
 				continue
 			}
 		}
