@@ -436,6 +436,10 @@ func (r *Report) checkFrontend(dir string) {
 			"this is the same reader that refuses it at delivery, so the solution would be delivered and then fail")
 		return
 	}
+	if frontend.Bundled != nil {
+		r.ok(CodeFrontendMissing, fmt.Sprintf("the page declares %q, bundled by the host from %s (%s)", frontend.Title, frontend.Bundled.Package, frontend.Bundled.Export))
+		return
+	}
 	r.ok(CodeFrontendMissing, fmt.Sprintf("the page declares %q exposing %s", frontend.Title, frontend.ExposedModule))
 }
 

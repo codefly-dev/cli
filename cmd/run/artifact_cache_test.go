@@ -87,6 +87,16 @@ func TestANativeRunBuildsItsDeclaredPageOncePerChangeOfItsInputs(t *testing.T) {
 	require.NoError(t, err, "headless: no build needed")
 	require.Nil(t, bundle)
 
+	// A page the host bundles is built by the host, never by the run: no
+	// build runs, so the run hands delivery no bundle for it.
+	hostBundled := &resources.Module{Name: "host-bundled", ServiceEntry: "api"}
+	hostBundled.WithDir(t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Join(hostBundled.Dir(), "services", "api"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hostBundled.Dir(), "services", "api", solutionrun.FrontendFileName), []byte("title: Models\norder: 0\nbundled: {package: \"@example/models-ui\", export: modelsPlugin}\n"), 0o600))
+	bundle, err = cluster.frontendBundle(ctx, hostBundled)
+	require.NoError(t, err, "a page the host bundles: no build needed")
+	require.Nil(t, bundle)
+
 	bin := t.TempDir()
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	calls := filepath.Join(t.TempDir(), "calls")

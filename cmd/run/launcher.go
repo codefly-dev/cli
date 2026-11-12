@@ -459,10 +459,12 @@ func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
 // before the delivery lock is taken, so a build delays no other module's
 // delivery. The frontend's own npm build runs natively unless the service that
 // owns the page runs in a container, where it builds in the pinned builder
-// image as deployment does. Headless components need no build.
+// image as deployment does. Headless components need no build, and neither
+// does a page the host bundles: the host builds it from the release's
+// package, and delivery refuses a bundle handed beside it.
 func (cluster *launcher) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
 	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
-	if err != nil || frontend == nil {
+	if err != nil || frontend == nil || frontend.Bundled != nil {
 		return nil, err
 	}
 	workspaceDir := cluster.composed().Dir()
