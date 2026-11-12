@@ -665,6 +665,13 @@ release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
 
+A merged PR is tagged even when this command did not open it: when the manifest
+on main is above the latest tag, the commit that set that version is tagged,
+provided the checkout is level with origin/main and the ci workflow succeeded
+on that commit. Otherwise the command refuses and says why; it never bumps
+again on top of an untagged version. This path runs no gate, so --pin and
+--no-attestation do not apply to it.
+
 Successful CI for the exact checkout HEAD can attest source tests; the release
 report records the workflow, run ID and SHA. Otherwise source tests run locally.
 Pass --no-attestation to force local source tests. Build, audit and conformance
