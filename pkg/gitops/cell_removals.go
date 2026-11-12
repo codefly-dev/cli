@@ -309,9 +309,12 @@ type compositionRemovals struct {
 // what every dropped module last delivered.
 func judgeCompositionRemovals(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, cell *publicationCell, base *compositionBase) (*cellfile.File, *compositionClaim, compositionRemovals, error) {
 	var removals compositionRemovals
-	baseCell, err := baseCellFile(ctx, cell, base.repo, base.branch, base.revision)
-	if err != nil {
-		return nil, nil, removals, err
+	var baseCell *cellfile.File
+	var err error
+	if cell != nil {
+		if baseCell, err = baseCellFile(ctx, cell.delivered, base.repo, base.branch, base.revision); err != nil {
+			return nil, nil, removals, err
+		}
 	}
 	claim := newCompositionClaim(ctx, workspace, base.repo, base.module, base.revision, baseCell)
 	if removals.removed, err = removeUndeclaredDeliveries(base.repo, base.gitopsPath, env, base.restoreRevision, claim); err != nil {
@@ -325,23 +328,22 @@ func judgeCompositionRemovals(ctx context.Context, workspace *resources.Workspac
 	return baseCell, claim, removals, nil
 }
 
-// baseCellFile reads the cell file the delivery base revision carries at the
-// path the publication delivers to, nil when the base has none. A publication
-// carrying no cell file is held to nothing, and reads none.
-func baseCellFile(ctx context.Context, cell *publicationCell, repo, baseBranch, baseRevision string) (*cellfile.File, error) {
-	if cell == nil {
-		return nil, nil
-	}
-	baseData, err := gitCommandBytes(ctx, repo, "show", baseRevision+":"+cell.delivered)
+// baseCellFile reads the cell file the delivery base revision carries at
+// delivered, the path a publication delivers the file to, nil when the base
+// has none. A publication carrying no cell file is held to nothing
+// (holdCellToBase) and reads none for that; the tree it delivers is still
+// held to the base's file (holdTreeToCell), which reads it here.
+func baseCellFile(ctx context.Context, delivered, repo, baseBranch, baseRevision string) (*cellfile.File, error) {
+	baseData, err := gitCommandBytes(ctx, repo, "show", baseRevision+":"+delivered)
 	if err != nil {
 		if gitSaysAbsent(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read %s's cell file %s: %w", baseBranch, cell.delivered, err)
+		return nil, fmt.Errorf("read %s's cell file %s: %w", baseBranch, delivered, err)
 	}
 	base, err := cellfile.Parse(baseData)
 	if err != nil {
-		return nil, fmt.Errorf("%s's cell file %s cannot be read: %w", baseBranch, cell.delivered, err)
+		return nil, fmt.Errorf("%s's cell file %s cannot be read: %w", baseBranch, delivered, err)
 	}
 	return base, nil
 }

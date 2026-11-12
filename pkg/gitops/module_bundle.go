@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -436,10 +437,12 @@ func validateTransportNeutralModuleBundleInTree(tree *renderRoot, root string) e
 
 // retainManagedBundle assembles a managed service's promotable bundle from the
 // two things a managed service contributes to the cluster: the bootstrap Jobs its
-// agent emitted (a one-shot handoff) and the ExternalSecret projection its
-// environment declares. It reports whether a bundle was produced; when the service
-// contributes neither, its rendered tree is removed and false is returned so the
-// caller records it as an unrendered managed unit.
+// agent emitted (a one-shot handoff), with the ServiceAccount each runs as when
+// the agent bound one — the Job's cloud identity, which the agent decides from
+// the environment's declaration (codefly-dev/cli#1346) — and the ExternalSecret
+// projection its environment declares. It reports whether a bundle was produced;
+// when the service contributes neither, its rendered tree is removed and false is
+// returned so the caller records it as an unrendered managed unit.
 func retainManagedBundle(
 	root, service, environment, namespace string,
 	secretRefs []environments.EnvironmentManagedSecretReference,
@@ -452,12 +455,13 @@ func retainManagedBundle(
 	return retainManagedBundleInTree(tree, root, service, environment, namespace, secretRefs)
 }
 
-func retainManagedBundleInTree(
-	tree *renderRoot,
-	root, service, environment, namespace string,
-	secretRefs []environments.EnvironmentManagedSecretReference,
-) (bool, error) {
+// managedBootstrapManifests reads a managed service's rendered tree for the
+// two kinds of manifest its bundle may carry: the bootstrap Jobs labelled for
+// the service, in the order met, and every ServiceAccount the render emitted,
+// by name, for the Jobs to be matched against.
+func managedBootstrapManifests(tree *renderRoot, root, service string) ([]map[string]any, map[string]map[string]any, error) {
 	var jobs []map[string]any
+	accounts := map[string]map[string]any{}
 	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := filepath.Ext(relative)
 		if extension != yamlExtension && extension != ymlExtension {
@@ -472,10 +476,16 @@ func retainManagedBundleInTree(
 			return err
 		}
 		for _, item := range manifests {
+			metadata, _ := item.value["metadata"].(map[string]any)
+			if item.group == "" && item.kind == "ServiceAccount" {
+				if name, _ := metadata["name"].(string); name != "" {
+					accounts[name] = item.value
+				}
+				continue
+			}
 			if item.group != "batch" || item.kind != "Job" {
 				continue
 			}
-			metadata, _ := item.value["metadata"].(map[string]any)
 			labels, _ := metadata["labels"].(map[string]any)
 			if labels["codefly.dev/bootstrap-service"] == service {
 				jobs = append(jobs, item.value)
@@ -483,6 +493,86 @@ func retainManagedBundleInTree(
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return jobs, accounts, nil
+}
+
+// accountsRetainedByJobs picks, from the accounts the render emitted, the ones
+// a retained Job names, each once. Only an account a retained Job names
+// travels with it, and a Job bound to an account the render did not emit is
+// refused: it would run as nothing the cluster knows.
+func accountsRetainedByJobs(service string, jobs []map[string]any, accounts map[string]map[string]any) ([]map[string]any, error) {
+	var retained []map[string]any
+	for _, job := range jobs {
+		name, _ := mapField(mapField(mapField(job, "spec"), "template"), "spec")["serviceAccountName"].(string)
+		if name == "" {
+			continue
+		}
+		account, rendered := accounts[name]
+		if !rendered {
+			return nil, fmt.Errorf("managed service %s: its bootstrap Job runs as ServiceAccount %q, which its render does not emit", service, name)
+		}
+		if !slices.ContainsFunc(retained, func(kept map[string]any) bool { return mapField(kept, "metadata")["name"] == name }) {
+			retained = append(retained, account)
+		}
+	}
+	return retained, nil
+}
+
+// writeManagedBundleBase writes the bundle's base: the retained accounts, then
+// the Jobs, then the ExternalSecret projection when there is one, and returns
+// the file names in that order for the base kustomization.
+func writeManagedBundleBase(tree *renderRoot, base string, accounts, jobs []map[string]any, projection *externalSecret) ([]string, error) {
+	var resourcesList []string
+	for index, account := range accounts {
+		name := fmt.Sprintf("service-account-%d.yaml", index+1)
+		encoded, err := yaml.Marshal(account)
+		if err != nil {
+			return nil, err
+		}
+		if err = tree.write(base, name, encoded); err != nil {
+			return nil, err
+		}
+		resourcesList = append(resourcesList, name)
+	}
+	for index, job := range jobs {
+		name := fmt.Sprintf("job-%d.yaml", index+1)
+		encoded, err := yaml.Marshal(job)
+		if err != nil {
+			return nil, err
+		}
+		if err = tree.write(base, name, encoded); err != nil {
+			return nil, err
+		}
+		resourcesList = append(resourcesList, name)
+	}
+	if projection != nil {
+		projected, err := yaml.Marshal(projection)
+		if err != nil {
+			return nil, err
+		}
+		// The projection is an ExternalSecret — a reference to remote keys, never a
+		// secret value — so it stays a world-readable manifest like its siblings.
+		if err = tree.write(base, "external-secret.yaml", projected); err != nil {
+			return nil, err
+		}
+		resourcesList = append(resourcesList, "external-secret.yaml")
+	}
+	return resourcesList, nil
+}
+
+func retainManagedBundleInTree(
+	tree *renderRoot,
+	root, service, environment, namespace string,
+	secretRefs []environments.EnvironmentManagedSecretReference,
+) (bool, error) {
+	jobs, accounts, err := managedBootstrapManifests(tree, root, service)
+	if err != nil {
+		return false, err
+	}
+	retainedAccounts, err := accountsRetainedByJobs(service, jobs, accounts)
 	if err != nil {
 		return false, err
 	}
@@ -511,29 +601,9 @@ func retainManagedBundleInTree(
 	if err = tree.mkdirAll(overlay); err != nil {
 		return false, err
 	}
-	var resourcesList []string
-	for index, job := range jobs {
-		name := fmt.Sprintf("job-%d.yaml", index+1)
-		encoded, marshalErr := yaml.Marshal(job)
-		if marshalErr != nil {
-			return false, marshalErr
-		}
-		if err = tree.write(base, name, encoded); err != nil {
-			return false, err
-		}
-		resourcesList = append(resourcesList, name)
-	}
-	if projection != nil {
-		projected, marshalErr := yaml.Marshal(projection)
-		if marshalErr != nil {
-			return false, marshalErr
-		}
-		// The projection is an ExternalSecret — a reference to remote keys, never a
-		// secret value — so it stays a world-readable manifest like its siblings.
-		if writeErr := tree.write(base, "external-secret.yaml", projected); writeErr != nil {
-			return false, writeErr
-		}
-		resourcesList = append(resourcesList, "external-secret.yaml")
+	resourcesList, err := writeManagedBundleBase(tree, base, retainedAccounts, jobs, projection)
+	if err != nil {
+		return false, err
 	}
 	baseKustomization := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",

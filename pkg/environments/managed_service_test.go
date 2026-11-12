@@ -369,3 +369,83 @@ func TestValidateEnvironmentsRejectsUnknownQualifiedServiceIdentity(t *testing.T
 		})
 	}
 }
+
+func inClusterServicesDeclaration(key string) string {
+	return `    in-cluster-services:
+      - ` + key + `
+`
+}
+
+// in-cluster-services is the explicit counterpart of managed-services: it
+// resolves the same way, and a store's agent is refused a render for an
+// environment that declares neither.
+func TestInClusterResolvesLikeAManagedService(t *testing.T) {
+	env := &environments.Environment{InClusterServices: []string{"sessions/redis", "store"}}
+	if !env.InCluster("sessions", "redis") || !env.InCluster("catalog", "store") {
+		t.Fatal("a declared in-cluster service did not resolve")
+	}
+	if env.InCluster("catalog", "redis") {
+		t.Fatal("a qualified entry resolved for another module's service")
+	}
+	var absent *environments.Environment
+	if absent.InCluster("sessions", "redis") {
+		t.Fatal("a nil environment reported an in-cluster service")
+	}
+}
+
+// A service's server is one or the other: a key in both blocks is refused at
+// load, before any render could be told two things.
+func TestEnvironmentValidateRejectsAServiceBothManagedAndInCluster(t *testing.T) {
+	env := &environments.Environment{
+		Name:              "prod",
+		ManagedServices:   map[string]environments.EnvironmentManagedService{"sessions/redis": managedEntry("cache.internal.example")},
+		InClusterServices: []string{"sessions/redis"},
+	}
+	err := env.Validate()
+	if err == nil || !strings.Contains(err.Error(), "both managed") || !strings.Contains(err.Error(), "sessions/redis") {
+		t.Fatalf("Validate = %v, want a refusal naming sessions/redis as both", err)
+	}
+	env.InClusterServices = []string{"../redis"}
+	env.ManagedServices = nil
+	if err := env.Validate(); err == nil || !strings.Contains(err.Error(), "in-cluster-services") {
+		t.Fatalf("Validate = %v, want a malformed in-cluster-services key refused", err)
+	}
+}
+
+// The graph rules managed-services keys are held to apply to in-cluster ones:
+// an ambiguous bare key is refused naming the candidates, a qualified one is
+// accepted, and an unknown qualified one is a typo refused by name.
+func TestValidateEnvironmentsHoldsInClusterServicesToTheGraph(t *testing.T) {
+	ctx := context.Background()
+	for name, test := range map[string]struct {
+		key  string
+		want []string
+	}{
+		"ambiguous bare key": {key: "redis", want: []string{"ambiguous", "sessions/redis", "catalog/redis", "in-cluster service"}},
+		"unknown service":    {key: "sessions/redys", want: []string{"unknown service", "in-cluster service"}},
+		"qualified key":      {key: "sessions/redis"},
+		"bare key, no match": {key: "postgres"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws, err := loadDeploymentWorkspace(ctx, writeTwoModuleWorkspace(t, inClusterServicesDeclaration(test.key)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ws.ValidateEnvironments(ctx)
+			if len(test.want) == 0 {
+				if err != nil {
+					t.Fatalf("ValidateEnvironments = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected ValidateEnvironments to refuse the declaration")
+			}
+			for _, want := range test.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %v, want it to contain %q", err, want)
+				}
+			}
+		})
+	}
+}

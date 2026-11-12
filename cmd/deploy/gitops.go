@@ -110,11 +110,15 @@ var gitOpsRenderCmd = &cobra.Command{
 		}); err != nil {
 			return err
 		}
+		// The cell file is this render's output as much as the tree is: the
+		// cell admits the tree only through it, and a publish of a tree it
+		// does not approve is refused. So a cell file that cannot be derived
+		// fails the render, as `render --all` fails, instead of being warned
+		// about on the way to exit 0.
 		if env.Host != nil {
 			cell, cellErr := gitops.RenderCell(ctx, workspace, env)
 			if cellErr != nil {
-				cli.Warning("Cell file not re-derived: %s", cellErr)
-				return nil
+				return fmt.Errorf("render the cell file of environment %s: %w", env.Name, cellErr)
 			}
 			printCell(&cell)
 		}
@@ -733,6 +737,9 @@ func printCell(cell *gitops.CellResult) {
 		return
 	}
 	cli.Info("Cell file %s covers modules %s", cell.Path, strings.Join(cell.Modules, ", "))
+	if len(cell.Carried) > 0 {
+		cli.Info("Cell file keeps the entries of %s as it had them: this checkout holds no render of them for this environment", strings.Join(cell.Carried, ", "))
+	}
 	for _, edge := range cell.ConfiguredEdges {
 		cli.Info("%s", edge)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,6 +191,26 @@ func renderCellTree(t *testing.T, workspace *resources.Workspace, module, servic
 // given, so a test can render a module that delivers a module manifest.
 func renderCellTreeWith(t *testing.T, options *RenderOptions, service, environment string) RenderResult {
 	t.Helper()
+	return renderCellTreeFrom(t, options, service, environment, cellDeployment)
+}
+
+// renderCellTreeImage renders the cell fixture's unit with its first container
+// pinned to digest: a rebuild of that service.
+func renderCellTreeImage(t *testing.T, workspace *resources.Workspace, module, service, namespace, environment, digest string) RenderResult {
+	t.Helper()
+	deployment := strings.Replace(cellDeployment, "sha256:"+strings.Repeat("a", 64), digest, 1)
+	require.NotEqual(t, cellDeployment, deployment)
+	return renderCellTreeFrom(t, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, environment, module),
+		Module:      module, Environment: environment, Namespace: namespace, AppProject: "acme-" + environment,
+		Promotable: true, OwnedPath: "deployments/modules/" + module,
+		Units:   unitsWithPorts(module, service),
+		Package: &InventoryPackage{ID: "acme/" + module, Version: "1.2.0"},
+	}, service, environment, deployment)
+}
+
+func renderCellTreeFrom(t *testing.T, options *RenderOptions, service, environment, deployment string) RenderResult {
+	t.Helper()
 	result, err := RenderOwnedTree(context.Background(), options, func(_ context.Context, root string) error {
 		overlay := filepath.Join(root, "services", service, "overlays", environment)
 		if err := os.MkdirAll(overlay, 0o755); err != nil {
@@ -198,7 +219,7 @@ func renderCellTreeWith(t *testing.T, options *RenderOptions, service, environme
 		if err := os.WriteFile(filepath.Join(overlay, kustomizationFile), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"), 0o644); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(strings.ReplaceAll(cellDeployment, "name: api", "name: "+service)), 0o644)
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(strings.ReplaceAll(deployment, "name: api", "name: "+service)), 0o644)
 	})
 	require.NoError(t, err)
 	return result
@@ -295,36 +316,117 @@ func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {
 	require.Contains(t, err.Error(), "codefly deploy gitops render billing --env staging")
 }
 
-// A composed module with no render record in the checkout (the records are
-// uncommitted render outputs, so a clean of deployments/ removes them) refuses
-// the cell file by name, with the command that renders it, and leaves the file
-// already on disk as it was: a file regenerated whole without that module
-// would withdraw every workload it delivers. Once it is rendered, the file is
-// written as before.
-func TestCellFileRefusesToDropAComposedModuleWithNoRender(t *testing.T) {
+// A working render is never committed, so a single-module render on a fresh
+// checkout holds no render of any other module. That render must move its own
+// module's approvals and nothing else's: the file written is the one on disk
+// with the rendered module's entries moved to the render's — the other
+// module's namespace byte for byte as it was, a module the composition no
+// longer declares dropped — and it is the file a whole render writes once the
+// missing render is back. This is the Blue incident of 2026-11-12: a
+// single-module render left the cell approving the old digests, and the
+// promotion merged a tree the cell refused every pod of.
+func TestASingleModuleRenderMovesOnlyItsOwnApprovals(t *testing.T) {
 	workspace := writeCellWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
 	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
-	full, err := RenderCell(context.Background(), workspace, env)
+	whole, err := RenderCell(context.Background(), workspace, env)
 	require.NoError(t, err)
-	before, err := os.ReadFile(full.Path)
-	require.NoError(t, err)
+	require.Empty(t, whole.Carried)
+	before := readCellFile(t, whole.Path)
 
+	// The file on disk also carries a module the composition no longer
+	// declares, as a file from an older composition does.
+	stale := readCellFile(t, whole.Path)
+	stale.Namespaces = append(stale.Namespaces, cellfile.Namespace{Name: "acme-legacy", Module: "legacy"})
+	require.NoError(t, writeCell(stale, whole.Path))
+
+	// A fresh checkout: billing's render is gone, shop is rebuilt.
 	require.NoError(t, os.RemoveAll(moduleRenderDestination(workspace, "staging", "billing")))
-	_, err = RenderCell(context.Background(), workspace, env)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "cell file is not written")
-	require.Contains(t, err.Error(), "composed module(s) billing")
-	require.Contains(t, err.Error(), "codefly deploy gitops render billing --env staging")
-	after, err := os.ReadFile(full.Path)
+	rebuilt := "sha256:" + strings.Repeat("e", 64)
+	renderCellTreeImage(t, workspace, "shop", "api", "acme-shop", "staging", rebuilt)
+	single, err := RenderCell(context.Background(), workspace, env)
 	require.NoError(t, err)
-	require.Equal(t, string(before), string(after), "a refused cell file leaves the one on disk untouched")
+	require.Equal(t, []string{"shop"}, single.Modules)
+	require.Equal(t, []string{"billing"}, single.Carried)
+	after := readCellFile(t, single.Path)
+	require.Equal(t, []string{"acme-billing", "acme-shop"}, namespaceNames(after), "the undeclared module is dropped, the composed ones stay")
+	require.Equal(t, cellNamespaceOf(t, before, "billing"), cellNamespaceOf(t, after, "billing"), "billing's entries are as the file had them")
+	shop := cellNamespaceOf(t, after, "shop")
+	require.Equal(t, rebuilt, shop.Workloads[0].Containers[0].Image.Digest, "the rebuilt container's approval moved")
+	require.Equal(t, cellNamespaceOf(t, before, "shop").Workloads[0].Containers[1], shop.Workloads[0].Containers[1], "the other container's did not")
+	require.Equal(t, before.Source, after.Source)
 
+	// With billing's render back, the whole render writes the same file.
+	singleBytes, err := os.ReadFile(single.Path)
+	require.NoError(t, err)
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
 	again, err := RenderCell(context.Background(), workspace, env)
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "shop"}, again.Modules)
+	require.Empty(t, again.Carried)
+	wholeBytes, err := os.ReadFile(again.Path)
+	require.NoError(t, err)
+	require.Equal(t, string(wholeBytes), string(singleBytes), "the single-module render wrote what the whole render writes")
+}
+
+// With no render of a composed module in the checkout AND no cell file on
+// disk describing it, nothing says what that module delivers, so the render
+// refuses the cell file by name, with the command that renders it, rather
+// than write one that would withdraw every workload the module delivers.
+func TestCellFileRefusesToDropAComposedModuleNothingDescribes(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	_, err := RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cell file is not written")
+	require.Contains(t, err.Error(), "composed module(s) billing")
+	require.Contains(t, err.Error(), "codefly deploy gitops render billing --env staging")
+	path, err := CellPath(workspace, env)
+	require.NoError(t, err)
+	require.NoFileExists(t, path)
+
+	// A file on disk that does not describe the module is no better.
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	full, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	file := readCellFile(t, full.Path)
+	file.Namespaces = slices.DeleteFunc(file.Namespaces, func(namespace cellfile.Namespace) bool { return namespace.Module == "billing" })
+	require.NoError(t, writeCell(file, full.Path))
+	before, err := os.ReadFile(full.Path)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(moduleRenderDestination(workspace, "staging", "billing")))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "composed module(s) billing")
+	after, err := os.ReadFile(full.Path)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after), "a refused cell file leaves the one on disk untouched")
+}
+
+func readCellFile(t *testing.T, path string) *cellfile.File {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	file, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	return file
+}
+
+func namespaceNames(file *cellfile.File) []string {
+	names := make([]string, 0, len(file.Namespaces))
+	for _, namespace := range file.Namespaces {
+		names = append(names, namespace.Name)
+	}
+	return names
+}
+
+func cellNamespaceOf(t *testing.T, file *cellfile.File, module string) cellfile.Namespace {
+	t.Helper()
+	index := slices.IndexFunc(file.Namespaces, func(namespace cellfile.Namespace) bool { return namespace.Module == module })
+	require.GreaterOrEqual(t, index, 0, "no namespace of module %s", module)
+	return file.Namespaces[index]
 }
 
 // The cell file is derived from the composition, not from whatever records

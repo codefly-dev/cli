@@ -13,9 +13,13 @@ import (
 // Carried holds the declarations a module agent owns on an environment block:
 // keys the CLI admits, preserves on load and save, and hands verbatim to the
 // module bundle generator (encodeTransportNeutralModuleWorkspace), but never
-// interprets, never validates the value of, and never sends to a service agent
-// (Runtime projects none of them). It is the inline seam core's
-// resources.Environment.Extensions already is, held to a closed list of names.
+// interprets, never validates the value of, and never projects into a
+// workload's environment (Runtime projects none of them). A managed service's
+// own agent is handed its entry's `auth-mode` and `instance-connection-name`
+// on Deploy, verbatim in value, as the `managed-service` declaration
+// (orchestration.withEnvironmentServiceDeclaration). It is the inline seam
+// core's resources.Environment.Extensions already is, held to a closed list of
+// names.
 //
 // The list is closed because the rest of the environment block is strict: a
 // key the CLI does not know is refused by name at workspace load, so a mistyped
