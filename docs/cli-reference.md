@@ -660,8 +660,9 @@ release turns the manual per-repo release cascade into one verb:
   4. tag the merge commit, then verify the release published a downloadable
      asset — failing loudly if the tag shipped no artifact
 
-It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
-release already tagged through this flow whose asset has not published yet is
+It is safe to re-run: an open PR is waited on, a merged PR is tagged (also one
+this command did not open, when the manifest on main is above the latest tag
+and CI passed on the commit that set it), and a release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
 

@@ -176,19 +176,8 @@ func runAgentRelease(ctx context.Context, o releaseOptions) error {
 			}
 			return target.verifyPublishedAsset(ctx, manifest.Version.String(), extraPlatform)
 		}
-		// No release PR of this flow's own, yet the manifest is above a real
-		// tag: someone else merged the bump. Tag the commit that moved the
-		// manifest, or refuse; never bump again on top of an untagged version.
 		if latest != nil {
-			sha, rerr := target.mergedManifestCommit(ctx, manifest.Version, latest)
-			if rerr != nil {
-				return rerr
-			}
-			cli.Info("resuming release %s: the manifest on main moved to it at %s, merged outside this flow and not tagged yet; tagging it", pendingTag, shortSHA(sha))
-			if err = target.createTagRef(ctx, pendingTag, sha); err != nil {
-				return err
-			}
-			return target.verifyPublishedAsset(ctx, manifest.Version.String(), extraPlatform)
+			return target.tagMergedElsewhere(ctx, manifest.Version, latest, extraPlatform)
 		}
 	}
 
@@ -264,6 +253,23 @@ var attestMergedCommit = func(ctx context.Context, t *releaseTarget, sha string)
 	}
 	a, err := findSourceAttestation(ctx, client.Checks, client.Actions, t.owner, t.repo, sha)
 	return a != nil, err
+}
+
+// tagMergedElsewhere resumes a manifest bump merged outside this flow: no
+// release PR of its own exists, yet the manifest is above a real tag. It tags
+// the commit that moved the manifest, or refuses; it never bumps again on top
+// of an untagged version.
+func (t *releaseTarget) tagMergedElsewhere(ctx context.Context, version, latest *semver.Version, extraPlatform string) error {
+	tag := "v" + version.String()
+	sha, err := t.mergedManifestCommit(ctx, version, latest)
+	if err != nil {
+		return err
+	}
+	cli.Info("resuming release %s: the manifest on main moved to it at %s, merged outside this flow and not tagged yet; tagging it", tag, shortSHA(sha))
+	if err = t.createTagRef(ctx, tag, sha); err != nil {
+		return err
+	}
+	return t.verifyPublishedAsset(ctx, version.String(), extraPlatform)
 }
 
 // mergedManifestCommit finds the commit on origin/main (first-parent) where the
