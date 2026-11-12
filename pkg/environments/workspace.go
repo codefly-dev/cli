@@ -176,6 +176,14 @@ func (env *Environment) Validate() error {
 			return err
 		}
 	}
+	for _, name := range env.InClusterServices {
+		if err := validateManagedServiceKey(name); err != nil {
+			return fmt.Errorf("in-cluster-services: %w", err)
+		}
+		if _, managed := env.ManagedServices[name]; managed {
+			return fmt.Errorf("environment %q declares %q both managed (managed-services) and in-cluster (in-cluster-services): a service's server is one or the other", env.Name, name)
+		}
+	}
 	return env.ResourceQuota.Validate()
 }
 
@@ -268,7 +276,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 	scoped := selectedOrAll(environments, selected)
 	needsGraph := false
 	for _, env := range scoped {
-		if env != nil && (len(env.serviceScopedNames()) > 0 || len(env.ManagedServices) > 0) {
+		if env != nil && (len(env.serviceScopedNames()) > 0 || len(env.ManagedServices) > 0 || len(env.InClusterServices) > 0) {
 			needsGraph = true
 			break
 		}
@@ -340,7 +348,7 @@ func ValidateManagedServices(ctx context.Context, workspace *resources.Workspace
 	scoped := selectedOrAll(declared, selected)
 	needsGraph := false
 	for _, env := range scoped {
-		if env != nil && len(env.ManagedServices) > 0 {
+		if env != nil && (len(env.ManagedServices) > 0 || len(env.InClusterServices) > 0) {
 			needsGraph = true
 			break
 		}
@@ -400,20 +408,32 @@ func servicesByName(ctx context.Context, workspace *resources.Workspace) (map[st
 // A bare key matching nothing is left alone: an imported coordinate contract
 // declares a fleet's managed services, and a workspace that composes none of them
 // is entitled to carry the entry unused.
+//
+// An in-cluster-services key is held to the same rules: it names a service the
+// same way, and an inert or ambiguous one would leave a store's render refused
+// for want of a declaration the environment believed it had written.
 func validateManagedServiceKeys(env *Environment, byName map[string][]string) error {
+	keys := make([]namedService, 0, len(env.ManagedServices)+len(env.InClusterServices))
 	for key := range env.ManagedServices {
+		keys = append(keys, namedService{"managed service", key})
+	}
+	for _, key := range env.InClusterServices {
+		keys = append(keys, namedService{"in-cluster service", key})
+	}
+	for _, named := range keys {
+		key := named.name
 		if err := validateManagedServiceKey(key); err != nil {
 			return fmt.Errorf("environment %q: %w", env.Name, err)
 		}
 		if _, service, qualified := strings.Cut(key, "/"); qualified {
 			if !slices.Contains(byName[service], key) {
-				return fmt.Errorf("environment %q managed service %q references unknown service", env.Name, key)
+				return fmt.Errorf("environment %q %s %q references unknown service", env.Name, named.block, key)
 			}
 			continue
 		}
 		if candidates := byName[key]; len(candidates) > 1 {
-			return fmt.Errorf("environment %q managed service %q is ambiguous: %s each declare a service named %q, so qualify the entry with the module whose service is managed",
-				env.Name, key, strings.Join(candidates, " and "), key)
+			return fmt.Errorf("environment %q %s %q is ambiguous: %s each declare a service named %q, so qualify the entry with the module whose service is meant",
+				env.Name, named.block, key, strings.Join(candidates, " and "), key)
 		}
 	}
 	return nil

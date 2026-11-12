@@ -340,6 +340,9 @@ func (env *Environment) serviceDeclarations() []namedService {
 	for key := range env.ManagedServices {
 		named = append(named, namedService{"managed-services", key})
 	}
+	for _, key := range env.InClusterServices {
+		named = append(named, namedService{"in-cluster-services", key})
+	}
 	for key := range env.Egress {
 		named = append(named, namedService{"egress", key})
 	}

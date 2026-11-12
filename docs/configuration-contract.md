@@ -242,6 +242,45 @@ environments:
         instance-connection-name: project:us-east1:store
 ```
 
+### What a managed service's own agent is told
+
+A managed service's workloads are the environment's, but its schema is still
+the module's: the service's agent renders the bootstrap Job that applies it,
+and the render retains that Job (and the ServiceAccount the agent binds it to)
+as the service's whole bundle. So the agent has to know, on `Deploy`, what the
+environment decided. The CLI hands it one configuration information in the
+service's own configuration, built from the entry and the environment — never
+projected into any workload:
+
+| Information | Key | Value |
+| --- | --- | --- |
+| `managed-service` | `login-mode` | the entry's `auth-mode`, verbatim |
+| `managed-service` | `instance` | the entry's `instance-connection-name`, verbatim |
+| `managed-service` | `owner-principal` | with `auth-mode: external-identity`: the `service-identity` principal declared for the managed service itself, which its bootstrap Job logs in as |
+| `managed-service` | `runtime-principals` | with `auth-mode: external-identity`: the identities of the services of this render that depend on it at run time (their own `service-identity`, or the entry's `identity`), comma-separated and sorted |
+| `in-cluster-service` | — | the environment lists the service in `in-cluster-services` |
+
+The keys are the agent's spellings, not the entry's, because `auth-mode` and
+`instance-connection-name` read as credentials to the sensitive-key classifier
+a restricted render applies to every value it is handed. A managed service in
+`external-identity` mode with no `service-identity` is refused by name — a Job
+with no identity cannot log in — and so is a run-time dependent with no
+identity to reach it as.
+
+`in-cluster-services` is the explicit counterpart of `managed-services`: a list
+of services, keyed the same way and held to the same graph rules, whose server
+this environment deploys as the module declares it. A store's agent refuses a
+render for an environment that declares neither
+(codefly-dev/service-postgres), so no environment deploys a database server
+because it forgot to say where the server lives.
+
+```yaml
+environments:
+  - name: dev
+    in-cluster-services:
+      - shop/store
+```
+
 The list is closed (`environments.CarriedEnvironmentKeys`,
 `environments.CarriedManagedServiceKeys`): every other key in either block is
 still refused by name at workspace load, so `key-servce` fails exactly as a
@@ -398,9 +437,9 @@ plan — naming the service and what holds on to it:
   configuration in this environment, or keep the service.
 - **A declaration of the environment.** `ingress`, `host.gateway`,
   `host.delivery`, `cell`, `egress`, `service-mesh`, `service-identity`,
-  `service-config`, `service-secrets` (including a generator's `services`) and
-  `managed-services` naming the service are refused — a service is either
-  rendered, managed or excluded, never two of them.
+  `service-config`, `service-secrets` (including a generator's `services`),
+  `managed-services` and `in-cluster-services` naming the service are refused
+  — a service is either rendered, managed or excluded, never two of them.
 - **A module interface export, a service entry, a solution's consumption.** A
   module whose `interface` exports one of the excluded service's endpoints, a
   module naming it its `service-entry`, and a solution whose manifest

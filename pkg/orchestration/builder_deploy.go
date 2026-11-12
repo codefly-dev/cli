@@ -80,6 +80,13 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		sort.Strings(b.deployedSecretKeys)
 	}
 
+	// Last, after the secret split: the declaration carries no secret, and it
+	// is what a store's agent decides its whole render on.
+	conf, err = withEnvironmentServiceDeclaration(ctx, conf, b.instance.Identity, b.world)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot hand the environment's declaration for the service to its agent")
+	}
+
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
