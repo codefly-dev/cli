@@ -164,6 +164,8 @@ func moduleAuthority(
 	// order, and EdgeDependency.Module stays the signed principal the host
 	// resolves through its catalogue — never a name, binding id or release.
 	authority.InstallationRole = resolved.InstallationRole
+	authority.Setup = append([]modulecontract.ResolvedSetup(nil), resolved.Setup...)
+	authority.OwnerAwareResourceKinds = append([]string(nil), resolved.OwnerAwareResourceKinds...)
 	authority.EdgeDependencies = append([]modulecontract.EdgeDependency(nil), resolved.EdgeDependencies...)
 	// The scopes that govern a source tied to an installation of the module,
 	// as core resolved them ("<kind>:<action>", sorted). The host reads them
