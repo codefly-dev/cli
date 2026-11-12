@@ -465,18 +465,46 @@ func (t *releaseTarget) findPRForBranch(ctx context.Context, branch string) (*gi
 	return prs[0], nil
 }
 
-// findReleasePR is findPRForBranch for the ACTIVE release branch: a PR that was
-// closed without merging means a human rejected this release, so it refuses
-// rather than silently resuming.
+// findReleasePR is findPRForBranch for the ACTIVE release branch. A PR closed
+// without merging means a human rejected this release. The PR is found by head
+// ref name, which a closed PR keeps forever, so the PR alone does not say
+// whether anything is left to clean up: the branch does. With the branch gone
+// the release is a clean start over (nil, a fresh PR is opened); with the
+// branch still present the state is ambiguous (a rejected attempt or a stale
+// push), so it refuses and names the remedy that is actually outstanding.
 func (t *releaseTarget) findReleasePR(ctx context.Context, branch string) (*github.PullRequest, error) {
 	pr, err := t.findPRForBranch(ctx, branch)
 	if err != nil {
 		return nil, err
 	}
-	if pr != nil && pr.GetState() == "closed" && !prMerged(pr) {
-		return nil, fmt.Errorf("release PR %s was closed without merging; close it out or delete branch %s to start over", pr.GetHTMLURL(), branch)
+	if pr == nil || pr.GetState() != "closed" || prMerged(pr) {
+		return pr, nil
 	}
-	return pr, nil
+	exists, err := t.remoteBranchExists(ctx, branch)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		cli.Info("release PR %s was closed without merging and branch %s is gone; opening a new release PR", pr.GetHTMLURL(), branch)
+		return nil, nil
+	}
+	return nil, fmt.Errorf("release PR %s was closed without merging and branch %s still exists; delete the branch to start over", pr.GetHTMLURL(), branch)
+}
+
+// remoteBranchExists reports whether branch exists on the repository's origin.
+func (t *releaseTarget) remoteBranchExists(ctx context.Context, branch string) (bool, error) {
+	client, err := gh.NewClient()
+	if err != nil {
+		return false, err
+	}
+	_, resp, err := client.Git.GetRef(ctx, t.owner, t.repo, "refs/heads/"+branch)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("check release branch %s: %w", branch, err)
+	}
+	return true, nil
 }
 
 // waitForMerge polls the PR until a human merges it, returning the merge commit
