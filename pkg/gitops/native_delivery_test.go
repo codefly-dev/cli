@@ -280,3 +280,25 @@ func TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration(t *testing.T) {
 	require.Equal(t, string(host.bodies[1]), string(host.bodies[2]), "a withdrawal is replayed byte for byte")
 	require.False(t, live.Removed, "the delivered manifest is untouched")
 }
+
+// A page the host bundles (solutionhost.Frontend.Bundled) is delivered as a
+// frontend with no payload: the host builds it from the release's package,
+// so a native run builds no bundle for it and refuses one it is handed.
+// Before this a native run refused the declaration itself ("built no
+// bundle"), and a module whose page the host bundles could declare none.
+func TestANativeManifestCarriesAPageTheHostBundles(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	module.ServiceEntry = "api"
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), "services", "api", solutionrun.FrontendFileName), []byte("title: Installed models\norder: 60\nbundled: {package: \"@example/crm-ui\", export: crmPlugin}\n"), 0o600))
+	deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment()}
+	manifest, err := deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services, Started: nativeStarted("crm", "api")})
+	require.NoError(t, err)
+	require.NotNil(t, manifest.Frontend)
+	require.Equal(t, &solutionhost.FrontendBundled{Package: "@example/crm-ui", Export: "crmPlugin"}, manifest.Frontend.Bundled)
+	require.Nil(t, manifest.Frontend.Payload)
+	require.Empty(t, manifest.Frontend.ExposedModule)
+
+	bundle := &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services, Started: nativeStarted("crm", "api"), FrontendBundle: bundle})
+	require.ErrorContains(t, err, "no bundle of its own")
+}

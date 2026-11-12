@@ -44,6 +44,8 @@ func stampFrontendPayload(instance *ModuleInstance, artifacts []composition.Rele
 		return fmt.Errorf("%s %s declares the release artifact %q with purpose %q; a frontend bundle is a runtime artifact", instance.Kind, instance.Name, FrontendArtifactName, bundle.Purpose)
 	case instance.Frontend == nil:
 		return fmt.Errorf("%s %s declares the release artifact %q and no frontend; a bundle is the output of a declared page", instance.Kind, instance.Name, FrontendArtifactName)
+	case instance.Frontend.Bundled != nil:
+		return fmt.Errorf("%s %s declares the release artifact %q and a page the host bundles (%s); the host builds what it serves, so such a page names no payload", instance.Kind, instance.Name, FrontendArtifactName, instance.Frontend.Bundled.Package)
 	case bundle.MediaType == "":
 		return fmt.Errorf("%s %s declares the release artifact %q without a media type; the frontend payload carries the explicit canonical media type the release declares", instance.Kind, instance.Name, FrontendArtifactName)
 	}
@@ -128,7 +130,9 @@ func publishFrontendBundle(ctx context.Context, workspace *resources.Workspace, 
 		return artifacts, nil
 	}
 	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
-	if err != nil || frontend == nil {
+	if err != nil || frontend == nil || frontend.Bundled != nil {
+		// A page the host bundles is built by the host from the release's
+		// package: the render publishes no bundle for it.
 		return artifacts, err
 	}
 	repository, err := frontendBundleRepositoryOf(env, workspace.Name)

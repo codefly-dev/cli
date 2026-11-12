@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/solutionrun"
+	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
@@ -136,4 +137,14 @@ func TestANativeRunStampsTheBundleItBuilt(t *testing.T) {
 			require.Equal(t, built, documents.Frontend.Payload)
 		})
 	}
+}
+
+// A release artifact named frontend beside a page the host bundles is
+// refused: the host builds what it serves, so the payload names nothing.
+func TestAReleasedBundleBesideAPageTheHostBundlesIsRefused(t *testing.T) {
+	instance := &ModuleInstance{Kind: solutionhost.KindModule, Name: "crm", Frontend: &solutionhost.Frontend{Title: "Models", Bundled: &solutionhost.FrontendBundled{Package: "@example/crm-ui", Export: "crmPlugin"}}}
+	err := stampFrontendPayload(instance, []composition.ReleaseArtifact{{Name: FrontendArtifactName, Purpose: composition.ArtifactRuntime, Digest: releasedBundleDigest, MediaType: "application/x-tar"}})
+	require.ErrorContains(t, err, "a page the host bundles")
+	require.Nil(t, instance.Frontend.Payload)
+	require.NoError(t, stampFrontendPayload(instance, nil))
 }
