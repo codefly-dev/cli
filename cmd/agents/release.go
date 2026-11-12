@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -45,8 +46,9 @@ var ReleaseCmd = &cobra.Command{
   4. tag the merge commit, then verify the release published a downloadable
      asset — failing loudly if the tag shipped no artifact
 
-It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
-release already tagged through this flow whose asset has not published yet is
+It is safe to re-run: an open PR is waited on, a merged PR is tagged (also one
+this command did not open, when the manifest on main is above the latest tag
+and CI passed on the commit that set it), and a release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
 
@@ -174,6 +176,20 @@ func runAgentRelease(ctx context.Context, o releaseOptions) error {
 			}
 			return target.verifyPublishedAsset(ctx, manifest.Version.String(), extraPlatform)
 		}
+		// No release PR of this flow's own, yet the manifest is above a real
+		// tag: someone else merged the bump. Tag the commit that moved the
+		// manifest, or refuse; never bump again on top of an untagged version.
+		if latest != nil {
+			sha, rerr := target.mergedManifestCommit(ctx, manifest.Version, latest)
+			if rerr != nil {
+				return rerr
+			}
+			cli.Info("resuming release %s: the manifest on main moved to it at %s, merged outside this flow and not tagged yet; tagging it", pendingTag, shortSHA(sha))
+			if err = target.createTagRef(ctx, pendingTag, sha); err != nil {
+				return err
+			}
+			return target.verifyPublishedAsset(ctx, manifest.Version.String(), extraPlatform)
+		}
 	}
 
 	newVer, err := bumpFrom(releaseBase(manifest.Version, latest), o.bump)
@@ -238,6 +254,48 @@ func releaseBase(manifestVersion, latestTag *semver.Version) *semver.Version {
 		return latestTag
 	}
 	return manifestVersion
+}
+
+// attestMergedCommit reports whether CI succeeded for sha. A seam for tests.
+var attestMergedCommit = func(ctx context.Context, t *releaseTarget, sha string) (bool, error) {
+	client, err := gh.NewClient()
+	if err != nil {
+		return false, err
+	}
+	a, err := findSourceAttestation(ctx, client.Checks, client.Actions, t.owner, t.repo, sha)
+	return a != nil, err
+}
+
+// mergedManifestCommit finds the commit on origin/main (first-parent) where the
+// manifest moved to version, for a bump merged outside this flow, and requires
+// CI to have passed on it: this flow's gates never ran for that commit, so the
+// attestation is the evidence it may be tagged. It errors, naming the remedy,
+// when the commit cannot be identified or was never attested.
+func (t *releaseTarget) mergedManifestCommit(ctx context.Context, version, latest *semver.Version) (string, error) {
+	refuse := func(why string) (string, error) {
+		return "", fmt.Errorf("manifest version %s is above the latest tag v%s but %s; not bumping again. Check that main's history for agent.codefly.yaml holds the intended release, then tag v%s on its commit by hand or delete the stray bump", version, latest, why, version)
+	}
+	if _, err := t.git(ctx, "fetch", "origin", "main", "--quiet"); err != nil {
+		return refuse("origin/main cannot be fetched: " + err.Error())
+	}
+	pattern := `^version:[[:space:]]*["']?` + regexp.QuoteMeta(version.String()) + `["']?[[:space:]]*$`
+	// Run from the agent directory so the pathspec is relative to it.
+	out, err := gitRun(ctx, t.dir, "log", "origin/main", "--first-parent", "-m", "-n1", "--format=%H", "-G"+pattern, "--", "agent.codefly.yaml")
+	if err != nil {
+		return refuse("its commit cannot be searched: " + err.Error())
+	}
+	sha := strings.TrimSpace(out)
+	if sha == "" {
+		return refuse("no commit on origin/main sets that version")
+	}
+	ok, err := attestMergedCommit(ctx, t, sha)
+	if err != nil {
+		return refuse("CI for " + shortSHA(sha) + " cannot be read: " + err.Error())
+	}
+	if !ok {
+		return refuse("no successful CI run is attested for its commit " + shortSHA(sha))
+	}
+	return sha, nil
 }
 
 func shortSHA(sha string) string {
