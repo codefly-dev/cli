@@ -314,6 +314,10 @@ type World struct {
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
 	goModulePrefetch *goModulePrefetch
+	// prefetchOnce and gitOnce guard the two lazy prefetches above, which the
+	// plan phase now reaches from several services at once.
+	prefetchOnce sync.Once
+	gitOnce      sync.Once
 	// gitSourcePrefetch holds the git source mirrors this flow's recipes
 	// declared, fetched the same way (see gitSourcePrefetch).
 	gitSourcePrefetch *gitSourcePrefetch
@@ -2780,19 +2784,28 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 
 var _ ExecutorManager = &Flow{}
 
-// goModules is the flow's Go module prefetch, created on first use.
+// goModules is the flow's Go module prefetch, created once however many
+// services ask for it. The plan phase runs its services concurrently, so the
+// bare lazy initializer this replaced raced: two goroutines could each see nil
+// and each build a prefetch, which fetches the same modules twice and leaks
+// the temp directory of whichever assignment loses.
 func (world *World) goModules() *goModulePrefetch {
-	if world.goModulePrefetch == nil {
-		world.goModulePrefetch = newGoModulePrefetch()
-	}
+	world.prefetchOnce.Do(func() {
+		if world.goModulePrefetch == nil {
+			world.goModulePrefetch = newGoModulePrefetch()
+		}
+	})
 	return world.goModulePrefetch
 }
 
-// gitSources is the flow's git source prefetch, created on first use.
+// gitSources is the flow's git source prefetch, created once, for the same
+// reason as goModules.
 func (world *World) gitSources() *gitSourcePrefetch {
-	if world.gitSourcePrefetch == nil {
-		world.gitSourcePrefetch = newGitSourcePrefetch()
-	}
+	world.gitOnce.Do(func() {
+		if world.gitSourcePrefetch == nil {
+			world.gitSourcePrefetch = newGitSourcePrefetch()
+		}
+	})
 	return world.gitSourcePrefetch
 }
 
