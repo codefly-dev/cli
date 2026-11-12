@@ -2697,6 +2697,8 @@ func gitSigningConfigured(ctx context.Context, dir string) (bool, error) {
 	return key != "", nil
 }
 
+const gitAddVerb = "add"
+
 func gitCommand(ctx context.Context, dir string, args ...string) (string, error) {
 	return command(ctx, dir, "git", args...)
 }

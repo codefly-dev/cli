@@ -14,8 +14,10 @@ import (
 	"github.com/codefly-dev/authority/libraries/authority-core/go/decide"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/delivered"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/workingrender"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -40,16 +42,14 @@ type DeliveredModule struct {
 	File, Unread string
 }
 
-// ReadDeliveredAuthority reads environment's module manifests and envelope
-// under root. It reads committed files only: no cluster and no credential.
-// The environment's working render (workingrender.Modules) answers the
-// question before a publish; the committed trees (deployments/modules and
-// deployments/environments/<env>/modules) are what the cell reads, and win
-// because they are read after it.
-func ReadDeliveredAuthority(root, environment string) (*DeliveredAuthority, error) {
+// ReadDeliveredAuthority reads environment's module manifests and envelope in
+// trees, the environment's own module trees as EnvironmentModuleTrees lists
+// them, a later tree winning. It reads files only: no cluster and no
+// credential.
+func ReadDeliveredAuthority(trees []string, environment string) (*DeliveredAuthority, error) {
 	out := &DeliveredAuthority{Modules: map[string]DeliveredModule{}}
 	var files []string
-	for _, tree := range []string{workingrender.Modules(root, environment), filepath.Join(root, "deployments", "modules"), filepath.Join(root, "deployments", "environments", environment, "modules")} {
+	for _, tree := range trees {
 		found, _ := filepath.Glob(filepath.Join(tree, "*", "module-manifests", "overlays", environment, "*.yaml"))
 		files = append(files, found...)
 	}
@@ -81,7 +81,7 @@ func ReadDeliveredAuthority(root, environment string) (*DeliveredAuthority, erro
 		out.Modules[m.Principal] = entry
 	}
 	if len(out.Modules) == 0 {
-		return nil, fmt.Errorf("no paired delivery document is rendered for environment %q under %s, so nothing can be said about what that cell enforces; render it: codefly deploy gitops render --all --env %s", environment, root, environment)
+		return nil, fmt.Errorf("no paired delivery document is rendered for environment %q under %s, so nothing can be said about what that cell enforces; render it: codefly deploy gitops render --all --env %s", environment, strings.Join(trees, " or "), environment)
 	}
 	if out.EnvelopeFile == "" {
 		out.EnvelopeUnread = fmt.Sprintf("environment %q carries no module-envelope.yaml: `codefly deploy gitops publish` of the host module writes it", environment)
@@ -255,4 +255,29 @@ func OwnDeclaration(dir string) (principal string, ownerAware bool, err error) {
 		return "", false, fmt.Errorf("%s publishes no module contract", dir)
 	}
 	return contract.Principal, contract.OwnerAware, nil
+}
+
+// EnvironmentModuleTrees lists the module trees in workspace that say what
+// env delivers, in the order a reader lets the later win: the environment's
+// working render (workingrender.Modules), what a publish would deliver, then
+// its own delivered tree, `<gitops path>/modules`, as the workspace's checkout
+// holds it. Another environment's tree is never among them: a tree under a
+// path env does not deliver to is another environment's, whatever overlays it
+// carries, and an environment delivering to a repository of its own has no
+// delivered tree in this checkout.
+func EnvironmentModuleTrees(workspace *resources.Workspace, env *environments.Environment) ([]string, error) {
+	trees := make([]string, 1, 2)
+	trees[0] = workingrender.Modules(workspace.Dir(), env.Name)
+	defaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		return nil, err
+	}
+	if env.Gitops != nil && env.Gitops.RepoURL != "" && defaults != nil && defaults.RepoURL != "" && env.Gitops.RepoURL != defaults.RepoURL {
+		return trees, nil
+	}
+	gitopsPath, err := validateRelativePath(gitopsPathOf(env, defaults))
+	if err != nil {
+		return nil, fmt.Errorf("gitops.path: %w", err)
+	}
+	return append(trees, filepath.Join(workspace.Dir(), filepath.FromSlash(deliveryModulesPath(gitopsPath)))), nil
 }

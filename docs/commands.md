@@ -2002,22 +2002,24 @@ codefly deploy gitops publish payments --env staging     # deliver it
 
    When the environment declares a `host:` block, the environment's cell file
    (`<gitops path>/cells/<environment>/cell.yaml`) is re-derived from the
-   rendered trees exactly as a render derives it, written, and is among the
-   changed files. A cell admits only the builds its cell file names — a
-   validation cell takes that approval from the branch head's file — so a
-   re-pin the file did not carry would be refused at admission and never run.
-   Because the file is derived from the whole workspace, it may move nothing
-   but the service's own image digests and the `source` revision against the
-   file the branch carries (the workspace's `HEAD`; the file on disk when the
-   workspace is not a git checkout). Anything else — a sibling module rendered
-   and not published, an uncommitted environment change, a sibling tree at
-   another inventory schema — would be approved by the dev deployment's
-   publication, so it is refused, naming each namespace that moved, before the
-   image is built: publish those changes (after `codefly deploy gitops render
-   --all --env <env>` if the trees are stale), then deploy again. That includes
-   an earlier dev deployment of another service not yet published: publish it
-   before the next. After the build, only digests of the repositories it
-   produced may move. With no committed cell file there is no approval to
+   environment's working renders exactly as a render derives it, written, and is
+   among the changed files. A cell admits only the builds its cell file names,
+   so a re-pin the file did not carry would be refused at admission and never
+   run. The file is held to the one publish holds it to: the cell file on the
+   environment's **delivery base branch** (`gitops.branch` of its delivery
+   repository), read afresh from that repository, never the workspace's own
+   `HEAD`, which a publication does not move. It may move nothing but the
+   service's own image digests and the `source` revision against that file (an
+   environment that declares no delivery repository is held to the file on
+   disk). Anything else — a sibling module rendered and not published, an
+   environment change not yet delivered, a sibling tree at another inventory
+   schema — would be approved by the dev deployment's publication, so it is
+   refused, naming each namespace that moved, before the image is built:
+   publish those changes (after `codefly deploy gitops render --all --env
+   <env>` if the renders are stale) and let the promotion land, then deploy
+   again. That includes an earlier dev deployment of another service not yet
+   delivered. After the build, only digests of the repositories it produced may
+   move. With no cell file on the delivery base branch there is no approval to
    replace, and it refuses the same way.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
@@ -2867,7 +2869,9 @@ method policy and every written copy of it. Both commands read committed files
 only — no cluster, no credential.
 
 `check` is the gate. `--env <environment>`, in a composition, reads what that
-environment delivers to its host and fails when a module's delivery does not
+environment delivers to its host — from its working render and then its own
+delivered tree (`<gitops path>/modules`), never a tree another environment
+delivers from — and fails when a module's delivery does not
 hold to its own contract, when a role names a scope the composition reaches
 nowhere, or when the envelope withholds a scope a binding asks for (the host
 drops it without a record). `--module-dir <module>`, in a module's checkout,

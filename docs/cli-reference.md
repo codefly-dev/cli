@@ -865,7 +865,7 @@ Flags:
       --env string          the environment whose delivered tree is read
       --fail-on-unproven    exit 1 when a method is open on a module that checks owners
       --module-dir string   a module's checkout: its published policies and generated tables
-      --root string         the composition's workspace root, holding deployments/ (default ".")
+      --root string         the composition's workspace root: the environment's working render and its own delivered tree are read there (default ".")
 ```
 
 ## `codefly authority trace`
@@ -908,7 +908,7 @@ Flags:
       --method string       the audience's method, as its policy names it
       --module-dir string   a module's checkout: its published policies and generated tables
       --role string         the role held on the caller's installation; omit for the module acting alone
-      --root string         the composition's workspace root, holding deployments/ (default ".")
+      --root string         the composition's workspace root: the environment's working render and its own delivered tree are read there (default ".")
 ```
 
 ## `codefly build`

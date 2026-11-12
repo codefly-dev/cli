@@ -358,10 +358,13 @@ func TestDeployDevCarriesRebuildToTheBuild(t *testing.T) {
 
 // hostedDevFixture is the cell fixture (an environment with a host) with both
 // modules rendered and the cell file written, ready for a dev deployment of
-// shop/api from a source checkout.
+// shop/api from a source checkout. The environment delivers to a bare
+// repository whose main branch carries no cell file yet (see deliverCell).
 func hostedDevFixture(t *testing.T) (*resources.Workspace, *environments.Environment, *DevRequest, string) {
 	t.Helper()
-	workspace := writeCellWorkspace(t)
+	remote := createBareRepository(t)
+	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "    namespace: acme\n",
+		"    namespace: acme\n    gitops:\n      repo-url: file://" + filepath.ToSlash(remote) + "\n"})
 	env := selectedEnvironment(t, workspace, "staging")
 	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
@@ -375,6 +378,21 @@ func hostedDevFixture(t *testing.T) (*resources.Workspace, *environments.Environ
 		Workspace: workspace, Module: module, Service: "api", Environment: env,
 		AppProject: "acme-staging", Source: DevSource{Dir: source, Origin: DevSourceFlag},
 	}, cell.Path
+}
+
+// deliverCell puts data on the delivery base branch as the staging cell file,
+// as a merged publication leaves it.
+func deliverCell(t *testing.T, env *environments.Environment, data []byte) {
+	t.Helper()
+	remote := strings.TrimPrefix(env.Gitops.RepoURL, "file://")
+	work := filepath.Join(t.TempDir(), "delivery")
+	gitRun(t, "", "clone", "--quiet", remote, work)
+	path := filepath.Join(work, "deployments", "cells", "staging", cellfile.FileName)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	gitRun(t, work, "add", ".")
+	gitRun(t, work, "-c", "user.name=Codefly Test", "-c", "user.email=codefly@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "publish")
+	gitRun(t, work, "push", "-q", "origin", "main")
 }
 
 // cellWorkloadImage reads the first container image of one workload of the
@@ -413,11 +431,11 @@ func isolateGit(t *testing.T) {
 // new digest and reports it among what it changed, for the commit to carry.
 func TestDeployDevIntoAHostedEnvironmentRederivesTheCellFile(t *testing.T) {
 	isolateGit(t)
-	workspace, _, request, cellPath := hostedDevFixture(t)
+	_, env, request, cellPath := hostedDevFixture(t)
 	require.Equal(t, "sha256:"+strings.Repeat("a", 64), cellWorkloadImage(t, cellPath, "api").Digest)
-	runGit(t, workspace.Dir(), "init", "-q")
-	runGit(t, workspace.Dir(), "add", ".")
-	runGit(t, workspace.Dir(), "commit", "-q", "-m", "render")
+	published, err := os.ReadFile(cellPath)
+	require.NoError(t, err)
+	deliverCell(t, env, published)
 	stubBuild(t, []string{"registry.example.test/acme/api:1.2.0@" + devNewDigest}, nil)
 
 	result, err := DeployDev(context.Background(), request)
@@ -431,14 +449,14 @@ func TestDeployDevIntoAHostedEnvironmentRederivesTheCellFile(t *testing.T) {
 	require.Equal(t, "sha256:"+strings.Repeat("a", 64), cellWorkloadImage(t, cellPath, "ledger").Digest, "no other workload moves")
 	require.NotNil(t, result.Cell)
 	require.Equal(t, cellPath, result.Cell.Path)
-
 }
 
-// The cell file is re-derived from the whole workspace, so a dev deployment
-// whose re-derived file would approve anything the branch's file does not —
-// beyond the one service's new build — is refused before anything is built,
-// naming what moved. The branch's file is the committed one, not the one on
-// disk.
+// The cell file is re-derived from the working renders, so a dev deployment
+// whose re-derived file would approve anything the delivery base's file does
+// not — beyond the one service's new build — is refused before anything is
+// built, naming what moved. The file it is held to is the one on the delivery
+// base branch, the one publish holds it to, never the workspace's own: a
+// publication lands there, while the workspace's HEAD never moves with it.
 func TestDeployDevRefusesACellFileThatMovesMoreThanItsService(t *testing.T) {
 	isolateGit(t)
 	workspace, env, request, cellPath := hostedDevFixture(t)
@@ -455,6 +473,9 @@ func TestDeployDevRefusesACellFileThatMovesMoreThanItsService(t *testing.T) {
 	file.Namespaces[0].Workloads[0].Containers[0].Image.Digest = "sha256:" + strings.Repeat("e", 64)
 	approved, err := file.Encode()
 	require.NoError(t, err)
+	deliverCell(t, env, approved)
+	// The workspace committing the same file approves nothing: only the
+	// delivery base does.
 	require.NoError(t, os.WriteFile(cellPath, approved, 0o600))
 	runGit(t, workspace.Dir(), "init", "-q")
 	runGit(t, workspace.Dir(), "add", ".")
@@ -463,9 +484,19 @@ func TestDeployDevRefusesACellFileThatMovesMoreThanItsService(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = DeployDev(context.Background(), request)
-	require.ErrorContains(t, err, "changes more than shop/api's images — namespace acme-billing differ from the committed cell file")
-	require.ErrorContains(t, err, "commit them first")
+	require.ErrorContains(t, err, "changes more than shop/api's images — namespace acme-billing differ from the cell file deployments/cells/staging/cell.yaml on the delivery base branch main")
+	require.ErrorContains(t, err, "publish them first")
 	require.Zero(t, *calls, "nothing is built for a refused deployment")
+
+	// Once the delivery base carries what the working renders derive — a
+	// publication merged — the same deployment proceeds, with the workspace's
+	// HEAD still where it was.
+	current, err := os.ReadFile(cellPath)
+	require.NoError(t, err)
+	deliverCell(t, env, current)
+	_, err = DeployDev(context.Background(), request)
+	require.NoError(t, err)
+	require.Equal(t, 1, *calls)
 }
 
 // Only the digests of the images the dev build produced may move: a sidecar
@@ -497,18 +528,16 @@ func TestDevCellMovesOnlyTheBuiltRepositories(t *testing.T) {
 	require.Empty(t, moved, "before the build, any of the service's digests may move")
 }
 
-// Without a committed cell file the branch approves no build to replace, so a
-// dev deployment into a git checkout refuses rather than committing a whole
+// Without a cell file on the delivery base branch nothing approves a build to
+// replace, so a dev deployment refuses rather than publishing a whole
 // approval set.
-func TestDeployDevRefusesAnUncommittedCellFile(t *testing.T) {
+func TestDeployDevRefusesWithoutADeliveredCellFile(t *testing.T) {
 	isolateGit(t)
-	workspace, _, request, _ := hostedDevFixture(t)
-	runGit(t, workspace.Dir(), "init", "-q")
-	runGit(t, workspace.Dir(), "add", "workspace.codefly.yaml")
-	runGit(t, workspace.Dir(), "commit", "-q", "-m", "workspace")
+	_, _, request, _ := hostedDevFixture(t)
 	calls := stubBuild(t, []string{"registry.example.test/acme/api:1.2.0@" + devNewDigest}, nil)
 	_, err := DeployDev(context.Background(), request)
-	require.ErrorContains(t, err, "environment staging's cell file deployments/cells/staging/cell.yaml is not committed")
+	require.ErrorContains(t, err, "environment staging's delivery base branch main carries no readable cell file at deployments/cells/staging/cell.yaml")
+	require.ErrorContains(t, err, "publish the environment's modules first")
 	require.Zero(t, *calls)
 }
 

@@ -79,30 +79,43 @@ func TestRendersOfTwoEnvironmentsSitSideBySideAndNeverTouchADeliveredTree(t *tes
 	require.Equal(t, "*\n", string(ignore), "a working render can never be committed")
 }
 
-// Publish reads its own environment's working render and nothing else: with
-// only another environment's render in the checkout it refuses with the render
-// that lifts it, leaving that render as it was, and once its own exists it
-// plans from exactly that one.
+// Publish reads its own environment's working render and nothing else. With
+// only another environment's render in the checkout — staging's, at staging's
+// path — publish for production finds none of its own and says so, naming the
+// render that lifts it, and leaves staging's as it was; once production's own
+// render exists it plans from exactly that one. Were the two environments to
+// share a path, publish would find staging's render where production's
+// belongs and refuse with the inventory's "holds the render … staging"
+// instead, so the refusal asserted here is the one only separate paths give.
 func TestPublishReadsOnlyItsOwnEnvironmentsRender(t *testing.T) {
 	ctx, workspace, _ := developerPublishWorkspace(t)
 	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
 	production := workingrender.Module(workspace.Dir(), "production", "payments")
-	other := workingrender.Module(workspace.Dir(), "staging", "payments")
-	require.NoError(t, os.MkdirAll(filepath.Dir(other), 0o755))
-	require.NoError(t, os.Rename(production, other))
-	before := snapshotTree(t, other)
-
-	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
-	_, err := PlanPublish(ctx, workspace, &request)
-	require.ErrorContains(t, err, "module payments has never been rendered for environment production")
-	require.ErrorContains(t, err, "run `codefly deploy gitops render payments --env production` first")
-	require.Equal(t, before, snapshotTree(t, other), "a refused publish touched another environment's render")
-
-	require.NoError(t, os.Rename(other, production))
+	staging := workingrender.Module(workspace.Dir(), "staging", "payments")
+	kept := filepath.Join(t.TempDir(), "production")
+	require.NoError(t, copyTree(production, kept))
 	inventory, err := LoadInventory(production)
 	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(production))
+	require.NoError(t, copyTree(kept, staging))
+	stagingInventory := inventory
+	stagingInventory.Environment = "staging"
+	require.NoError(t, writeCanonicalInventory(filepath.Join(staging, InventoryFilename), &stagingInventory))
+	before := snapshotTree(t, staging)
+
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	_, err = PlanPublish(ctx, workspace, &request)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "module payments has never been rendered for environment production")
+	require.Contains(t, err.Error(), "run `codefly deploy gitops render payments --env production` first")
+	require.NotContains(t, err.Error(), "staging", "publish read staging's render")
+	require.Equal(t, before, snapshotTree(t, staging), "a refused publish touched another environment's render")
+
+	require.NoError(t, copyTree(kept, production))
 	plan, err := PlanPublish(ctx, workspace, &request)
 	require.NoError(t, err)
 	require.Equal(t, "production", plan.Environment)
 	require.Equal(t, inventory.OwnedPath, plan.Path, "the plan delivers the tree production's render owns")
+	require.Equal(t, before, snapshotTree(t, staging))
 }

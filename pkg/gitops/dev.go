@@ -203,8 +203,9 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		return DevResult{}, err
 	}
 	// A hosted cell admits only the builds its cell file names, so the file is
-	// committed with the new digest. Whether it can be — re-derived, and moving
-	// nothing but this service's images — is settled before anything is built.
+	// published with the new digest. Whether it can be — re-derived, and moving
+	// nothing but this service's images against the delivery base's file — is
+	// settled before anything is built.
 	hosted := request.Environment.Host != nil
 	cellService := request.Module.Name + "/" + request.Service
 	var startCell devCell
@@ -241,11 +242,10 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		}
 		relative = append(relative, filepath.ToSlash(rel))
 	}
-	// A cell admits only the builds its cell file names: a validation cell takes
-	// that approval from the branch head's file, so a new digest the file does
-	// not carry is refused at admission and the deployment never runs. The cell
-	// file is re-derived from the rendered trees exactly as a render does, and
-	// committed with the digest it now approves.
+	// A cell admits only the builds its cell file names, so a new digest the
+	// delivered file does not carry is refused at admission and the deployment
+	// never runs. The cell file is re-derived from the working renders exactly
+	// as a render does, for publish to deliver with the digest it now approves.
 	var cell *CellResult
 	if hosted {
 		file, derived, cellErr := deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, images)
@@ -253,7 +253,7 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 			cellErr = writeCell(&file, derived.Path)
 		}
 		if cellErr != nil {
-			return DevResult{}, fmt.Errorf("the dev image is pushed and re-pinned in %s, but nothing is staged: %w", strings.Join(relative, ", "), cellErr)
+			return DevResult{}, fmt.Errorf("the dev image is pushed and re-pinned in %s, but the cell file that would approve it is not written, so there is nothing to publish: %w", strings.Join(relative, ", "), cellErr)
 		}
 		rel, relErr := filepath.Rel(request.Workspace.Dir(), derived.Path)
 		if relErr != nil {
@@ -484,5 +484,3 @@ func DevCommitTitle(module string, entry *InventoryDevDeployment) string {
 	}
 	return fmt.Sprintf("dev: %s/%s from %s@%s", module, entry.Service, entry.Source, revision)
 }
-
-const gitAddVerb = "add"

@@ -29,9 +29,23 @@ func TestDoctorWorkspaceWarnsAboutAnActiveDevDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := singleServiceWorkspace(t, testWorkspaceYAMLLocalDeclared, nil, map[string]string{
-		filepath.Join(workingrender.Dir, "staging", "modules", "backend", gitops.InventoryFilename): string(data) + "\n",
-	})
+	// Staging delivers from deployments/modules: a dev deployment is found in
+	// its working render, in its delivered tree as another clone published it,
+	// and, in both, reported once.
+	working := filepath.Join(workingrender.Dir, "staging", "modules", "backend", gitops.InventoryFilename)
+	delivered := filepath.Join("deployments", "modules", "backend", gitops.InventoryFilename)
+	yaml := testWorkspaceYAMLLocalDeclared + "    - name: staging\n"
+	for name, files := range map[string][]string{"working": {working}, "delivered": {delivered}, "both": {working, delivered}} {
+		extra := map[string]string{}
+		for _, file := range files {
+			extra[file] = string(data) + "\n"
+		}
+		found := findDiagnostics(runReadiness(t, workspaceReadinessOptions{dir: singleServiceWorkspace(t, yaml, nil, extra)}), codeGitOpsDevDeploymentActive)
+		if len(found) != 1 {
+			t.Fatalf("%s: %d dev deployment diagnostics, want exactly one", name, len(found))
+		}
+	}
+	dir := singleServiceWorkspace(t, yaml, nil, map[string]string{working: string(data) + "\n"})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diagnostic := requireCode(t, report, codeGitOpsDevDeploymentActive, "warn")
 	for _, want := range []string{"staging", "backend/api", "/src/api", "(dirty)", "no release describes"} {
