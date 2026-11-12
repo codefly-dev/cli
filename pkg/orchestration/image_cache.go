@@ -641,6 +641,10 @@ func externalBaseReferences(dockerfilePath string) ([]string, error) {
 // It is a seam so a test can bind a base without a registry.
 var resolveImageManifestDigest = func(ctx context.Context, reference, builderName string) (string, error) {
 	defer timings.Start("registry.manifest")()
+	if builderName == "" {
+		manifest, err := registryManifestOf(ctx, reference)
+		return manifest.digest, err
+	}
 	return cachedProbe(ctx, "manifest", reference, builderName, func() (string, error) {
 		probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
 		defer cancel()
