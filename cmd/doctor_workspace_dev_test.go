@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,18 +31,27 @@ func TestDoctorWorkspaceWarnsAboutAnActiveDevDeployment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Staging delivers from deployments/modules: a dev deployment is found in
-	// its working render, in its delivered tree as another clone published it,
-	// and, in both, reported once.
+	// Staging delivers from deployments/modules on main of this checkout's
+	// repository: a dev deployment is found in its working render, in its
+	// delivered tree as another clone published it, and, in both, reported
+	// once.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	working := filepath.Join(workingrender.Dir, "staging", "modules", "backend", gitops.InventoryFilename)
 	delivered := filepath.Join("deployments", "modules", "backend", gitops.InventoryFilename)
-	yaml := testWorkspaceYAMLLocalDeclared + "    - name: staging\n"
+	yaml := testWorkspaceYAMLLocalDeclared + "    - name: staging\n      gitops:\n        repo-url: https://github.com/acme/platform.git\n"
 	for name, files := range map[string][]string{"working": {working}, "delivered": {delivered}, "both": {working, delivered}} {
 		extra := map[string]string{}
 		for _, file := range files {
 			extra[file] = string(data) + "\n"
 		}
-		found := findDiagnostics(runReadiness(t, workspaceReadinessOptions{dir: singleServiceWorkspace(t, yaml, nil, extra)}), codeGitOpsDevDeploymentActive)
+		checkout := singleServiceWorkspace(t, yaml, nil, extra)
+		for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"remote", "add", "origin", "git@github.com:acme/platform.git"}} {
+			if out, err := exec.Command("git", append([]string{"-C", checkout}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+		found := findDiagnostics(runReadiness(t, workspaceReadinessOptions{dir: checkout}), codeGitOpsDevDeploymentActive)
 		if len(found) != 1 {
 			t.Fatalf("%s: %d dev deployment diagnostics, want exactly one", name, len(found))
 		}

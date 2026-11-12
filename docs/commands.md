@@ -2869,9 +2869,11 @@ method policy and every written copy of it. Both commands read committed files
 only — no cluster, no credential.
 
 `check` is the gate. `--env <environment>`, in a composition, reads what that
-environment delivers to its host — from its working render and then its own
-delivered tree (`<gitops path>/modules`), never a tree another environment
-delivers from — and fails when a module's delivery does not
+environment delivers to its host — from its working render, then from its
+delivered tree (`<gitops path>/modules`) when this checkout is its delivery
+repository on its delivery branch (the environment's own `gitops`, else the
+workspace's), never a tree another environment or another branch holds; a
+checkout whose repository or branch cannot be told is refused — and fails when a module's delivery does not
 hold to its own contract, when a role names a scope the composition reaches
 nowhere, or when the envelope withholds a scope a binding asks for (the host
 drops it without a record). `--module-dir <module>`, in a module's checkout,

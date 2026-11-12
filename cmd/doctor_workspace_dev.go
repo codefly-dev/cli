@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -16,7 +18,7 @@ const codeGitOpsDevDeploymentActive = "gitops_dev_deployment_active"
 
 // checkDevDeployments warns about every dev deployment recorded in a tree that
 // says what an environment delivers: its working render, and its own
-// delivered tree in this checkout (gitops.EnvironmentModuleTrees), so a dev
+// delivered tree when this checkout holds it (gitops.EnvironmentModuleTrees), so a dev
 // deployment published from another clone is reported as well. It reads only
 // the render inventories, and reports each deployment once.
 func checkDevDeployments(ws *resources.Workspace, report *workspaceReadinessReport) {
@@ -26,9 +28,11 @@ func checkDevDeployments(ws *resources.Workspace, report *workspaceReadinessRepo
 	}
 	var inventories []string
 	for _, env := range declared {
-		trees, treesErr := gitops.EnvironmentModuleTrees(ws, env)
+		trees, treesErr := gitops.EnvironmentModuleTrees(context.Background(), ws, env)
 		if treesErr != nil {
-			continue
+			// A delivered tree this checkout cannot attribute is not read;
+			// the working render is still this environment's own.
+			trees = []string{workingrender.Modules(ws.Dir(), env.Name)}
 		}
 		for _, tree := range trees {
 			found, _ := filepath.Glob(filepath.Join(tree, "*", gitops.InventoryFilename))

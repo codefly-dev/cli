@@ -536,8 +536,23 @@ func TestDeployDevRefusesWithoutADeliveredCellFile(t *testing.T) {
 	_, _, request, _ := hostedDevFixture(t)
 	calls := stubBuild(t, []string{"registry.example.test/acme/api:1.2.0@" + devNewDigest}, nil)
 	_, err := DeployDev(context.Background(), request)
-	require.ErrorContains(t, err, "environment staging's delivery base branch main carries no readable cell file at deployments/cells/staging/cell.yaml")
+	require.ErrorContains(t, err, "environment staging's delivery base branch main carries no cell file at deployments/cells/staging/cell.yaml")
 	require.ErrorContains(t, err, "publish the environment's modules first")
+	require.Zero(t, *calls)
+}
+
+// A delivery repository that cannot be read is named as such — git's own
+// reason, never "publish first" — and fails at once rather than prompting for
+// credentials: nothing is built.
+func TestDeployDevNamesADeliveryBaseItCannotRead(t *testing.T) {
+	isolateGit(t)
+	_, env, request, _ := hostedDevFixture(t)
+	require.NoError(t, os.RemoveAll(strings.TrimPrefix(env.Gitops.RepoURL, "file://")))
+	calls := stubBuild(t, []string{"registry.example.test/acme/api:1.2.0@" + devNewDigest}, nil)
+	_, err := DeployDev(context.Background(), request)
+	require.ErrorContains(t, err, "is held to the one on its delivery base branch main of "+env.Gitops.RepoURL+", which could not be read")
+	require.ErrorContains(t, err, "git fetch")
+	require.NotContains(t, err.Error(), "publish the environment's modules first")
 	require.Zero(t, *calls)
 }
 

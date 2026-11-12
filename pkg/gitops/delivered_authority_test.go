@@ -75,28 +75,68 @@ func TestTheDeliveredTreeIsReadAsTheHostComposesIt(t *testing.T) {
 	require.ErrorContains(t, err, `no paired delivery document is rendered for environment "green"`)
 }
 
-// platform-obin's main kept 146 files under deployments/modules/*/…/overlays/blue/
-// from the days a Blue render wrote into staging's tree. deployments/modules is
-// staging's delivered tree, so for Blue it is a foreign one: what Blue delivers
-// is read from Blue's working render and Blue's own delivered tree only, and
-// the leftover can never outrank a fresh Blue render.
+// What an environment delivers is read from its working render and from the
+// checkout only when the checkout IS its delivery repository on its delivery
+// base branch — resolved per environment, as publish resolves it, with no
+// workspace-wide default to lean on (platform-obin declares none: each
+// environment names the repository, and Blue its own branch). On a main
+// checkout, Blue's committed tree is main's copy, not what blue-delivery
+// delivers, and staging's tree carries leftover Blue overlays (146 files on
+// platform-obin's main); neither may speak for Blue over its fresh render.
 func TestAnotherEnvironmentsTreeNeverSpeaksForThisOne(t *testing.T) {
-	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "environments:\n",
-		"environments:\n  - name: blue\n    namespace: acme\n    gitops:\n      path: deployments/environments/blue\n"})
-	root := workspace.Dir()
-	blue, err := EnvironmentModuleTrees(workspace, selectedEnvironment(t, workspace, "blue"))
+	isolateGit(t)
+	ctx := t.Context()
+	remote := createBareRepository(t)
+	repo := "      repo-url: file://" + filepath.ToSlash(remote) + "\n"
+	workspace := writeCellWorkspace(t,
+		[3]string{resources.WorkspaceConfigurationName, "    namespace: acme\n", "    namespace: acme\n    gitops:\n" + repo},
+		[3]string{resources.WorkspaceConfigurationName, "environments:\n", "environments:\n" +
+			"  - name: blue\n    namespace: acme\n    gitops:\n" + repo + "      branch: blue-delivery\n      path: deployments/environments/blue\n" +
+			"  - name: elsewhere\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/other.git\n"})
+	root, err := filepath.EvalSymlinks(workspace.Dir())
 	require.NoError(t, err)
-	require.Equal(t, []string{workingrender.Modules(root, "blue"), filepath.Join(root, "deployments", "environments", "blue", "modules")}, blue)
-	staging, err := EnvironmentModuleTrees(workspace, selectedEnvironment(t, workspace, "staging"))
-	require.NoError(t, err)
-	require.Equal(t, []string{workingrender.Modules(root, "staging"), filepath.Join(root, "deployments", "modules")}, staging)
+	trees := func(environment string) ([]string, error) {
+		t.Helper()
+		return EnvironmentModuleTrees(ctx, workspace, selectedEnvironment(t, workspace, environment))
+	}
+
+	// Outside git, whether the checkout is anyone's delivery repository cannot
+	// be told: refused, never read.
+	_, err = trees("blue")
+	require.ErrorContains(t, err, "whether this checkout is that cannot be told")
 
 	declaration := &compositionv1.AuthorityManifestV1{InstallationRole: "none"}
+	stale := deliverInto(t, filepath.Join(root, "deployments", "environments", "blue", "modules"), "blue", preparedPairManifest("compute", 1), declaration)
 	deliverInto(t, filepath.Join(root, "deployments", "modules"), "blue", preparedPairManifest("compute", 1), declaration)
-	fresh := deliverInto(t, workingrender.Modules(root, "blue"), "blue", preparedPairManifest("compute", 2), declaration)
+	runGit(t, root, "init", "-q", "-b", "main")
+	runGit(t, root, "remote", "add", "origin", "file://"+filepath.ToSlash(remote))
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "main")
+	fresh := deliverInto(t, workingrender.Modules(workspace.Dir(), "blue"), "blue", preparedPairManifest("compute", 2), declaration)
+
+	staging, err := trees("staging")
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(workspace.Dir(), "staging"), filepath.Join(root, "deployments", "modules")}, staging,
+		"a main checkout of staging's repository holds staging's delivered tree")
+	blue, err := trees("blue")
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(workspace.Dir(), "blue")}, blue, "Blue delivers from blue-delivery, not this main checkout")
+	elsewhere, err := trees("elsewhere")
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(workspace.Dir(), "elsewhere")}, elsewhere, "another repository's tree is not in this checkout")
+
 	delivered, err := ReadDeliveredAuthority(blue, "blue")
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join(fresh, "compute-paired.yaml"), delivered.Modules["compute"].File, "the leftover in staging's tree spoke for blue")
+	require.Equal(t, filepath.Join(fresh, "compute-paired.yaml"), delivered.Modules["compute"].File, "main's stale Blue tree spoke for Blue")
+
+	// On blue-delivery, the checkout is Blue's delivered tree, and it wins.
+	runGit(t, root, "checkout", "-q", "-b", "blue-delivery")
+	blue, err = trees("blue")
+	require.NoError(t, err)
+	require.Equal(t, []string{workingrender.Modules(workspace.Dir(), "blue"), filepath.Join(root, "deployments", "environments", "blue", "modules")}, blue)
+	delivered, err = ReadDeliveredAuthority(blue, "blue")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(stale, "compute-paired.yaml"), delivered.Modules["compute"].File)
 }
 
 func TestAPermissionTableThisCannotReadIsAnErrorNotAnEmptyTable(t *testing.T) {

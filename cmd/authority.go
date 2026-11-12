@@ -362,7 +362,7 @@ func printTrace(w io.Writer, call *decide.Call, links []decide.Link, files map[s
 
 func init() {
 	for _, command := range []*cobra.Command{authorityCheckCmd, authorityTraceCmd} {
-		command.Flags().StringVar(&authorityFlags.root, "root", ".", "the composition's workspace root: the environment's working render and its own delivered tree are read there")
+		command.Flags().StringVar(&authorityFlags.root, "root", ".", "the composition's workspace root: the environment's working render is read there, and its delivered tree when the checkout is its delivery repository on its delivery branch")
 		command.Flags().StringVar(&authorityFlags.env, "env", "", "the environment whose delivered tree is read")
 		command.Flags().StringVar(&authorityFlags.moduleDir, "module-dir", "", "a module's checkout: its published policies and generated tables")
 		AuthorityCmd.AddCommand(command)
@@ -378,7 +378,8 @@ func init() {
 // root: its own module trees only (gitops.EnvironmentModuleTrees), never a
 // tree another environment delivers from.
 func readDeliveredAuthority(root, environment string) (*gitops.DeliveredAuthority, error) {
-	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
 	if err != nil {
 		return nil, fmt.Errorf("load the workspace at %s: %w", root, err)
 	}
@@ -386,7 +387,7 @@ func readDeliveredAuthority(root, environment string) (*gitops.DeliveredAuthorit
 	if err != nil {
 		return nil, err
 	}
-	trees, err := gitops.EnvironmentModuleTrees(workspace, env)
+	trees, err := gitops.EnvironmentModuleTrees(ctx, workspace, env)
 	if err != nil {
 		return nil, err
 	}

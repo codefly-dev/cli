@@ -1,8 +1,11 @@
 package gitops
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -257,27 +260,91 @@ func OwnDeclaration(dir string) (principal string, ownerAware bool, err error) {
 	return contract.Principal, contract.OwnerAware, nil
 }
 
-// EnvironmentModuleTrees lists the module trees in workspace that say what
-// env delivers, in the order a reader lets the later win: the environment's
-// working render (workingrender.Modules), what a publish would deliver, then
-// its own delivered tree, `<gitops path>/modules`, as the workspace's checkout
-// holds it. Another environment's tree is never among them: a tree under a
-// path env does not deliver to is another environment's, whatever overlays it
-// carries, and an environment delivering to a repository of its own has no
-// delivered tree in this checkout.
-func EnvironmentModuleTrees(workspace *resources.Workspace, env *environments.Environment) ([]string, error) {
+// EnvironmentModuleTrees lists the module trees that say what env delivers,
+// in the order a reader lets the later win: the environment's working render
+// (workingrender.Modules), what a publish would deliver, then its delivered
+// tree, `<gitops path>/modules`, read from this checkout only when this
+// checkout IS the environment's delivery repository on its delivery base
+// branch (checkoutDelivers). The repository and branch are the environment's
+// own, falling back to the workspace default, exactly as publish resolves
+// them. A checkout of another repository or another branch holds a tree that
+// is not what the environment delivers, so it is never read; one whose
+// identity cannot be told is refused with the reason, never read.
+func EnvironmentModuleTrees(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]string, error) {
 	trees := make([]string, 1, 2)
 	trees[0] = workingrender.Modules(workspace.Dir(), env.Name)
-	defaults, err := environments.WorkspaceGitops(workspace)
+	delivers, err := declaresDeliveryRepository(workspace, env)
+	if err != nil || !delivers {
+		return trees, err
+	}
+	config, _, baseBranch, pathRoot, err := resolveGitops(workspace, env.Name, true)
 	if err != nil {
 		return nil, err
 	}
-	if env.Gitops != nil && env.Gitops.RepoURL != "" && defaults != nil && defaults.RepoURL != "" && env.Gitops.RepoURL != defaults.RepoURL {
+	root, here, err := checkoutDelivers(ctx, workspace.Dir(), config.RepoURL, baseBranch)
+	if err != nil {
+		return nil, fmt.Errorf("environment %s delivers from %s on branch %s, and whether this checkout is that cannot be told (%w), so no tree in it is read as what the environment delivers; run from a checkout of %s on %s", env.Name, config.RepoURL, baseBranch, err, config.RepoURL, baseBranch)
+	}
+	if !here {
 		return trees, nil
 	}
-	gitopsPath, err := validateRelativePath(gitopsPathOf(env, defaults))
+	return append(trees, filepath.Join(root, filepath.FromSlash(deliveryModulesPath(pathRoot)))), nil
+}
+
+// checkoutDelivers reports whether the git checkout holding dir is repository
+// on branch: a remote of it names repository (or, for a local repository, the
+// checkout is that directory) and branch is checked out. It answers the
+// checkout's top level for the delivered path to be read under. A directory
+// outside git, a detached HEAD or a checkout with no remote cannot be told,
+// and that is an error, never a no.
+func checkoutDelivers(ctx context.Context, dir, repository, branch string) (string, bool, error) {
+	root, err := gitCommand(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return nil, fmt.Errorf("gitops.path: %w", err)
+		return "", false, err
 	}
-	return append(trees, filepath.Join(workspace.Dir(), filepath.FromSlash(deliveryModulesPath(gitopsPath)))), nil
+	head, err := gitCommand(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return "", false, fmt.Errorf("HEAD names no branch: %w", err)
+	}
+	want := repositoryKey(repository)
+	if repositoryKey(root) == want {
+		return root, head == branch, nil
+	}
+	remotes, err := gitCommand(ctx, root, "remote")
+	if err != nil {
+		return "", false, err
+	}
+	if strings.TrimSpace(remotes) == "" {
+		return "", false, errors.New("the checkout has no remote")
+	}
+	for _, remote := range strings.Fields(remotes) {
+		urls, urlErr := gitCommand(ctx, root, "remote", "get-url", "--all", "--", remote)
+		if urlErr != nil {
+			return "", false, urlErr
+		}
+		for _, candidate := range strings.Fields(urls) {
+			if repositoryKey(candidate) == want {
+				return root, head == branch, nil
+			}
+		}
+	}
+	return root, false, nil
+}
+
+// repositoryKey is one spelling of a repository address, so that the scp,
+// https and ssh forms of one GitHub repository, with or without `.git`, and a
+// local path with or without `file://`, compare equal.
+func repositoryKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if match := scpGitURLPattern.FindStringSubmatch(raw); len(match) == 3 {
+		return "github.com/" + strings.ToLower(match[1]+"/"+strings.TrimSuffix(match[2], ".git"))
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
+		return strings.ToLower(parsed.Hostname() + "/" + strings.TrimSuffix(strings.Trim(parsed.Path, "/"), ".git"))
+	}
+	path := strings.TrimPrefix(raw, "file://")
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return "file:" + filepath.Clean(path)
 }

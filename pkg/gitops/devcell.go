@@ -59,8 +59,11 @@ func loadDevCell(ctx context.Context, workspace *resources.Workspace, env *envir
 		delivered := deliveryCellPath(pathRoot, env.Name)
 		cell.origin = fmt.Sprintf("the cell file %s on the delivery base branch %s", delivered, baseBranch)
 		data, err = baseBranchFile(ctx, config.RepoURL, baseBranch, delivered)
+		if errors.Is(err, errBaseFileAbsent) {
+			return devCell{}, fmt.Errorf("environment %s's delivery base branch %s carries no cell file at %s, so it approves no build to replace: publish the environment's modules first (codefly deploy gitops publish <module> --env %s)", env.Name, baseBranch, delivered, env.Name)
+		}
 		if err != nil {
-			return devCell{}, fmt.Errorf("environment %s's delivery base branch %s carries no readable cell file at %s, so it approves no build to replace (%w): publish the environment's modules first (codefly deploy gitops publish <module> --env %s)", env.Name, baseBranch, delivered, err, env.Name)
+			return devCell{}, fmt.Errorf("environment %s's cell file is held to the one on its delivery base branch %s of %s, which could not be read, so nothing approves a build to replace: %w", env.Name, baseBranch, config.RepoURL, err)
 		}
 	} else {
 		cell.origin = "the cell file on disk"
@@ -91,8 +94,14 @@ func declaresDeliveryRepository(workspace *resources.Workspace, env *environment
 	return defaults != nil && strings.TrimSpace(defaults.RepoURL) != "", nil
 }
 
+// errBaseFileAbsent is a delivery base branch that was read and holds no file
+// at the path asked for, as opposed to one that could not be read at all.
+var errBaseFileAbsent = errors.New("the delivery base branch holds no such file")
+
 // baseBranchFile reads one file of branch as the delivery repository holds it
-// now, through a throwaway shallow fetch: the same base a publish clones.
+// now, through a throwaway shallow fetch: the same base a publish clones. The
+// fetch never prompts: a repository this shell holds no credential for fails
+// at once, naming git's reason, rather than waiting on a terminal.
 func baseBranchFile(ctx context.Context, repository, branch, path string) ([]byte, error) {
 	temp, err := os.MkdirTemp("", "codefly-delivery-base-*")
 	if err != nil {
@@ -105,10 +114,15 @@ func baseBranchFile(ctx context.Context, repository, branch, path string) ([]byt
 	if _, err = gitCommand(ctx, temp, "check-ref-format", "--branch", branch); err != nil {
 		return nil, fmt.Errorf("invalid delivery base branch %q: %w", branch, err)
 	}
-	if _, err = gitCommand(ctx, temp, "fetch", "--quiet", "--no-tags", "--depth=1", "--", repository, "refs/heads/"+branch); err != nil {
+	if _, err = gitCommandWithEnv(ctx, temp, []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"},
+		"fetch", "--quiet", "--no-tags", "--depth=1", "--", repository, "refs/heads/"+branch); err != nil {
 		return nil, err
 	}
-	return gitCommandBytes(ctx, temp, "show", "FETCH_HEAD:"+path)
+	data, err := gitCommandBytes(ctx, temp, "show", "FETCH_HEAD:"+path)
+	if err != nil && gitSaysAbsent(err) {
+		return nil, errBaseFileAbsent
+	}
+	return data, err
 }
 
 // deriveDevCell re-derives the environment's cell file from the workspace and
