@@ -68,3 +68,32 @@ func Prepare(workspaceDir, environment string) error {
 	}
 	return nil
 }
+
+// Record is where the outcome of the last render of module for environment is
+// kept: beside the tree rather than in it, because the tree is what publish
+// delivers and a failed render leaves the previous tree in place. Publish
+// reads it to refuse a tree no render vouches for now.
+func Record(workspaceDir, environment, module string) string {
+	return filepath.Join(Environment(workspaceDir, environment), "records", module+".json")
+}
+
+// RecordOf answers whose working render destination is — the workspace, the
+// environment and the module — when it is one, so a writer that is handed
+// only a destination records the render it produced there. A destination
+// that is not a module's working render (a service render, a scratch tree)
+// answers false.
+func RecordOf(destination string) (workspaceDir, environment, module string, ok bool) {
+	destination = filepath.Clean(destination)
+	modules := filepath.Dir(destination)
+	envDir := filepath.Dir(modules)
+	root := filepath.Dir(envDir)
+	if filepath.Base(modules) != "modules" || filepath.Base(root) != filepath.Base(Dir) || filepath.Base(filepath.Dir(root)) != filepath.Dir(filepath.FromSlash(Dir)) {
+		return "", "", "", false
+	}
+	workspaceDir = filepath.Dir(filepath.Dir(root))
+	environment, module = filepath.Base(envDir), filepath.Base(destination)
+	if Module(workspaceDir, environment, module) != destination {
+		return "", "", "", false
+	}
+	return workspaceDir, environment, module, true
+}

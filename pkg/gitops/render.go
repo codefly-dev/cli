@@ -63,7 +63,25 @@ type projectContract struct {
 	clusterResources map[string]struct{}
 }
 
+// RenderOwnedTree stages the tree generate writes, validates it, and replaces
+// opts.Destination with it only when every step succeeds. When the
+// destination is a module's working render, the render is recorded beside it
+// (render_record.go): rendering before it starts, then rendered or failed, so
+// a render that does not finish leaves a record publish refuses rather than an
+// earlier tree that reads as current.
 func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(context.Context, string) error) (RenderResult, error) {
+	if err := writeRenderRecord(opts.Destination, &renderRecord{Outcome: renderRecordRendering}); err != nil {
+		return RenderResult{}, err
+	}
+	result, err := renderOwnedTree(ctx, opts, generate)
+	record := renderRecord{Outcome: renderRecordRendered, Digest: result.Inventory.Digest, Pins: opts.CompositionPins}
+	if err != nil {
+		record = renderRecord{Outcome: renderRecordFailed, Error: err.Error()}
+	}
+	return result, errors.Join(err, writeRenderRecord(opts.Destination, &record))
+}
+
+func renderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(context.Context, string) error) (RenderResult, error) {
 	if opts.Destination == "" {
 		return RenderResult{}, fmt.Errorf("render destination is required")
 	}

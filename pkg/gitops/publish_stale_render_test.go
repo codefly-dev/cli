@@ -42,7 +42,9 @@ func TestPublishNamesARenderForAnotherEnvironmentBeforeItsGraph(t *testing.T) {
 	require.ErrorContains(t, err, "run `codefly deploy gitops render saas --env blue` first")
 	require.NotContains(t, err.Error(), "unexpected unit")
 
-	// Rendered for this environment, the tree is still held to its graph.
+	// Rendered for this environment by a render that succeeded, the tree is
+	// still held to its graph.
+	require.NoError(t, storeRenderRecord(workspace.Dir(), "blue", "saas", &renderRecord{Outcome: renderRecordRendered}))
 	inventory.Environment = "blue"
 	canonical, err = json.MarshalIndent(inventory, "", "  ")
 	require.NoError(t, err)

@@ -1,0 +1,119 @@
+package gitops
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"github.com/codefly-dev/cli/pkg/workingrender"
+	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
+)
+
+// renderPublishFixtureFailing is renderPublishFixture's render failing part
+// way, as `codefly deploy gitops render saas --env blue` did on 2026-11-12
+// when a dependency image was refused.
+func renderPublishFixtureFailing(t *testing.T, root, module, environment string) {
+	t.Helper()
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: workingrender.Module(root, environment, module), Module: module, UnitNames: []string{"api"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", module)),
+		Units:       promotableServiceGraph(module, []string{"api"}),
+		Environment: environment, Namespace: "payments", AppProject: "payments", Promotable: true,
+	}, func(context.Context, string) error {
+		return errors.New("image registry.example/payments/api:0.1.0 is already published from other code")
+	})
+	require.ErrorContains(t, err, "already published from other code")
+}
+
+func TestPublishIsAllowedRightAfterASuccessfulRender(t *testing.T) {
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{Module: "payments", Environment: "production", Local: true})
+	require.NoError(t, err)
+}
+
+// The 2026-11-12 promotion: a render failed, the tree an earlier render left
+// was still in place, and publish delivered it. Publish now refuses until a
+// render succeeds again.
+func TestPublishRefusesTheTreeAFailedRenderLeft(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true}
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	renderPublishFixtureFailing(t, workspace.Dir(), "payments", "production")
+
+	_, err := PlanPublish(ctx, workspace, &request)
+	require.ErrorContains(t, err, "the last render of module payments for environment production failed")
+	require.ErrorContains(t, err, "already published from other code")
+	require.ErrorContains(t, err, "run `codefly deploy gitops render payments --env production` again")
+
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	_, err = PlanPublish(ctx, workspace, &request)
+	require.NoError(t, err, "a render that succeeds again lifts the refusal")
+}
+
+// A render that never finished — interrupted — leaves the earlier tree too.
+func TestPublishRefusesARenderThatNeverFinished(t *testing.T) {
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	require.NoError(t, writeRenderRecord(workingrender.Module(workspace.Dir(), "production", "payments"), &renderRecord{Outcome: renderRecordRendering}))
+
+	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{Module: "payments", Environment: "production", Local: true})
+	require.ErrorContains(t, err, "never finished")
+}
+
+// A render reads the composition's pins; once one moves, the tree is of
+// another composition and publish names the pin.
+func TestPublishRefusesARenderWhosePinsMoved(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	workspace.Modules = []*resources.ModuleReference{{Name: "billing", Source: "github.com/acme/billing", Version: "v1.0.0"}}
+	destination := workingrender.Module(workspace.Dir(), "production", "payments")
+	_, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: destination, Module: "payments", UnitNames: []string{"api"},
+		OwnedPath:   "environments/modules/payments",
+		Units:       promotableServiceGraph("payments", []string{"api"}),
+		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+		CompositionPins: compositionPins(workspace),
+	}, func(_ context.Context, stage string) error {
+		return writePublishServiceFixture(stage, "production", "api")
+	})
+	require.NoError(t, err)
+	require.NoError(t, holdRenderRecord(workspace, "payments", "production"))
+
+	workspace.Modules[0].Version = "v1.1.0"
+	_, err = loadPublicationInventory(ctx, workspace, &PublishRequest{Module: "payments", Environment: "production"}, destination, "environments")
+	require.ErrorContains(t, err, "the composition's pins moved since module payments was rendered for environment production")
+	require.ErrorContains(t, err, "billing github.com/acme/billing@v1.0.0 → github.com/acme/billing@v1.1.0")
+	require.ErrorContains(t, err, "run `codefly deploy gitops render payments --env production` again")
+
+	workspace.Modules = append(workspace.Modules, &resources.ModuleReference{Name: "ledger", Source: "github.com/acme/ledger", Version: "v2.0.0"})
+	workspace.Modules[0].Version = "v1.0.0"
+	err = holdRenderRecord(workspace, "payments", "production")
+	require.ErrorContains(t, err, "ledger added at github.com/acme/ledger@v2.0.0")
+}
+
+// A whole-composition render that stopped before reaching a module records
+// that module's render as failed, so its earlier tree is refused as well.
+func TestPublishRefusesAModuleTheCompositionRenderNeverReached(t *testing.T) {
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	require.NoError(t, RecordRenderFailure(workspace.Dir(), "production", "payments", errors.New("render --all stopped at billing before rendering it")))
+
+	err := holdRenderRecord(workspace, "payments", "production")
+	require.ErrorContains(t, err, "failed at")
+	require.ErrorContains(t, err, "render --all stopped at billing")
+}
+
+// A working render no record vouches for — rendered by a CLI that kept none,
+// or put there by hand — is refused with the render that lifts it.
+func TestPublishRefusesAWorkingRenderWithNoRecord(t *testing.T) {
+	workspace := &resources.Workspace{Name: "payments"}
+	workspace.WithDir(t.TempDir())
+	err := holdRenderRecord(workspace, "payments", "production")
+	require.ErrorContains(t, err, "no record of the render that produced it")
+	require.ErrorContains(t, err, "run `codefly deploy gitops render payments --env production` again")
+}

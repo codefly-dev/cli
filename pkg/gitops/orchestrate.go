@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -52,8 +53,16 @@ func renderModuleTree(
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
 	build renderBuild,
-) (RenderResult, error) {
+) (_ RenderResult, err error) {
 	defer timings.Start("module.total")()
+	// A render that fails before it reaches the tree — the workspace, the
+	// permissions, the delivery target — still fails the module's render:
+	// publish must not take the earlier tree as this render's.
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, RecordRenderFailure(workspace.Dir(), env.Name, module.Name, err))
+		}
+	}()
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
 	}
@@ -80,7 +89,7 @@ func renderModuleTree(
 		}
 	}
 	endAuthored := timings.Start("module.authored-configurations")
-	err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime())
+	err = refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime())
 	endAuthored()
 	if err != nil {
 		return RenderResult{}, err
@@ -105,17 +114,18 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	options := &RenderOptions{
-		Destination:    moduleRenderDestination(workspace, env.Name, module.Name),
-		Module:         module.Name,
-		Environment:    env.Name,
-		Namespace:      scope.Namespace,
-		AppProject:     project,
-		Promotable:     true,
-		OwnedPath:      ownedPath,
-		Workspace:      workspace.Name,
-		Host:           env.Host,
-		Target:         env,
-		DeliveryTarget: deliveryTarget,
+		Destination:     moduleRenderDestination(workspace, env.Name, module.Name),
+		Module:          module.Name,
+		Environment:     env.Name,
+		Namespace:       scope.Namespace,
+		AppProject:      project,
+		Promotable:      true,
+		OwnedPath:       ownedPath,
+		Workspace:       workspace.Name,
+		Host:            env.Host,
+		Target:          env,
+		DeliveryTarget:  deliveryTarget,
+		CompositionPins: compositionPins(workspace),
 	}
 	render := &moduleRender{
 		workspace: workspace, module: module, env: env, scope: &scope,

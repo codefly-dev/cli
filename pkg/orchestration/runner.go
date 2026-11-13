@@ -1287,7 +1287,8 @@ func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, ad
 	sockets := listeningSockets(lookupCtx)
 	held := make([]string, 0, len(collisions))
 	for _, collision := range collisions {
-		held = append(held, fmt.Sprintf("%d (%s)%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, holderPID(sockets, collision.address, collision.port))))
+		holder := holderPID(sockets, collision.address, collision.port)
+		held = append(held, fmt.Sprintf("%d (%s)%s%s", collision.port, collision.endpoint, portHolderSuffix(lookupCtx, holder), orphanedGroupHint(lookupCtx, holder)))
 	}
 	return held
 }

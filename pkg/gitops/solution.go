@@ -88,6 +88,9 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		Workspace:   req.Workspace.Name,
 		Host:        env.Host,
 		Target:      env,
+		// A solution's render is published like a module's, so it is held
+		// to the composition it read in the same way.
+		CompositionPins: compositionPins(req.Workspace),
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		executor, release, err := connectSolutionExecutor(ctx, req.Workspace.Dir(), req.Agent)

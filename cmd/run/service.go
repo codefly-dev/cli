@@ -104,6 +104,11 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	cli.Init()
 	defer func() {
 		services.ClearAgents()
+		// Once the agents are gone, what they started and left behind is this
+		// run's to take back, whichever way it ended.
+		if cleanupRun != nil {
+			returnErr = errors.Join(returnErr, reclaimRun(context.WithoutCancel(ctx), cleanupRun.flow, started, runFailed(signalled, returnErr)))
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		// Machine-wide on purpose: this recovers records whose owner has exited,
 		// which is garbage collection and never signals a live workspace's run.
@@ -113,9 +118,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))
 		} else if recovered := evidence.RecoveredPGIDs(); len(recovered) > 0 {
 			cli.Info("reaped %d managed process groups after run: %v", len(recovered), recovered)
-		}
-		if returnErr != nil && signalled.Err() == nil && cleanupRun != nil {
-			returnErr = errors.Join(returnErr, removeFailedRunContainers(context.WithoutCancel(ctx), cleanupRun.flow, started))
 		}
 	}()
 
@@ -637,26 +639,6 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 	<-finished
 	cli.RestoreOutput()
 	return runErr
-}
-
-// removeFailedRunContainers takes back the containers a failed run's own
-// agents created, once they are gone: they hold no dev data worth reusing,
-// and they hold the ports the next run needs (#1233). A run stopped on
-// purpose never calls it, so the next run still reuses what that run left.
-func removeFailedRunContainers(ctx context.Context, flow *orchestration.Flow, started time.Time) error {
-	if flow == nil || !slices.ContainsFunc(flow.SelectableRuntimeContexts(), shouldSweepStaleContainers) {
-		return nil
-	}
-	removeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	removed, err := flow.RemoveContainersCreatedByThisRun(removeCtx, started)
-	if len(removed) > 0 {
-		cli.Info("removed %d containers the failed run started: %v", len(removed), removed)
-	}
-	if err != nil {
-		return fmt.Errorf("remove the failed run's containers: %w", err)
-	}
-	return nil
 }
 
 // shouldSweepStaleContainers keeps explicit Local/Nix runs independent of the
