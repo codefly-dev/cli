@@ -3,8 +3,10 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/timings"
 )
 
@@ -24,10 +26,39 @@ const SkipWorkspaceReadinessFlag = "skip-workspace-readiness"
 // so this package cannot import cmd back. It is nil in this package's unit
 // tests unless one installs a stand-in, which is how the gate's behaviour is
 // exercised without the engine.
-// enforcing is false when the operator took the override: the engine then
-// reports its verdict without printing the refusal banner a verb that proceeds
-// has not earned.
-var WorkspaceReadiness func(ctx context.Context, env, module string, enforcing bool) error
+var WorkspaceReadiness func(ctx context.Context, question ReadinessQuestion) (ReadinessVerdict, error)
+
+// ReadinessQuestion is what a delivery verb asks the readiness engine.
+type ReadinessQuestion struct {
+	Env, Module string
+	// Enforcing is false when the operator took the override: the engine then
+	// reports its verdict without printing the refusal banner a verb that
+	// proceeds has not earned.
+	Enforcing bool
+	// JudgePins compares the composition's pins with their sources now, and
+	// refuses one behind its source that no hold covers. A render sets it. A
+	// publication of a render that recorded its own judgement does not: the
+	// render's judgement is the one it is held to (publishReady).
+	JudgePins bool
+}
+
+// ReadinessVerdict is what a passing (or overridden) readiness found that the
+// verb carries forward.
+type ReadinessVerdict struct {
+	// PinsJudged reports that the composition's pins were compared with their
+	// sources; Behind then names each one behind its source, or not compared,
+	// that no hold covers — non-empty only under the override.
+	PinsJudged bool
+	Behind     []string
+}
+
+// pinCurrency is the verdict as a render records it: nil when no pin was judged.
+func (verdict ReadinessVerdict) pinCurrency() *gitops.PinCurrency {
+	if !verdict.PinsJudged {
+		return nil
+	}
+	return &gitops.PinCurrency{Behind: verdict.Behind}
+}
 
 // skipWorkspaceReadiness is the operator's explicit override. It exists for one
 // situation: a workspace mid-repair, where the module being delivered is fine
@@ -44,19 +75,53 @@ var skipWorkspaceReadiness bool
 // unmaterialized workspace can only be reported as unmaterialized), and which
 // is free once it has happened. Everything the failure used to be discovered
 // behind — the render, the builds, the pushes, the clone — still comes after.
-func requireWorkspaceReady(ctx context.Context, verb, env, module string) error {
+func requireWorkspaceReady(ctx context.Context, verb, env, module string) (*gitops.PinCurrency, error) {
+	verdict, err := askReadiness(ctx, verb, ReadinessQuestion{Env: env, Module: module, JudgePins: true})
+	return verdict.pinCurrency(), err
+}
+
+// publishReady is the precondition of a verb that delivers a render — plan
+// and publish. Its pins are held to the judgement the render recorded, not
+// judged again against sources that moved while it rendered: a render takes
+// minutes, other merges move a pinned source's main meanwhile, and judging
+// the pins again refused, as "N commits behind main", the very commits the
+// render was right to ship. A render whose pins moved since is refused by
+// publish itself (it is of another composition), so what is delivered is
+// always what was judged. A render that recorded no judgement — an older
+// CLI's — has its pins judged now, as before.
+func publishReady(ctx context.Context, verb, workspaceDir, env, module string) error {
+	judged := gitops.RenderedPinCurrency(workspaceDir, env, module)
+	if _, err := askReadiness(ctx, verb, ReadinessQuestion{Env: env, Module: module, JudgePins: judged == nil}); err != nil || judged == nil {
+		return err
+	}
+	if len(judged.Behind) == 0 {
+		return nil
+	}
+	behind := fmt.Sprintf("module %s was rendered for environment %s on pins its render found behind their sources and held by nothing: %s; move each pin (or state a hold in pin-holds) and render again",
+		module, env, strings.Join(judged.Behind, "; "))
+	if !skipWorkspaceReadiness {
+		return fmt.Errorf("%s — refusing to %s (override with --%s)", behind, verb, SkipWorkspaceReadinessFlag)
+	}
+	cli.Warning("--%s: %s", SkipWorkspaceReadinessFlag, behind)
+	return nil
+}
+
+func askReadiness(ctx context.Context, verb string, question ReadinessQuestion) (ReadinessVerdict, error) {
 	defer timings.Start("readiness")()
+	env := question.Env
 	if WorkspaceReadiness == nil {
 		if skipWorkspaceReadiness {
 			cli.Warning("--%s: workspace readiness for environment %q was NOT evaluated before `%s`", SkipWorkspaceReadinessFlag, env, verb)
 		}
-		return nil
+		return ReadinessVerdict{}, nil
 	}
 	if !skipWorkspaceReadiness {
-		if err := WorkspaceReadiness(ctx, env, module, true); err != nil {
-			return fmt.Errorf("%w — refusing to %s (override with --%s)", err, verb, SkipWorkspaceReadinessFlag)
+		question.Enforcing = true
+		verdict, err := WorkspaceReadiness(ctx, question)
+		if err != nil {
+			return ReadinessVerdict{}, fmt.Errorf("%w — refusing to %s (override with --%s)", err, verb, SkipWorkspaceReadinessFlag)
 		}
-		return nil
+		return verdict, nil
 	}
 	// The override skips the REFUSAL, not the evaluation.
 	//
@@ -69,12 +134,14 @@ func requireWorkspaceReady(ctx context.Context, verb, env, module string) error 
 	//
 	// So the report is always produced. Under the flag it is printed and the verb
 	// proceeds, naming what the next verb will refuse; without it, it refuses here
-	// as before.
-	if err := WorkspaceReadiness(ctx, env, module, false); err != nil {
+	// as before. The pins it found behind are carried forward either way: a
+	// render records them, and its publish refuses them.
+	verdict, err := WorkspaceReadiness(ctx, question)
+	if err != nil {
 		cli.Warning("--%s: workspace readiness for environment %q FAILED and was not enforced before `%s`", SkipWorkspaceReadinessFlag, env, verb)
 		cli.Warning("--%s: every delivery verb evaluates this precondition, so the next one will refuse until it is fixed", SkipWorkspaceReadinessFlag)
-		return nil
+		return verdict, nil
 	}
 	cli.Warning("--%s: workspace readiness for environment %q passed, so the override changed nothing before `%s`", SkipWorkspaceReadinessFlag, env, verb)
-	return nil
+	return verdict, nil
 }

@@ -47,6 +47,11 @@ type ProduceRequest struct {
 	// image builds and pushes starting and finishing, and the images it kept.
 	// Nil reports nothing.
 	Progress io.Writer
+	// PinCurrency is what the readiness gate this render passed judged of the
+	// composition's pins against their sources, kept in the render record so
+	// publish holds the tree to the render's judgement rather than to a later
+	// main (render_record.go). Nil: no gate judged them.
+	PinCurrency *PinCurrency
 }
 
 // ManifestProducer renders a validated, transport-neutral manifest bundle.
@@ -130,7 +135,7 @@ func (c *Coordinator) Observe(ctx context.Context, request *ObserveRequest) (Obs
 type flowProducer struct{}
 
 func (flowProducer) Produce(ctx context.Context, request *ProduceRequest) (RenderResult, error) {
-	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild, withoutCell: request.WithoutCell, progress: request.Progress, deployed: request.Deployed}
+	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild, withoutCell: request.WithoutCell, progress: request.Progress, deployed: request.Deployed, pinCurrency: request.PinCurrency}
 	if request.Service == nil {
 		return renderModuleTree(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, !request.Snapshot, build)
 	}

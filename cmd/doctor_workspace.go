@@ -130,6 +130,10 @@ type workspaceReadinessOptions struct {
 	// not be read, a failure rather than a warning. A render sets it: what it
 	// ships must be what the sources hold today, or a stated hold.
 	requireCurrentPins bool
+	// pinsJudgedElsewhere leaves the pins uncompared: a publication of a
+	// render that recorded its own judgement is held to that judgement, not
+	// to sources that moved since (deploy.ReadinessQuestion.JudgePins).
+	pinsJudgedElsewhere bool
 }
 
 // workspaceReadiness runs the read-only readiness validation and always
@@ -158,7 +162,9 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	checkReferencedModules(ctx, ws, report)
 	checkVendoredPins(ctx, ws, report)
 	checkModuleTrust(ctx, ws, report)
-	checkPinCurrency(ctx, ws, opts.module, opts.requireCurrentPins, report)
+	if !opts.pinsJudgedElsewhere {
+		checkPinCurrency(ctx, ws, opts.module, opts.requireCurrentPins, report)
+	}
 	checkServiceOverrides(ctx, ws, report)
 	checkDevDeployments(ctx, ws, report)
 	materialized := checkModulesMaterialized(ctx, ws, report)

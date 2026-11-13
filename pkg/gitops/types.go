@@ -327,6 +327,10 @@ type RenderOptions struct {
 	// read, kept in the render record beside a module's working render so
 	// publish refuses the tree once any of them moves (render_record.go).
 	CompositionPins map[string]string
+	// PinCurrency is the readiness gate's judgement of those pins against
+	// their sources when this render ran, kept in the render record; nil when
+	// no gate judged them.
+	PinCurrency *PinCurrency
 	// ReleaseArtifacts is what the module's package manifest declares the
 	// release publishes; the runtime artifact named frontend among them is
 	// the bundle a module manifest's generated frontend.payload names.

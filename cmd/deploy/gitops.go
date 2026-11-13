@@ -53,7 +53,8 @@ var gitOpsRenderCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
+		judged := map[string]*gitops.PinCurrency{}
+		if judged[module.Name], err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
 		env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
@@ -80,15 +81,17 @@ var gitOpsRenderCmd = &cobra.Command{
 					return gitops.RenderResult{}, fmt.Errorf("the workspace composes no module %s", name)
 				}
 				target = composed[index]
-				if readyErr := requireWorkspaceReady(ctx, "render", gitOpsEnv, name); readyErr != nil {
+				pins, readyErr := requireWorkspaceReady(ctx, "render", gitOpsEnv, name)
+				if readyErr != nil {
 					return gitops.RenderResult{}, readyErr
 				}
+				judged[name] = pins
 			}
 			result, renderErr := gitops.NewCoordinator().Render(ctx, &gitops.ProduceRequest{
 				Workspace: workspace, Module: target, Environment: env,
 				AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 				Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
-				Progress: os.Stdout,
+				Progress: os.Stdout, PinCurrency: judged[name],
 			})
 			if renderErr != nil {
 				return result, renderErr
@@ -138,7 +141,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err = requireWorkspaceReady(ctx, "snapshot", gitOpsEnv, module.Name); err != nil {
+		if _, err = requireWorkspaceReady(ctx, "snapshot", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
 		env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
@@ -176,7 +179,7 @@ var gitOpsPlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err = requireWorkspaceReady(ctx, "plan", gitOpsEnv, module.Name); err != nil {
+		if err = publishReady(ctx, "plan", workspace.Dir(), gitOpsEnv, module.Name); err != nil {
 			return err
 		}
 		request := publishRequest(module.Name)
@@ -191,16 +194,22 @@ var gitOpsPlanCmd = &cobra.Command{
 
 var gitOpsPublishCmd = &cobra.Command{
 	Use:   "publish [module]",
-	Short: "Create a promotion commit (signed when git has a signing identity) and open or update its pull request",
+	Short: "Create a promotion commit (signed when git has a signing identity) and open or update its pull request; --all deploys the whole composition",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		if gitOpsPublishAll {
+			if len(args) > 0 {
+				return fmt.Errorf("--all publishes every composed module; name no module with it")
+			}
+			return publishComposition(ctx)
+		}
 		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}
-		if err = requireWorkspaceReady(ctx, "publish", gitOpsEnv, module.Name); err != nil {
+		if err = publishReady(ctx, "publish", workspace.Dir(), gitOpsEnv, module.Name); err != nil {
 			return err
 		}
 		request := publishRequest(module.Name)
@@ -613,7 +622,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	}
 	cli.Info("Render digest %s", plan.RenderDigest)
 	cli.Info("Service snapshot %s", plan.SnapshotRevision)
-	cli.Info("Changed files:")
+	if len(plan.Changed) > 0 {
+		cli.Info("Changed files:")
+	}
 	for _, path := range plan.Changed {
 		cli.Info("  %s", path)
 	}
@@ -684,6 +695,10 @@ func init() {
 	}
 	gitOpsRenderCmd.Flags().BoolVar(&gitOpsRenderAll, "all", false,
 		"Render every module the workspace composes, the host first, and derive the environment's cell file once at the end")
+	gitOpsPublishCmd.Flags().BoolVar(&gitOpsPublishAll, "all", false,
+		"Deploy the whole composition: render it if any module has no publishable render, publish every changed module (each after the modules it depends on, the hop and the host last), and merge each promotion once its base branch's required checks pass")
+	gitOpsPublishCmd.Flags().DurationVar(&gitOpsMergeTimeout, "merge-timeout", 30*time.Minute,
+		"With --all, how long to wait for one promotion's required checks (or merge queue) before stopping")
 	gitOpsRenderCmd.Flags().BoolVar(&gitOpsValidateCluster, "validate-cluster", false,
 		"Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)")
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
@@ -842,9 +857,11 @@ func renderComposition(ctx context.Context) error {
 	for _, name := range withdrawn {
 		cli.Info("Skipped %s: environment %s withdraws every service of it (exclude-services)", name, env.Name)
 	}
-	// Every module is held to its readiness before the first image is built.
+	// Every module is held to its readiness before the first image is built,
+	// and its render records what that judged of its pins.
+	judged := map[string]*gitops.PinCurrency{}
 	for _, module := range rendered {
-		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
+		if judged[module.Name], err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
 	}
@@ -863,7 +880,7 @@ func renderComposition(ctx context.Context) error {
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 			Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
-			Progress: os.Stdout, Deployed: deployed,
+			Progress: os.Stdout, Deployed: deployed, PinCurrency: judged[module.Name],
 		})
 		if renderErr != nil {
 			// The modules after this one keep whatever render their tree

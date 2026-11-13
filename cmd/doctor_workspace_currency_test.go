@@ -169,7 +169,7 @@ func TestRenderGateRefusesAStalePinAndShowsAHeldOne(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": fmt.Sprintf(currencyWorkspace, "0.1.0", "")})
 	t.Chdir(dir)
 
-	err := deploy.WorkspaceReadiness(context.Background(), "local", "", true)
+	err := readinessError(deploy.WorkspaceReadiness(context.Background(), deploy.ReadinessQuestion{Env: "local", Module: "", Enforcing: true, JudgePins: true}))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), codePinStale, "the delivery gate must be strict about a stale pin")
 }
@@ -211,4 +211,33 @@ func TestJudgePinNamesAnAbbreviatedCommitSHA(t *testing.T) {
 
 	// The full object name is a commit pin and judged against the branch.
 	require.True(t, judge(head, commits[3]).current, "the tip is current")
+}
+
+// readinessError is the error a delivery verb's readiness question answered.
+func readinessError(_ deploy.ReadinessVerdict, err error) error { return err }
+
+// The engine judges the pins only when the question asks it to: a render's
+// gate judges them and hands back the ones behind (recorded with the render),
+// and a publication of a render that recorded its judgement does not judge
+// them again against a source that moved since.
+func TestTheDeliveryGateJudgesPinsOnlyWhenAsked(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", t.TempDir())
+	stubSource(t, &composition.SourceHead{Branch: "main", Tip: strings.Repeat("c", 40), Tags: []string{"v0.2.0"}}, nil)
+	dir := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": fmt.Sprintf(currencyWorkspace, "0.1.0", "")})
+	t.Chdir(dir)
+	ctx := context.Background()
+
+	verdict, err := deploy.WorkspaceReadiness(ctx, deploy.ReadinessQuestion{Env: "local", JudgePins: true})
+	require.ErrorContains(t, err, codePinStale)
+	require.True(t, verdict.PinsJudged)
+	require.Len(t, verdict.Behind, 1, "the pin behind its source is handed back for the render to record")
+	require.Contains(t, verdict.Behind[0], "behind the newest")
+
+	// The fixture is not materialized, so the gate still fails — on that, and
+	// not on the pin.
+	verdict, err = deploy.WorkspaceReadiness(ctx, deploy.ReadinessQuestion{Env: "local", Enforcing: true})
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), codePinStale, "a publication held to its render's judgement does not judge the pins again")
+	require.False(t, verdict.PinsJudged)
+	require.Empty(t, verdict.Behind)
 }

@@ -1249,7 +1249,12 @@ repository (it holds the base commit, or the delivery holds the workspace
 revision the base's file names as its `source.revision`), the checkout must
 contain the delivery base commit itself — the file's source revision is the
 render's parent, and a `modules:` edit rides in the render's own commit, so an
-unfetched checkout at that parent has not seen it; when the two repositories
+unfetched checkout at that parent has not seen it — and the module counts as
+declared when the configuration at that base commit, **or at the source
+revision the base's file names** (when this history descends from it), declared
+it: a `modules:` edit pushed to the delivery branch before the render leaves the
+base commit already without the module while the base's file was rendered from
+the composition that had it; when the two repositories
 are separate, the checkout must contain that source revision, and the
 workspace's own configuration **as committed at that revision** must have
 declared the module (a render may run on an uncommitted `modules:` edit, and
@@ -1287,11 +1292,46 @@ reach this: it explains what the file withdraws, not what the tree runs. A
 rollback moves no cell file and is not held here (its plan says what to do
 when the base's file does not name the restored build).
 
+To deploy a whole composition to an environment, one command:
+
+```bash
+codefly deploy gitops publish --all --env production
+```
+
+It renders the composition (`render --all`) when any module has no render a
+publish would deliver — never rendered, its last render failed or never
+finished, the composition's pins moved since, or a configuration group it
+bakes in changed — and otherwise renders nothing. It then publishes every
+module whose delivery changes, each after the modules its services depend on,
+then the composition's hop (its route table is baked in from the catalogs of
+the modules behind it), then the module hosting the delivery API; a module
+whose delivery base already carries its render is reported `unchanged` and not
+published. Each promotion pull request is merged once the checks its **base
+branch requires** have passed on its head — branch protection and rulesets
+alike, through the merge queue when the branch has one — and nothing else is
+waited on: a check the base does not require, failing for reasons of its own,
+does not hold the merge. A merge commit is used when the repository allows one
+and the branch does not require a linear history, so the signed promotion
+commit stays on the base. A required check that fails, a merge the repository
+refuses (a review it requires) or a wait past `--merge-timeout` (default 30m)
+stops the run at that module; the modules after it are not published, and
+running the same command again picks up where it stopped (what was delivered
+is `unchanged`). Progress is narrated per module, and the run ends with one row
+per module: its result (`merged`, `unchanged`, `promoted` for a local
+promotion, `failed`, `not reached`), its promotion and the commit the base
+carries. `--allow-cell-removal`, `--allow-unresolved-contracts`,
+`--skip-workspace-readiness` and `--local` apply to every module's
+publication; `--yes` skips the one confirmation. It does not regenerate
+`runnable-bindings`: that file is a reviewed input of the render, and a
+readiness refusal names `codefly generate runnable-bindings --env <env>` when it
+is out of date.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments
 codefly deploy gitops render --all --env production   # Every composed module, the host first
+codefly deploy gitops publish --all --env production  # Render if owed, publish and merge every changed module
 codefly deploy gitops plan payments --env production
 codefly deploy gitops publish payments --env production
 
@@ -2307,6 +2347,22 @@ evaluation — the verdict is still produced and printed, and the verb proceeds
 naming that the next delivery verb will refuse until it is fixed. So the override
 does not make a render offline: it still spends the currency timeout before
 proceeding.
+
+**The render's judgement is the one its publication is held to.** A render
+records, beside its working render (`.codefly/renders/<env>/records/<module>.json`,
+`pinCurrency`), what the gate judged of the composition's pins: every pin
+current or held, or — only under `--skip-workspace-readiness` — the pins it
+found behind. `plan` and `publish` of that render do not compare the pins with
+their sources again: a render takes minutes, other merges move a pinned
+source's main meanwhile, and judging again refused, as `N commits behind
+main`, exactly the commits the render was right to ship (on 2026-11-13 a Blue
+round was only published by writing `pin-holds` at what it had rendered). What
+the check is for still holds: a publication refuses a render whose pins moved
+at all since it rendered (it is of another composition), so what is delivered
+is always what was judged; and it refuses a render that recorded pins behind,
+naming them, unless it is given `--skip-workspace-readiness` too. A render that
+recorded no judgement — one an older CLI made — has its pins judged at publish,
+as before.
 The check reads the network (bounded at 10 s, 25 s for a render); a first run
 fetches each stale source's history once.
 

@@ -74,7 +74,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 		return RenderResult{}, err
 	}
 	result, err := renderOwnedTree(ctx, opts, generate)
-	record := renderRecord{Outcome: renderRecordRendered, Digest: result.Inventory.Digest, Pins: opts.CompositionPins}
+	record := renderRecord{Outcome: renderRecordRendered, Digest: result.Inventory.Digest, Pins: opts.CompositionPins, PinCurrency: opts.PinCurrency}
 	if err != nil {
 		record = renderRecord{Outcome: renderRecordFailed, Error: err.Error()}
 	}

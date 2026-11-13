@@ -50,6 +50,47 @@ type renderRecord struct {
 	// dependencies' images and contracts from these, so it is stale once any
 	// of them moves.
 	Pins map[string]string `json:"pins,omitempty"`
+	// PinCurrency is how the readiness gate this render passed judged Pins
+	// against their sources, at render time. Absent when no gate judged them
+	// (a CLI that recorded none, or a render path with no gate).
+	PinCurrency *PinCurrency `json:"pinCurrency,omitempty"`
+}
+
+// PinCurrency is a render's judgement of the composition's pins against their
+// sources, made by the readiness gate the render passed. It is what a publish
+// of that render is held to.
+//
+// A render ships what its pins name, and refuses a pin behind its source
+// unless a hold states why (cli#1339). Publishing is a later act: a render
+// takes minutes, and while it runs other merges move the sources' main, so a
+// publish that judged the pins again would refuse, as "N commits behind
+// main", exactly the commits the render was right to ship. Judging them once,
+// when they are rendered, keeps the safety the check exists for — nothing is
+// delivered that no render judged current or held — and publish refuses a
+// tree once its pins move at all (holdRenderRecord), so what it delivers is
+// always what was judged.
+type PinCurrency struct {
+	// Behind names every pin the gate found behind its source, or could not
+	// compare with it, that no hold covers: empty when every pin was current
+	// or held. A render records a non-empty list only under the operator's
+	// override, and publish refuses it under the same override only.
+	Behind []string `json:"behind,omitempty"`
+}
+
+// RenderedPinCurrency is the pin judgement the last render of module for
+// environment recorded, nil when its record carries none — no record, a
+// render that did not finish, or one that no gate judged — so the caller
+// judges the pins against their sources itself, as before.
+func RenderedPinCurrency(workspaceDir, environment, module string) *PinCurrency {
+	data, err := os.ReadFile(workingrender.Record(workspaceDir, environment, module))
+	if err != nil {
+		return nil
+	}
+	var record renderRecord
+	if json.Unmarshal(data, &record) != nil || record.Outcome != renderRecordRendered {
+		return nil
+	}
+	return record.PinCurrency
 }
 
 // compositionPins is the composition a render reads, as a render record
