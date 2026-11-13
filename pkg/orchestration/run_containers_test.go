@@ -97,7 +97,7 @@ func TestAFailedRunRemovesOnlyTheContainersItCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(*removed)
-	if !slices.Equal(*removed, []string{"gateway", "minio"}) || len(got) != 2 {
+	if !slices.Equal(*removed, []string{"gateway", "minio"}) || len(got.Containers) != 2 {
 		t.Fatalf("removed %v (reported %v), want only the run's own minio and gateway", *removed, got)
 	}
 }
@@ -108,7 +108,7 @@ func TestAFailedRunKeepsItsContainersWhileAnotherRunIsLive(t *testing.T) {
 	started := time.Unix(1_800_000_000, 0)
 	flow, removed := failedRunFlow(t, started, []container.Summary{summary("minio", 4100, started.Add(time.Second), "")}, true, 4100)
 	got, err := flow.RemoveContainersCreatedByThisRun(context.Background(), started)
-	if err != nil || len(*removed) != 0 || len(got) != 0 {
+	if err != nil || len(*removed) != 0 || len(got.Containers) != 0 {
 		t.Fatalf("removed %v (reported %v, err %v), want nothing while another run is live", *removed, got, err)
 	}
 }

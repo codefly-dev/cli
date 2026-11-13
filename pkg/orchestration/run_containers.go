@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 
 	"github.com/codefly-dev/cli/pkg/processgroup"
 )
@@ -91,24 +94,65 @@ var otherRunsLive = func(ctx context.Context, world *World) bool {
 	return len(groups) > 0
 }
 
+// removeRunNetwork removes one network a removed container was attached to,
+// when codefly created it and nothing is attached to it any more; it reports
+// whether it did. An agent that gives its containers a network of their own
+// (the object store's MinIO and gateway share one) removes it only in Destroy,
+// which a run never calls, so each failed run used to leave one behind until
+// the engine ran out of address pools. A network another container still uses
+// is kept for it. A variable so a test can stand in for the engine.
+var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
+	cli, err := dockerrun.NewClient()
+	if err != nil {
+		return false, err
+	}
+	defer cli.Close()
+	removeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	inspect, err := cli.NetworkInspect(removeCtx, name, network.InspectOptions{})
+	if errdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if inspect.Labels[dockerrun.LabelCodeflyOwner] != ownedLabel || len(inspect.Containers) > 0 {
+		return false, nil
+	}
+	if err = cli.NetworkRemove(removeCtx, inspect.ID); err != nil && !errdefs.IsNotFound(err) {
+		return false, err
+	}
+	return true, nil
+}
+
+// RunRemovals names what RemoveContainersCreatedByThisRun took back.
+type RunRemovals struct {
+	Containers []string
+	Networks   []string
+}
+
 // RemoveContainersCreatedByThisRun removes the containers this run's agents
 // created since started, in the run's recovery scope, once its agents are
-// gone; it answers their names. Call it only for a run that failed: a run
-// stopped on purpose keeps them for the next run to reuse.
-func (flow *Flow) RemoveContainersCreatedByThisRun(ctx context.Context, started time.Time) ([]string, error) {
+// gone, and then the codefly networks they leave empty. Call it only for a run
+// that failed: a run stopped on purpose keeps them for the next run to reuse.
+func (flow *Flow) RemoveContainersCreatedByThisRun(ctx context.Context, started time.Time) (RunRemovals, error) {
+	var removals RunRemovals
+	if flow == nil {
+		return removals, nil
+	}
 	scopeID, _, ok := strings.Cut(flow.containerRecoveryIdentity, ":")
 	if !ok || scopeID == "" || flow.world == nil || flow.world.Workspace == nil {
-		return nil, nil
+		return removals, nil
 	}
 	if otherRunsLive(ctx, flow.world) {
-		return nil, nil
+		return removals, nil
 	}
 	listed, err := listOwnedContainers(ctx, scopeID)
 	if err != nil {
-		return nil, fmt.Errorf("list the run's containers: %w", err)
+		return removals, fmt.Errorf("list the run's containers: %w", err)
 	}
-	var removed []string
 	var failures []error
+	var networks []string
 	for i := range listed {
 		c := &listed[i]
 		if !createdByRun(c, &flow.world.agents, started) {
@@ -119,9 +163,41 @@ func (flow *Flow) RemoveContainersCreatedByThisRun(ctx context.Context, started 
 			failures = append(failures, fmt.Errorf("remove %s: %w", name, err))
 			continue
 		}
-		removed = append(removed, name)
+		removals.Containers = append(removals.Containers, name)
+		for _, attached := range userNetworks(c) {
+			if !slices.Contains(networks, attached) {
+				networks = append(networks, attached)
+			}
+		}
 	}
-	return removed, errors.Join(failures...)
+	slices.Sort(networks)
+	for _, name := range networks {
+		removed, err := removeRunNetwork(ctx, name)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("remove network %s: %w", name, err))
+			continue
+		}
+		if removed {
+			removals.Networks = append(removals.Networks, name)
+		}
+	}
+	return removals, errors.Join(failures...)
+}
+
+// userNetworks is every network c is attached to other than the engine's own.
+func userNetworks(c *container.Summary) []string {
+	if c.NetworkSettings == nil {
+		return nil
+	}
+	var names []string
+	for name := range c.NetworkSettings.Networks {
+		switch name {
+		case network.NetworkBridge, network.NetworkHost, network.NetworkNone, "":
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 func firstName(c *container.Summary) string {

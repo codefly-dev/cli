@@ -21,6 +21,7 @@ require (
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
 	github.com/compose-spec/compose-go v1.20.2
+	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
 	github.com/docker/docker v28.5.2+incompatible
@@ -98,7 +99,6 @@ require (
 	github.com/cloudflare/circl v1.6.5 // indirect
 	github.com/codefly-dev/authority/libraries/resources/go v0.0.0-20261109220601-1f0887616bde // indirect
 	github.com/codefly-dev/gortk v0.2.0 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
 	github.com/creativeprojects/go-selfupdate v1.7.0 // indirect
