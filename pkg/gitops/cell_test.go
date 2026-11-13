@@ -797,6 +797,16 @@ func TestThePreparedRunnableReachIsAConsumerEdge(t *testing.T) {
 		require.Empty(t, consumers["shop/api/rest"])
 		require.Contains(t, configured, "cell: runtime/worker reaches shop/api/connect through the runnable bindings it installs; prepared by the composition, not declared by either service")
 	})
+	t.Run("an environment's runnable-call-endpoint receives every prepared call", func(t *testing.T) {
+		workspace := writeExecutorWorkspace(t, "grpc")
+		env := selectedEnvironment(t, workspace, "staging")
+		env.RunnableCallEndpoint = "shop/api/rest"
+		consumers, configured, err := endpointConsumers(context.Background(), workspace, env)
+		require.NoError(t, err)
+		require.Equal(t, []string{"runtime/worker"}, consumers["shop/api/rest"], "the executor calls the call endpoint")
+		require.Empty(t, consumers["shop/api/connect"], "no prepared call goes to the owner's listener")
+		require.Contains(t, configured, "cell: runtime/worker reaches shop/api/rest through the runnable bindings it installs; the environment sends every prepared call to its runnable-call-endpoint")
+	})
 	t.Run("a REST operation is called on the endpoint it is published on", func(t *testing.T) {
 		workspace := writeExecutorWorkspace(t, "rest")
 		consumers, _, err := endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))

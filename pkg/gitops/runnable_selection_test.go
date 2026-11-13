@@ -118,7 +118,7 @@ func TestRuntimeInstallationSelectsReachPerConsumer(t *testing.T) {
 			if selected {
 				want++
 			}
-			require.Len(t, preparedReachConsumers(reach), want)
+			require.Len(t, preparedReachConsumers(reach, ""), want)
 			require.Contains(t, reach.consumers["shop/api/rest"], runnableExecutor{Module: "shop", Service: "api"})
 			if selected {
 				require.Contains(t, reach.consumers["shop/api/rest"], runnableExecutor{Module: "runtime", Service: "worker"})

@@ -875,7 +875,7 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 	if gatewayErr != nil {
 		return nil, nil, gatewayErr
 	}
-	for _, edge := range append(gatewayEdges, preparedReachConsumers(reach)...) {
+	for _, edge := range append(gatewayEdges, preparedReachConsumers(reach, env.RunnableCallEndpoint)...) {
 		if slices.Contains(consumers[edge.key], edge.consumer) {
 			continue
 		}
@@ -1070,11 +1070,34 @@ func hostRouteConsumers(ctx context.Context, workspace *resources.Workspace, env
 // the other, so without this the cell admits nobody on the owner's endpoint,
 // the mesh denies the call, and the executor reports only an owner that did
 // not answer.
-func preparedReachConsumers(reach *runnableReach) []consumerEdge {
+//
+// An environment that declares a runnable-call-endpoint (the hop, where the
+// composition stands one) sends every prepared call there instead of to the
+// owner's listener, as the mesh edges do (meshComposition.callEndpoint): the
+// executor is then a consumer of that endpoint, not of the owners'. Naming the
+// owner here would admit a direct call nobody makes and deny the one the
+// executor does make.
+func preparedReachConsumers(reach *runnableReach, callEndpoint string) []consumerEdge {
 	if reach == nil {
 		return nil
 	}
 	var edges []consumerEdge
+	if callEndpoint != "" {
+		seen := map[string]bool{}
+		for key := range reach.owners {
+			for _, executor := range reach.consumers[key] {
+				consumer := executor.Unique()
+				if seen[consumer] {
+					continue
+				}
+				seen[consumer] = true
+				edges = append(edges, consumerEdge{key: callEndpoint, consumer: consumer,
+					why: fmt.Sprintf("cell: %s reaches %s through the runnable bindings it installs; the environment sends every prepared call to its runnable-call-endpoint", consumer, callEndpoint)})
+			}
+		}
+		slices.SortFunc(edges, func(a, b consumerEdge) int { return strings.Compare(a.consumer, b.consumer) })
+		return edges
+	}
 	for key := range reach.owners {
 		for _, executor := range reach.consumers[key] {
 			consumer := executor.Unique()
