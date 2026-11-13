@@ -74,7 +74,7 @@ func ReadDeliveredAuthority(trees []string, environment string) (*DeliveredAutho
 		if !held || document.manifest.Removed {
 			continue
 		}
-		m, err := deliveredModule(document)
+		m, err := deliveredModule(&document)
 		entry := DeliveredModule{Module: m, File: file}
 		if err != nil {
 			entry.Unread = err.Error()
@@ -92,7 +92,7 @@ func ReadDeliveredAuthority(trees []string, environment string) (*DeliveredAutho
 
 // deliveredModule composes a module from its paired document exactly as a
 // host does: core's manifest, completed by the authority's document.
-func deliveredModule(document preparedDocument) (domain.Module, error) {
+func deliveredModule(document *preparedDocument) (domain.Module, error) {
 	if document.request.GetAuthority() == nil {
 		return delivered.Module(document.manifest, nil)
 	}
