@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/portclaims"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	"github.com/codefly-dev/core/network"
 	corereadiness "github.com/codefly-dev/core/readiness"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
@@ -64,9 +64,10 @@ type ResolvedEndpoint struct {
 	Unsupported bool
 }
 
-// ResolveNative computes an endpoint's deterministic native address WITHOUT a
-// running flow, by reusing the exact port-hash + address formatting the
-// runtime uses (network.NativeFor). namingScope must match the scope the
+// ResolveNative computes an endpoint's native address WITHOUT a running flow:
+// the port a run of that workspace and scope claimed on this machine, else the
+// exact port-hash + address formatting the runtime uses (network.NativeFor),
+// through portclaims.Ledger.NativeFor. namingScope must match the scope the
 // service was/will be run with (empty for the normal interactive case).
 func ResolveNative(ctx context.Context, workspace, module, service, namingScope string, ep *resources.Endpoint) (ResolvedEndpoint, error) {
 	// External is a LOCATION, not a visibility: core v0.11.0 deleted
@@ -91,7 +92,7 @@ func ResolveNative(ctx context.Context, workspace, module, service, namingScope 
 	if err != nil {
 		return ResolvedEndpoint{}, fmt.Errorf("resolve endpoint declaration: %w", err)
 	}
-	inst := network.NativeFor(ctx, workspace, module, service, namingScope, pe)
+	inst := portclaims.Default().NativeFor(ctx, workspace, module, service, namingScope, pe)
 	return ResolvedEndpoint{
 		Address: inst.Address,
 		// Hostname is the bare host (e.g. "localhost"); Host is already

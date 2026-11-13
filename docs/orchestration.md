@@ -1319,10 +1319,28 @@ boundary, not live route reconfiguration. Existing hop versions that do not
 declare `hop-routes` keep their existing configuration mode; a new hop requires
 both the CLI projection and the generated group.
 
+A local run's port for an endpoint starts from the one derived from the
+workspace, the service, the endpoint and the naming scope, and is claimed on
+this machine before the first mapping names it (`pkg/portclaims`, a locked
+ledger under `~/.codefly/ports/`, or `$CODEFLY_PORT_CLAIMS`). The derived port is
+a hash into a few thousand slots, so two scopes, or two compositions of a few
+dozen endpoints each, meet on one port by chance; the claim takes the first
+port of the endpoint's derived sequence (the derived port, then re-derivations
+that keep its API digit) that no other run claims and no other process listens
+on, and warns, naming both ports, when that is not the derived one. The run's
+own claim is taken again first on its next start, whatever listens there — its
+kept container, or its own leftover, which the guard below tells apart — and
+another run's claim blocks while that run lives and for a week after it last
+started, so a stopped scope keeps its ports. `codefly endpoint`, `show network`
+and `generate runnable-bindings` read the claim, so they name the port the run
+serves; bindings generated before a run moved a port name the derived one until
+they are generated again. `--temporary-ports` and `--override-port` claim
+nothing: the kernel, or the caller, already chose.
+
 A routed module ordered after the hop — one that calls through it is — has
 loaded but not initialized when the hop starts. The snapshot routes it at the
-address its own Init will be proposed, derived from the workspace, the service
-and the naming scope, and that Init is the check: the proposed address is
+address its own Init will be proposed, the claimed address above, and that
+Init is the check: the proposed address is
 accepted; an Init that accepts another address, or drops the routed endpoint,
 is refused naming the route, the address the snapshot holds and the one
 offered. A restart derives the same address again, so the remedy is the

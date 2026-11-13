@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/core/architecture"
-	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -20,9 +20,10 @@ var (
 )
 
 // NetworkCmd shows every service's endpoints and the DETERMINISTIC native address each
-// binds to — computed with network.NativeFor, the SAME port hash the run flow's
-// GenerateNetworkMappings uses. So this is the network configuration a run produces,
-// visible WITHOUT starting anything, plus the dependency endpoints each service consumes.
+// binds to — the port a run of that scope claimed on this machine, else the SAME
+// port hash the run flow's GenerateNetworkMappings uses (portclaims.Ledger.NativeFor).
+// So this is the network configuration a run produces, visible WITHOUT starting
+// anything, plus the dependency endpoints each service consumes.
 //
 // With --json it also emits each endpoint's deployed in-cluster port — the one
 // allocation a Kubernetes render emits (core's network.DeployedEndpointPorts) — so a
@@ -93,7 +94,7 @@ render for --env carries none.`,
 			for _, ep := range endpoints {
 				addr := "(external — DNS/public-resolved at runtime)"
 				if !resources.IsExternalEndpoint(ep) {
-					if inst := network.NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
+					if inst := portclaims.Default().NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
 						addr = inst.Address
 					}
 				}

@@ -22,6 +22,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/cli/pkg/web"
@@ -952,6 +953,9 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	flow.WithExcludeRoot(excludeRoot)
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTemporaryPorts(temporaryPorts)
+	// Derived ports are claimed on this machine, so a run beside another run
+	// skips a port that run claims or another process holds.
+	flow.WithPortClaims(portclaims.Default())
 	if shouldIsolateInvocation(temporaryPorts, namingScopeExplicit) {
 		if invocation := flow.WithIsolatedInvocation(); invocation != "" {
 			cli.Info(
