@@ -72,23 +72,33 @@ const (
 
 	// pairedDeliveryImage is the image a PAIRED delivery Job runs, which must
 	// execute codefly itself rather than a shell script: the index digest of
-	// tag 0.0.7, the same companion built by the same recipe
-	// (core companions/codefly/Dockerfile, published by this repo's
-	// companions.yaml, which cross-compiles the CLI into
-	// bin/linux/<arch>/codefly) from a CLI that carries `delivery apply`
-	// (core bumped every companion in codefly-dev/core#875, because every one
-	// of them bakes the CLI). Measured on linux/amd64 and linux/arm64:
-	// `delivery apply --help` answers.
+	// tag 0.0.8, the codefly companion built by its recipe (core
+	// companions/codefly/Dockerfile at codefly-dev/core#917) and published
+	// and attested by this repository's Companions workflow (run 43402105044,
+	// `codefly companion publish`, which cross-compiles the CLI into
+	// bin/linux/<arch>/codefly) from main at 4206d65, so its binary embeds
+	// codefly/core v0.19.27.
+	// Measured on linux/amd64 and linux/arm64: `delivery apply` decodes a
+	// manifest carrying authority.source_governance, which 0.0.7's binary
+	// (core v0.19.17) refused as a field it does not know.
+	//
+	// That binary decodes what this CLI renders strictly, so its core must be
+	// at least this CLI's. The integration test
+	// TestThePairedDeliveryImageDecodesWhatThisCLIRenders reads the core out of
+	// the pinned image and fails when it is older: a core bump here moves this
+	// pin in the same change, from a companion built from that change.
 	//
 	// It is a SEPARATE pin because deliveryImage's /bin/codefly cannot execute:
 	// at 0.0.4 the cross-compiled binary was dynamically linked against glibc
 	// while the base is Alpine, so its interpreter — /lib/ld-linux-aarch64.so.1
 	// on arm64, /lib64/ld-linux-x86-64.so.2 on amd64, where /lib64 does not
 	// exist at all — is absent and exec fails with ENOENT. Since 0.0.6 the
-	// publisher cross-compiles a STATIC binary, and 0.0.6's binary predated the
-	// verb. The shell runner's pin is left where it is so moving it is its own
-	// change, with its own re-render of every cell.
-	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:1cbd3826d33517926bdfeaec70c9666d7ccde8c7a8d7edf398540a892c75049c"
+	// publisher cross-compiles a STATIC binary. The shell runner's pin is left
+	// where it is so moving it is its own change, with its own re-render of
+	// every cell. Moving this one changes the carrier a paired cell file
+	// declares (cellDelivery) just the same, so a paired cell is re-rendered
+	// and published with, or before, the first Job that runs it.
+	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:f4a25afb6dc88b4c973ff23f8d4c9cc5b62a9cb930081792eb818aade30fa156"
 
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"
