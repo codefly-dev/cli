@@ -97,8 +97,10 @@ type NativeWorkload struct {
 	// delivered. Nil when the component declares no page.
 	FrontendBundle *solutionhost.FrontendPayload
 	// DeferFrontend deliberately omits current frontend publication while
-	// admitting workload authority. It removes any previous current page on
-	// a replacing generation; it never means "keep the previous frontend".
+	// admitting workload authority: a page whose bundle this run has not
+	// built. It removes any previous current page on a replacing generation;
+	// it never means "keep the previous frontend". A page the host bundles
+	// has no bundle to wait for, so deferring leaves it declared.
 	DeferFrontend bool
 }
 
@@ -167,17 +169,20 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	// native run delivers what runs, and the host reads the bytes from the
 	// cache by the digest named here. A declared remote without it is
 	// refused: a host admits no remote without its signed payload. A page the
-	// host bundles has none: the host builds it from the release's package.
+	// host bundles has none: the host builds it from the release's package,
+	// so it is delivered as declared whether or not publication is deferred
+	// (the authority admits a module's roles only beside its page).
+	hostBundled := instance.Frontend != nil && instance.Frontend.Bundled != nil
 	switch {
 	case workload.DeferFrontend && workload.FrontendBundle != nil:
 		return nil, fmt.Errorf("module %s cannot both defer and publish a frontend bundle", workload.Module.Name)
-	case workload.DeferFrontend:
+	case workload.DeferFrontend && !hostBundled:
 		instance.Frontend = nil
 	case workload.FrontendBundle != nil && instance.Frontend == nil:
 		return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
-	case workload.FrontendBundle != nil && instance.Frontend.Bundled != nil:
+	case workload.FrontendBundle != nil && hostBundled:
 		return nil, fmt.Errorf("module %s built a frontend bundle and declares a page the host bundles (%s); the host builds what it serves, so such a page has no bundle of its own", workload.Module.Name, instance.Frontend.Bundled.Package)
-	case instance.Frontend != nil && instance.Frontend.Bundled != nil:
+	case hostBundled:
 		// The host builds the page from the release's package: nothing to
 		// carry, and no payload to name.
 	case workload.FrontendBundle != nil:

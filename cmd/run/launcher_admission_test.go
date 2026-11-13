@@ -537,3 +537,62 @@ esac
 	require.NoError(t, err)
 	require.Equal(t, 1, strings.Count(string(ran), "build"), "unchanged inputs reuse the retained bundle")
 }
+
+// A page the host bundles is admitted with the module, as a remote page is:
+// the authority admits a module's roles only beside its page, and such a page
+// has no bundle for admission to wait on. Before, admission (and a failed
+// start's delivery) read "no bundle yet" as "defer the page" and delivered the
+// module's roles with no frontend, which the host refuses: "module declares
+// roles and no page". The declaration is module-model-gateway's at d7ecda3a
+// (modules/model/services/model/solution.frontend.codefly.yaml) byte for byte,
+// and its module names the entry service the way that module does.
+func TestAdmissionCarriesAPageTheHostBundles(t *testing.T) {
+	cluster, peer := admissionLauncher(t)
+	dir := filepath.Join(cluster.composed().Dir(), "modules", "alpha")
+	moduleFile := filepath.Join(dir, resources.ModuleConfigurationName)
+	body, err := os.ReadFile(moduleFile)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(moduleFile, append([]byte("service-entry: api\n"), body...), 0o600))
+	declaration := `# The module's page, as the manifest delivers it: the installed-models page the
+# host BUNDLES from this module's package (frontend/packages/model-ui, the
+# package and export ../../frontend.codefly.yaml names for the host's build),
+# not a Module Federation remote the host loads — so ` + "`bundled`" + `, and no
+# exposed_module, host_contract or payload (core solutionhost.Frontend). With
+# the page declared here the authority admits the three standard roles
+# ../../module.contract.codefly.yaml declares, and the host offers the page to
+# their holders. Core's reader (ParseFrontend) holds this file to the block's
+# rules; the CLI delivers it unchanged in the signed manifest.
+title: Installed models
+order: 60
+bundled:
+  package: "@obin-ai/model-ui"
+  export: modelFrontendPlugin
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "services", "api", solutionrun.FrontendFileName), []byte(declaration), 0o600))
+	workspace, err := resources.LoadWorkspaceFromDir(t.Context(), cluster.composed().Dir())
+	require.NoError(t, err)
+	cluster.workspace = workspace
+	bundled := &solutionhost.FrontendBundled{Package: "@obin-ai/model-ui", Export: "modelFrontendPlugin"}
+	pageOf := func(m *solutionhost.ModuleManifest) *solutionhost.Frontend {
+		require.NotNil(t, m.Frontend, "module %s generation %d is delivered without its page", m.Alias, m.Generation)
+		return m.Frontend
+	}
+
+	require.NoError(t, cluster.admitSelected(t.Context()))
+	var admitted *solutionhost.ModuleManifest
+	for _, m := range peer.snapshots() {
+		if m.Alias == "alpha" {
+			admitted = m
+		}
+	}
+	require.NotNil(t, admitted, "alpha is admitted")
+	page := pageOf(admitted)
+	require.Equal(t, bundled, page.Bundled, "admission carries the page the host bundles")
+	require.Nil(t, page.Payload, "the host builds it, so it names no payload")
+
+	// A failed start delivers the module again before it is ready; the page
+	// is still part of what the module is.
+	require.NoError(t, cluster.deliverReadiness(t.Context(), "alpha", true))
+	snapshots := peer.snapshots()
+	require.Equal(t, bundled, pageOf(snapshots[len(snapshots)-1]).Bundled, "a failed start keeps the page the host bundles")
+}
