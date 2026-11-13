@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,12 +111,16 @@ func (*pullRequestLanding) stranding() bool { return true }
 
 func (l *pullRequestLanding) land(ctx context.Context, e *Engine, tag string) (bool, error) {
 	branch := "release-" + strings.TrimPrefix(tag, "v")
-	if err := l.reclaimBranch(ctx, e, branch); err != nil {
+	if err := l.reclaimBranch(ctx, e, branch, tag); err != nil {
 		return false, err
 	}
 	// No --force: reclaimBranch has already cleared any leftover, so a
-	// rejection here is a branch this release has no claim on.
+	// rejection here is a branch another publisher pushed since — and it is
+	// left exactly as that publisher pushed it.
 	if _, err := e.git(ctx, "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
+		if now, lsErr := e.git(ctx, "ls-remote", "--heads", "origin", "refs/heads/"+branch); lsErr == nil && strings.TrimSpace(now) != "" {
+			return false, errors.Join(anotherPublisher(tag, branch, branch+" appeared on origin while this run was pushing it"), err)
+		}
 		return false, fmt.Errorf("push release branch %s: %w", branch, err)
 	}
 	number, err := l.open(ctx, branch, tag)
@@ -414,23 +419,67 @@ func (l *pullRequestLanding) confirmMerged(ctx context.Context, number int) bool
 	return err == nil && pr.GetMerged()
 }
 
+// liveBranchGrace is how recent a release branch's head commit must be for
+// publish to treat it as another publisher's, even before that publisher has
+// opened its pull request. A publisher commits its bump, pushes the branch and
+// opens the pull request within seconds; the grace covers that window and a
+// few minutes of clock skew between the two machines.
+const liveBranchGrace = 5 * time.Minute
+
+// errAnotherPublisher is the refusal for a release branch this run did not
+// create and has no claim on. Two publishers bumping the same version used to
+// take turns overwriting release-x.y.z, and the loser failed on a 409 about a
+// head branch that was out of date, which named neither the cause nor the
+// other run.
+var errAnotherPublisher = errors.New("another publisher is running")
+
+func anotherPublisher(tag, branch, evidence string) error {
+	return fmt.Errorf("%w for %s: %s; wait for it to finish, or, if no publisher is running, close the pull request and delete %s on origin, then publish again",
+		errAnotherPublisher, tag, evidence, branch)
+}
+
 // reclaimBranch clears a release branch left behind by an earlier attempt at
 // this same version, so a retry is not wedged forever behind a non-fast-forward
 // rejection whose git error names no remedy.
 //
-// Reclaiming is unambiguous rather than merely convenient: Release has already
-// established that this version is untagged both locally and on origin, and
-// that main carries no untagged release commit for it. An existing
-// release-x.y.z therefore belongs to an attempt that did not complete. Deleting
-// it also closes the stale pull request that attempt left open, which is what
-// keeps a re-run from stacking a second one.
-func (l *pullRequestLanding) reclaimBranch(ctx context.Context, e *Engine, branch string) error {
+// Release has already established that this version is untagged both locally
+// and on origin, and that main carries no untagged release commit for it, so
+// an existing release-x.y.z belongs to an attempt that did not complete — or
+// to one that has not completed yet. A publisher that is still running keeps
+// its pull request open, and has just pushed its branch before opening one;
+// either is refused by name rather than deleted from under it. Only a branch
+// with neither is a leftover, and deleting it also closes any pull request
+// that attempt left behind, which keeps a re-run from stacking a second one.
+func (l *pullRequestLanding) reclaimBranch(ctx context.Context, e *Engine, branch, tag string) error {
 	out, err := e.git(ctx, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
 	if err != nil {
 		return fmt.Errorf("check for a leftover release branch %s: %w", branch, err)
 	}
 	if strings.TrimSpace(out) == "" {
 		return nil
+	}
+	open, _, err := l.client.PullRequests.List(ctx, l.owner, l.repo, &github.PullRequestListOptions{
+		State: "open", Head: l.owner + ":" + branch,
+	})
+	if err != nil {
+		return fmt.Errorf("check for an open pull request on %s: %w", branch, err)
+	}
+	if len(open) > 0 {
+		return anotherPublisher(tag, branch, fmt.Sprintf("release pull request #%d is open on %s", open[0].GetNumber(), branch))
+	}
+	if _, err = e.git(ctx, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+		return fmt.Errorf("read release branch %s: %w", branch, err)
+	}
+	committed, err := e.git(ctx, "log", "-1", "--format=%ct", "FETCH_HEAD")
+	if err != nil {
+		return fmt.Errorf("read release branch %s: %w", branch, err)
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(committed), 10, 64)
+	if err != nil {
+		return fmt.Errorf("read release branch %s commit time %q: %w", branch, committed, err)
+	}
+	if age := time.Since(time.Unix(seconds, 0)); age < liveBranchGrace {
+		return anotherPublisher(tag, branch, fmt.Sprintf("%s was pushed %s ago and its pull request is not open yet", branch, age.Round(time.Second)))
 	}
 	fmt.Printf("==> reclaiming %s, left on origin by an earlier attempt at this version\n", branch)
 	return l.deleteBranch(ctx, e, branch)

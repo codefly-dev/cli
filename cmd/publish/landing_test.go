@@ -50,6 +50,9 @@ type fakeGitHubPullRequests struct {
 	// that need the publish budget to expire *there* cancel from here rather
 	// than racing a wall clock.
 	afterChecks func()
+	// openPullRequests is the open-pull-request listing served for the
+	// release branch: another publisher's pull request when non-empty.
+	openPullRequests string
 
 	mu          sync.Mutex
 	polls       int
@@ -66,6 +69,16 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/codefly-dev/cli/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			require.Equal(t, "open", r.URL.Query().Get("state"))
+			require.True(t, strings.HasPrefix(r.URL.Query().Get("head"), "codefly-dev:release-"))
+			if f.openPullRequests == "" {
+				fmt.Fprint(w, `[]`)
+			} else {
+				fmt.Fprint(w, f.openPullRequests)
+			}
+			return
+		}
 		require.Equal(t, http.MethodPost, r.Method)
 		var body struct{ Title, Head, Base string }
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
@@ -660,7 +673,7 @@ func TestEngine_Release_ResumeRebuildsWhatAfterPushShips(t *testing.T) {
 // a non-fast-forward, with a raw git error naming no remedy.
 func TestEngine_Release_ReclaimsALeftoverReleaseBranch(t *testing.T) {
 	dir, origin, _ := releaseRepo(t, "0.1.0")
-	gitIn(t, dir, "push", "origin", "HEAD:refs/heads/release-0.1.1")
+	pushReleaseBranchCommittedAt(t, dir, "release-0.1.1", time.Now().Add(-time.Hour))
 	gitIn(t, dir, "commit", "--allow-empty", "-m", "unrelated work")
 	gitIn(t, dir, "push", "origin", "main")
 
@@ -669,6 +682,89 @@ func TestEngine_Release_ReclaimsALeftoverReleaseBranch(t *testing.T) {
 	require.NoError(t, err, "a leftover release branch must not wedge the retry")
 	require.Equal(t, "v0.1.1", tag)
 	require.Equal(t, gitIn(t, origin, "rev-parse", "refs/heads/main"), gitIn(t, origin, "rev-list", "-n1", tag))
+}
+
+// pushReleaseBranchCommittedAt pushes a release branch whose head was
+// committed at when, the one fact that tells a leftover from a live push.
+func pushReleaseBranchCommittedAt(t *testing.T, dir, branch string, when time.Time) string {
+	t.Helper()
+	tree := gitIn(t, dir, "rev-parse", "HEAD^{tree}")
+	cmd := exec.Command("git", "commit-tree", tree, "-p", "HEAD", "-m", "release: v0.1.1")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Other", "GIT_AUTHOR_EMAIL=other@example.com",
+		"GIT_COMMITTER_NAME=Other", "GIT_COMMITTER_EMAIL=other@example.com",
+		"GIT_COMMITTER_DATE="+when.Format(time.RFC3339),
+	)
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	sha := strings.TrimSpace(string(out))
+	gitIn(t, dir, "push", "origin", sha+":refs/heads/"+branch)
+	return sha
+}
+
+// requireOtherPublisherUntouched pins what a refused publish leaves: the
+// other run's branch exactly as it pushed it, and nothing of its own.
+func requireOtherPublisherUntouched(t *testing.T, dir, origin, manifest, theirs, headBefore string) {
+	t.Helper()
+	require.Equal(t, theirs, gitIn(t, origin, "rev-parse", "refs/heads/release-0.1.1"), "the other publisher's branch must survive")
+	require.Equal(t, headBefore, gitIn(t, origin, "rev-parse", "refs/heads/main"))
+	require.Empty(t, gitIn(t, origin, "tag", "-l", "v0.1.1"))
+	contents, err := os.ReadFile(manifest)
+	require.NoError(t, err)
+	require.Equal(t, "version: 0.1.0\n", string(contents), "a refused bump must not survive locally")
+}
+
+// TestEngine_Release_RefusesAReleaseBranchWithAnOpenPullRequest covers two
+// publishers racing one version: the second used to delete the first's
+// branch, closing its pull request, and one of them failed on a 409 that
+// named neither the cause nor the other run.
+func TestEngine_Release_RefusesAReleaseBranchWithAnOpenPullRequest(t *testing.T) {
+	dir, origin, manifest := releaseRepo(t, "0.1.0")
+	headBefore := gitIn(t, dir, "rev-parse", "HEAD")
+	theirs := pushReleaseBranchCommittedAt(t, dir, "release-0.1.1", time.Now().Add(-time.Hour))
+	fake := &fakeGitHubPullRequests{t: t, origin: origin, states: []string{"clean"}, openPullRequests: `[{"number":9}]`}
+
+	_, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.ErrorIs(t, err, errAnotherPublisher)
+	require.ErrorContains(t, err, "another publisher is running for v0.1.1: release pull request #9 is open on release-0.1.1")
+	require.Empty(t, fake.branch, "no second pull request is opened")
+	requireOtherPublisherUntouched(t, dir, origin, manifest, theirs, headBefore)
+}
+
+// TestEngine_Release_RefusesAFreshlyPushedReleaseBranch covers the seconds
+// between another publisher pushing its branch and opening its pull request.
+func TestEngine_Release_RefusesAFreshlyPushedReleaseBranch(t *testing.T) {
+	dir, origin, manifest := releaseRepo(t, "0.1.0")
+	headBefore := gitIn(t, dir, "rev-parse", "HEAD")
+	theirs := pushReleaseBranchCommittedAt(t, dir, "release-0.1.1", time.Now())
+	fake := &fakeGitHubPullRequests{t: t, origin: origin, states: []string{"clean"}}
+
+	_, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.ErrorIs(t, err, errAnotherPublisher)
+	require.ErrorContains(t, err, "its pull request is not open yet")
+	requireOtherPublisherUntouched(t, dir, origin, manifest, theirs, headBefore)
+}
+
+// TestEngine_Release_RefusesABranchPushedDuringItsOwnPush covers the last
+// window: the branch was absent when checked and another publisher's push won
+// before this run's. The rejection is named, and the winner's branch is left.
+func TestEngine_Release_RefusesABranchPushedDuringItsOwnPush(t *testing.T) {
+	dir, origin, manifest := releaseRepo(t, "0.1.0")
+	headBefore := gitIn(t, dir, "rev-parse", "HEAD")
+	hook := filepath.Join(origin, "hooks", "pre-receive")
+	// The racer's push lands while this one is being received.
+	require.NoError(t, os.WriteFile(hook, []byte(`#!/bin/sh
+while read -r _ _ ref; do
+  case "$ref" in refs/heads/release-*) env -u GIT_QUARANTINE_PATH git update-ref "$ref" refs/heads/main; exit 1;; esac
+done
+`), 0o755))
+	fake := &fakeGitHubPullRequests{t: t, origin: origin, states: []string{"clean"}}
+
+	_, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.ErrorIs(t, err, errAnotherPublisher)
+	require.ErrorContains(t, err, "release-0.1.1 appeared on origin while this run was pushing it")
+	requireOtherPublisherUntouched(t, dir, origin, manifest, headBefore, headBefore)
 }
 
 // TestEngine_Release_MergeErrorAfterServerSideMerge pins that a merge which
