@@ -298,6 +298,14 @@ func TestANativeManifestCarriesAPageTheHostBundles(t *testing.T) {
 	require.Nil(t, manifest.Frontend.Payload)
 	require.Empty(t, manifest.Frontend.ExposedModule)
 
+	// Admission defers publication, which names no bundle; this page has none
+	// to defer, so it is admitted as declared (the authority admits a
+	// module's roles only beside its page).
+	admitted, err := deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services, Declared: nativeStarted("crm", "api"), DeferFrontend: true})
+	require.NoError(t, err)
+	require.NotNil(t, admitted.Frontend, "a deferred delivery keeps a page the host bundles")
+	require.Equal(t, manifest.Frontend, admitted.Frontend)
+
 	bundle := &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}
 	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services, Started: nativeStarted("crm", "api"), FrontendBundle: bundle})
 	require.ErrorContains(t, err, "no bundle of its own")
