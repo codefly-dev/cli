@@ -18,13 +18,14 @@ func stubReadiness(t *testing.T, verdict func(ctx context.Context, env, module s
 	t.Helper()
 	previous := WorkspaceReadiness
 	t.Cleanup(func() { WorkspaceReadiness = previous })
-	enforced = nil
-	t.Cleanup(func() { enforced = nil })
+	enforced, judged = nil, nil
+	t.Cleanup(func() { enforced, judged = nil, nil })
 	var asked []string
-	WorkspaceReadiness = func(ctx context.Context, env, module string, enforcing bool) error {
-		asked = append(asked, env+"/"+module)
-		enforced = append(enforced, enforcing)
-		return verdict(ctx, env, module)
+	WorkspaceReadiness = func(ctx context.Context, question ReadinessQuestion) (ReadinessVerdict, error) {
+		asked = append(asked, question.Env+"/"+question.Module)
+		enforced = append(enforced, question.Enforcing)
+		judged = append(judged, question.JudgePins)
+		return ReadinessVerdict{PinsJudged: question.JudgePins}, verdict(ctx, question.Env, question.Module)
 	}
 	return &asked
 }
@@ -33,6 +34,9 @@ func stubReadiness(t *testing.T, verdict func(ctx context.Context, env, module s
 // override must report without enforcing, so the engine does not print a refusal
 // banner on a verb that proceeds.
 var enforced []bool
+
+// judged records, per question, whether the engine was asked to judge the pins.
+var judged []bool
 
 func withSkip(t *testing.T, value bool) {
 	t.Helper()
@@ -47,7 +51,7 @@ func TestRequireWorkspaceReadyRefusesAndNamesTheOverride(t *testing.T) {
 		return errors.New("workspace is not ready for environment \"staging\"")
 	})
 
-	err := requireWorkspaceReady(context.Background(), "render", "staging", "saas")
+	_, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas")
 	if err == nil {
 		t.Fatal("a not-ready workspace must refuse the verb")
 	}
@@ -63,7 +67,7 @@ func TestRequireWorkspaceReadyPassesAReadyWorkspace(t *testing.T) {
 	withSkip(t, false)
 	asked := stubReadiness(t, func(context.Context, string, string) error { return nil })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("a ready workspace must not be refused: %v", err)
 	}
 	if len(*asked) != 1 || (*asked)[0] != "staging/saas" {
@@ -87,7 +91,7 @@ func TestSkipWorkspaceReadinessProceedsAndStillReportsTheVerdict(t *testing.T) {
 		return errors.New("workspace is not ready")
 	})
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("the override must let the verb proceed: %v", err)
 	}
 	if len(*asked) != 1 || (*asked)[0] != "staging/saas" {
@@ -101,7 +105,7 @@ func TestSkipWorkspaceReadinessEvaluatesEvenWhenItWouldHavePassed(t *testing.T) 
 	withSkip(t, true)
 	asked := stubReadiness(t, func(context.Context, string, string) error { return nil })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("a ready workspace under the override must not be refused: %v", err)
 	}
 	if len(*asked) != 1 {
@@ -117,7 +121,7 @@ func TestSkipWorkspaceReadinessWithNoEngineProceeds(t *testing.T) {
 	WorkspaceReadiness = nil
 	t.Cleanup(func() { WorkspaceReadiness = previous })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("with no readiness engine the verb proceeds: %v", err)
 	}
 }
@@ -203,7 +207,7 @@ func TestSkipWorkspaceReadinessReportsWithoutEnforcing(t *testing.T) {
 	withSkip(t, true)
 	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("the override must let the verb proceed: %v", err)
 	}
 	if len(enforced) != 1 || enforced[0] {
@@ -216,7 +220,7 @@ func TestRequireWorkspaceReadyEnforcesWhenItRefuses(t *testing.T) {
 	withSkip(t, false)
 	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
 		t.Fatal("an unready workspace must be refused")
 	}
 	if len(enforced) != 1 || !enforced[0] {
@@ -246,7 +250,7 @@ func TestSkipWorkspaceReadinessWarnsThatTheNextVerbWillRefuse(t *testing.T) {
 	lines := captureWarnings(t)
 	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("the override must let the verb proceed: %v", err)
 	}
 	out := joined(lines)
@@ -269,7 +273,7 @@ func TestSkipWorkspaceReadinessWarnsWhenItChangedNothing(t *testing.T) {
 	lines := captureWarnings(t)
 	stubReadiness(t, func(context.Context, string, string) error { return nil })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("a ready workspace under the override must not be refused: %v", err)
 	}
 	out := joined(lines)
@@ -286,7 +290,7 @@ func TestRequireWorkspaceReadyDoesNotWarnWhenItRefuses(t *testing.T) {
 	lines := captureWarnings(t)
 	stubReadiness(t, func(context.Context, string, string) error { return errors.New("workspace is not ready") })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err == nil {
 		t.Fatal("an unready workspace must be refused")
 	}
 	if out := joined(lines); strings.Contains(out, SkipWorkspaceReadinessFlag+":") {
@@ -303,7 +307,7 @@ func TestSkipWorkspaceReadinessWithNoEngineSaysItWasNotEvaluated(t *testing.T) {
 	WorkspaceReadiness = nil
 	t.Cleanup(func() { WorkspaceReadiness = previous })
 
-	if err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
+	if _, err := requireWorkspaceReady(context.Background(), "render", "staging", "saas"); err != nil {
 		t.Fatalf("with no readiness engine the verb proceeds: %v", err)
 	}
 	if out := joined(lines); !strings.Contains(out, "NOT evaluated") {

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -166,8 +167,25 @@ func newCompositionClaim(ctx context.Context, workspace *resources.Workspace, cl
 		return claim
 	}
 	claim.advanced = gitIsAncestor(ctx, dir, claim.revision, head)
-	if claim.advanced {
-		claim.declaredAt = declaredAtRevision(ctx, dir, claim.revision)
+	if !claim.advanced {
+		return claim
+	}
+	claim.declaredAt = declaredAtRevision(ctx, dir, claim.revision)
+	// In one repository the base revision is not always the composition the
+	// base's cell file was rendered from: a `modules:` edit committed to the
+	// delivery branch before the render (the workspace branch IS the delivery
+	// branch) leaves the base revision already without the module, while the
+	// file it carries was rendered from an earlier composition that named it.
+	// That composition is the file's source revision, so when this history
+	// holds it and descends from it, what it declared is what the checkout has
+	// seen declared — and a module it named that the checkout no longer
+	// declares was removed here. Without this, the publication that withdraws
+	// such a module from the cell file left its delivered tree behind.
+	if source != "" && source != claim.revision && gitHasCommit(ctx, dir, source) && gitIsAncestor(ctx, dir, source, head) {
+		if claim.declaredAt == nil {
+			claim.declaredAt = map[string]bool{}
+		}
+		maps.Copy(claim.declaredAt, declaredAtRevision(ctx, dir, source))
 	}
 	return claim
 }

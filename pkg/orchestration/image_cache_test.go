@@ -879,27 +879,51 @@ func TestAPublishedVersionLabelledBeforeClassesIsAdoptedFromAPinnedRelease(t *te
 	require.Equal(t, 0, harness.docker.calls(t, "build"))
 }
 
-// From a checkout, the same image is refused: an edited service whose version
-// did not move would otherwise be handed the earlier release's image with
-// nothing compared.
-func TestAPublishedVersionLabelledBeforeClassesIsRefusedFromACheckout(t *testing.T) {
+// From a checkout, the same image is not adopted: an edited service whose
+// version did not move would otherwise be handed the earlier release's image
+// with nothing compared. It is built apart, under its own qualified tag, and
+// the release tag is never written.
+func TestAPublishedVersionLabelledBeforeClassesIsBuiltApartFromACheckout(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
 	harness.peer.image = "example.test/app:1.2.3"
-	stubPublishedImage(t, "sha256:"+strings.Repeat("d", 64), "sha256:"+strings.Repeat("e", 64))
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	require.ErrorContains(t, harness.tryBuild(ctx, t), "cannot be compared with this build's")
-	require.Equal(t, 0, harness.docker.calls(t, "build"), "a published release is never rebuilt")
+	published := "sha256:" + strings.Repeat("d", 64)
+	stubRegistry(t, map[string]publishedImage{"example.test/app:1.2.3": {digest: published, labels: map[string]string{buildInputsLabel: "sha256:" + strings.Repeat("e", 64)}}})
+	require.NotEqual(t, published, harness.build(t), "the release's image is not adopted from a checkout")
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	args := harness.docker.buildArgs(t)
+	require.Regexp(t, qualifiedTag, args[0])
+	require.NotContains(t, args[0], "-t example.test/app:1.2.3 ", "the release tag is never written")
 }
 
 // An image published before builds recorded their inputs proves nothing either
-// way, so it is built again, as it always was.
-func TestAPublishedVersionWithNoInputRecordIsBuiltAgain(t *testing.T) {
+// way: it is built again — apart from it, never over the release tag.
+func TestAPublishedVersionWithNoInputRecordIsBuiltApart(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
 	harness.peer.image = "example.test/app:1.2.3"
-	stubPublishedImage(t, "sha256:"+strings.Repeat("d", 64), "")
+	stubRegistry(t, map[string]publishedImage{"example.test/app:1.2.3": {digest: "sha256:" + strings.Repeat("d", 64)}})
 	harness.build(t)
 	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	args := harness.docker.buildArgs(t)
+	require.Regexp(t, qualifiedTag, args[0])
+	require.NotContains(t, args[0], "-t example.test/app:1.2.3 ", "the release tag is never written")
+}
+
+// --rebuild builds again, and still never over a release tag the registry
+// holds; with nothing published under it, it builds the release as before.
+func TestARebuildOfAPublishedReleaseIsBuiltApart(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	harness.rebuild = true
+	stubRegistry(t, nil)
+	harness.build(t)
+	require.Contains(t, harness.docker.buildArgs(t)[0], "-t example.test/app:1.2.3 ", "an unpublished release is built under its tag")
+
+	stubRegistry(t, map[string]publishedImage{"example.test/app:1.2.3": {digest: "sha256:" + strings.Repeat("d", 64)}})
+	harness.build(t)
+	args := harness.docker.buildArgs(t)
+	last := args[len(args)-1]
+	require.Regexp(t, qualifiedTag, last)
+	require.NotContains(t, last, "-t example.test/app:1.2.3 ", "a rebuild never writes a published release tag")
 }
 
 func TestBuildInputsAreReadFromEveryPlatform(t *testing.T) {

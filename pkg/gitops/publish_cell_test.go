@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/stretchr/testify/require"
 )
 
 // seedCellFile commits a cell file directly onto main of the bare delivery
@@ -348,6 +349,73 @@ func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.
 	}
 	if len(plan.RemovedModules) != 0 || slices.ContainsFunc(plan.Changed, func(path string) bool { return strings.HasPrefix(path, legacy) }) {
 		t.Fatalf("a removal the flag confirms pruned the delivered tree: %v %v", plan.RemovedModules, plan.Changed)
+	}
+}
+
+// TestAWithdrawalCommittedToTheDeliveryBranchRemovesTheTree: when the
+// workspace repository is the delivery repository, the `modules:` edit that
+// withdraws a module can land on the delivery branch BEFORE the render — the
+// workspace branch is the delivery branch — so the base revision's own
+// composition already lacks the module while the base's cell file, rendered
+// from an earlier composition, still names it. On 2026-11-13 a solution left
+// Blue this way: the publish withdrew it from the cell file and left its
+// delivered tree, whose ApplicationSet kept generating OutOfSync/Missing
+// applications until the tree was deleted by hand. The composition the base's
+// file was rendered from (its source revision) declared the module and this
+// history descends from it, so the removal is the composition's, and the tree
+// goes in the same publication.
+func TestAWithdrawalCommittedToTheDeliveryBranchRemovesTheTree(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	declaredLegacy := committedWorkspace(t, workspace, "legacy")
+	dir := workspace.Dir()
+	// The withdrawal, committed: the composition no longer declares legacy.
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "compose: legacy out")
+	env := selectedEnvironment(t, workspace, "production")
+	_, data := renderedCell(t, ctx, workspace, env)
+	file, err := cellfile.Parse(renderedFrom(t, data, declaredLegacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	addLegacyCaller(t, file)
+	base, err := file.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, files := legacyDelivery()
+	files[deliveryCellPath("environments", "production")] = base
+	// The base revision carries the withdrawn composition itself, as the
+	// delivery branch does once the edit is pushed to it.
+	withdrawn, err := os.ReadFile(filepath.Join(dir, resources.WorkspaceConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files[resources.WorkspaceConfigurationName] = withdrawn
+	seedDelivered(t, remote, "the delivery branch, after the withdrawal was pushed to it", files)
+	// One history: the checkout holds the base commit and descends from it.
+	gitRun(t, dir, "fetch", "-q", remote, "main")
+	gitRun(t, dir, "merge", "-q", "-s", "ours", "--allow-unrelated-histories", "-m", "the delivery branch", "FETCH_HEAD")
+
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatalf("a withdrawal the composition explains was refused without the flag: %v", err)
+	}
+	if !slices.Equal(plan.RemovedModules, []string{legacy}) {
+		t.Fatalf("the plan removes %v, want the withdrawn module's tree %s", plan.RemovedModules, legacy)
+	}
+	if len(plan.UndeclaredCellRemovals) != 2 || len(plan.CellRemovals) != 0 {
+		t.Fatalf("the plan reports %v explained and %v named; want legacy's namespace and edge explained by the composition", plan.UndeclaredCellRemovals, plan.CellRemovals)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Command("git", "--git-dir", remote, "cat-file", "-e", result.Commit+":"+legacy+"/"+InventoryFilename).Run() == nil {
+		t.Fatalf("the publication that withdrew %s from the cell file still delivers its tree", legacy)
 	}
 }
 
@@ -718,4 +786,28 @@ func TestPublishRefusesATreeTheCellDoesNotApprove(t *testing.T) {
 	if plan.CellFile != deliveryCellPath("environments", "production") {
 		t.Fatalf("the consistent pair does not carry the cell file: %q", plan.CellFile)
 	}
+}
+
+// A publication of a render the base already carries delivers nothing: what a
+// whole-composition deploy reads as a module already delivered. Here the
+// promotion branch the publish continues is the base itself (a local
+// promotion advanced it); a base past a merged branch answers ErrNoChanges.
+func TestARenderTheBaseCarriesHasNoChanges(t *testing.T) {
+	ctx, workspace, _ := developerPublishWorkspace(t)
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	require.NoError(t, err)
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	require.NoError(t, err)
+	require.True(t, result.Promoted)
+
+	require.True(t, plan.Delivers())
+	again, err := PlanPublish(ctx, workspace, &request)
+	require.NoError(t, err, "a promotion branch that is the base is continued, not refused")
+	require.Empty(t, again.Changed)
+	require.Equal(t, again.BaseRevision, again.ExistingCommit)
+	require.False(t, again.Delivers(), "the base carries this render")
 }

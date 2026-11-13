@@ -242,12 +242,7 @@ func SignedAuthorityDocument(manifest *solutionhost.ModuleManifest, core, declar
 	if signer == nil {
 		return nil, errors.New("the authority half of a paired delivery is signed by the release key, and none was given")
 	}
-	var policy compositionv1.AuthorityManifestV1
-	if err := proto.Unmarshal(declaration, &policy); err != nil {
-		return nil, err
-	}
-	policy.Module, policy.Generation, policy.CoreManifestDigest = manifest.Alias, manifest.Generation, delivery.Digest(core)
-	document, err := proto.MarshalOptions{Deterministic: true}.Marshal(&policy)
+	document, err := authorityDocument(manifest, core, declaration)
 	if err != nil {
 		return nil, err
 	}
@@ -314,4 +309,20 @@ func refusal(module string, manifest *solutionhost.ModuleManifest, err error) er
 				"The local authority holds applied deliveries in memory only: stop the run and start it again, and the host accepts the module afresh", module, manifest.Generation, manifest.Binding, err)}
 	}
 	return &HostStatusError{Code: code, Message: fmt.Sprintf("the host refused the module manifest of %s through the composition interface: %v", module, err)}
+}
+
+// authorityDocument is the authority half's document for a declaration at a
+// manifest's generation, bound to its Core bytes: deterministic, so a
+// delivered half can be compared with it byte for byte. nil for no
+// declaration.
+func authorityDocument(manifest *solutionhost.ModuleManifest, core, declaration []byte) ([]byte, error) {
+	if declaration == nil {
+		return nil, nil
+	}
+	var policy compositionv1.AuthorityManifestV1
+	if err := proto.Unmarshal(declaration, &policy); err != nil {
+		return nil, err
+	}
+	policy.Module, policy.Generation, policy.CoreManifestDigest = manifest.Alias, manifest.Generation, delivery.Digest(core)
+	return proto.MarshalOptions{Deterministic: true}.Marshal(&policy)
 }

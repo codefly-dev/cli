@@ -38,6 +38,9 @@ type renderBuild struct {
 	// deployed is the composition's services already deployed, once, for every
 	// module a whole-composition render renders; nil deploys this module's own.
 	deployed *CompositionDeploy
+	// pinCurrency is the readiness gate's judgement of the composition's pins,
+	// recorded with the render; nil when no gate judged them.
+	pinCurrency *PinCurrency
 }
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -126,6 +129,7 @@ func renderModuleTree(
 		Target:          env,
 		DeliveryTarget:  deliveryTarget,
 		CompositionPins: compositionPins(workspace),
+		PinCurrency:     build.pinCurrency,
 	}
 	render := &moduleRender{
 		workspace: workspace, module: module, env: env, scope: &scope,

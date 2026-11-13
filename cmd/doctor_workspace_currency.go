@@ -302,6 +302,9 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 		}
 		used[index] = true
 		held++
+		if report.heldUntil == "" || hold.Until < report.heldUntil {
+			report.heldUntil = hold.Until
+		}
 		report.add(codePinHeld, name, checkStatusWarn, fmt.Sprintf("%s: %s -- HELD until %s: %s", p, verdict.detail, hold.Until, hold.Reason),
 			fmt.Sprintf("drop the hold from %s once %s is moved", pinHoldsKey, p.name))
 	}
@@ -317,6 +320,7 @@ func checkPinCurrency(ctx context.Context, ws *resources.Workspace, module strin
 	cli := <-cliDone
 	report.add(cli.Code, cli.Name, cli.Status, cli.Message, cli.Remediation)
 	// No duration here: a doctor report is deterministic for a given state.
+	report.pinsCompared = true
 	report.add("", "pin currency", "ok", fmt.Sprintf("%d pins compared with their sources: %d current, %d stale, %d held",
 		current+stale+held, current, stale, held), "")
 }

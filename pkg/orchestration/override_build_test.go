@@ -108,9 +108,15 @@ func classLabels(t *testing.T, args string) map[string]string {
 
 // The 2026-10-24 defect: a release published from another checkout, whose
 // recipe or bases differ from this one's, refused every later render of every
-// module on the cell. The refusal exists for a version not moved with its
-// code, so only a code difference refuses; anything else adopts the release's
-// build. An agent other than the release's pin still refuses (#1146).
+// module on the cell. Only a code difference — or another agent's build —
+// means the release tag holds another build than this one; anything else
+// adopts the release's build.
+//
+// And the 2026-11-13 friction: robin/chat:0.1.45 and documents/documents:0.2.3
+// were refused as "already published from other code", which cost two hand
+// version bumps, two re-pins and a re-render. A build whose release tag holds
+// another build is now pushed under <version>-build.<identity> — the scheme an
+// agent override's build already uses — and the release tag is never written.
 func TestAPublishedReleaseIsJudgedByItsCode(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
 	harness.peer.image = "example.test/app:1.2.3"
@@ -137,31 +143,69 @@ func TestAPublishedReleaseIsJudgedByItsCode(t *testing.T) {
 	}
 	for name, tc := range map[string]struct {
 		labels map[string]string
-		refuse string
+		apart  bool
 	}{
 		"same code, other recipe and bases": {labels: with(map[string]string{buildInputsLabel: other, buildRecipeLabel: other, buildBasesLabel: other})},
 		// The harness builds from a checkout, not a pinned release the CLI
-		// materialized, so code nothing can compare is refused
-		// (TestPublishedReleaseVerdictNamesTheClass adopts it from one).
+		// materialized, so code nothing can compare is not this build's.
 		"labelled before the classes, from a checkout": {labels: with(map[string]string{
 			buildInputsLabel: other, buildCodeLabel: "", buildRecipeLabel: "", buildBasesLabel: "",
-		}), refuse: "cannot be compared with this build's"},
-		"other code":  {labels: with(map[string]string{buildInputsLabel: other, buildCodeLabel: other}), refuse: "is already published from other code"},
-		"other agent": {labels: with(map[string]string{buildInputsLabel: other, buildAgentLabel: "codefly.dev/go:0.0.9"}), refuse: "from a build by agent codefly.dev/go:0.0.9"},
+		}), apart: true},
+		"other code":  {labels: with(map[string]string{buildInputsLabel: other, buildCodeLabel: other}), apart: true},
+		"other agent": {labels: with(map[string]string{buildInputsLabel: other, buildAgentLabel: "codefly.dev/go:0.0.9"}), apart: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			require.NoError(t, os.RemoveAll(filepath.Join(harness.workspaceDir, filepath.FromSlash(imageCacheDir))))
 			stubRegistry(t, map[string]publishedImage{"example.test/app:1.2.3": {digest: published, labels: tc.labels}})
-			if tc.refuse == "" {
-				require.Equal(t, published, harness.build(t))
-			} else {
-				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-				defer cancel()
-				require.ErrorContains(t, harness.tryBuild(ctx, t), tc.refuse)
+			before := harness.docker.calls(t, "build")
+			digest := harness.build(t)
+			if !tc.apart {
+				require.Equal(t, published, digest)
+				require.Equal(t, before, harness.docker.calls(t, "build"), "the release's build is adopted, never rebuilt")
+				return
 			}
-			require.Equal(t, 1, harness.docker.calls(t, "build"), "a published release is never rebuilt")
+			require.NotEqual(t, published, digest, "the release's build is not this one")
+			require.Equal(t, before+1, harness.docker.calls(t, "build"))
+			built := harness.docker.buildArgs(t)
+			last := built[len(built)-1]
+			require.Regexp(t, qualifiedTag, last, "pushed under a build-qualified tag")
+			require.NotContains(t, last, "-t example.test/app:1.2.3 ", "the release tag is never overwritten")
 		})
 	}
+}
+
+// The tag a build is pushed apart under names one identity: held by another
+// build's inputs, it is refused — never overwritten — and held by this
+// build's, it is adopted.
+func TestATagApartHeldByOtherInputsIsRefused(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.image = "example.test/app:1.2.3"
+	stubRegistry(t, nil)
+	harness.build(t)
+	key := harness.key(t)
+	qualified := overrideBuildImage("example.test/app:1.2.3", key)
+	release := publishedImage{digest: "sha256:" + strings.Repeat("d", 64), labels: map[string]string{
+		buildInputsLabel: "sha256:" + strings.Repeat("e", 64), buildCodeLabel: "sha256:" + strings.Repeat("e", 64),
+	}}
+
+	require.NoError(t, os.RemoveAll(filepath.Join(harness.workspaceDir, filepath.FromSlash(imageCacheDir))))
+	stubRegistry(t, map[string]publishedImage{
+		"example.test/app:1.2.3": release,
+		qualified:                {digest: "sha256:" + strings.Repeat("f", 64), labels: map[string]string{buildInputsLabel: "sha256:" + strings.Repeat("a", 64)}},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	require.ErrorContains(t, harness.tryBuild(ctx, t), "already published from other inputs")
+
+	require.NoError(t, os.RemoveAll(filepath.Join(harness.workspaceDir, filepath.FromSlash(imageCacheDir))))
+	ours := "sha256:" + strings.Repeat("b", 64)
+	stubRegistry(t, map[string]publishedImage{
+		"example.test/app:1.2.3": release,
+		qualified:                {digest: ours, labels: map[string]string{buildInputsLabel: key}},
+	})
+	before := harness.docker.calls(t, "build")
+	require.Equal(t, ours, harness.build(t), "this build's own qualified tag is adopted")
+	require.Equal(t, before, harness.docker.calls(t, "build"))
 }
 
 // The warning says which class differs, and the refusal names the code.

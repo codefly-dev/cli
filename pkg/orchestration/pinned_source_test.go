@@ -1,13 +1,11 @@
 package orchestration
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/codefly-dev/cli/pkg/modulecache"
 	coreservices "github.com/codefly-dev/core/agents/services"
@@ -214,10 +212,14 @@ func TestAPinnedReleaseIsBuiltAndAdoptedFromItsCommit(t *testing.T) {
 	require.Equal(t, published, harness.build(t), "the published build of this commit is adopted")
 	require.Equal(t, 1, harness.docker.calls(t, "build"), "nothing is rebuilt")
 
+	// From a checkout that is not the pinned release, the code differs from
+	// the release's: built apart, never pushed over the release tag.
 	t.Setenv(modulecache.Env, t.TempDir())
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	require.ErrorContains(t, harness.tryBuild(ctx, t), "is already published from other code")
+	require.NotEqual(t, published, harness.build(t))
+	require.Equal(t, 2, harness.docker.calls(t, "build"))
+	args := harness.docker.buildArgs(t)
+	require.Regexp(t, qualifiedTag, args[len(args)-1])
+	require.NotContains(t, args[len(args)-1], "-t example.test/app:1.2.3 ")
 }
 
 // A pinned release's Go modules are fetched from its commit, as Docker is

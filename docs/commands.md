@@ -1249,7 +1249,12 @@ repository (it holds the base commit, or the delivery holds the workspace
 revision the base's file names as its `source.revision`), the checkout must
 contain the delivery base commit itself — the file's source revision is the
 render's parent, and a `modules:` edit rides in the render's own commit, so an
-unfetched checkout at that parent has not seen it; when the two repositories
+unfetched checkout at that parent has not seen it — and the module counts as
+declared when the configuration at that base commit, **or at the source
+revision the base's file names** (when this history descends from it), declared
+it: a `modules:` edit pushed to the delivery branch before the render leaves the
+base commit already without the module while the base's file was rendered from
+the composition that had it; when the two repositories
 are separate, the checkout must contain that source revision, and the
 workspace's own configuration **as committed at that revision** must have
 declared the module (a render may run on an uncommitted `modules:` edit, and
@@ -1287,11 +1292,60 @@ reach this: it explains what the file withdraws, not what the tree runs. A
 rollback moves no cell file and is not held here (its plan says what to do
 when the base's file does not name the restored build).
 
+To deploy a whole composition to an environment, one command:
+
+```bash
+codefly deploy gitops publish --all --env production
+```
+
+It renders the composition (`render --all`) when any module has no render a
+publish would deliver — never rendered, its last render failed or never
+finished, the composition's pins moved since, or a configuration group it
+bakes in changed, or a pin-hold its judgement relied on has ended — and
+otherwise renders nothing. It then publishes every
+module whose delivery changes, each after the modules its services depend on,
+then the composition's hop (its route table is baked in from the catalogs of
+the modules behind it), then the module hosting the delivery API; a module
+whose delivery base already carries its render is reported `unchanged` and not
+published, and a module whose contract check is refused against a producer
+this run publishes later is published right after that producer. Each
+promotion pull request is merged once the checks its **base branch requires**
+have passed on its head — branch protection and rulesets alike — and nothing
+else is waited on: a check the base does not require, failing for reasons of
+its own, does not hold the merge. The merge is the CLI's one merge loop, the
+one `codefly publish` lands a release through: it merges the exact head the
+publish pushed, catches a branch up when a strict base moved past it, joins
+the merge queue when the base takes merges only through one, and asks GitHub
+whether a merge it could not confirm happened. A merge commit is used when the
+repository allows one and neither a linear history nor a ruleset forbids it,
+so the signed promotion commit stays on the base. A required check that fails, a merge the repository
+refuses (a review it requires) or a wait past `--merge-timeout` (default 30m)
+stops the run at that module; the modules after it are not published, and
+running the same command again picks up where it stopped (what was delivered
+is `unchanged`: a publish delivers an unchanged pair — module manifest and
+authority half — as the bytes the base branch carries rather than signing it
+again, since a fresh signature alone would be a new promotion). A promotion
+that falls behind a base requiring branches to be up to date is not caught up
+on GitHub — that would be a head nobody pushed — and the run says to publish
+again. Progress is narrated per module, and the run ends with one row
+per module: its result (`merged`, `unchanged`, `promoted` for a local
+promotion, `failed`, `not reached`), its promotion and the commit the base
+carries. `--allow-cell-removal`, `--allow-unresolved-contracts`,
+`--skip-workspace-readiness` and `--local` apply to every module's
+publication; `--promotion-branch`, `--message`, `--title` and `--body` describe
+one module's promotion and are refused with `--all`. Without `--yes` it asks
+once before rendering, and again for each promotion that withdraws something
+(a module's tree, a cell-file entry, a host binding), when its plan is shown. It does not regenerate
+`runnable-bindings`: that file is a reviewed input of the render, and a
+readiness refusal names `codefly generate runnable-bindings --env <env>` when it
+is out of date.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments
 codefly deploy gitops render --all --env production   # Every composed module, the host first
+codefly deploy gitops publish --all --env production  # Render if owed, publish and merge every changed module
 codefly deploy gitops plan payments --env production
 codefly deploy gitops publish payments --env production
 
@@ -2307,6 +2361,24 @@ evaluation — the verdict is still produced and printed, and the verb proceeds
 naming that the next delivery verb will refuse until it is fixed. So the override
 does not make a render offline: it still spends the currency timeout before
 proceeding.
+
+**The render's judgement is the one its publication is held to.** A render
+records, beside its working render (`.codefly/renders/<env>/records/<module>.json`,
+`pinCurrency`), what the gate judged of the composition's pins: every pin
+current or held, or — only under `--skip-workspace-readiness` — the pins it
+found behind. `plan` and `publish` of that render do not compare the pins with
+their sources again: a render takes minutes, other merges move a pinned
+source's main meanwhile, and judging again refused, as `N commits behind
+main`, exactly the commits the render was right to ship (on 2026-11-13 a Blue
+round was only published by writing `pin-holds` at what it had rendered). What
+the check is for still holds: a publication refuses a render whose pins moved
+at all since it rendered (it is of another composition), so what is delivered
+is always what was judged; and it refuses a render that recorded pins behind,
+naming them, unless it is given `--skip-workspace-readiness` too. A judgement
+that relied on a `pin-holds` entry stands only as long as that hold would: past
+the earliest such `until:` date, publish judges the pins again. A render that
+recorded no judgement — one an older CLI made — has its pins judged at publish,
+as before.
 The check reads the network (bounded at 10 s, 25 s for a render); a first run
 fetches each stale source's history once.
 
@@ -5328,15 +5400,26 @@ move with its code:
 | The published image | The render |
 |---|---|
 | records this build's code; its recipe or bases differ (another checkout, another builder, a re-pushed base) | adopts it — it is the release's build — and warns naming the class that differs |
-| records other code | refuses: the code changed without its version moving, and the fix is a new release, never a rebuild under the old version |
-| records another agent than the release pins | refuses: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
-| records only the aggregate (labelled before the classes existed) | adopts it, with a warning, only when the service builds from a pinned release the CLI materialized (its code is the release's by construction); from a checkout or an override it refuses, since nothing can compare the code — build from the pinned release, or release a new version |
+| records other code | builds **apart**: the code changed without its version moving, so this build is pushed under `<version>-build.<identity>` (below) with a warning naming the release tag; the release tag is never written, and moving the service's version is how the build becomes the release |
+| records another agent than the release pins | builds apart the same way: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
+| records only the aggregate (labelled before the classes existed) | adopts it, with a warning, only when the service builds from a pinned release the CLI materialized (its code is the release's by construction); from a checkout or an override it builds apart, since nothing can compare the code |
+
+A build pushed apart is judged at its own tag exactly as an override's is: the
+tag names one input identity, so a registry holding it from this build's inputs
+is adopted, and one holding it from other inputs is refused, never overwritten.
+A build whose inputs cannot all be bound has no identity to name it by and is
+refused as before. Until 2026-11-13 the first three rows refused, and each
+such refusal cost a hand version bump, a re-pin and a re-render.
 
 Adopting is the default for an image that cannot be compared because the two
 alternatives are worse: refusing blocks every render of every module on a cell
 that holds one such image (a render needs every workload's digest), and
 rebuilding overwrites a release wherever tags are mutable. One recording no
-inputs at all (pushed before builds recorded them) is built again. With a registry
+inputs at all (pushed before builds recorded them), or whose labels cannot be
+read, proves nothing either way and is never written over: the build goes apart
+(below), and a labels read that fails stops the render. `--rebuild` builds
+again under the same rule — over an unpublished release tag as before, apart
+from a published one. With a registry
 Only the registry answering that the tag does not exist lets a released version
 be built: any other failed read (an authorization refusal, a timeout, an
 unreachable registry) stops the render, because building over it would

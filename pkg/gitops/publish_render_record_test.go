@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
@@ -116,4 +117,69 @@ func TestPublishRefusesAWorkingRenderWithNoRecord(t *testing.T) {
 	err := holdRenderRecord(workspace, "payments", "production")
 	require.ErrorContains(t, err, "no record of the render that produced it")
 	require.ErrorContains(t, err, "run `codefly deploy gitops render payments --env production` again")
+}
+
+// A render records the pin judgement of the readiness gate it passed, and a
+// later render that failed, or no gate at all, leaves none for publish to
+// rely on: RenderedPinCurrency answers only for a render that finished.
+func TestARenderRecordsThePinJudgementItPassed(t *testing.T) {
+	root := t.TempDir()
+	render := func(judged *PinCurrency) {
+		t.Helper()
+		_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+			Destination: workingrender.Module(root, "production", "payments"), Module: "payments", UnitNames: []string{"api"},
+			OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
+			Units:       promotableServiceGraph("payments", []string{"api"}),
+			Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+			PinCurrency: judged,
+		}, func(_ context.Context, stage string) error {
+			return writePublishServiceFixture(stage, "production", "api")
+		})
+		require.NoError(t, err)
+	}
+
+	render(&PinCurrency{Behind: []string{"saas pins owner/saas at tag 0.1.0: 1 release behind the newest, 0.2.0"}})
+	require.Equal(t, &PinCurrency{Behind: []string{"saas pins owner/saas at tag 0.1.0: 1 release behind the newest, 0.2.0"}},
+		RenderedPinCurrency(root, "production", "payments"))
+
+	render(&PinCurrency{})
+	require.Equal(t, &PinCurrency{}, RenderedPinCurrency(root, "production", "payments"), "every pin current or held")
+
+	render(nil)
+	require.Nil(t, RenderedPinCurrency(root, "production", "payments"), "no gate judged this render")
+
+	render(&PinCurrency{})
+	renderPublishFixtureFailing(t, root, "payments", "production")
+	require.Nil(t, RenderedPinCurrency(root, "production", "payments"), "the last render failed: no judgement stands")
+	require.Nil(t, RenderedPinCurrency(root, "production", "never-rendered"))
+}
+
+// RenderStands is publish's own first hold, asked alone: a whole-composition
+// publish renders only when it fails.
+func TestRenderStandsIsPublishsFirstHold(t *testing.T) {
+	workspace := loadGitopsWorkspace(t, createBareRepository(t))
+	env := selectedEnvironment(t, workspace, "production")
+	require.ErrorContains(t, RenderStands(context.Background(), workspace, env, "payments"), "has never been rendered")
+
+	renderPublishFixture(t, workspace.Dir(), "payments", "production", "api")
+	require.NoError(t, RenderStands(context.Background(), workspace, env, "payments"))
+
+	renderPublishFixtureFailing(t, workspace.Dir(), "payments", "production")
+	require.ErrorContains(t, RenderStands(context.Background(), workspace, env, "payments"), "failed")
+}
+
+// A judgement that relied on a pin-hold stands through the hold's date and no
+// longer after it, as the hold itself does.
+func TestAPinJudgementEndsWithTheHoldItReliedOn(t *testing.T) {
+	day := func(value string) time.Time {
+		parsed, err := time.Parse("2006-01-02 15:04", value)
+		require.NoError(t, err)
+		return parsed
+	}
+	held := &PinCurrency{HeldUntil: "2026-11-16"}
+	require.False(t, held.Expired(day("2026-11-16 23:00")), "a hold applies through its date")
+	require.True(t, held.Expired(day("2026-11-17 01:00")))
+	require.False(t, (&PinCurrency{}).Expired(day("2099-01-01 00:00")), "no hold, nothing to end")
+	require.False(t, (*PinCurrency)(nil).Expired(day("2099-01-01 00:00")))
+	require.True(t, (&PinCurrency{HeldUntil: "someday"}).Expired(day("2026-11-13 00:00")), "an unreadable date is not a judgement to rely on")
 }

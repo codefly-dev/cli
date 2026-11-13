@@ -3,6 +3,7 @@ package gitops
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/core/solutionhost"
 )
@@ -142,6 +144,10 @@ type deliveredManifest struct {
 	// Both are read only from the base branch (priorDeliveredManifests).
 	paired    bool
 	authority []byte
+	// pair is the paired document the base branch delivers, as it reads; a
+	// settled entry keeps it only while its generation, and so its carrier,
+	// is the delivered one.
+	pair *preparedDocument
 }
 
 // settleManifestDelivery settles the delivery documents of the tree staged at
@@ -350,7 +356,7 @@ func settledManifestSet(rendered, prior map[string]deliveredManifest) (map[strin
 			}
 			entry.manifest.Generation = generation
 			if generation == previous.manifest.Generation {
-				entry.carrier = previous.carrier
+				entry.carrier, entry.pair = previous.carrier, previous.pair
 			}
 		}
 		settled[binding] = entry
@@ -425,7 +431,7 @@ func settlePairedGenerations(ctx context.Context, settled, prior map[string]deli
 			continue
 		}
 		entry.manifest.Generation = previous.manifest.Generation + 1
-		entry.carrier = nil
+		entry.carrier, entry.pair = nil, nil
 		settled[binding] = entry
 	}
 	return nil
@@ -451,7 +457,7 @@ func advanceNamed(settled, prior map[string]deliveredManifest, advance []string,
 			continue
 		}
 		entry.manifest.Generation = previous.manifest.Generation + 1
-		entry.carrier = nil
+		entry.carrier, entry.pair = nil, nil
 		settled[binding] = entry
 	}
 	return nil
@@ -654,8 +660,13 @@ func writeManifestSet(ctx context.Context, target, overlay string, inventory *In
 				return nil, fmt.Errorf("the paired document of %s was not prepared by the inspected plan, and the publish that executes a plan signs nothing the plan did not compare", binding)
 			}
 			var pairErr error
-			if pair, pairErr = PreparedPairedDocument(entry.carrier, declaration, resolvedSigner(opts)); pairErr != nil {
+			if pair, pairErr = deliveredPair(&entry, declaration, opts); pairErr != nil {
 				return nil, pairErr
+			}
+			if pair == nil {
+				if pair, pairErr = PreparedPairedDocument(entry.carrier, declaration, resolvedSigner(opts)); pairErr != nil {
+					return nil, pairErr
+				}
 			}
 		}
 		if opts.Carriers == nil {
@@ -770,6 +781,7 @@ func deliveredManifestsAt(ctx context.Context, repo, ref, where, overlayPath str
 		}
 		entry.paired = true
 		entry.authority = pair.request.GetAuthority().GetDocument()
+		entry.pair = &pair
 		prior[pair.binding] = entry
 	}
 	return prior, nil
@@ -897,4 +909,49 @@ func overlayFilesAt(ctx context.Context, repo, revision, where, overlayPath stri
 		files = append(files, name)
 	}
 	return files, nil
+}
+
+// deliveredPair is the paired document the base branch already delivers for
+// entry, when it is the pair this publish would deliver: the same Core
+// carrier, an authority half whose document is byte for byte the one the
+// declaration signs into now, and a signature the release policy still
+// admits. A signature is fresh bytes each time (ECDSA, KMS), so signing an
+// unchanged pair again changed the overlay, the delivery Job's name and the
+// promotion on every publish of an unchanged render — a deploy could never
+// find a module already delivered. Like the Core carrier, the pair is signed
+// once and reused after. nil means sign it.
+func deliveredPair(entry *deliveredManifest, declaration []byte, opts *deliveryPublishOptions) ([]byte, error) {
+	if entry.pair == nil || opts.AllowUnsigned || len(entry.carrier) == 0 {
+		return nil, nil
+	}
+	signed, err := solutionhost.ParseSigned(entry.carrier)
+	if err != nil {
+		return nil, nil
+	}
+	request := entry.pair.request
+	if !bytes.Equal(request.GetCarrier().GetDocument(), signed.Document) || !bytes.Equal(request.GetCarrier().GetEnvelope(), signed.Envelope) {
+		return nil, nil
+	}
+	want, err := authorityDocument(entry.manifest, signed.Document, declaration)
+	if err != nil {
+		return nil, err
+	}
+	authority := request.GetAuthority()
+	if !bytes.Equal(authority.GetDocument(), want) {
+		return nil, nil
+	}
+	// The authority half is not a module-manifest carrier, so the release
+	// policy's carrier check (ReuseCheck) cannot read it: it is verified as
+	// the host verifies it, by its own envelope format, under the release
+	// signer's key — the one key this publish would sign it with.
+	if authority != nil {
+		signer := resolvedSigner(opts)
+		if signer == nil || signer.Public() == nil {
+			return nil, nil
+		}
+		if _, verifyErr := delivery.Verify(authority.GetDocument(), authority.GetEnvelope(), map[string]crypto.PublicKey{signer.KeyID(): signer.Public()}); verifyErr != nil {
+			return nil, nil
+		}
+	}
+	return entry.pair.encoded, nil
 }

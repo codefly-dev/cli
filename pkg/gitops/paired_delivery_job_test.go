@@ -381,3 +381,45 @@ func settledGenerationOf(t *testing.T, repository *deliveryRepository, binding s
 	require.True(t, held)
 	return manifest.Generation
 }
+
+// An unchanged pair is delivered again as the bytes the base branch carries,
+// not signed again: a signature is fresh bytes each time (ECDSA, KMS), so a
+// pair signed anew changed the overlay, the delivery Job's name and the
+// promotion on every publish of an unchanged render, and a whole-composition
+// deploy run again found no module already delivered (2026-11-13, w9scratch:
+// a resumed deploy re-promoted all thirteen modules). A changed declaration
+// is still signed, at the next generation.
+func TestAnUnchangedPairIsDeliveredAsTheBaseCarriesIt(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{nonce: true}
+	first := pairedOptions(signer)
+	_, err := repository.settle(repository.stageRender(t, "crm"), &first)
+	require.NoError(t, err)
+	delivered := overlayFile(t, repository, pairedDocumentFile("example.prod.crm"))
+	repository.deliver(t)
+	signed := signer.signed
+
+	again := pairedOptions(signer)
+	_, err = repository.settle(repository.stageRender(t, "crm"), &again)
+	require.NoError(t, err)
+	require.Equal(t, string(delivered), string(overlayFile(t, repository, pairedDocumentFile("example.prod.crm"))),
+		"an unchanged pair is the delivered one, byte for byte")
+	require.Equal(t, signed, signer.signed, "nothing was signed again")
+
+	// A pair its signer no longer verifies (another key) is signed again,
+	// never delivered on trust.
+	rotated := &fakeSigner{nonce: true}
+	other := pairedOptions(rotated)
+	_, err = repository.settle(repository.stageRender(t, "crm"), &other)
+	require.NoError(t, err)
+	require.Positive(t, rotated.signed, "a pair the signer cannot verify is signed again")
+
+	grown := pairedOptions(signer)
+	grown.Declarations = &AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
+		return []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}, {Name: "auditor"}}, nil
+	}}
+	_, err = repository.settle(repository.stageRender(t, "crm"), &grown)
+	require.NoError(t, err)
+	require.NotEqual(t, string(delivered), string(overlayFile(t, repository, pairedDocumentFile("example.prod.crm"))))
+	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"))
+}
