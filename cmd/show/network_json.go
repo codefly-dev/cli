@@ -10,10 +10,10 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -119,7 +119,7 @@ func writeNetworkJSON(ctx context.Context, out io.Writer, workspace *resources.W
 				entry.Visibility = "private"
 			}
 			if !resources.IsExternalEndpoint(ep) {
-				if inst := network.NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
+				if inst := portclaims.Default().NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
 					entry.Native = inst.Address
 				}
 			}

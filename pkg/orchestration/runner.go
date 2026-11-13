@@ -881,7 +881,7 @@ func (world *World) localProducerMappings(ctx context.Context, service *resource
 	if err != nil {
 		return nil, err
 	}
-	return world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
+	return world.localNetworkMappings(ctx, identity, endpoints, runtimeContext)
 }
 
 // producerNetworkMappings returns a producer's mappings: the ones it recorded,
@@ -963,7 +963,7 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
+	networkMappings, err := runner.world.localNetworkMappings(ctx, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -2359,7 +2359,7 @@ func (runner *Runner) gatherInitInputs(ctx, cfgCtx context.Context, w *wool.Wool
 	// that reference to the address it is about to serve. Deriving it again as
 	// a producer's would allocate a second, different port under
 	// --temporary-ports, where a derivation is refused for that reason.
-	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
+	out.networkMappings, err = runner.world.localNetworkMappings(ctx, runner.instance.Identity, runner.endpoints, out.runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/dockerstart"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
@@ -446,6 +447,11 @@ type World struct {
 	// producer's address is not a function of its identity, so it cannot be
 	// derived before that producer initializes (localProducerMappings).
 	temporaryPorts bool
+
+	// ports claims each endpoint's derived host port on this machine before
+	// the first mapping names it (local_port_claims.go). Nil leaves the derived
+	// port unclaimed, as every flow but a local run's does.
+	ports localPortClaims
 
 	// workspaceConfigurationValues are values the run path derives itself,
 	// keyed group -> key -> value. They are layered onto the resolved workspace
@@ -2591,8 +2597,20 @@ func (flow *Flow) WithPortOverrides(overrides map[string]uint16) {
 		return
 	}
 	flow.portOverrides = overrides
+	if flow.world != nil {
+		flow.world.ports.pin(overrides)
+	}
 	if flow.world != nil && flow.world.LocalNetworkManager != nil {
 		flow.world.LocalNetworkManager.WithPortOverrides(overrides)
+	}
+}
+
+// WithPortClaims makes this flow claim each endpoint's derived host port in
+// ledger before using it, so a run beside other runs on this machine skips a
+// port another run claims or another process holds (local_port_claims.go).
+func (flow *Flow) WithPortClaims(ledger *portclaims.Ledger) {
+	if flow.world != nil && ledger != nil {
+		flow.world.ports.ledger = ledger
 	}
 }
 
