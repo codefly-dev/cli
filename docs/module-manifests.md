@@ -916,7 +916,7 @@ host's refusal says it, and `--advance <binding>` is the answer
 ([what publish settles](#what-publish-settles)).
 
 **The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
-the codefly companion tag `0.0.7`, whose `/bin/codefly` is a static binary that
+the codefly companion tag `0.0.8`, whose `/bin/codefly` is a static binary that
 carries this verb and executes on `linux/amd64` and `linux/arm64` (the shell runner's
 `deliveryImage`, tag `0.0.4`, carries a glibc binary in an Alpine image and
 cannot exec it). The image follows the ENVIRONMENT: in a paired environment
@@ -931,8 +931,13 @@ also carries every tool for.
 **Moving the pin.** Every companion bakes the CLI, so a CLI verb a Job must
 run needs a new companion version for all of them (core
 `docs/runbooks/publish-companions.md`); `0.0.6` predated `delivery apply` and
-`0.0.7` is the first tag that carries it. A moved pin changes every cell's
-`delivery` declaration, so the cell is re-rendered with it.
+`0.0.7` is the first tag that carries it. The Job's codefly also decodes the
+manifest strictly before it sends it, so its core must be at least the
+render's: `0.0.7` (core v0.19.17) refused the bundled page and
+`source_governance` on Blue, which `0.0.8` (core v0.19.27) reads, and
+`TestThePairedDeliveryImageDecodesWhatThisCLIRenders` holds the two together. A
+moved pin changes every cell's `delivery` declaration, so the cell is
+re-rendered with it.
 
 ## The module envelope
 
