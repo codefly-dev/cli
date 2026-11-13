@@ -16,7 +16,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/workingrender"
-	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 )
@@ -80,10 +79,20 @@ func workspaceConfigurationDigests(ctx context.Context, workspace *resources.Wor
 // digestProvidedGroups digests the named groups as the environment provides
 // them now; a group the environment does not provide is absent from the
 // result.
+//
+// The groups are read the way a run and a render resolve them, generated
+// groups included: the hop's route table (hop-routes) is generated from the
+// published API catalogs of the modules behind it and baked into the hop's
+// tree like any authored group. Read from the authored configurations alone,
+// it was never digested, so a module that published a new method left the
+// hop delivering the old table with nothing refusing or reporting it.
 func digestProvidedGroups(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, consumed map[string]struct{}) (map[string]string, error) {
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
+	provided, _, err := orchestration.WorkspaceConfigurationsForChecking(ctx, workspace, env)
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations this render bakes in: %w", err)
+	}
+	if provided == nil {
+		return nil, nil
 	}
 	digests := make(map[string]string, len(consumed))
 	for _, info := range provided.Infos {
@@ -141,6 +150,24 @@ func currentGroupDigests(ctx context.Context, workspace *resources.Workspace, en
 		return nil, contractErr
 	}
 	return workspaceConfigurationDigests(ctx, workspace, env, services, slotGroups)
+}
+
+// hopRouteFeed is the hop's route table, digested as the environment provides
+// it now, for a module published through the composition's hop, and nothing
+// for any other module. Such a module consumes no group for it: it FEEDS one.
+// Its published catalog is a part of the table the hop bakes in, so a release
+// that adds a method changes the hop's table, and the hop delivered before it
+// routes the method nowhere. Its publish is held to the hop's render the way
+// a consumer's is held to a group it reads (holdBaseConsumers).
+func hopRouteFeed(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, module string) (map[string]string, error) {
+	hop, err := derivedCompositionHop(ctx, workspace, env)
+	if err != nil {
+		return nil, err
+	}
+	if !hop.fronts(module) {
+		return nil, nil
+	}
+	return digestProvidedGroups(ctx, workspace, env, map[string]struct{}{hopRoutesGroup: {}})
 }
 
 // StaleGroupConsumersError reports sibling modules whose rendered trees bake in

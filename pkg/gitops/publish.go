@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -251,7 +252,7 @@ func preparePublish(
 		return fail(err)
 	}
 	contractChecks := checkContracts(&inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
-	staleConsumers, err := holdBaseConsumers(ctx, workspace, request, repo, baseBranch, pathRoot, &inventory)
+	staleConsumers, err := holdBaseConsumers(ctx, workspace, env, request, repo, baseBranch, pathRoot, restoreRevision, &inventory)
 	if err != nil {
 		return fail(err)
 	}
@@ -311,12 +312,39 @@ func preparePublish(
 	}, nil
 }
 
+// renderedHopFeed is what a render's publish of module feeds the hop's route
+// table (hopRouteFeed). A rollback re-delivers a tree whose published catalog
+// is not the one the composition's sources feed the hop now, so it feeds
+// nothing the hop is held to.
+func renderedHopFeed(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, module, baseBranch, restoreRevision string) (map[string]string, error) {
+	if restoreRevision != "" {
+		return nil, nil
+	}
+	fed, err := hopRouteFeed(ctx, workspace, env, module)
+	if err != nil {
+		return nil, fmt.Errorf("the hop route table %s is published into cannot be read, so whether the hop delivered on %s routes it is unknown: %w", module, baseBranch, err)
+	}
+	return fed, nil
+}
+
 // holdBaseConsumers refuses the publication while a module on the delivery
 // base reads a workspace configuration group at a digest this render moved
 // (refuseStaleBaseConsumers), and otherwise describes, for the plan, the
-// base's consumers that are stale against it.
-func holdBaseConsumers(ctx context.Context, workspace *resources.Workspace, request *PublishRequest, repo, baseBranch, pathRoot string, inventory *Inventory) ([]string, error) {
-	staleOnBase, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
+// base's consumers that are stale against it. The groups the module feeds
+// without consuming them — the hop's route table, for a module published
+// through the composition's hop (renderedHopFeed) — hold the base's consumers
+// of those the same way.
+func holdBaseConsumers(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, request *PublishRequest, repo, baseBranch, pathRoot, restoreRevision string, inventory *Inventory) ([]string, error) {
+	fed, err := renderedHopFeed(ctx, workspace, env, request.Module, baseBranch, restoreRevision)
+	if err != nil {
+		return nil, err
+	}
+	digests := maps.Clone(inventory.WorkspaceConfigurationDigests)
+	if digests == nil {
+		digests = map[string]string{}
+	}
+	maps.Copy(digests, fed)
+	staleOnBase, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, digests)
 	if err != nil {
 		return nil, err
 	}
