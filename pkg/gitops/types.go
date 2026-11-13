@@ -725,3 +725,11 @@ type ObserveResult struct {
 	Path     string   `json:"path"`
 	Evidence Evidence `json:"evidence"`
 }
+
+// Delivers reports whether publishing the plan changes what its base branch
+// delivers: it changes files, or it continues a promotion branch that holds a
+// change the base does not yet carry. A plan that does neither is a render
+// the base already carries.
+func (plan *PublishPlan) Delivers() bool {
+	return len(plan.Changed) > 0 || plan.ExistingCommit != "" && plan.ExistingCommit != plan.BaseRevision
+}

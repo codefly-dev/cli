@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/stretchr/testify/require"
 )
 
 // seedCellFile commits a cell file directly onto main of the bare delivery
@@ -785,4 +786,29 @@ func TestPublishRefusesATreeTheCellDoesNotApprove(t *testing.T) {
 	if plan.CellFile != deliveryCellPath("environments", "production") {
 		t.Fatalf("the consistent pair does not carry the cell file: %q", plan.CellFile)
 	}
+}
+
+// A publication of a render the base already carries delivers nothing: what a
+// whole-composition deploy reads as a module already delivered. Here the
+// promotion branch the publish continues is the base itself (a local
+// promotion advanced it); a base past a merged branch answers ErrNoChanges.
+func TestARenderTheBaseCarriesHasNoChanges(t *testing.T) {
+	ctx, workspace, _ := developerPublishWorkspace(t)
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{nonce: true},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	require.NoError(t, err)
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	require.NoError(t, err)
+	require.True(t, result.Promoted)
+
+	require.True(t, plan.Delivers())
+	again, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		require.ErrorIs(t, err, ErrNoChanges)
+		return
+	}
+	require.False(t, again.Delivers(), "the base carries this render: changed %v, branch %s, base %s", again.Changed, again.ExistingCommit, again.BaseRevision)
 }

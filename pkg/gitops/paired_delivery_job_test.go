@@ -406,6 +406,14 @@ func TestAnUnchangedPairIsDeliveredAsTheBaseCarriesIt(t *testing.T) {
 		"an unchanged pair is the delivered one, byte for byte")
 	require.Equal(t, signed, signer.signed, "nothing was signed again")
 
+	// A pair its signer no longer verifies (another key) is signed again,
+	// never delivered on trust.
+	rotated := &fakeSigner{nonce: true}
+	other := pairedOptions(rotated)
+	_, err = repository.settle(repository.stageRender(t, "crm"), &other)
+	require.NoError(t, err)
+	require.Positive(t, rotated.signed, "a pair the signer cannot verify is signed again")
+
 	grown := pairedOptions(signer)
 	grown.Declarations = &AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
 		return []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}, {Name: "auditor"}}, nil

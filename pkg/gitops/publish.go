@@ -2273,6 +2273,10 @@ func publicationCellPaths(
 	return cell, owned, published, carried, nil
 }
 
+// ErrNoChanges is a publication that would change nothing on the delivery
+// base: the base already carries the render.
+var ErrNoChanges = errors.New("promotion has no changes")
+
 // stagePublication stages exactly the paths this publication writes and reports
 // what moved against startRevision, with the diff that is signed and reviewed.
 // A publication that changes nothing is refused, unless it is continuing a
@@ -2286,7 +2290,7 @@ func stagePublication(ctx context.Context, repo, startRevision, branchRevision s
 		return nil, "", err
 	}
 	if len(changed) == 0 && branchRevision == "" {
-		return nil, "", fmt.Errorf("promotion has no changes")
+		return nil, "", ErrNoChanges
 	}
 	diff, err := gitCommand(ctx, repo, append([]string{"diff", "--cached", "--binary", startRevision, "--"}, publishedPaths...)...)
 	if err != nil {

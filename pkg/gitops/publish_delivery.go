@@ -3,6 +3,7 @@ package gitops
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/core/solutionhost"
 )
@@ -429,7 +431,7 @@ func settlePairedGenerations(ctx context.Context, settled, prior map[string]deli
 			continue
 		}
 		entry.manifest.Generation = previous.manifest.Generation + 1
-		entry.carrier = nil
+		entry.carrier, entry.pair = nil, nil
 		settled[binding] = entry
 	}
 	return nil
@@ -455,7 +457,7 @@ func advanceNamed(settled, prior map[string]deliveredManifest, advance []string,
 			continue
 		}
 		entry.manifest.Generation = previous.manifest.Generation + 1
-		entry.carrier = nil
+		entry.carrier, entry.pair = nil, nil
 		settled[binding] = entry
 	}
 	return nil
@@ -658,7 +660,7 @@ func writeManifestSet(ctx context.Context, target, overlay string, inventory *In
 				return nil, fmt.Errorf("the paired document of %s was not prepared by the inspected plan, and the publish that executes a plan signs nothing the plan did not compare", binding)
 			}
 			var pairErr error
-			if pair, pairErr = deliveredPair(ctx, &entry, declaration, opts); pairErr != nil {
+			if pair, pairErr = deliveredPair(&entry, declaration, opts); pairErr != nil {
 				return nil, pairErr
 			}
 			if pair == nil {
@@ -918,7 +920,7 @@ func overlayFilesAt(ctx context.Context, repo, revision, where, overlayPath stri
 // promotion on every publish of an unchanged render — a deploy could never
 // find a module already delivered. Like the Core carrier, the pair is signed
 // once and reused after. nil means sign it.
-func deliveredPair(ctx context.Context, entry *deliveredManifest, declaration []byte, opts *deliveryPublishOptions) ([]byte, error) {
+func deliveredPair(entry *deliveredManifest, declaration []byte, opts *deliveryPublishOptions) ([]byte, error) {
 	if entry.pair == nil || opts.AllowUnsigned || len(entry.carrier) == 0 {
 		return nil, nil
 	}
@@ -938,8 +940,16 @@ func deliveredPair(ctx context.Context, entry *deliveredManifest, declaration []
 	if !bytes.Equal(authority.GetDocument(), want) {
 		return nil, nil
 	}
-	if authority != nil && opts.ReuseCheck != nil {
-		if opts.ReuseCheck(ctx, authority.GetEnvelope(), authority.GetDocument()) != nil {
+	// The authority half is not a module-manifest carrier, so the release
+	// policy's carrier check (ReuseCheck) cannot read it: it is verified as
+	// the host verifies it, by its own envelope format, under the release
+	// signer's key — the one key this publish would sign it with.
+	if authority != nil {
+		signer := resolvedSigner(opts)
+		if signer == nil || signer.Public() == nil {
+			return nil, nil
+		}
+		if _, verifyErr := delivery.Verify(authority.GetDocument(), authority.GetEnvelope(), map[string]crypto.PublicKey{signer.KeyID(): signer.Public()}); verifyErr != nil {
 			return nil, nil
 		}
 	}

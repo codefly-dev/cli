@@ -5400,9 +5400,16 @@ move with its code:
 | The published image | The render |
 |---|---|
 | records this build's code; its recipe or bases differ (another checkout, another builder, a re-pushed base) | adopts it — it is the release's build — and warns naming the class that differs |
-| records other code | refuses: the code changed without its version moving, and the fix is a new release, never a rebuild under the old version |
-| records another agent than the release pins | refuses: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
-| records only the aggregate (labelled before the classes existed) | adopts it, with a warning, only when the service builds from a pinned release the CLI materialized (its code is the release's by construction); from a checkout or an override it refuses, since nothing can compare the code — build from the pinned release, or release a new version |
+| records other code | builds **apart**: the code changed without its version moving, so this build is pushed under `<version>-build.<identity>` (below) with a warning naming the release tag; the release tag is never written, and moving the service's version is how the build becomes the release |
+| records another agent than the release pins | builds apart the same way: the tag holds a build the release does not name (made under an [agent override](#moving-the-agent-version-of-composed-services) by a CLI that pushed it under the release tag) |
+| records only the aggregate (labelled before the classes existed) | adopts it, with a warning, only when the service builds from a pinned release the CLI materialized (its code is the release's by construction); from a checkout or an override it builds apart, since nothing can compare the code |
+
+A build pushed apart is judged at its own tag exactly as an override's is: the
+tag names one input identity, so a registry holding it from this build's inputs
+is adopted, and one holding it from other inputs is refused, never overwritten.
+A build whose inputs cannot all be bound has no identity to name it by and is
+refused as before. Until 2026-11-13 the first three rows refused, and each
+such refusal cost a hand version bump, a re-pin and a re-render.
 
 Adopting is the default for an image that cannot be compared because the two
 alternatives are worse: refusing blocks every render of every module on a cell

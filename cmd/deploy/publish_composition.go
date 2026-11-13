@@ -199,7 +199,7 @@ func publishAndMerge(ctx context.Context, plane control.Plane, workspaceDir, mod
 	result, err := control.PublishGitOps(ctx, plane, &request, func(plan *gitops.PublishPlan) error {
 		// A promotion branch the publish continues has a promotion waiting
 		// even when this render adds nothing to it.
-		if len(plan.Changed) == 0 && plan.ExistingCommit == "" {
+		if !plan.Delivers() {
 			return errNothingToDeliver
 		}
 		for _, check := range plan.ContractChecks {
@@ -216,7 +216,7 @@ func publishAndMerge(ctx context.Context, plane control.Plane, workspaceDir, mod
 		}
 		return nil
 	})
-	if errors.Is(err, errNothingToDeliver) {
+	if errors.Is(err, errNothingToDeliver) || errors.Is(err, gitops.ErrNoChanges) {
 		delivery.result = "unchanged"
 		cli.Info("  unchanged: the delivery base already carries this render")
 		return delivery, ""
