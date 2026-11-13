@@ -192,6 +192,15 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestSourceAttachmentPreservesSelectionAndBuilderIdentity$' ./pkg/sourceworkspace -v
 
+      # A paired delivery Job runs the codefly baked into pairedDeliveryImage,
+      # which decodes what this CLI renders strictly. This reads the core that
+      # binary embeds out of the pinned image (anonymous ghcr pull, both
+      # architectures) and fails when it is older than this CLI's, so a core
+      # bump cannot land ahead of a delivery image that can decode it.
+      - name: Prove the paired delivery image decodes what this CLI renders
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestThePairedDeliveryImageDecodesWhatThisCLIRenders$' ./pkg/gitops -v
+
       # Always-run so a failed or filtered-out test still has to account for
       # the rows its job claimed. Keep these last: they audit every step above.
       - name: Verify conformance receipts
