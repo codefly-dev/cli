@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -50,6 +51,9 @@ type ReadinessVerdict struct {
 	// that no hold covers — non-empty only under the override.
 	PinsJudged bool
 	Behind     []string
+	// HeldUntil is the earliest end date of the pin-holds the judgement
+	// relied on, empty when it relied on none.
+	HeldUntil string
 }
 
 // pinCurrency is the verdict as a render records it: nil when no pin was judged.
@@ -57,7 +61,7 @@ func (verdict ReadinessVerdict) pinCurrency() *gitops.PinCurrency {
 	if !verdict.PinsJudged {
 		return nil
 	}
-	return &gitops.PinCurrency{Behind: verdict.Behind}
+	return &gitops.PinCurrency{Behind: verdict.Behind, HeldUntil: verdict.HeldUntil}
 }
 
 // skipWorkspaceReadiness is the operator's explicit override. It exists for one
@@ -91,6 +95,12 @@ func requireWorkspaceReady(ctx context.Context, verb, env, module string) (*gito
 // CLI's — has its pins judged now, as before.
 func publishReady(ctx context.Context, verb, workspaceDir, env, module string) error {
 	judged := gitops.RenderedPinCurrency(workspaceDir, env, module)
+	if judged.Expired(time.Now()) {
+		// A hold the render relied on has ended since: its judgement no
+		// longer stands, and the pins are judged now.
+		cli.Warning("a pin-hold the render of %s relied on ended %s: its pins are judged against their sources now", module, judged.HeldUntil)
+		judged = nil
+	}
 	if _, err := askReadiness(ctx, verb, ReadinessQuestion{Env: env, Module: module, JudgePins: judged == nil}); err != nil || judged == nil {
 		return err
 	}

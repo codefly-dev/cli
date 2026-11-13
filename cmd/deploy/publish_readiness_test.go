@@ -120,3 +120,18 @@ func TestARenderCarriesItsGatesPinJudgement(t *testing.T) {
 		t.Fatalf("with no engine nothing was judged, yet the render carries %+v (%v)", pins, err)
 	}
 }
+
+// A render that relied on a pin-hold which has since ended is judged again at
+// publish: the hold no longer vouches for the pin.
+func TestPublishJudgesAgainOnceAHoldItsRenderReliedOnEnded(t *testing.T) {
+	withSkip(t, false)
+	stubReadiness(t, func(context.Context, string, string) error { return nil })
+	dir := t.TempDir()
+	writeRecord(t, dir, "rendered", `{"heldUntil":"2026-01-01"}`)
+	if err := publishReady(context.Background(), "publish", dir, "blue", "saas"); err != nil {
+		t.Fatal(err)
+	}
+	if len(judged) != 1 || !judged[0] {
+		t.Fatalf("a judgement whose hold ended was trusted (%v)", judged)
+	}
+}

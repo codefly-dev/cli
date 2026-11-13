@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/gh"
+
 	"github.com/google/go-github/v89/github"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +95,7 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		f.polls++
 		merged := f.merged
 		f.mu.Unlock()
-		fmt.Fprintf(w, `{"number":7,"node_id":"PR_node_7","merged":%t,"mergeable_state":%q,"head":{"sha":%q}}`,
+		fmt.Fprintf(w, `{"number":7,"node_id":"PR_node_7","merged":%t,"mergeable_state":%q,"head":{"sha":%q},"base":{"ref":"main"}}`,
 			merged, state, f.headSHA())
 	})
 	mux.HandleFunc("/repos/codefly-dev/cli/pulls/7/merge", func(w http.ResponseWriter, r *http.Request) {
@@ -371,22 +373,22 @@ func TestMergeQueueRequired(t *testing.T) {
 		Response: &http.Response{StatusCode: http.StatusMethodNotAllowed},
 		Message:  "Changes must be made through the merge queue",
 	}
-	require.True(t, mergeQueueRequired(queueRefusal))
+	require.True(t, gh.MergeQueueRequired(queueRefusal))
 
 	otherRefusal := &github.ErrorResponse{
 		Response: &http.Response{StatusCode: http.StatusMethodNotAllowed},
 		Message:  "Pull Request is not mergeable",
 	}
-	require.False(t, otherRefusal.Message == "" || mergeQueueRequired(otherRefusal),
+	require.False(t, otherRefusal.Message == "" || gh.MergeQueueRequired(otherRefusal),
 		"a 405 that is not about the queue must not be retried as one")
 
 	conflict := &github.ErrorResponse{
 		Response: &http.Response{StatusCode: http.StatusConflict},
 		Message:  "Changes must be made through the merge queue",
 	}
-	require.False(t, mergeQueueRequired(conflict), "the queue refusal is a 405")
+	require.False(t, gh.MergeQueueRequired(conflict), "the queue refusal is a 405")
 
-	require.False(t, mergeQueueRequired(errors.New("merge queue")), "a bare error is not an API refusal")
+	require.False(t, gh.MergeQueueRequired(errors.New("merge queue")), "a bare error is not an API refusal")
 }
 
 func TestEngine_Release_RedPullRequest_PublishesNothing(t *testing.T) {

@@ -34,7 +34,9 @@ func init() {
 			requireCurrentPins:  question.JudgePins,
 			pinsJudgedElsewhere: !question.JudgePins,
 		})
-		verdict := deploy.ReadinessVerdict{PinsJudged: question.JudgePins, Behind: pinsBehind(report)}
+		// Judged only when the comparison ran: a workspace that fails before
+		// it is reached has judged no pin, whatever was asked.
+		verdict := deploy.ReadinessVerdict{PinsJudged: question.JudgePins && report.pinsCompared, Behind: pinsBehind(report), HeldUntil: report.heldUntil}
 		if report.Status == readinessStatusReady {
 			// Held pins are deliberate, and a render is where they must be seen.
 			for i := range report.Checks {

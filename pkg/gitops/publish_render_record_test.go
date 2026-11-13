@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
@@ -165,4 +166,20 @@ func TestRenderStandsIsPublishsFirstHold(t *testing.T) {
 
 	renderPublishFixtureFailing(t, workspace.Dir(), "payments", "production")
 	require.ErrorContains(t, RenderStands(context.Background(), workspace, env, "payments"), "failed")
+}
+
+// A judgement that relied on a pin-hold stands through the hold's date and no
+// longer after it, as the hold itself does.
+func TestAPinJudgementEndsWithTheHoldItReliedOn(t *testing.T) {
+	day := func(value string) time.Time {
+		parsed, err := time.Parse("2006-01-02 15:04", value)
+		require.NoError(t, err)
+		return parsed
+	}
+	held := &PinCurrency{HeldUntil: "2026-11-16"}
+	require.False(t, held.Expired(day("2026-11-16 23:00")), "a hold applies through its date")
+	require.True(t, held.Expired(day("2026-11-17 01:00")))
+	require.False(t, (&PinCurrency{}).Expired(day("2099-01-01 00:00")), "no hold, nothing to end")
+	require.False(t, (*PinCurrency)(nil).Expired(day("2099-01-01 00:00")))
+	require.True(t, (&PinCurrency{HeldUntil: "someday"}).Expired(day("2026-11-13 00:00")), "an unreadable date is not a judgement to rely on")
 }

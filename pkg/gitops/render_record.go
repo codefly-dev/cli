@@ -75,6 +75,19 @@ type PinCurrency struct {
 	// or held. A render records a non-empty list only under the operator's
 	// override, and publish refuses it under the same override only.
 	Behind []string `json:"behind,omitempty"`
+	// HeldUntil is the earliest end date (YYYY-MM-DD) of the pin-holds the
+	// judgement relied on: past it the judgement no longer stands, as the
+	// hold no longer would (a hold applies through its date).
+	HeldUntil string `json:"heldUntil,omitempty"`
+}
+
+// Expired reports a judgement that relied on a pin-hold which has ended.
+func (judged *PinCurrency) Expired(now time.Time) bool {
+	if judged == nil || judged.HeldUntil == "" {
+		return false
+	}
+	until, err := time.Parse("2006-01-02", judged.HeldUntil)
+	return err != nil || now.After(until.Add(24*time.Hour))
 }
 
 // RenderedPinCurrency is the pin judgement the last render of module for

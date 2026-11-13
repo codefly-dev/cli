@@ -38,6 +38,13 @@ type fakeDeliveryRepository struct {
 	alreadyDone bool
 	queued      int
 	reads       map[string]int
+	// mergeable is the pull request's mergeable state (default unstable);
+	// queue makes a direct merge a 405 naming the merge queue; refusal is
+	// any other 405 a merge answers; head is the pull request's head.
+	mergeable string
+	queue     bool
+	refusal   string
+	head      string
 }
 
 func (f *fakeDeliveryRepository) serve(t *testing.T) {
@@ -49,8 +56,18 @@ func (f *fakeDeliveryRepository) serve(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && path == "/repos/owner/delivery/pulls/9":
 			merged := f.merged || f.alreadyDone
-			fmt.Fprintf(w, `{"number":9,"node_id":"PR_9","state":%q,"merged":%t,"merge_commit_sha":"feedfacefeedfacefeedfacefeedfacefeedface","head":{"sha":%q}}`,
-				map[bool]string{true: "closed", false: "open"}[merged], merged, mergeHead)
+			state, mergeable, head := "open", f.mergeable, f.head
+			if merged {
+				state = "closed"
+			}
+			if mergeable == "" {
+				mergeable = "unstable"
+			}
+			if head == "" {
+				head = mergeHead
+			}
+			fmt.Fprintf(w, `{"number":9,"node_id":"PR_9","state":%q,"merged":%t,"mergeable_state":%q,"merge_commit_sha":"feedfacefeedfacefeedfacefeedfacefeedface","head":{"sha":%q},"base":{"ref":"blue-delivery"}}`,
+				state, merged, mergeable, head)
 		case r.Method == http.MethodGet && path == "/repos/owner/delivery/branches/blue-delivery":
 			checks, _ := json.Marshal(f.protection)
 			fmt.Fprintf(w, `{"name":"blue-delivery","protection":{"enabled":true,"required_status_checks":{"contexts":%s}}}`, checks)
@@ -92,18 +109,27 @@ func (f *fakeDeliveryRepository) serve(t *testing.T) {
 				http.Error(w, `{"message":"Head branch was modified"}`, http.StatusConflict)
 				return
 			}
+			if f.queue || f.refusal != "" {
+				message := f.refusal
+				if f.queue {
+					message = "Changes must be made through the merge queue"
+				}
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				fmt.Fprintf(w, `{"message":%q}`, message)
+				return
+			}
 			f.merged, f.method = true, body.MergeMethod
 			fmt.Fprint(w, `{"merged":true,"sha":"cafecafecafecafecafecafecafecafecafecafe","message":"Pull Request successfully merged"}`)
 		case r.Method == http.MethodPost && path == "/api/graphql":
 			data, _ := io.ReadAll(r.Body)
-			if strings.Contains(string(data), "enqueuePullRequest") {
-				f.queued++
-				fmt.Fprint(w, `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}`)
+			if !strings.Contains(string(data), "enqueuePullRequest") || !strings.Contains(string(data), "PR_9") {
+				http.Error(w, "unexpected query "+string(data), http.StatusInternalServerError)
 				return
 			}
-			// The queue merges the promotion after it has been looked at once.
+			// The queue takes it, and merges it.
+			f.queued++
 			f.merged = true
-			fmt.Fprint(w, `{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"state":"AWAITING_CHECKS"}}}}}`)
+			fmt.Fprint(w, `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}`)
 		default:
 			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
 		}
@@ -187,7 +213,8 @@ func TestARequiredCheckThatNeverReportsTimesOut(t *testing.T) {
 	_, err := MergePromotion(context.Background(), &PublishResult{
 		Repository: "https://github.com/owner/delivery.git", BaseBranch: "blue-delivery", Commit: mergeHead, PullRequestID: 9,
 	}, MergeOptions{Interval: time.Millisecond, Timeout: 30 * time.Millisecond, Progress: func(state string) { said = append(said, state) }})
-	require.ErrorContains(t, err, "required check(s) secret-scan did not pass in time")
+	require.ErrorContains(t, err, "waiting on required check(s) secret-scan")
+	require.ErrorContains(t, err, "was not merged")
 	require.False(t, repository.merged)
 }
 
@@ -201,18 +228,42 @@ func TestALinearHistoryTakesTheSquash(t *testing.T) {
 	require.Equal(t, "squash", repository.method)
 }
 
-// A branch that merges through a queue is given the promotion through it,
-// and the merge is the queue's.
+// A branch that merges through a queue refuses the direct merge once the
+// required checks have passed on the head, and the promotion joins the queue;
+// the merge is the queue's.
 func TestAMergeQueueTakesThePromotion(t *testing.T) {
-	repository := &fakeDeliveryRepository{rules: `[{"type":"merge_queue","parameters":{"merge_method":"MERGE"}}]`, protection: []string{"bootstrap-audit"}}
+	repository := &fakeDeliveryRepository{queue: true, protection: []string{"secret-scan"},
+		runs: map[string][][2]string{"secret-scan": {{"in_progress", ""}, {"completed", "success"}}}}
 	repository.serve(t)
 
 	result, said, err := mergeIt(t)
 	require.NoError(t, err)
 	require.Equal(t, 1, repository.queued)
-	require.Equal(t, "queue", result.Method)
 	require.Equal(t, "feedfacefeedfacefeedfacefeedfacefeedface", result.Commit)
-	require.Contains(t, strings.Join(said, "\n"), "in the merge queue")
+	narrated := strings.Join(said, "\n")
+	require.Less(t, strings.Index(narrated, "every required check passed"), strings.Index(narrated, "entered the merge queue"),
+		"the promotion joins the queue only once its head's required checks pass:\n%s", narrated)
+}
+
+// A merge GitHub refuses for a reason of its own — a review the base requires
+// — stops with GitHub's reason, not with a wait that runs out.
+func TestARequiredReviewStopsTheMergeWithItsReason(t *testing.T) {
+	repository := &fakeDeliveryRepository{mergeable: "blocked", refusal: "At least 1 approving review is required by reviewers with write access."}
+	repository.serve(t)
+
+	_, _, err := mergeIt(t)
+	require.ErrorContains(t, err, "approving review is required")
+	require.False(t, repository.merged)
+}
+
+// A head that moved since the publish pushed it is never merged.
+func TestAMovedHeadIsNotMerged(t *testing.T) {
+	repository := &fakeDeliveryRepository{head: strings.Repeat("b", 40)}
+	repository.serve(t)
+
+	_, _, err := mergeIt(t)
+	require.ErrorContains(t, err, "not 12345678, the head this merge was asked to land")
+	require.False(t, repository.merged)
 }
 
 // A promotion already merged — a deploy run again after it stopped — answers
@@ -223,7 +274,6 @@ func TestAMergedPromotionAnswersItsMerge(t *testing.T) {
 
 	result, _, err := mergeIt(t)
 	require.NoError(t, err)
-	require.Equal(t, "already merged", result.Method)
 	require.Equal(t, "feedfacefeedfacefeedfacefeedfacefeedface", result.Commit)
 }
 

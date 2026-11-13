@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -19,14 +20,17 @@ import (
 // they keep the state UNSTABLE forever, so the poll timed out on promotions
 // the repository would have merged. What the base branch requires is the
 // whole condition: its required status checks (branch protection and
-// rulesets alike), passing on the promotion's head, and, where the branch
-// takes merges through a queue, the queue. Nothing else is waited on.
+// rulesets alike) passing on the promotion's head. The merge itself — the
+// mergeable state, a strict base caught up, the merge queue, a merge
+// confirmed after a transport error — is the CLI's one merge loop
+// (gh.PullRequestMerge), which a release lands its bump through too; only
+// which checks count, and how the merge is made, are a promotion's own.
 
 // MergeOptions bounds and narrates a promotion's merge.
 type MergeOptions struct {
 	// Timeout bounds the wait for the required checks and the queue.
 	Timeout time.Duration
-	// Interval is how often the checks are read again (default 15s).
+	// Interval is how often the pull request is read again (default 15s).
 	Interval time.Duration
 	// Progress is told each new state of what the merge waits on.
 	Progress func(string)
@@ -37,7 +41,7 @@ type MergeResult struct {
 	Number int
 	// Commit is the commit the base branch carries for the promotion.
 	Commit string
-	// Method is how it was merged: merge, squash, rebase, or queue.
+	// Method is how it was asked to merge: merge, squash or rebase.
 	Method string
 	// Required are the checks the base branch required, by name.
 	Required []string
@@ -50,118 +54,110 @@ type requiredCheck struct {
 	appID   int64
 }
 
+// baseRequirements is what the base branch requires of a merge.
+type baseRequirements struct {
+	checks []requiredCheck
+	// linear: the branch requires a linear history (no merge commit).
+	linear bool
+	// methods are the merge methods a ruleset allows; empty allows any.
+	methods []string
+}
+
 // MergePromotion waits until every status check the promotion's base branch
-// requires has passed on the promotion's head, then merges it — through the
-// branch's merge queue when it has one — and answers the commit the base
-// carries. A required check that fails, a merge the repository refuses (a
-// review it requires, a base that moved under a strict policy) and a wait
-// past the timeout are errors naming their reason; a promotion already merged
-// answers its merge.
+// requires has passed on the promotion's head, then merges that head —
+// through the branch's merge queue when it has one — and answers the commit
+// the base carries. A required check that fails, a merge the repository
+// refuses (a review it requires, a head that moved) and a wait past the
+// timeout are errors naming their reason; a promotion already merged answers
+// its merge.
 func MergePromotion(ctx context.Context, result *PublishResult, options MergeOptions) (MergeResult, error) {
+	merged := MergeResult{Number: result.PullRequestID}
 	if result.PullRequestID == 0 {
-		return MergeResult{}, fmt.Errorf("the promotion of %s is not a GitHub pull request (%s), so there is nothing to merge here", result.Path, result.PullRequest)
+		return merged, fmt.Errorf("the promotion of %s is not a GitHub pull request (%s), so there is nothing to merge here", result.Path, result.PullRequest)
 	}
 	slug, err := validateRepositoryURL(result.Repository, false)
 	if err != nil {
-		return MergeResult{}, err
+		return merged, err
 	}
 	owner, repo, err := splitRepositorySlug(slug)
 	if err != nil {
-		return MergeResult{}, err
+		return merged, err
 	}
 	client, err := gh.NewClient()
 	if err != nil {
-		return MergeResult{}, err
+		return merged, err
 	}
-	merger := &promotionMerger{client: client, owner: owner, repo: repo, number: result.PullRequestID, options: options}
-	if merger.options.Interval <= 0 {
-		merger.options.Interval = 15 * time.Second
+	if options.Interval <= 0 {
+		options.Interval = 15 * time.Second
 	}
-	if merger.options.Progress == nil {
-		merger.options.Progress = func(string) {}
-	}
-	if merger.options.Timeout > 0 {
+	say := narrator(options.Progress)
+	if options.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, merger.options.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, options.Timeout)
 		defer cancel()
 	}
-	return merger.merge(ctx, result.BaseBranch, result.Commit)
-}
-
-type promotionMerger struct {
-	client  *github.Client
-	owner   string
-	repo    string
-	number  int
-	options MergeOptions
-	last    string
-}
-
-func (m *promotionMerger) say(state string) {
-	if state != m.last {
-		m.last = state
-		m.options.Progress(state)
-	}
-}
-
-func (m *promotionMerger) merge(ctx context.Context, base, head string) (MergeResult, error) {
-	merged := MergeResult{Number: m.number}
-	pr, _, err := m.client.PullRequests.Get(ctx, m.owner, m.repo, m.number)
-	if err != nil {
-		return merged, fmt.Errorf("read promotion pull request #%d: %w", m.number, err)
-	}
-	if pr.GetMerged() {
-		merged.Commit, merged.Method = pr.GetMergeCommitSHA(), "already merged"
-		return merged, nil
-	}
-	if pr.GetState() != "open" {
-		return merged, fmt.Errorf("promotion pull request #%d is %s, not open: publish again to open a new one", m.number, pr.GetState())
-	}
-	if pr.GetHead().GetSHA() != head {
-		return merged, fmt.Errorf("promotion pull request #%d is at %s, not the commit this publish pushed (%s): publish again", m.number, shortRevision(pr.GetHead().GetSHA()), shortRevision(head))
-	}
-	required, queued, linear, err := m.requirements(ctx, base)
+	checks := &requiredChecks{client: client, owner: owner, repo: repo, number: result.PullRequestID, say: say}
+	requires, err := checks.requirements(ctx, result.BaseBranch)
 	if err != nil {
 		return merged, err
 	}
-	for _, check := range required {
+	checks.required = requires.checks
+	for _, check := range requires.checks {
 		merged.Required = append(merged.Required, check.context)
 	}
-	if queued {
-		// A queue runs the required checks on the merge group itself, so the
-		// head's are not waited on here: the queue is the gate.
-		merged.Method = "queue"
-		return merged, m.throughQueue(ctx, pr, &merged)
-	}
-	if err = m.awaitChecks(ctx, head, required); err != nil {
+	if merged.Method, err = mergeMethod(ctx, client, owner, repo, requires); err != nil {
 		return merged, err
 	}
-	if merged.Method, err = m.method(ctx, linear); err != nil {
-		return merged, err
+	merge := &gh.PullRequestMerge{
+		Client: client, Owner: owner, Repo: repo, Number: result.PullRequestID,
+		Noun: "promotion pull request", Poll: options.Interval, Ready: checks.ready,
+		Method: merged.Method, Head: result.Commit, MergeBlocked: true, Say: say,
 	}
-	done, _, err := m.client.PullRequests.Merge(ctx, m.owner, m.repo, m.number, "", &github.PullRequestOptions{SHA: head, MergeMethod: merged.Method})
-	if err != nil {
-		return merged, fmt.Errorf("merge promotion pull request #%d: %w", m.number, err)
+	merged.Commit, err = merge.Land(ctx)
+	var open *gh.StillOpenError
+	if errors.As(err, &open) {
+		return merged, fmt.Errorf("promotion pull request #%d was still %q after %s (%s); it is open and was not merged", open.Number, open.State, options.Timeout, checks.waiting)
 	}
-	if !done.GetMerged() {
-		return merged, fmt.Errorf("merge promotion pull request #%d: %s", m.number, done.GetMessage())
+	return merged, err
+}
+
+// narrator says a state once, however many reads repeat it.
+func narrator(progress func(string)) func(string) {
+	last := ""
+	return func(state string) {
+		if progress != nil && state != last {
+			last = state
+			progress(state)
+		}
 	}
-	merged.Commit = done.GetSHA()
-	return merged, nil
+}
+
+// requiredChecks is the promotion's check policy: the base branch's required
+// checks, read on the head the merge loop is about to land.
+type requiredChecks struct {
+	client      *github.Client
+	owner, repo string
+	number      int
+	required    []requiredCheck
+	say         func(string)
+	// waiting names what the last read was still waiting on.
+	waiting string
 }
 
 // requirements reads what the base branch requires of a merge: its required
-// status checks (branch protection and rulesets), whether it merges through a
-// queue, and whether it requires a linear history.
-func (m *promotionMerger) requirements(ctx context.Context, base string) (required []requiredCheck, queued, linear bool, err error) {
+// status checks (branch protection and rulesets), whether it requires a
+// linear history, and the merge methods a ruleset allows. A GitHub that
+// serves no rules endpoint (an older Enterprise answers 404) has no rules.
+func (r *requiredChecks) requirements(ctx context.Context, base string) (baseRequirements, error) {
+	var requires baseRequirements
 	add := func(context string, appID int64) {
-		if !slices.ContainsFunc(required, func(check requiredCheck) bool { return check.context == context }) {
-			required = append(required, requiredCheck{context: context, appID: appID})
+		if !slices.ContainsFunc(requires.checks, func(check requiredCheck) bool { return check.context == context }) {
+			requires.checks = append(requires.checks, requiredCheck{context: context, appID: appID})
 		}
 	}
-	branch, _, err := m.client.Repositories.GetBranch(ctx, m.owner, m.repo, base, 0)
+	branch, _, err := r.client.Repositories.GetBranch(ctx, r.owner, r.repo, base, 0)
 	if err != nil {
-		return nil, false, false, fmt.Errorf("read the protection of %s/%s's %s: %w", m.owner, m.repo, base, err)
+		return requires, fmt.Errorf("read the protection of %s/%s's %s: %w", r.owner, r.repo, base, err)
 	}
 	if checks := branch.GetProtection().GetRequiredStatusChecks(); checks != nil {
 		if checks.Checks != nil {
@@ -175,46 +171,95 @@ func (m *promotionMerger) requirements(ctx context.Context, base string) (requir
 			}
 		}
 	}
-	rules, _, err := m.client.Repositories.ListRulesForBranch(ctx, m.owner, m.repo, base, nil)
-	if err != nil {
-		return nil, false, false, fmt.Errorf("read the rules of %s/%s's %s: %w", m.owner, m.repo, base, err)
+	rules, response, err := r.client.Repositories.ListRulesForBranch(ctx, r.owner, r.repo, base, nil)
+	if err != nil && (response == nil || response.StatusCode != http.StatusNotFound) {
+		return requires, fmt.Errorf("read the rules of %s/%s's %s: %w", r.owner, r.repo, base, err)
 	}
-	if rules != nil {
-		for _, rule := range rules.RequiredStatusChecks {
-			for _, check := range rule.Parameters.RequiredStatusChecks {
-				var appID int64
-				if check.IntegrationID != nil {
-					appID = *check.IntegrationID
-				}
-				add(check.Context, appID)
+	if rules == nil {
+		return requires, nil
+	}
+	for _, rule := range rules.RequiredStatusChecks {
+		for _, check := range rule.Parameters.RequiredStatusChecks {
+			var appID int64
+			if check.IntegrationID != nil {
+				appID = *check.IntegrationID
 			}
+			add(check.Context, appID)
 		}
-		queued, linear = len(rules.MergeQueue) > 0, len(rules.RequiredLinearHistory) > 0
 	}
-	return required, queued, linear, nil
+	requires.linear = len(rules.RequiredLinearHistory) > 0
+	for _, rule := range rules.PullRequest {
+		for _, method := range rule.Parameters.AllowedMergeMethods {
+			requires.methods = append(requires.methods, string(method))
+		}
+	}
+	return requires, nil
 }
 
-// checkState is one required check on the promotion's head: passed, failed
-// (with why), or still owed.
-func (m *promotionMerger) checkState(ctx context.Context, head string, check requiredCheck, statuses []*github.RepoStatus) (passed bool, failed string, err error) {
-	options := &github.ListCheckRunsOptions{CheckName: github.Ptr(check.context), Filter: github.Ptr("latest")}
+// ready is the merge loop's verdict on head: every required check passed.
+// A required check that failed ends the wait with its name.
+func (r *requiredChecks) ready(ctx context.Context, head string) (bool, error) {
+	if len(r.required) == 0 {
+		r.say(fmt.Sprintf("#%d: the base branch requires no status check", r.number))
+		return true, nil
+	}
+	combined, _, err := r.client.Repositories.GetCombinedStatus(ctx, r.owner, r.repo, head, &github.ListOptions{PerPage: 100})
+	if err != nil {
+		return false, fmt.Errorf("read the statuses of %s: %w", shortRevision(head), err)
+	}
+	var owed []string
+	for _, check := range r.required {
+		passed, failed, err := r.state(ctx, head, check, combined.Statuses)
+		if err != nil {
+			return false, err
+		}
+		if failed != "" {
+			return false, fmt.Errorf("required check %s", failed)
+		}
+		if !passed {
+			owed = append(owed, check.context)
+		}
+	}
+	if len(owed) > 0 {
+		r.waiting = "waiting on required check(s) " + strings.Join(owed, ", ")
+		r.say(fmt.Sprintf("#%d: %s", r.number, r.waiting))
+		return false, nil
+	}
+	r.waiting = ""
+	r.say(fmt.Sprintf("#%d: every required check passed (%d)", r.number, len(r.required)))
+	return true, nil
+}
+
+// state is one required check on head: passed, failed (with why), or still
+// owed. A check run satisfies it when one by that name (from the app the
+// requirement names, if it names one) has run; the newest such run is the
+// verdict, as GitHub takes it. A commit status of that context does too.
+func (r *requiredChecks) state(ctx context.Context, head string, check requiredCheck, statuses []*github.RepoStatus) (passed bool, failed string, err error) {
+	options := &github.ListCheckRunsOptions{CheckName: github.Ptr(check.context), Filter: github.Ptr("latest"), ListOptions: github.ListOptions{PerPage: 100}}
 	if check.appID > 0 {
 		options.AppID = github.Ptr(check.appID)
 	}
-	runs, _, err := m.client.Checks.ListCheckRunsForRef(ctx, m.owner, m.repo, head, options)
+	runs, _, err := r.client.Checks.ListCheckRunsForRef(ctx, r.owner, r.repo, head, options)
 	if err != nil {
 		return false, "", fmt.Errorf("read check %s on %s: %w", check.context, shortRevision(head), err)
 	}
-	if runs != nil && len(runs.CheckRuns) > 0 {
-		run := runs.CheckRuns[0]
-		if run.GetStatus() != "completed" {
+	var newest *github.CheckRun
+	if runs != nil {
+		for _, run := range runs.CheckRuns {
+			if newest == nil || run.GetID() > newest.GetID() {
+				newest = run
+			}
+		}
+	}
+	if newest != nil {
+		if newest.GetStatus() != "completed" {
 			return false, "", nil
 		}
-		switch run.GetConclusion() {
+		switch newest.GetConclusion() {
 		case "success", "neutral", "skipped":
 			return true, "", nil
 		default:
-			return false, fmt.Sprintf("%s concluded %s (%s)", check.context, run.GetConclusion(), run.GetHTMLURL()), nil
+			return false, fmt.Sprintf("%s concluded %s (%s)", check.context, newest.GetConclusion(), newest.GetHTMLURL()), nil
 		}
 	}
 	for _, status := range statuses {
@@ -232,133 +277,25 @@ func (m *promotionMerger) checkState(ctx context.Context, head string, check req
 	return false, "", nil
 }
 
-// awaitChecks waits until every required check has passed on head, and
-// refuses on the first that fails.
-func (m *promotionMerger) awaitChecks(ctx context.Context, head string, required []requiredCheck) error {
-	if len(required) == 0 {
-		m.say(fmt.Sprintf("#%d: the base branch requires no status check", m.number))
-		return nil
-	}
-	for {
-		combined, _, err := m.client.Repositories.GetCombinedStatus(ctx, m.owner, m.repo, head, &github.ListOptions{PerPage: 100})
-		if err != nil {
-			return fmt.Errorf("read the statuses of %s: %w", shortRevision(head), err)
-		}
-		var owed []string
-		for _, check := range required {
-			passed, failed, checkErr := m.checkState(ctx, head, check, combined.Statuses)
-			if checkErr != nil {
-				return checkErr
-			}
-			if failed != "" {
-				return fmt.Errorf("promotion pull request #%d: required check %s", m.number, failed)
-			}
-			if !passed {
-				owed = append(owed, check.context)
-			}
-		}
-		if len(owed) == 0 {
-			m.say(fmt.Sprintf("#%d: every required check passed (%d)", m.number, len(required)))
-			return nil
-		}
-		m.say(fmt.Sprintf("#%d: waiting on required check(s) %s", m.number, strings.Join(owed, ", ")))
-		if err = sleep(ctx, m.options.Interval); err != nil {
-			return fmt.Errorf("promotion pull request #%d: required check(s) %s did not pass in time: %w", m.number, strings.Join(owed, ", "), err)
-		}
-	}
-}
-
-// method picks how the repository lets a promotion merge: a merge commit
-// keeps the signed promotion commit on the base, so it is preferred unless
-// the repository disallows it or the branch requires a linear history.
-func (m *promotionMerger) method(ctx context.Context, linear bool) (string, error) {
-	repository, _, err := m.client.Repositories.Get(ctx, m.owner, m.repo)
+// mergeMethod picks how a promotion merges: a merge commit keeps the signed
+// promotion commit on the base, so it is preferred unless the repository
+// disallows it, the branch requires a linear history, or a ruleset allows
+// other methods only.
+func mergeMethod(ctx context.Context, client *github.Client, owner, repo string, requires baseRequirements) (string, error) {
+	repository, _, err := client.Repositories.Get(ctx, owner, repo)
 	if err != nil {
-		return "", fmt.Errorf("read the merge methods %s/%s allows: %w", m.owner, m.repo, err)
+		return "", fmt.Errorf("read the merge methods %s/%s allows: %w", owner, repo, err)
+	}
+	allowed := func(method string) bool {
+		return len(requires.methods) == 0 || slices.Contains(requires.methods, method)
 	}
 	switch {
-	case repository.GetAllowMergeCommit() && !linear:
+	case repository.GetAllowMergeCommit() && !requires.linear && allowed("merge"):
 		return "merge", nil
-	case repository.GetAllowSquashMerge():
+	case repository.GetAllowSquashMerge() && allowed("squash"):
 		return "squash", nil
-	case repository.GetAllowRebaseMerge():
+	case repository.GetAllowRebaseMerge() && allowed("rebase"):
 		return "rebase", nil
 	}
-	return "", fmt.Errorf("%s/%s allows no merge method this promotion can use", m.owner, m.repo)
-}
-
-// throughQueue adds the promotion to the base branch's merge queue and waits
-// until the queue merges it, refusing when the queue drops it.
-func (m *promotionMerger) throughQueue(ctx context.Context, pr *github.PullRequest, merged *MergeResult) error {
-	var enqueued struct {
-		Data struct {
-			EnqueuePullRequest struct {
-				MergeQueueEntry struct{ State string } `json:"mergeQueueEntry"`
-			} `json:"enqueuePullRequest"`
-		} `json:"data"`
-		Errors []struct{ Message string } `json:"errors"`
-	}
-	if err := m.graphQL(ctx, `mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { state } } }`,
-		map[string]any{"id": pr.GetNodeID()}, &enqueued); err != nil {
-		return err
-	}
-	if len(enqueued.Errors) > 0 {
-		return fmt.Errorf("add promotion pull request #%d to the merge queue: %s", m.number, enqueued.Errors[0].Message)
-	}
-	for {
-		current, _, err := m.client.PullRequests.Get(ctx, m.owner, m.repo, m.number)
-		if err != nil {
-			return fmt.Errorf("read promotion pull request #%d: %w", m.number, err)
-		}
-		if current.GetMerged() {
-			merged.Commit = current.GetMergeCommitSHA()
-			return nil
-		}
-		var queued struct {
-			Data struct {
-				Repository struct {
-					PullRequest struct {
-						MergeQueueEntry *struct{ State string } `json:"mergeQueueEntry"`
-					} `json:"pullRequest"`
-				} `json:"repository"`
-			} `json:"data"`
-		}
-		if err = m.graphQL(ctx, `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { mergeQueueEntry { state } } } }`,
-			map[string]any{"owner": m.owner, "repo": m.repo, "number": m.number}, &queued); err != nil {
-			return err
-		}
-		entry := queued.Data.Repository.PullRequest.MergeQueueEntry
-		if entry == nil {
-			return fmt.Errorf("promotion pull request #%d left the merge queue unmerged (a required check failed on its merge group, or it was removed)", m.number)
-		}
-		m.say(fmt.Sprintf("#%d: in the merge queue, %s", m.number, strings.ToLower(entry.State)))
-		if err = sleep(ctx, m.options.Interval); err != nil {
-			return fmt.Errorf("promotion pull request #%d was not merged by the queue in time: %w", m.number, err)
-		}
-	}
-}
-
-// graphQL runs one query against the API the client addresses.
-func (m *promotionMerger) graphQL(ctx context.Context, query string, variables map[string]any, out any) error {
-	// api.github.com/graphql, or <host>/api/graphql beside <host>/api/v3/.
-	endpoint := strings.TrimSuffix(m.client.BaseURL(), "v3/") + "graphql"
-	request, err := m.client.NewRequest(ctx, http.MethodPost, endpoint, map[string]any{"query": query, "variables": variables})
-	if err != nil {
-		return err
-	}
-	if _, err = m.client.Do(request, out); err != nil {
-		return fmt.Errorf("GitHub GraphQL: %w", err)
-	}
-	return nil
-}
-
-func sleep(ctx context.Context, interval time.Duration) error {
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return "", fmt.Errorf("%s/%s allows no merge method its rules admit for this promotion", owner, repo)
 }

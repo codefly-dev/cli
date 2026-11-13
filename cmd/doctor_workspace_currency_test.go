@@ -241,3 +241,13 @@ func TestTheDeliveryGateJudgesPinsOnlyWhenAsked(t *testing.T) {
 	require.False(t, verdict.PinsJudged)
 	require.Empty(t, verdict.Behind)
 }
+
+// A workspace that fails before the pin comparison runs has judged no pin,
+// whatever the question asked, so a render under the override records none.
+func TestNoPinIsJudgedWhenTheComparisonNeverRan(t *testing.T) {
+	t.Setenv("CODEFLY_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	verdict, err := deploy.WorkspaceReadiness(context.Background(), deploy.ReadinessQuestion{Env: "local", JudgePins: true})
+	require.Error(t, err)
+	require.False(t, verdict.PinsJudged)
+}

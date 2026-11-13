@@ -1301,18 +1301,24 @@ codefly deploy gitops publish --all --env production
 It renders the composition (`render --all`) when any module has no render a
 publish would deliver — never rendered, its last render failed or never
 finished, the composition's pins moved since, or a configuration group it
-bakes in changed — and otherwise renders nothing. It then publishes every
+bakes in changed, or a pin-hold its judgement relied on has ended — and
+otherwise renders nothing. It then publishes every
 module whose delivery changes, each after the modules its services depend on,
 then the composition's hop (its route table is baked in from the catalogs of
 the modules behind it), then the module hosting the delivery API; a module
 whose delivery base already carries its render is reported `unchanged` and not
-published. Each promotion pull request is merged once the checks its **base
-branch requires** have passed on its head — branch protection and rulesets
-alike, through the merge queue when the branch has one — and nothing else is
-waited on: a check the base does not require, failing for reasons of its own,
-does not hold the merge. A merge commit is used when the repository allows one
-and the branch does not require a linear history, so the signed promotion
-commit stays on the base. A required check that fails, a merge the repository
+published, and a module whose contract check is refused against a producer
+this run publishes later is published right after that producer. Each
+promotion pull request is merged once the checks its **base branch requires**
+have passed on its head — branch protection and rulesets alike — and nothing
+else is waited on: a check the base does not require, failing for reasons of
+its own, does not hold the merge. The merge is the CLI's one merge loop, the
+one `codefly publish` lands a release through: it merges the exact head the
+publish pushed, catches a branch up when a strict base moved past it, joins
+the merge queue when the base takes merges only through one, and asks GitHub
+whether a merge it could not confirm happened. A merge commit is used when the
+repository allows one and neither a linear history nor a ruleset forbids it,
+so the signed promotion commit stays on the base. A required check that fails, a merge the repository
 refuses (a review it requires) or a wait past `--merge-timeout` (default 30m)
 stops the run at that module; the modules after it are not published, and
 running the same command again picks up where it stopped (what was delivered
@@ -1321,7 +1327,10 @@ per module: its result (`merged`, `unchanged`, `promoted` for a local
 promotion, `failed`, `not reached`), its promotion and the commit the base
 carries. `--allow-cell-removal`, `--allow-unresolved-contracts`,
 `--skip-workspace-readiness` and `--local` apply to every module's
-publication; `--yes` skips the one confirmation. It does not regenerate
+publication; `--promotion-branch`, `--message`, `--title` and `--body` describe
+one module's promotion and are refused with `--all`. Without `--yes` it asks
+once before rendering, and again for each promotion that withdraws something
+(a module's tree, a cell-file entry, a host binding), when its plan is shown. It does not regenerate
 `runnable-bindings`: that file is a reviewed input of the render, and a
 readiness refusal names `codefly generate runnable-bindings --env <env>` when it
 is out of date.
@@ -2360,7 +2369,9 @@ round was only published by writing `pin-holds` at what it had rendered). What
 the check is for still holds: a publication refuses a render whose pins moved
 at all since it rendered (it is of another composition), so what is delivered
 is always what was judged; and it refuses a render that recorded pins behind,
-naming them, unless it is given `--skip-workspace-readiness` too. A render that
+naming them, unless it is given `--skip-workspace-readiness` too. A judgement
+that relied on a `pin-holds` entry stands only as long as that hold would: past
+the earliest such `until:` date, publish judges the pins again. A render that
 recorded no judgement — one an older CLI made — has its pins judged at publish,
 as before.
 The check reads the network (bounded at 10 s, 25 s for a render); a first run

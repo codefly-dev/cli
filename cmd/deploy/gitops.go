@@ -203,6 +203,11 @@ var gitOpsPublishCmd = &cobra.Command{
 			if len(args) > 0 {
 				return fmt.Errorf("--all publishes every composed module; name no module with it")
 			}
+			for flag, value := range map[string]string{"promotion-branch": gitOpsBranch, "message": gitOpsMessage, "title": gitOpsTitle, "body": gitOpsBody} {
+				if value != "" {
+					return fmt.Errorf("--%s describes one module's promotion; --all publishes each module's own (name a module to set it)", flag)
+				}
+			}
 			return publishComposition(ctx)
 		}
 		workspace, module, err := loadGitOpsModule(ctx, args)

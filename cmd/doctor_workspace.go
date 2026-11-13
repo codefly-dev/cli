@@ -100,6 +100,10 @@ type workspaceReadinessReport struct {
 	Service             string                `json:"service,omitempty"`
 	Status              string                `json:"status"`
 	Checks              []workspaceDiagnostic `json:"checks"`
+	// pinsCompared reports that the pin-currency check ran to its verdict,
+	// and heldUntil is the earliest end date of the holds it relied on.
+	pinsCompared bool
+	heldUntil    string
 }
 
 func (report *workspaceReadinessReport) add(code, name, status, message, remediation string) {
