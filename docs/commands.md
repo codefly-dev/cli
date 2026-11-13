@@ -860,7 +860,11 @@ This is what a cell's delivery Job runs: a GitOps publish toward a host whose
 delivery endpoint declares `codefly.dev/composition` writes one paired document
 per manifest into the delivery overlay and renders the manifest Job to run
 `/bin/codefly delivery apply` with the projected token, from the codefly
-companion `0.0.7`, the first tag whose static binary carries this verb.
+companion `0.0.8`, pinned by digest. `0.0.7` was the first tag whose static
+binary carries this verb, but its core refuses the
+`authority.source_governance` field this CLI renders; the companion's core must
+be at least the CLI's, which `TestThePairedDeliveryImageDecodesWhatThisCLIRenders`
+checks against the pinned image.
 
 Each document is one `ApplyManifestRequest` carrying **both** signed halves:
 core's module manifest in its DSSE carrier, and the authority declaration
