@@ -215,6 +215,18 @@ func (b *Builder) decideImageReuse(
 		return decision, err
 	}
 	if b.world.RebuildImages {
+		// --rebuild builds again, and still never over a published release:
+		// a release tag the registry holds is the release's build, so the
+		// rebuild goes apart from it.
+		if shouldPush && decision.image == "" && releasedVersionTag(recipe.GetImage()) {
+			digest, probeErr := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
+			if probeErr != nil && !isImageNotFound(probeErr) {
+				return decision, w.Wrapf(probeErr, "cannot tell whether %s is already published", recipe.GetImage())
+			}
+			if probeErr == nil && digest != "" {
+				return b.buildApart(w, recipe, decision, identityErr, fmt.Errorf("--rebuild of %s, which the registry already holds", recipe.GetImage()))
+			}
+		}
 		return decision, nil
 	}
 	// A released version is built once. The image is tagged with the service's
@@ -237,15 +249,11 @@ func (b *Builder) decideImageReuse(
 			// identity, as an agent override's build is (override_build.go).
 			// The declared version stays the release's number; the cell pins
 			// the digest, so the qualified tag is what this render delivers.
-			if identity.Key == "" {
-				return decision, w.Wrapf(other, "and an image input cannot be bound to name this build apart from the release (%v)", identityErr)
+			if decision, err = b.buildApart(w, recipe, decision, identityErr, other); err != nil {
+				return decision, err
 			}
-			release := recipe.GetImage()
 			recipe = proto.CloneOf(recipe)
-			recipe.Image = overrideBuildImage(release, identity.Key)
-			decision.image = recipe.GetImage()
-			w.Warn("the release tag holds another build of this version; tagging this build apart (move the service's version to release it)",
-				wool.Field("release", release), wool.Field("image", decision.image), wool.Field("why", other.Error()))
+			recipe.Image = decision.image
 			if adopt, other, err = b.adoptPublished(ctx, w, recipe, decision, probeBuilder); err != nil {
 				return decision, err
 			}
@@ -280,6 +288,20 @@ func (b *Builder) decideImageReuse(
 	return decision, nil
 }
 
+// buildApart names this build apart from the release tag the registry holds:
+// <version>-build.<input identity>, the tag an agent override's build takes
+// (override_build.go). A build with an input that cannot be bound has no
+// identity to be named by, and is refused rather than pushed over the release.
+func (b *Builder) buildApart(w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr, why error) (imageReuse, error) {
+	if decision.identity.Key == "" {
+		return decision, w.Wrapf(why, "%s holds a published build, and an image input cannot be bound to name this build apart from it (%v)", recipe.GetImage(), identityErr)
+	}
+	decision.image = overrideBuildImage(recipe.GetImage(), decision.identity.Key)
+	w.Warn("the release tag holds another build of this version; tagging this build apart (move the service's version to release it)",
+		wool.Field("release", recipe.GetImage()), wool.Field("image", decision.image), wool.Field("why", why.Error()))
+	return decision, nil
+}
+
 // adoptPublished answers what the registry holds at the recipe's tag: the
 // entry that adopts it, nothing when it is not published or is to be built
 // again, or — for a released tag — why it holds another build than this one
@@ -311,7 +333,13 @@ func (b *Builder) adoptPublished(ctx context.Context, w *wool.Wool, recipe *buil
 // build (other), or the refusal.
 func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, digest, probeBuilder string) (*imageCacheEntry, error, error) {
 	identity := decision.identity
-	labels, _ := resolveImageBuildLabels(ctx, recipe.GetImage(), probeBuilder)
+	labels, labelErr := resolveImageBuildLabels(ctx, recipe.GetImage(), probeBuilder)
+	release := decision.image == ""
+	if labelErr != nil && release {
+		// Unread labels prove nothing either way, and building again would
+		// write the release tag.
+		return nil, nil, w.Wrapf(labelErr, "cannot read the build labels of %s, which the registry holds", recipe.GetImage())
+	}
 	published := labels[buildInputsLabel]
 	adopted := &imageCacheEntry{
 		Schema: imageCacheSchema, Key: identity.Key, Service: b.instance.Unique(), Recipe: recipe.GetName(),
@@ -336,6 +364,11 @@ func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recip
 		w.Warn(warning, wool.Field("image", recipe.GetImage()), wool.Field("recipe", recipe.GetName()),
 			wool.Field("published_inputs", published), wool.Field("identity", identity.Key))
 		return adopted, nil, nil
+	case release:
+		// A released tag that records no inputs (pushed before builds
+		// recorded them), or a build with no identity to compare, proves
+		// nothing either way; the release tag is not written over.
+		return nil, fmt.Errorf("%s records no build inputs this build can be compared with", recipe.GetImage()), nil
 	default:
 		w.Warn("the published image records no build inputs; building it again",
 			wool.Field("image", recipe.GetImage()), wool.Field("recipe", recipe.GetName()))

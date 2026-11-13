@@ -5415,7 +5415,11 @@ Adopting is the default for an image that cannot be compared because the two
 alternatives are worse: refusing blocks every render of every module on a cell
 that holds one such image (a render needs every workload's digest), and
 rebuilding overwrites a release wherever tags are mutable. One recording no
-inputs at all (pushed before builds recorded them) is built again. With a registry
+inputs at all (pushed before builds recorded them), or whose labels cannot be
+read, proves nothing either way and is never written over: the build goes apart
+(below), and a labels read that fails stops the render. `--rebuild` builds
+again under the same rule — over an unpublished release tag as before, apart
+from a published one. With a registry
 Only the registry answering that the tag does not exist lets a released version
 be built: any other failed read (an authorization refusal, a timeout, an
 unreachable registry) stops the render, because building over it would

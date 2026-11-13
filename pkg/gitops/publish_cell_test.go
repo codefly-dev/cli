@@ -806,9 +806,8 @@ func TestARenderTheBaseCarriesHasNoChanges(t *testing.T) {
 
 	require.True(t, plan.Delivers())
 	again, err := PlanPublish(ctx, workspace, &request)
-	if err != nil {
-		require.ErrorIs(t, err, ErrNoChanges)
-		return
-	}
-	require.False(t, again.Delivers(), "the base carries this render: changed %v, branch %s, base %s", again.Changed, again.ExistingCommit, again.BaseRevision)
+	require.NoError(t, err, "a promotion branch that is the base is continued, not refused")
+	require.Empty(t, again.Changed)
+	require.Equal(t, again.BaseRevision, again.ExistingCommit)
+	require.False(t, again.Delivers(), "the base carries this render")
 }
