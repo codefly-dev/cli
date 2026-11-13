@@ -215,19 +215,7 @@ func (b *Builder) decideImageReuse(
 		return decision, err
 	}
 	if b.world.RebuildImages {
-		// --rebuild builds again, and still never over a published release:
-		// a release tag the registry holds is the release's build, so the
-		// rebuild goes apart from it.
-		if shouldPush && decision.image == "" && releasedVersionTag(recipe.GetImage()) {
-			digest, probeErr := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
-			if probeErr != nil && !isImageNotFound(probeErr) {
-				return decision, w.Wrapf(probeErr, "cannot tell whether %s is already published", recipe.GetImage())
-			}
-			if probeErr == nil && digest != "" {
-				return b.buildApart(w, recipe, decision, identityErr, fmt.Errorf("--rebuild of %s, which the registry already holds", recipe.GetImage()))
-			}
-		}
-		return decision, nil
+		return b.rebuildDecision(ctx, w, recipe, decision, identityErr, shouldPush, probeBuilder)
 	}
 	// A released version is built once. The image is tagged with the service's
 	// version, which `codefly publish` stamps on every service of the release, and
@@ -237,33 +225,9 @@ func (b *Builder) decideImageReuse(
 	// built. An unversioned service (0.0.0, never published) is not a release and
 	// is built as before.
 	if shouldPush && (releasedVersionTag(recipe.GetImage()) || decision.image != "") {
-		adopt, other, err := b.adoptPublished(ctx, w, recipe, decision, probeBuilder)
-		if err != nil {
+		var adopted bool
+		if recipe, decision, adopted, err = b.publishedDecision(ctx, w, recipe, decision, identityErr, probeBuilder); err != nil || adopted {
 			return decision, err
-		}
-		if other != nil {
-			// The release tag holds another build of this version — its code
-			// changed and its version did not, or another agent built it. The
-			// tag is never overwritten, and this build is not refused either:
-			// it is pushed under a tag of its own, qualified by its input
-			// identity, as an agent override's build is (override_build.go).
-			// The declared version stays the release's number; the cell pins
-			// the digest, so the qualified tag is what this render delivers.
-			if decision, err = b.buildApart(w, recipe, decision, identityErr, other); err != nil {
-				return decision, err
-			}
-			recipe = proto.CloneOf(recipe)
-			recipe.Image = decision.image
-			if adopt, other, err = b.adoptPublished(ctx, w, recipe, decision, probeBuilder); err != nil {
-				return decision, err
-			}
-			if other != nil {
-				return decision, w.Wrap(other)
-			}
-		}
-		if adopt != nil {
-			decision.entry = adopt
-			return decision, nil
 		}
 	}
 	if identity.Key == "" {
@@ -286,6 +250,57 @@ func (b *Builder) decideImageReuse(
 			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
 	}
 	return decision, nil
+}
+
+// rebuildDecision is --rebuild's: build again, and still never over a
+// published release — a release tag the registry holds is the release's
+// build, so the rebuild goes apart from it.
+func (b *Builder) rebuildDecision(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr error, shouldPush bool, probeBuilder string) (imageReuse, error) {
+	if !shouldPush || decision.image != "" || !releasedVersionTag(recipe.GetImage()) {
+		return decision, nil
+	}
+	digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
+	if err != nil && !isImageNotFound(err) {
+		return decision, w.Wrapf(err, "cannot tell whether %s is already published", recipe.GetImage())
+	}
+	if err == nil && digest != "" {
+		return b.buildApart(w, recipe, decision, identityErr, fmt.Errorf("--rebuild of %s, which the registry already holds", recipe.GetImage()))
+	}
+	return decision, nil
+}
+
+// publishedDecision judges what the registry holds at the recipe's tag:
+// adopted reports a published build this one is; otherwise the recipe and
+// decision come back as this build is to be pushed — under its release tag
+// when nothing is published there, or apart from a release tag that holds
+// another build of this version. That tag is never overwritten, and this
+// build is not refused either: it is pushed under a tag of its own,
+// qualified by its input identity, as an agent override's build is
+// (override_build.go). The declared version stays the release's number; the
+// cell pins the digest, so the qualified tag is what the render delivers.
+func (b *Builder) publishedDecision(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr error, probeBuilder string) (*builderv0.DockerBuildRecipe, imageReuse, bool, error) {
+	adopt, other, err := b.adoptPublished(ctx, w, recipe, decision, probeBuilder)
+	if err != nil {
+		return recipe, decision, false, err
+	}
+	if other != nil {
+		if decision, err = b.buildApart(w, recipe, decision, identityErr, other); err != nil {
+			return recipe, decision, false, err
+		}
+		recipe = proto.CloneOf(recipe)
+		recipe.Image = decision.image
+		if adopt, other, err = b.adoptPublished(ctx, w, recipe, decision, probeBuilder); err != nil {
+			return recipe, decision, false, err
+		}
+		if other != nil {
+			return recipe, decision, false, w.Wrap(other)
+		}
+	}
+	if adopt == nil {
+		return recipe, decision, false, nil
+	}
+	decision.entry = adopt
+	return recipe, decision, true, nil
 }
 
 // buildApart names this build apart from the release tag the registry holds:

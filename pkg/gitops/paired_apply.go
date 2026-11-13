@@ -152,7 +152,7 @@ func (a *PairedApply) Apply(ctx context.Context, directory string) ([]PairedRece
 			if timeout > remaining {
 				timeout = remaining
 			}
-			receipt := a.send(ctx, documents[i], timeout)
+			receipt := a.send(ctx, &documents[i], timeout)
 			switch {
 			case receipt.Err == nil:
 				a.say(fmt.Sprintf("delivered %s: binding %s at generation %d", receipt.Document, receipt.Binding, receipt.Generation))
@@ -207,7 +207,7 @@ func (a *PairedApply) Apply(ctx context.Context, directory string) ([]PairedRece
 // here, per request, so a projection rotated between rounds is re-read, and it
 // is set on a COPY of the prepared request so no token is retained after the
 // call.
-func (a *PairedApply) send(ctx context.Context, document preparedDocument, timeout time.Duration) PairedReceipt {
+func (a *PairedApply) send(ctx context.Context, document *preparedDocument, timeout time.Duration) PairedReceipt {
 	receipt := PairedReceipt{Document: document.name, Binding: document.binding, Generation: document.generation}
 	credential, err := a.Credential()
 	if err != nil {
