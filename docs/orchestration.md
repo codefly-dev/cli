@@ -1327,7 +1327,9 @@ a hash into a few thousand slots, so two scopes, or two compositions of a few
 dozen endpoints each, meet on one port by chance; the claim takes the first
 port of the endpoint's derived sequence (the derived port, then re-derivations
 that keep its API digit) that no other run claims and no other process listens
-on, and warns, naming both ports, when that is not the derived one. The run's
+on — a port held only by the service's own kept container (below) counts as
+the service's — and warns, naming both ports, when that is not the derived one.
+`codefly run` and the control plane's run claim; nothing else does. The run's
 own claim is taken again first on its next start, whatever listens there — its
 kept container, or its own leftover, which the guard below tells apart — and
 another run's claim blocks while that run lives and for a week after it last
@@ -1335,7 +1337,9 @@ started, so a stopped scope keeps its ports. `codefly endpoint`, `show network`
 and `generate runnable-bindings` read the claim, so they name the port the run
 serves; bindings generated before a run moved a port name the derived one until
 they are generated again. `--temporary-ports` and `--override-port` claim
-nothing: the kernel, or the caller, already chose.
+nothing: the kernel, or the caller, already chose. An unreadable ledger is set
+aside as `claims.json.corrupt-<time>` with a warning; a ledger that cannot be
+used leaves the run on its derived ports, which the guard below still checks.
 
 A routed module ordered after the hop — one that calls through it is — has
 loaded but not initialized when the hop starts. The snapshot routes it at the

@@ -9,6 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
@@ -259,6 +260,9 @@ func (p *planeImpl) Run(ctx context.Context, req *RunRequest) (RunHandle, error)
 			f.WithOutputEnvService(req.OutputEnvService)
 		}
 		f.WithExcludeRoot(req.ExcludeRoot)
+		// As `codefly run` does: claim derived ports on this machine, so this
+		// run and the CLI's agree on them and neither takes another run's.
+		f.WithPortClaims(portclaims.Default())
 		return nil
 	})
 	if err != nil {

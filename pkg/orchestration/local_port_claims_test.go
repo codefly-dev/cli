@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"maps"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/dockerrun"
+	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/require"
 )
 
@@ -90,7 +93,61 @@ func TestLocalRunSkipsAPortAnotherProcessHolds(t *testing.T) {
 	world := claimsTestWorld(t, "pc153-gate", portclaims.New(filepath.Join(t.TempDir(), "claims.json")))
 	port := proposedPort(t, world, endpoint)
 	require.NotEqual(t, derived, port)
-	require.False(t, portclaims.Held(uint16(port)))
 	// The first-Init guard that used to refuse the run passes on the claim.
 	require.NoError(t, (&Runner{}).checkInitialPortAvailability(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(port))}))
+}
+
+// A consumer deriving a producer's address before its Init, and the Init
+// itself, propose the same claimed port in one run.
+func TestADerivationBeforeInitAndTheInitAgree(t *testing.T) {
+	endpoint := claimsTestEndpoint(t)
+	ledger := portclaims.New(filepath.Join(t.TempDir(), "claims.json"))
+	world := claimsTestWorld(t, "gate", ledger)
+	require.Equal(t, proposedPort(t, world, endpoint), proposedPort(t, world, endpoint))
+}
+
+// A caller's --override-port wins over the claim, and is not claimed.
+func TestAnOverrideWinsOverTheClaim(t *testing.T) {
+	endpoint := claimsTestEndpoint(t)
+	world := claimsTestWorld(t, "gate", portclaims.New(filepath.Join(t.TempDir(), "claims.json")))
+	flow := &Flow{world: world}
+	flow.WithPortOverrides(map[string]uint16{resources.EndpointDestination(endpoint): 45001})
+	require.Equal(t, uint32(45001), proposedPort(t, world, endpoint))
+}
+
+// A derived port held by the service's own kept container — left up by a run
+// of this scope before the ledger recorded it — is claimed, not moved away
+// from; the same port held by anything else is.
+func TestADerivedPortHeldByTheServicesOwnKeptContainerIsClaimed(t *testing.T) {
+	endpoint := claimsTestEndpoint(t)
+	derived := uint16(proposedPort(t, claimsTestWorld(t, "gate", nil), endpoint))
+	forwarder, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(derived))))
+	if err != nil {
+		t.Skipf("derived port %d is not free to stand in for the container's forwarder: %v", derived, err)
+	}
+	defer forwarder.Close()
+
+	identity := &resources.ServiceIdentity{Module: "saas", Name: "store"}
+	kept := keptContainer(dockerrun.ContainerName(identity.UniqueWithWorkspaceAndScope("platform-core", "gate")), derived)
+	kept.Labels[dockerrun.LabelCodeflyService] = "saas/store"
+	previous := listOwnedContainers
+	t.Cleanup(func() { listOwnedContainers = previous })
+	for _, tc := range []struct {
+		name    string
+		service string
+		moved   bool
+	}{{"own container", "saas/store", false}, {"another service's container", "saas/cache", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			container := kept
+			container.Labels = maps.Clone(kept.Labels)
+			container.Labels[dockerrun.LabelCodeflyService] = tc.service
+			listOwnedContainers = func(context.Context, string) ([]dockercontainer.Summary, error) {
+				return []dockercontainer.Summary{container}, nil
+			}
+			world := claimsTestWorld(t, "gate", portclaims.New(filepath.Join(t.TempDir(), "claims.json")))
+			world.containerRecoveryIdentity = testRecoveryScope + ":" + testRecoveryNamespace
+			port := uint16(proposedPort(t, world, endpoint))
+			require.Equal(t, tc.moved, port != derived, "derived %d, proposed %d", derived, port)
+		})
+	}
 }

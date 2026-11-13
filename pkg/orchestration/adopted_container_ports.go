@@ -52,16 +52,25 @@ var listOwnedContainers = func(ctx context.Context, scopeID string) ([]container
 // only the existing exact-bare-name compatibility path; suffixes prove nothing.
 // A present conflicting or malformed parent label always refuses the exception.
 func (runner *Runner) adoptedContainerAddresses(ctx context.Context) func(address string) bool {
-	scopeID, namespace, ok := strings.Cut(runner.containerRecoveryIdentity, ":")
-	if !ok || scopeID == "" || runner.instance == nil || runner.instance.Identity == nil ||
-		runner.world == nil || runner.world.Workspace == nil || runner.world.Env == nil {
+	if runner.instance == nil || runner.world == nil {
+		return func(string) bool { return false }
+	}
+	return runner.world.adoptedContainerAddresses(ctx, runner.containerRecoveryIdentity, runner.instance.Identity)
+}
+
+// adoptedContainerAddresses is the same answer for a service of this world,
+// under a recovery identity: the run's port claim asks it too, so a derived
+// port held by the service's own kept container is the service's to keep.
+func (world *World) adoptedContainerAddresses(ctx context.Context, recoveryIdentity string, identity *resources.ServiceIdentity) func(address string) bool {
+	scopeID, namespace, ok := strings.Cut(recoveryIdentity, ":")
+	if !ok || scopeID == "" || identity == nil || world == nil || world.Workspace == nil || world.Env == nil {
 		return func(string) bool { return false }
 	}
 	// The workspace and naming scope the agent's Load receives
 	// (RuntimeInstance.Load sends the run's workspace name, not the identity's).
-	identity, workspace := runner.instance.Identity, runner.world.Workspace.Name
+	workspace := world.Workspace.Name
 	unique := identity.UniqueWithWorkspace(workspace)
-	if scope := runner.world.Env.NamingScope; scope != "" {
+	if scope := world.Env.NamingScope; scope != "" {
 		unique = identity.UniqueWithWorkspaceAndScope(workspace, scope)
 	}
 	name := dockerrun.ContainerName(unique)

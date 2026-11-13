@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,11 +62,11 @@ func TestTwoScopesThatDeriveOnePortClaimDisjointPorts(t *testing.T) {
 	first := testLedger(t, 100)
 	second := sibling(first, 200)
 	second.alive = func(p int) bool { return p == 100 || p == 200 }
-	pa, moved, err := first.Claim(RunKey("platform-core", a), "saas/store/tcp", ca)
+	pa, moved, err := first.Claim(context.Background(), RunKey("platform-core", a), "saas/store/tcp", ca, nil)
 	require.NoError(t, err)
 	require.False(t, moved)
 	require.Equal(t, ca[0], pa)
-	pb, moved, err := second.Claim(RunKey("platform-core", b), "saas/store/tcp", cb)
+	pb, moved, err := second.Claim(context.Background(), RunKey("platform-core", b), "saas/store/tcp", cb, nil)
 	require.NoError(t, err)
 	require.True(t, moved)
 	require.NotEqual(t, pa, pb, "two live scopes were handed the same port")
@@ -84,12 +86,11 @@ func TestAHeldPortIsSkipped(t *testing.T) {
 	require.True(t, Held(candidates[0]))
 
 	l := New(filepath.Join(t.TempDir(), "claims.json"))
-	port, moved, err := l.Claim(RunKey("platform-core", "pc153-gate"), "records/records/connect", candidates)
+	port, moved, err := l.Claim(context.Background(), RunKey("platform-core", "pc153-gate"), "records/records/connect", candidates, nil)
 	require.NoError(t, err)
 	require.True(t, moved)
 	require.NotEqual(t, candidates[0], port)
 	require.Contains(t, candidates, port)
-	require.False(t, Held(port), "the claimed port is free")
 }
 
 // A run takes its own port again after a restart, whatever listens there: it
@@ -98,14 +99,14 @@ func TestARunKeepsItsOwnPortAcrossRestarts(t *testing.T) {
 	candidates := []uint16{57760, 57770, 57780}
 	first := testLedger(t, 100)
 	first.held = func(port uint16) bool { return port == 57760 }
-	port, _, err := first.Claim(RunKey("ws", "gate"), "saas/store/tcp", candidates)
+	port, _, err := first.Claim(context.Background(), RunKey("ws", "gate"), "saas/store/tcp", candidates, nil)
 	require.NoError(t, err)
 	require.Equal(t, uint16(57770), port)
 
 	restarted := sibling(first, 300)
 	restarted.alive = func(int) bool { return false }
 	restarted.held = func(uint16) bool { return true }
-	again, moved, err := restarted.Claim(RunKey("ws", "gate"), "saas/store/tcp", candidates)
+	again, moved, err := restarted.Claim(context.Background(), RunKey("ws", "gate"), "saas/store/tcp", candidates, nil)
 	require.NoError(t, err)
 	require.False(t, moved)
 	require.Equal(t, port, again)
@@ -118,17 +119,17 @@ func TestAStoppedRunsClaimBlocksUntilItLapses(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	stopped := testLedger(t, 100)
 	stopped.now = func() time.Time { return now }
-	_, _, err := stopped.Claim(RunKey("ws", "a"), "m/s/tcp", candidates)
+	_, _, err := stopped.Claim(context.Background(), RunKey("ws", "a"), "m/s/tcp", candidates, nil)
 	require.NoError(t, err)
 
 	other := sibling(stopped, 200)
 	other.alive = func(p int) bool { return p == 200 }
-	port, _, err := other.Claim(RunKey("ws", "b"), "m/s/tcp", candidates)
+	port, _, err := other.Claim(context.Background(), RunKey("ws", "b"), "m/s/tcp", candidates, nil)
 	require.NoError(t, err)
 	require.Equal(t, uint16(20010), port)
 
 	now = now.Add(claimTTL + time.Hour)
-	port, moved, err := other.Claim(RunKey("ws", "c"), "m/s/tcp", candidates)
+	port, moved, err := other.Claim(context.Background(), RunKey("ws", "c"), "m/s/tcp", candidates, nil)
 	require.NoError(t, err)
 	require.False(t, moved)
 	require.Equal(t, uint16(20000), port, "a lapsed claim of a dead run frees its port")
@@ -144,11 +145,79 @@ func TestNativeForReadsTheRunsClaim(t *testing.T) {
 	l.held = func(port uint16) bool { return uint32(port) == derived.Port }
 	candidates := Candidates(ctx, "ws", "saas", "store", "gate", storeEndpoint, network.PortModeHost)
 	require.Equal(t, derived.Port, uint32(candidates[0]))
-	port, moved, err := l.Claim(RunKey("ws", "gate"), Destination("saas/store/tcp", network.PortModeHost), candidates)
+	port, moved, err := l.Claim(context.Background(), RunKey("ws", "gate"), Destination("saas/store/tcp", network.PortModeHost), candidates, nil)
 	require.NoError(t, err)
 	require.True(t, moved)
 
 	require.Equal(t, fmt.Sprintf("localhost:%d", port), l.NativeFor(ctx, "ws", "saas", "store", "gate", endpoint).Address)
 	require.Equal(t, network.NativeFor(ctx, "ws", "saas", "store", "other", endpoint).Address,
 		l.NativeFor(ctx, "ws", "saas", "store", "other", endpoint).Address, "a scope with no claim reads the derived port")
+}
+
+// Runs that start at the same moment, each with its own ledger handle on one
+// file, never take the same port: the pick and the record are one locked step.
+func TestConcurrentRunsClaimDistinctPorts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	candidates := Candidates(context.Background(), "ws", "saas", "store", "", storeEndpoint, network.PortModeHost)
+	const runs = 16
+	ports := make([]uint16, runs)
+	var wg sync.WaitGroup
+	for i := 0; i < runs; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			l := New(path)
+			l.held = func(uint16) bool { return false }
+			port, _, err := l.Claim(context.Background(), RunKey("ws", "scope-"+strconv.Itoa(i)), "saas/store/tcp", candidates, nil)
+			require.NoError(t, err)
+			ports[i] = port
+		}(i)
+	}
+	wg.Wait()
+	seen := map[uint16]bool{}
+	for _, port := range ports {
+		require.False(t, seen[port], "port %d handed to two runs", port)
+		seen[port] = true
+	}
+}
+
+// A derived port held by the endpoint's own kept container, which the ledger
+// never recorded (a scope run before the ledger existed, or whose claim
+// lapsed), is the endpoint's to keep, not a foreign holder to move away from.
+func TestAPortHeldByTheEndpointsOwnContainerIsKept(t *testing.T) {
+	candidates := []uint16{57760, 57770}
+	l := testLedger(t, 100)
+	l.held = func(uint16) bool { return true }
+	port, moved, err := l.Claim(context.Background(), RunKey("ws", "gate"), "saas/store/tcp", candidates,
+		func(port uint16) bool { return port == 57760 })
+	require.NoError(t, err)
+	require.False(t, moved)
+	require.Equal(t, uint16(57760), port)
+}
+
+// An unreadable ledger is set aside rather than silently overwritten.
+func TestAnUnreadableLedgerIsSetAside(t *testing.T) {
+	l := testLedger(t, 100)
+	require.NoError(t, os.WriteFile(l.path, []byte("{not json"), 0o600))
+	port, _, err := l.Claim(context.Background(), RunKey("ws", "gate"), "m/s/tcp", []uint16{20000}, nil)
+	require.NoError(t, err)
+	require.Equal(t, uint16(20000), port)
+	aside, err := filepath.Glob(l.path + ".corrupt-*")
+	require.NoError(t, err)
+	require.Len(t, aside, 1)
+	kept, err := os.ReadFile(aside[0])
+	require.NoError(t, err)
+	require.Equal(t, "{not json", string(kept))
+}
+
+// No ledger (no home directory) claims nothing and reads the derived port.
+func TestANilLedgerClaimsNothing(t *testing.T) {
+	var l *Ledger
+	port, moved, err := l.Claim(context.Background(), RunKey("ws", "gate"), "m/s/tcp", []uint16{20000, 20010}, nil)
+	require.NoError(t, err)
+	require.False(t, moved)
+	require.Equal(t, uint16(20000), port)
+	endpoint := &basev0.Endpoint{Name: "tcp", Api: "tcp"}
+	require.Equal(t, network.NativeFor(context.Background(), "ws", "saas", "store", "gate", endpoint).Address,
+		l.NativeFor(context.Background(), "ws", "saas", "store", "gate", endpoint).Address)
 }

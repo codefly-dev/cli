@@ -3,6 +3,8 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/portclaims"
@@ -22,6 +24,9 @@ type localPortClaims struct {
 	// settled is every endpoint destination whose port is decided: claimed
 	// here, or pinned by the caller (Flow.WithPortOverrides), which wins.
 	settled map[string]bool
+	// failed stops claiming for the rest of the run once the ledger cannot be
+	// used, so its endpoints keep one rule rather than a mix.
+	failed bool
 }
 
 func (c *localPortClaims) pin(overrides map[string]uint16) {
@@ -57,11 +62,15 @@ func (world *World) localNetworkMappings(ctx context.Context, identity *resource
 // process holds, and pins it. Under --temporary-ports the kernel already hands
 // out a free port, and without a ledger the derived port stands, as before.
 //
-// A ledger that cannot be written leaves the derived port in place: the claim
-// only prevents a collision the first-Init port guard still reports.
+// A derived port held only by the service's own kept container is the
+// service's: it is claimed, and the first-Init guard adopts the container.
+//
+// A ledger that cannot be used leaves the derived ports in place for the rest
+// of the run: the claim only prevents a collision the first-Init port guard
+// still reports.
 func (world *World) claimLocalPorts(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint, runtimeContext *basev0.RuntimeContext) {
 	claims := &world.ports
-	if claims.ledger == nil || world.temporaryPorts || world.LocalNetworkManager == nil || world.Workspace == nil || world.Env == nil {
+	if claims.ledger == nil || claims.failed || world.temporaryPorts || world.LocalNetworkManager == nil || world.Workspace == nil || world.Env == nil {
 		return
 	}
 	w := wool.Get(ctx).In("orchestration.claimLocalPorts", wool.ThisField(identity))
@@ -69,19 +78,26 @@ func (world *World) claimLocalPorts(ctx context.Context, identity *resources.Ser
 	scope := world.Env.NamingScope
 	run := portclaims.RunKey(world.Workspace.Name, scope)
 
+	adopted := world.adoptedContainerAddresses(ctx, world.containerRecoveryIdentity, identity)
+	ours := func(port uint16) bool {
+		p := strconv.Itoa(int(port))
+		return adopted(net.JoinHostPort(loopbackIPv4, p)) || adopted(net.JoinHostPort(loopbackIPv6, p))
+	}
+
 	claims.mu.Lock()
 	defer claims.mu.Unlock()
 	overrides := map[string]uint16{}
 	for _, endpoint := range endpoints {
 		destination := resources.EndpointDestination(endpoint)
-		if claims.settled[destination] {
+		if claims.failed || claims.settled[destination] {
 			continue
 		}
 		claims.settle(destination)
 		candidates := portclaims.Candidates(ctx, world.Workspace.Name, identity.Module, identity.Name, scope, endpoint, mode)
-		port, moved, err := claims.ledger.Claim(run, portclaims.Destination(destination, mode), candidates)
+		port, moved, err := claims.ledger.Claim(ctx, run, portclaims.Destination(destination, mode), candidates, ours)
 		if err != nil {
-			w.Warn(fmt.Sprintf("%s: cannot claim a host port, so it keeps its derived port %d: %v", destination, candidates[0], err))
+			claims.failed = true
+			w.Warn(fmt.Sprintf("cannot claim host ports, so this run keeps its derived ports from %s on: %v", destination, err))
 			continue
 		}
 		if moved {

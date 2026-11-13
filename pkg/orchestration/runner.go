@@ -963,7 +963,7 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
+	networkMappings, err := runner.world.localNetworkMappings(ctx, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}

@@ -2609,7 +2609,7 @@ func (flow *Flow) WithPortOverrides(overrides map[string]uint16) {
 // ledger before using it, so a run beside other runs on this machine skips a
 // port another run claims or another process holds (local_port_claims.go).
 func (flow *Flow) WithPortClaims(ledger *portclaims.Ledger) {
-	if flow.world != nil {
+	if flow.world != nil && ledger != nil {
 		flow.world.ports.ledger = ledger
 	}
 }

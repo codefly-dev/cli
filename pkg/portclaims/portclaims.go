@@ -40,6 +40,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 	"github.com/gofrs/flock"
 	"github.com/shirou/gopsutil/v3/process"
 )
@@ -80,14 +81,16 @@ type Ledger struct {
 }
 
 // Default is the machine's ledger: $CODEFLY_PORT_CLAIMS, else
-// ~/.codefly/ports/claims.json.
+// ~/.codefly/ports/claims.json. Without a home it is nil, which claims nothing
+// and reads the derived port: a shared temporary directory is no place for a
+// file another user could plant claims in.
 func Default() *Ledger {
 	if path := os.Getenv(PathEnv); path != "" {
 		return New(path)
 	}
 	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
+	if err != nil || home == "" {
+		return nil
 	}
 	return New(filepath.Join(home, ".codefly", "ports", "claims.json"))
 }
@@ -137,18 +140,25 @@ func Candidates(ctx context.Context, workspace, module, service, namingScope str
 
 // Claim returns the port run binds for destination: its own earlier claim,
 // else the first candidate no other live or recent claim names and nothing
-// listens on, which it records. moved reports that this call chose a port
-// other than the derived one (candidates[0]). With every candidate taken it
-// returns the derived port unrecorded, so the run's port guard names the
-// holder.
-func (l *Ledger) Claim(run, destination string, candidates []uint16) (port uint16, moved bool, err error) {
+// listens on — or only what ours says is the endpoint's own (its kept
+// container, from before the ledger knew it) — which it records. moved
+// reports that this call chose a port other than the derived one
+// (candidates[0]). With every candidate taken it returns the derived port
+// unrecorded, so the run's port guard names the holder.
+func (l *Ledger) Claim(ctx context.Context, run, destination string, candidates []uint16, ours func(uint16) bool) (port uint16, moved bool, err error) {
 	if len(candidates) == 0 {
 		return 0, false, errors.New("no candidate port")
 	}
-	err = l.update(func(claims map[uint16]Claim) bool {
+	if l == nil {
+		return candidates[0], false, nil
+	}
+	if ours == nil {
+		ours = func(uint16) bool { return false }
+	}
+	err = l.update(ctx, func(claims map[uint16]Claim) bool {
 		if owned, ok := own(claims, run, destination); ok {
 			port = owned
-		} else if port = free(claims, candidates, l.held); port == 0 {
+		} else if port = free(claims, candidates, func(p uint16) bool { return l.held(p) && !ours(p) }); port == 0 {
 			port = candidates[0]
 			return false
 		} else {
@@ -175,6 +185,9 @@ func free(claims map[uint16]Claim, candidates []uint16, held func(uint16) bool) 
 
 // Lookup is run's recorded port for destination, read without claiming.
 func (l *Ledger) Lookup(run, destination string) (uint16, bool) {
+	if l == nil {
+		return 0, false
+	}
 	claims, err := l.read()
 	if err != nil {
 		return 0, false
@@ -185,6 +198,9 @@ func (l *Ledger) Lookup(run, destination string) (uint16, bool) {
 // NativeFor is network.NativeFor with the run's claim when it has one: the
 // address a run of that workspace and scope binds, read without a live run.
 func (l *Ledger) NativeFor(ctx context.Context, workspace, module, service, namingScope string, endpoint *basev0.Endpoint) *basev0.NetworkInstance {
+	if l == nil {
+		return network.NativeFor(ctx, workspace, module, service, namingScope, endpoint)
+	}
 	stamped := &basev0.Endpoint{Module: module, Service: service, Name: endpoint.GetName(), Api: endpoint.GetApi()}
 	if port, ok := l.Lookup(RunKey(workspace, namingScope), Destination(resources.EndpointDestination(stamped), network.PortModeHost)); ok {
 		return network.Native(endpoint, port)
@@ -208,25 +224,30 @@ func own(claims map[uint16]Claim, run, destination string) (uint16, bool) {
 
 // update runs change over the claims under the file lock, dropping claims that
 // lapsed, and writes them back when change reports it recorded one.
-func (l *Ledger) update(change func(map[uint16]Claim) bool) error {
+func (l *Ledger) update(ctx context.Context, change func(map[uint16]Claim) bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
 		return fmt.Errorf("port claims: %w", err)
 	}
 	lock := flock.New(l.path + ".lock")
-	ctx, cancel := context.WithTimeout(context.Background(), lockTimeout)
+	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
 	defer cancel()
-	locked, err := lock.TryLockContext(ctx, 20*time.Millisecond)
+	locked, err := lock.TryLockContext(lockCtx, 20*time.Millisecond)
 	if err != nil || !locked {
 		return fmt.Errorf("port claims: cannot lock %s: %v", l.path, err)
 	}
 	defer func() { _ = lock.Unlock() }()
 	claims, err := l.read()
 	if err != nil {
-		// An unreadable ledger is rewritten rather than trusted or fatal: the
-		// claims in it protect only against a collision the port guard still
-		// reports.
+		// An unreadable ledger is set aside, said, and started afresh rather
+		// than trusted or fatal: the claims in it protect only against a
+		// collision the port guard still reports.
+		aside := fmt.Sprintf("%s.corrupt-%d", l.path, l.now().Unix())
+		if renameErr := os.Rename(l.path, aside); renameErr != nil {
+			return fmt.Errorf("port claims: %s is unreadable (%v) and cannot be set aside: %w", l.path, err, renameErr)
+		}
+		wool.Get(ctx).In("portclaims.update").Warn(fmt.Sprintf("port claims: %s was unreadable (%v); set aside as %s, and other runs' claims in it are forgotten", l.path, err, aside))
 		claims = map[uint16]Claim{}
 	}
 	for port, claim := range claims {
