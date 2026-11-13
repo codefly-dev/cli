@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 
 	"github.com/codefly-dev/cli/pkg/processgroup"
@@ -100,7 +101,9 @@ var otherRunsLive = func(ctx context.Context, world *World) bool {
 // (the object store's MinIO and gateway share one) removes it only in Destroy,
 // which a run never calls, so each failed run used to leave one behind until
 // the engine ran out of address pools. A network another container still uses
-// is kept for it. A variable so a test can stand in for the engine.
+// is kept for it, stopped containers included: the engine's inspect lists only
+// running endpoints, and a stopped container whose network is removed can never
+// start again. A variable so a test can stand in for the engine.
 var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 	cli, err := dockerrun.NewClient()
 	if err != nil {
@@ -117,6 +120,16 @@ var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	if inspect.Labels[dockerrun.LabelCodeflyOwner] != ownedLabel || len(inspect.Containers) > 0 {
+		return false, nil
+	}
+	// By name as well as id (the engine ORs them): a container created but
+	// never started records its network by name alone.
+	attached, err := cli.ContainerList(removeCtx, container.ListOptions{All: true, Filters: filters.NewArgs(
+		filters.Arg("network", inspect.ID), filters.Arg("network", inspect.Name))})
+	if err != nil {
+		return false, err
+	}
+	if len(attached) > 0 {
 		return false, nil
 	}
 	if err = cli.NetworkRemove(removeCtx, inspect.ID); err != nil && !errdefs.IsNotFound(err) {

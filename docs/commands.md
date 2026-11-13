@@ -1623,6 +1623,19 @@ changes only through publish, which copies the working render into a clone of
 the delivery repository at the environment's gitops path. `.codefly/renders`
 carries its own `.gitignore`, so a working render cannot be committed.
 
+**Publish delivers a working render only while a render still vouches for
+it.** A failed render leaves the previous tree in place, so each render also
+writes an outcome file beside the tree, at
+`.codefly/renders/<env>/records/<module>.json`, which is never delivered. It
+says `rendering` before the render starts, then `rendered`, with the
+composition's pins (every `modules:` entry as `source@version`), or `failed`,
+with the error. `render --all` marks each module it stopped before reaching as
+`failed`. `plan` and `publish` refuse, naming `codefly deploy gitops render
+<module> --env <env>`, when that file is missing, says `failed` or `rendering`
+(an interrupted render), or when a pin has moved, been added or been removed
+since. Behaviour change: a working render left by a CLI older than this check
+has no such file, so it is refused once and must be rendered again.
+
 Publish clones the selected GitOps repository, commits and advertises the
 immutable service/module snapshot, derives exact AppProject authority from that
 snapshot, and adds CLI-owned Applications pinned to its commit and paths. It

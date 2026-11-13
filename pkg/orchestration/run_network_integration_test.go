@@ -62,6 +62,18 @@ func TestRemoveRunNetworkAgainstTheEngine(t *testing.T) {
 	require.False(t, removed)
 	require.True(t, networkExists(shared), "a network another container still uses is kept")
 
+	// The engine's inspect lists only running endpoints; a stopped container
+	// still needs its network to start again.
+	stopped := createTestNetwork(t, true)
+	output, err = exec.Command("docker", "create", "--network", stopped, runNetworkImage, "true").CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	created := strings.TrimSpace(string(output))
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "--force", created).Run() })
+	removed, err = removeRunNetwork(ctx, stopped)
+	require.NoError(t, err)
+	require.False(t, removed)
+	require.True(t, networkExists(stopped), "a network a stopped container is attached to is kept")
+
 	removed, err = removeRunNetwork(ctx, "codefly-run-network-test-absent")
 	require.NoError(t, err)
 	require.False(t, removed)
