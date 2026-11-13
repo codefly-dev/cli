@@ -1322,7 +1322,12 @@ so the signed promotion commit stays on the base. A required check that fails, a
 refuses (a review it requires) or a wait past `--merge-timeout` (default 30m)
 stops the run at that module; the modules after it are not published, and
 running the same command again picks up where it stopped (what was delivered
-is `unchanged`). Progress is narrated per module, and the run ends with one row
+is `unchanged`: a publish delivers an unchanged pair — module manifest and
+authority half — as the bytes the base branch carries rather than signing it
+again, since a fresh signature alone would be a new promotion). A promotion
+that falls behind a base requiring branches to be up to date is not caught up
+on GitHub — that would be a head nobody pushed — and the run says to publish
+again. Progress is narrated per module, and the run ends with one row
 per module: its result (`merged`, `unchanged`, `promoted` for a local
 promotion, `failed`, `not reached`), its promotion and the commit the base
 carries. `--allow-cell-removal`, `--allow-unresolved-contracts`,

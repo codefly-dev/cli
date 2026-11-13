@@ -114,9 +114,15 @@ func MergePromotion(ctx context.Context, result *PublishResult, options MergeOpt
 		Method: merged.Method, Head: result.Commit, MergeBlocked: true, Say: say,
 	}
 	merged.Commit, err = merge.Land(ctx)
+	// The wait can run out between reads or inside one; either way what it
+	// was waiting on is the reason.
 	var open *gh.StillOpenError
-	if errors.As(err, &open) {
-		return merged, fmt.Errorf("promotion pull request #%d was still %q after %s (%s); it is open and was not merged", open.Number, open.State, options.Timeout, checks.waiting)
+	if errors.As(err, &open) || errors.Is(err, context.DeadlineExceeded) {
+		waiting := checks.waiting
+		if waiting == "" {
+			waiting = "the merge"
+		}
+		return merged, fmt.Errorf("promotion pull request #%d was not merged in time: %s; it is open: %w", result.PullRequestID, waiting, err)
 	}
 	return merged, err
 }

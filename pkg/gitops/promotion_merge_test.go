@@ -306,3 +306,16 @@ func TestPublishOrderPutsTheHostLast(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"alpha", "zeta", "payments"}, order)
 }
+
+// A promotion behind a strict base is not caught up on GitHub: the catch-up
+// is a head nobody pushed, which the merge would then refuse. It says to
+// publish again, and leaves the branch as it was.
+func TestAPromotionBehindAStrictBaseIsNotRewritten(t *testing.T) {
+	repository := &fakeDeliveryRepository{mergeable: "behind"}
+	repository.serve(t)
+
+	_, _, err := mergeIt(t)
+	require.ErrorContains(t, err, "fell behind blue-delivery")
+	require.ErrorContains(t, err, "publish again")
+	require.False(t, repository.merged)
+}

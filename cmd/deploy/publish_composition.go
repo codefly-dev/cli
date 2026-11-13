@@ -126,15 +126,19 @@ func publishComposition(ctx context.Context) error {
 		queue = queue[1:]
 		cli.Info("[%d/%d] %s", len(deliveries)+1, len(order), module)
 		delivery, producer := publishAndMerge(ctx, plane, workspace.Dir(), module, queue)
-		if producer != "" && !deferred[module+"<"+producer] {
+		switch {
+		case producer != "" && !deferred[module+"<"+producer]:
 			// Its contract check refuses it against what is delivered of a
 			// module this run has yet to publish: it goes right after that
 			// module, once.
 			deferred[module+"<"+producer] = true
-			at := slices.Index(queue, producer) + 1
-			queue = slices.Insert(queue, at, module)
-			cli.Info("  deferred: its contract check is held to %s, which this run publishes next; publishing it after %s", producer, producer)
+			queue = slices.Insert(queue, slices.Index(queue, producer)+1, module)
+			cli.Info("  deferred: its contract check is held to %s, which this run has yet to publish; publishing it after %s", producer, producer)
 			continue
+		case producer != "":
+			// Held to the same producer again: the producers wait on each
+			// other, and no order of this run delivers either.
+			delivery.result, delivery.err = "failed", fmt.Errorf("its contract check is still held to %s, which this run has not published: the two are held to each other", producer)
 		}
 		deliveries = append(deliveries, delivery)
 		if delivery.err == nil {

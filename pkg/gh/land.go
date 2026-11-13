@@ -122,7 +122,11 @@ func (m *PullRequestMerge) Land(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("%s #%d conflicts with %s", m.Noun, m.Number, pr.GetBase().GetRef())
 		case "behind":
 			// A strict base: a branch that fell behind never goes green
-			// until it is caught up.
+			// until it is caught up. A merge bound to one head cannot catch
+			// up — GitHub's catch-up is a new head — so it says so instead.
+			if m.Head != "" {
+				return "", fmt.Errorf("%s #%d fell behind %s, which requires a branch to be up to date; catching it up would merge a head nobody pushed: publish again to rebuild it on %s", m.Noun, m.Number, pr.GetBase().GetRef(), pr.GetBase().GetRef())
+			}
 			var accepted *github.AcceptedError
 			if _, _, err := m.Client.PullRequests.UpdateBranch(ctx, m.Owner, m.Repo, m.Number, nil); err != nil && !errors.As(err, &accepted) {
 				return "", fmt.Errorf("update %s #%d onto %s: %w", m.Noun, m.Number, pr.GetBase().GetRef(), err)

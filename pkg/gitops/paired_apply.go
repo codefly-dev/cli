@@ -270,6 +270,9 @@ type preparedDocument struct {
 	manifest   *solutionhost.ModuleManifest
 	binding    string
 	generation uint64
+	// encoded is the document exactly as it was read: what a publish that
+	// reuses a delivered pair writes back.
+	encoded []byte
 }
 
 // readPreparedDocuments reads every prepared request in directory, in name
@@ -328,6 +331,6 @@ func parsePreparedDocument(name string, data []byte) (preparedDocument, error) {
 	}
 	return preparedDocument{
 		name: name, request: &request, manifest: manifest,
-		binding: manifest.Binding, generation: manifest.Generation,
+		binding: manifest.Binding, generation: manifest.Generation, encoded: data,
 	}, nil
 }
