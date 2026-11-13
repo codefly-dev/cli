@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -770,7 +771,7 @@ func unrenderedModules(remaining []*resources.Module) string {
 	for _, module := range remaining {
 		names = append(names, module.Name)
 	}
-	return " (not rendered, their trees are as they were: " + strings.Join(names, ", ") + ")"
+	return " (not rendered: each keeps its earlier tree, which publish refuses until it renders again: " + strings.Join(names, ", ") + ")"
 }
 
 func compositionRenderOrder(env *environments.Environment, modules []*resources.Module) (rendered []*resources.Module, withdrawn []string) {
@@ -801,6 +802,18 @@ func compositionRenderOrder(env *environments.Environment, modules []*resources.
 // tree is read against it, then the rest in name order — and derives the
 // environment's cell file once, from all of them. One command for one
 // composition: a stale sibling is never a reason to run it again.
+// recordUnrendered records the render of every module a whole-composition
+// render stopped before reaching as failed: each keeps the tree an earlier
+// render left, and publish must refuse it rather than deliver it as this
+// render's.
+func recordUnrendered(workspace *resources.Workspace, env *environments.Environment, modules []*resources.Module, cause error) error {
+	failures := make([]error, 0, len(modules))
+	for _, module := range modules {
+		failures = append(failures, gitops.RecordRenderFailure(workspace.Dir(), env.Name, module.Name, cause))
+	}
+	return errors.Join(failures...)
+}
+
 func renderComposition(ctx context.Context) error {
 	if err := common.ResolvePinnedModules(ctx); err != nil {
 		return err
@@ -841,7 +854,8 @@ func renderComposition(ctx context.Context) error {
 	deployed, err := gitops.DeployComposition(ctx, workspace, env, rendered,
 		gitOpsValidateCluster, gitOpsRebuild, cli.NewOutputSink())
 	if err != nil {
-		return fmt.Errorf("render the composition: %w%s", err, unrenderedModules(rendered))
+		err = fmt.Errorf("render the composition: %w", err)
+		return errors.Join(fmt.Errorf("%w%s", err, unrenderedModules(rendered)), recordUnrendered(workspace, env, rendered, err))
 	}
 	defer func() { _ = deployed.Close() }()
 	for index, module := range rendered {
@@ -853,9 +867,11 @@ func renderComposition(ctx context.Context) error {
 		})
 		if renderErr != nil {
 			// The modules after this one keep whatever render their tree
-			// held, which publish reports as rendered for another
-			// environment; naming them here says why.
-			return fmt.Errorf("render %s: %w%s", module.Name, renderErr, unrenderedModules(rendered[index+1:]))
+			// held; each is recorded as not rendered, so publish refuses
+			// it, and naming them here says why.
+			stopped := fmt.Errorf("render --all stopped at %s, before it reached this module: %w", module.Name, renderErr)
+			return errors.Join(fmt.Errorf("render %s: %w%s", module.Name, renderErr, unrenderedModules(rendered[index+1:])),
+				recordUnrendered(workspace, env, rendered[index+1:], stopped))
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)

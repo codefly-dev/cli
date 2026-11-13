@@ -958,6 +958,12 @@ func loadPublicationInventory(
 	if inventory.OwnedPath != expectedOwnedPath {
 		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q: %s", inventory.OwnedPath, expectedOwnedPath, renderFirst)
 	}
+	// Whose render this is, then whether that render still stands: a render
+	// that failed or was interrupted left an earlier tree here, and a render
+	// of a composition whose pins have moved since is of another composition.
+	if err := holdRenderRecord(workspace, request.Module, request.Environment); err != nil {
+		return Inventory{}, err
+	}
 	if err := ValidateRenderedTree(rendered, "", true); err != nil {
 		return Inventory{}, fmt.Errorf("validate promotable render: %w", err)
 	}

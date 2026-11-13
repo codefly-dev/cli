@@ -323,6 +323,10 @@ type RenderOptions struct {
 	Package     *InventoryPackage
 	// Pin is how the composition pinned the module, recorded in the inventory.
 	Pin *InventoryPin
+	// CompositionPins is every pinned module of the composition this render
+	// read, kept in the render record beside a module's working render so
+	// publish refuses the tree once any of them moves (render_record.go).
+	CompositionPins map[string]string
 	// ReleaseArtifacts is what the module's package manifest declares the
 	// release publishes; the runtime artifact named frontend among them is
 	// the bundle a module manifest's generated frontend.payload names.

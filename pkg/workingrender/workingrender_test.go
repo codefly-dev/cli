@@ -36,3 +36,23 @@ func TestPrepareIgnoresTheRendersAndRefusesAnUnnamedEnvironment(t *testing.T) {
 		t.Fatalf(".gitignore = %q, %v; want the root to ignore itself", data, err)
 	}
 }
+
+func TestOnlyAModulesWorkingRenderHasARecord(t *testing.T) {
+	root := t.TempDir()
+	workspace, environment, module, ok := RecordOf(Module(root, "blue", "saas"))
+	if !ok || workspace != root || environment != "blue" || module != "saas" {
+		t.Fatalf("RecordOf(the working render of saas for blue) = %q %q %q %v", workspace, environment, module, ok)
+	}
+	if Record(root, "blue", "saas") == Record(root, "staging", "saas") {
+		t.Fatal("two environments share one render record")
+	}
+	for _, other := range []string{
+		filepath.Join(Environment(root, "blue"), "services", "saas", "api"),
+		filepath.Join(root, "deployments", "modules", "saas"),
+		filepath.Join(root, "renders", "blue", "modules", "saas"),
+	} {
+		if _, _, _, ok := RecordOf(other); ok {
+			t.Fatalf("RecordOf(%s) answered a module's working render", other)
+		}
+	}
+}
