@@ -63,7 +63,7 @@ func renderModuleTree(
 			err = errors.Join(err, RecordRenderFailure(workspace.Dir(), env.Name, module.Name, err))
 		}
 	}()
-	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
+	if err = selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
 	}
 	// A whole-composition render has validated the workspace and held every
@@ -71,7 +71,7 @@ func renderModuleTree(
 	// own checks are a subset of those.
 	if build.deployed == nil {
 		endValidate := timings.Start("module.validate-workspace")
-		err := environments.ValidateWorkspace(ctx, workspace, env)
+		err = environments.ValidateWorkspace(ctx, workspace, env)
 		endValidate()
 		if err != nil {
 			return RenderResult{}, err
@@ -82,7 +82,7 @@ func renderModuleTree(
 	}
 	if build.deployed == nil {
 		endPermissions := timings.Start("module.composition-permissions")
-		err := CheckCompositionPermissions(ctx, workspace, env, true, module.Name)
+		err = CheckCompositionPermissions(ctx, workspace, env, true, module.Name)
 		endPermissions()
 		if err != nil {
 			return RenderResult{}, err
