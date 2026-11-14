@@ -53,7 +53,7 @@ func NewClient() (*github.Client, error) {
 // optional (present a token via env and it is never invoked) rather than
 // required.
 func Token() string {
-	if t := environmentToken(); t != "" {
+	if t, _ := environmentToken(); t != "" {
 		return t
 	}
 	token, _ := loginToken(context.Background(), "")
@@ -84,7 +84,9 @@ var releaseAPI = "https://api.github.com"
 //   - The token is read from gh's standard output, never enters an argument
 //     list, a log or a file, and lives only in this closure.
 //
-// With no token, it answers every source it tried, for the refusal to name.
+// With a token, it answers the one source the token came from, so a refusal
+// of that token can say whose it was; with none, every source it tried, for
+// the refusal to name.
 func ReleaseTokenSource(ctx context.Context) func() (string, []string) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -96,8 +98,8 @@ func ReleaseTokenSource(ctx context.Context) func() (string, []string) {
 		reason string
 	)
 	return func() (string, []string) {
-		if t := environmentToken(); t != "" {
-			return t, nil
+		if t, source := environmentToken(); t != "" {
+			return t, []string{source}
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -109,21 +111,27 @@ func ReleaseTokenSource(ctx context.Context) func() (string, []string) {
 			asked, token, reason = true, login, why
 		}
 		if token != "" {
-			return token, nil
+			return token, []string{loginSource}
 		}
 		return "", triedSources(reason)
 	}
 }
 
+// loginSource names the gh login as the source of a token it answered.
+const loginSource = "the gh login (" + releaseHost + ")"
+
 func triedSources(loginReason string) []string {
 	return []string{"GITHUB_TOKEN", "GH_TOKEN", fmt.Sprintf("the gh CLI login for %s (%s)", releaseHost, loginReason)}
 }
 
-func environmentToken() string {
-	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
-		return t
+// environmentToken is the environment's token and the variable it came from.
+func environmentToken() (token, source string) {
+	for _, variable := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if t := strings.TrimSpace(os.Getenv(variable)); t != "" {
+			return t, variable
+		}
 	}
-	return strings.TrimSpace(os.Getenv("GH_TOKEN"))
+	return "", ""
 }
 
 // releaseLogin is gh's login for github.com, held to GitHub's answer: a

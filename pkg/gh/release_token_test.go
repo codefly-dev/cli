@@ -62,8 +62,8 @@ func TestReleaseTokenSourceReadsTheGHLoginForGitHubOnceWhenTheEnvironmentHasNone
 	calls := fakeGH(t, `[ "$*" = "auth token --hostname github.com" ] || exit 1; printf 'gho_fromlogin\n'`)
 	source := ReleaseTokenSource(t.Context())
 	for range 3 {
-		if token, tried := source(); token != "gho_fromlogin" || tried != nil {
-			t.Fatalf("source() = %q, %v; want the gh login's token", token, tried)
+		if token, sources := source(); token != "gho_fromlogin" || len(sources) != 1 || sources[0] != "the gh login (github.com)" {
+			t.Fatalf("source() = %q, %v; want the gh login's token, named as its source", token, sources)
 		}
 	}
 	if got := callsOf(t, calls); len(got) != 1 || got[0] != "auth token --hostname github.com" {
@@ -76,8 +76,8 @@ func TestReleaseTokenSourcePrefersTheEnvironmentAndNeverAsksGH(t *testing.T) {
 		t.Run(variable, func(t *testing.T) {
 			calls := fakeGH(t, `printf 'gho_fromlogin\n'`)
 			t.Setenv(variable, "from-environment")
-			if token, _ := ReleaseTokenSource(t.Context())(); token != "from-environment" {
-				t.Fatalf("source() = %q, want the environment's", token)
+			if token, sources := ReleaseTokenSource(t.Context())(); token != "from-environment" || len(sources) != 1 || sources[0] != variable {
+				t.Fatalf("source() = %q, %v; want the environment's, named %s", token, sources, variable)
 			}
 			if got := callsOf(t, calls); got != nil {
 				t.Fatalf("gh was invoked although %s is set: %q", variable, got)
@@ -97,6 +97,25 @@ func TestReleaseTokenSourceWithholdsALoginGitHubRefuses(t *testing.T) {
 	}
 	if joined := strings.Join(tried, ", "); !strings.Contains(joined, "GitHub refused the login gh holds (401)") || strings.Contains(joined, "gho_revoked") {
 		t.Fatalf("tried = %q", joined)
+	}
+}
+
+// Only GitHub's 401 says a login is no credential. A 403 (a rate limit, a
+// policy) or a 404 says nothing about the token, so it is still handed over
+// and the download reports what GitHub says.
+func TestReleaseTokenSourceWithholdsALoginOnlyOnA401(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			fakeGH(t, `printf 'gho_fromlogin\n'`)
+			checks := githubAPI(t, status)
+			token, _ := ReleaseTokenSource(t.Context())()
+			if checks.Load() != 1 {
+				t.Fatalf("the login was checked %d times, want once", checks.Load())
+			}
+			if withheld := token == ""; withheld != (status == http.StatusUnauthorized) {
+				t.Fatalf("GitHub answered %d and the source answered %q", status, token)
+			}
+		})
 	}
 }
 
@@ -135,23 +154,64 @@ func TestReleaseTokenSourceSaysWhenGHIsNotInstalled(t *testing.T) {
 	}
 }
 
-// The command's context ends the lookup, and a cancelled lookup is asked
-// again rather than remembered as "no login".
-func TestReleaseTokenSourceStopsWithTheCommandAndForgetsACancelledLookup(t *testing.T) {
+// The command's context ends the lookup.
+func TestReleaseTokenSourceStopsWithTheCommand(t *testing.T) {
 	fakeGH(t, `exec /bin/sleep 30`)
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(100*time.Millisecond, cancel)
-	source := ReleaseTokenSource(ctx)
 	started := time.Now()
-	token, tried := source()
+	token, tried := ReleaseTokenSource(ctx)()
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("the lookup outlived its command by %s", elapsed)
 	}
 	if token != "" || !strings.Contains(strings.Join(tried, ", "), "cancelled") {
 		t.Fatalf("source() = %q, %v", token, tried)
 	}
-	if _, again := source(); !strings.Contains(strings.Join(again, ", "), "cancelled") {
-		t.Fatalf("a cancelled lookup was remembered as %v", again)
+}
+
+// reopenedContext is cancelled until reopen is called: a context a real
+// command never has, and the only way to observe whether the source asked gh
+// again after a cancelled lookup rather than answering from memory.
+type reopenedContext struct {
+	context.Context
+	cancelled atomic.Bool
+	done      chan struct{}
+}
+
+func newReopenedContext() *reopenedContext {
+	c := &reopenedContext{Context: context.Background(), done: make(chan struct{})}
+	close(c.done)
+	c.cancelled.Store(true)
+	return c
+}
+
+func (c *reopenedContext) reopen() { c.cancelled.Store(false) }
+
+func (c *reopenedContext) Done() <-chan struct{} {
+	if c.cancelled.Load() {
+		return c.done
+	}
+	return nil
+}
+
+func (c *reopenedContext) Err() error {
+	if c.cancelled.Load() {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A cancelled lookup is not remembered as "no login": the next ask runs gh.
+func TestReleaseTokenSourceDoesNotRememberACancelledLookup(t *testing.T) {
+	fakeGH(t, `printf 'gho_fromlogin\n'`)
+	ctx := newReopenedContext()
+	source := ReleaseTokenSource(ctx)
+	if token, tried := source(); token != "" || !strings.Contains(strings.Join(tried, ", "), "cancelled") {
+		t.Fatalf("a cancelled lookup answered %q, %v", token, tried)
+	}
+	ctx.reopen()
+	if token, tried := source(); token != "gho_fromlogin" {
+		t.Fatalf("after a cancelled lookup the source answered %q, %v; want gh asked again", token, tried)
 	}
 }
 
