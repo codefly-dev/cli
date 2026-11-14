@@ -12,9 +12,9 @@ import (
 
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 
 	"github.com/codefly-dev/cli/pkg/processgroup"
 )
@@ -83,7 +83,8 @@ var removeRunContainer = func(ctx context.Context, id string) error {
 	defer cli.Close()
 	removeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return cli.ContainerRemove(removeCtx, id, container.RemoveOptions{Force: true})
+	_, err = cli.ContainerRemove(removeCtx, id, client.ContainerRemoveOptions{Force: true})
+	return err
 }
 
 // otherRunsLive reports whether another run's managed process groups are
@@ -112,27 +113,27 @@ var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 	defer cli.Close()
 	removeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	inspect, err := cli.NetworkInspect(removeCtx, name, network.InspectOptions{})
+	inspected, err := cli.NetworkInspect(removeCtx, name, client.NetworkInspectOptions{})
 	if errdefs.IsNotFound(err) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
+	inspect := inspected.Network
 	if inspect.Labels[dockerrun.LabelCodeflyOwner] != ownedLabel || len(inspect.Containers) > 0 {
 		return false, nil
 	}
 	// By name as well as id (the engine ORs them): a container created but
 	// never started records its network by name alone.
-	attached, err := cli.ContainerList(removeCtx, container.ListOptions{All: true, Filters: filters.NewArgs(
-		filters.Arg("network", inspect.ID), filters.Arg("network", inspect.Name))})
+	attached, err := cli.ContainerList(removeCtx, client.ContainerListOptions{All: true, Filters: client.Filters{}.Add("network", inspect.ID).Add("network", inspect.Name)})
 	if err != nil {
 		return false, err
 	}
-	if len(attached) > 0 {
+	if len(attached.Items) > 0 {
 		return false, nil
 	}
-	if err = cli.NetworkRemove(removeCtx, inspect.ID); err != nil && !errdefs.IsNotFound(err) {
+	if _, err = cli.NetworkRemove(removeCtx, inspect.ID, client.NetworkRemoveOptions{}); err != nil && !errdefs.IsNotFound(err) {
 		return false, err
 	}
 	return true, nil

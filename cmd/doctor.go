@@ -17,7 +17,7 @@ import (
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -150,7 +150,7 @@ func checkAgentsInstalled(_ context.Context) checkResult {
 
 func checkDocker(ctx context.Context) checkResult {
 	r := checkResult{name: "docker daemon"}
-	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	c, err := client.New(client.FromEnv)
 	if err != nil {
 		r.status = statusWarn
 		r.detail = "cannot create docker client: " + err.Error()
@@ -160,7 +160,7 @@ func checkDocker(ctx context.Context) checkResult {
 	defer c.Close()
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	if _, err := c.Ping(pingCtx); err != nil {
+	if _, err := c.Ping(pingCtx, client.PingOptions{}); err != nil {
 		r.status = statusWarn // WARN, not FAIL: docker is optional for non-docker services
 		r.detail = fmt.Sprintf("not reachable at %s (%v)", c.DaemonHost(), err)
 		r.fix = "start Docker Desktop / dockerd, then `docker info` to confirm (only needed for docker-backed services)"
