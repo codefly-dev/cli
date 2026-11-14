@@ -109,6 +109,42 @@ func TestLibraryVersionIsTheProducersForOneContract(t *testing.T) {
 	}
 }
 
+// Regenerating never resets what a library already publishes: a local service
+// at 0.0.0 regenerating the client its consumers hold at ^0.0.1 rewrote both
+// package.json and library.codefly.yaml to 0.0.0.
+func TestARegeneratedLibraryNeverMovesItsVersionBack(t *testing.T) {
+	output := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(output, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local := []ContractEntry{{PackageVersion: "0.0.0"}}
+	write("library.codefly.yaml", "kind: library\nname: client\nversion: 0.0.0\n")
+	write("typescript/package.json", `{"name":"@acme/client","version":"0.0.1"}`)
+	if got := libraryVersion(output, local); got != "0.0.1" {
+		t.Fatalf("libraryVersion = %q, want the published 0.0.1 kept", got)
+	}
+	write("python/pyproject.toml", "[project]\nname = \"client\"\nversion = \"0.3.0\"\n")
+	if got := libraryVersion(output, local); got != "0.3.0" {
+		t.Fatalf("libraryVersion = %q, want the later Python package version 0.3.0", got)
+	}
+	// A producer ahead of every declaration moves the library forward.
+	if got := libraryVersion(output, []ContractEntry{{PackageVersion: "1.2.0"}}); got != "1.2.0" {
+		t.Fatalf("libraryVersion = %q, want the producer's 1.2.0", got)
+	}
+	// An unreadable declaration never displaces a version.
+	write("python/pyproject.toml", "[project]\nname = \"client\"\nversion = \"dev\"\n")
+	if got := libraryVersion(output, local); got != "0.0.1" {
+		t.Fatalf("libraryVersion = %q, want 0.0.1", got)
+	}
+}
+
 func packageJSON(t *testing.T, langDir string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(langDir, "package.json"))

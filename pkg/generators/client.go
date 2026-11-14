@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	semver "github.com/Masterminds/semver/v3"
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
 	"github.com/codefly-dev/cli/pkg/cli"
 	coreproto "github.com/codefly-dev/core/companions/proto"
@@ -796,11 +797,57 @@ func readExistingLanguageExports(outputDir string) ([]generatedLanguageExport, e
 // producer's own declared version for a single contract (the composed module
 // package's, or the local service's), and an aggregated library's existing
 // top-level version, since no one producer's version is its own.
+//
+// A generation never moves that version backwards. A library already declares
+// one, in its manifest and in the package manifests a release stamped or a
+// person bumped, and consumers depend on it: a local service still at 0.0.0
+// regenerating a client published as 0.0.1 keeps 0.0.1. The producer's version
+// it was generated from stays recorded exactly, per source.
 func libraryVersion(outputDir string, entries []ContractEntry) string {
+	version := entries[0].PackageVersion
 	if len(entries) > 1 {
-		return existingTopVersion(outputDir)
+		version = existingTopVersion(outputDir)
 	}
-	return entries[0].PackageVersion
+	if strings.TrimSpace(version) == "" {
+		return version // refused by the caller: a producer with no version
+	}
+	for _, existing := range existingLibraryVersions(outputDir) {
+		version = laterVersion(version, existing)
+	}
+	return version
+}
+
+// existingLibraryVersions is every version outputDir's library already
+// declares: its manifest's, and each language package manifest's.
+func existingLibraryVersions(outputDir string) []string {
+	var versions []string
+	if top := readTopVersion(outputDir); top != "" {
+		versions = append(versions, top)
+	}
+	for _, lang := range []languages.Language{languages.TYPESCRIPT, languages.PYTHON} {
+		path, _ := packageManifest(lang, filepath.Join(outputDir, string(lang)))
+		data, err := os.ReadFile(path) //nolint:gosec // the library's own package manifest
+		if err != nil {
+			continue
+		}
+		if start, end, err := locatePackageVersion(lang, path, data); err == nil {
+			versions = append(versions, strings.Trim(string(data[start:end]), `"'`))
+		}
+	}
+	return versions
+}
+
+// laterVersion is the later of two versions; current when either is not a
+// version, so an unreadable declaration never replaces a readable one.
+func laterVersion(current, candidate string) string {
+	c, err := semver.NewVersion(current)
+	if err != nil {
+		return current
+	}
+	if k, err := semver.NewVersion(candidate); err == nil && k.GreaterThan(c) {
+		return candidate
+	}
+	return current
 }
 
 // existingTopVersion reads an existing manifest's top-level version:, or
@@ -808,15 +855,24 @@ func libraryVersion(outputDir string, entries []ContractEntry) string {
 // library, which (unlike a single-entry generate client library) has no one
 // producer version to inherit.
 func existingTopVersion(outputDir string) string {
+	if version := readTopVersion(outputDir); version != "" {
+		return version
+	}
+	return "0.1.0"
+}
+
+// readTopVersion is an existing manifest's top-level version:, empty when
+// there is none.
+func readTopVersion(outputDir string) string {
 	data, err := os.ReadFile(filepath.Join(outputDir, resources.LibraryConfigurationName))
 	if err != nil {
-		return "0.1.0"
+		return ""
 	}
 	var doc struct {
 		Version string `yaml:"version"`
 	}
-	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Version == "" {
-		return "0.1.0"
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return ""
 	}
 	return doc.Version
 }
