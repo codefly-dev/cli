@@ -98,6 +98,12 @@ func Execute() error {
 	return RootCmd.Execute()
 }
 
+// subcommandGroup marks a command configureSubcommandValidation gave an action.
+// It runs only to print its help or refuse an unknown verb, so it is still a
+// group of subcommands rather than a verb of its own, and the command reference
+// says so whether or not the tree has been executed.
+const subcommandGroup = "codefly.dev/subcommand-group"
+
 func configureSubcommandValidation(command *cobra.Command) {
 	for _, child := range command.Commands() {
 		configureSubcommandValidation(child)
@@ -105,6 +111,10 @@ func configureSubcommandValidation(command *cobra.Command) {
 	if command == RootCmd || !command.HasSubCommands() || command.Runnable() {
 		return
 	}
+	if command.Annotations == nil {
+		command.Annotations = map[string]string{}
+	}
+	command.Annotations[subcommandGroup] = "true"
 	command.Args = rejectUnknownSubcommand
 	command.RunE = func(command *cobra.Command, _ []string) error {
 		return command.Help()

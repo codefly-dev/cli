@@ -104,7 +104,7 @@ func renderCommand(out *strings.Builder, command *cobra.Command, path string) {
 			fmt.Fprintf(out, "```\n%s\n```\n\n", long)
 		}
 		fmt.Fprintf(out, "```\n%s\n```\n", usageLine(command, full))
-		if flags := strings.TrimRight(command.NonInheritedFlags().FlagUsagesWrapped(0), "\n"); flags != "" {
+		if flags := strings.TrimRight(declaredFlags(command).FlagUsagesWrapped(0), "\n"); flags != "" {
 			fmt.Fprintf(out, "\nFlags:\n\n```\n%s\n```\n", flags)
 		}
 		if subs := visibleSubcommands(command); len(subs) > 0 {
@@ -120,14 +120,31 @@ func renderCommand(out *strings.Builder, command *cobra.Command, path string) {
 	}
 }
 
+// declaredFlags is the command's own flags, without the ones Cobra adds when it
+// executes the command (`-h, --help`, `--version`). Those belong to Cobra, like
+// its `help` command, and they appear only on commands something has already
+// executed, so keeping them would make the reference depend on test order.
+func declaredFlags(command *cobra.Command) *pflag.FlagSet {
+	local := command.NonInheritedFlags()
+	declared := pflag.NewFlagSet(command.Name(), pflag.ContinueOnError)
+	declared.SortFlags = local.SortFlags
+	local.VisitAll(func(f *pflag.Flag) {
+		if _, byCobra := f.Annotations[cobra.FlagSetByCobraAnnotation]; !byCobra {
+			declared.AddFlag(f)
+		}
+	})
+	return declared
+}
+
 // usageLine is the command's declared use, qualified by its full path, so the
-// line is one a reader can paste.
+// line is one a reader can paste. A group stays a group after Execute has given
+// it the help action that rejects unknown verbs (configureSubcommandValidation).
 func usageLine(command *cobra.Command, full string) string {
 	use := command.Use
 	if index := strings.IndexByte(use, ' '); index >= 0 {
 		return full + use[index:]
 	}
-	if command.Runnable() {
+	if command.Runnable() && command.Annotations[subcommandGroup] == "" {
 		return full + " [flags]"
 	}
 	return full + " <subcommand>"
@@ -171,6 +188,26 @@ func TestCLIReferenceGuardCatchesANewCommand(t *testing.T) {
 		if !strings.Contains(regenerated, want) {
 			t.Errorf("the regenerated reference does not carry %q", want)
 		}
+	}
+}
+
+// The reference describes the declared tree, so executing it changes nothing:
+// Execute gives every group the action that rejects an unknown verb, and Cobra
+// adds `-h, --help` to every command it runs. Other tests in this package
+// execute RootCmd, and the guards above must not depend on whether they ran
+// first.
+func TestCLIReferenceIgnoresWhatExecutionAdds(t *testing.T) {
+	before := renderCLIReference(RootCmd)
+	configureSubcommandValidation(RootCmd)
+	for _, path := range [][]string{{"build"}, {"build", "service"}} {
+		target, _, err := RootCmd.Find(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target.InitDefaultHelpFlag()
+	}
+	if after := renderCLIReference(RootCmd); after != before {
+		t.Fatal("executing the command tree changed the reference: it would pass or fail by test order")
 	}
 }
 
