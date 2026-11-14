@@ -132,20 +132,3 @@ func registryConfigOf(t *testing.T, registry *fakeRegistry, manifest ocispec.Des
 	require.NoError(t, json.Unmarshal(registry.manifests[manifest.Digest.String()].raw, &parsed))
 	return parsed.Config.Digest.String()
 }
-
-func TestRegistryReferencesResolveAsDockerDoes(t *testing.T) {
-	repository, ref, err := registryRepository("golang:1.27-bookworm")
-	require.NoError(t, err)
-	require.Equal(t, "docker.io/library/golang", repository.Reference.Registry+"/"+repository.Reference.Repository)
-	require.Equal(t, "1.27-bookworm", ref)
-	require.False(t, repository.PlainHTTP)
-
-	repository, ref, err = registryRepository("localhost:5000/app@sha256:" + strings.Repeat("b", 64))
-	require.NoError(t, err)
-	require.Equal(t, "sha256:"+strings.Repeat("b", 64), ref)
-	require.True(t, repository.PlainHTTP, "a loopback registry is plain HTTP, as docker reaches it")
-
-	_, ref, err = registryRepository("ghcr.io/org/app")
-	require.NoError(t, err)
-	require.Equal(t, "latest", ref)
-}

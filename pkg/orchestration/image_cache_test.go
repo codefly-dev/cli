@@ -71,7 +71,9 @@ case "$1 $2" in
 "image inspect")
   record inspect
   if [ "$4" = '{{json .RepoDigests}}' ]; then
-    printf '["codefly-local/runtime@sha256:%064d"]\n' 7
+    # The digest is the inspected image's own repository's, as docker answers.
+    name=${5%%@*}; name=${name%:*}
+    printf '["%s@sha256:%064d"]\n' "$name" 7
     exit 0
   fi
   printf 'sha256:%064d\n' 7

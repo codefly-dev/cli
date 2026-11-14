@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -187,5 +191,40 @@ func TestDaemonCommandsReturnErrorsThroughCobra(t *testing.T) {
 		if command.RunE == nil || command.Run != nil {
 			t.Errorf("daemon %s is not exclusively RunE", command.Name())
 		}
+	}
+}
+
+// The CLI leaves SIGINT and SIGTERM to each command: one that never reads its
+// context still ends on the first Ctrl-C. A process-wide handler would turn
+// that Ctrl-C into a cancellation nobody reads.
+func TestACommandThatIgnoresItsContextEndsOnTheFirstSIGINT(t *testing.T) {
+	if os.Getenv("CODEFLY_SIGNAL_HELPER") != "" {
+		probe := &cobra.Command{
+			Use: "signal-probe",
+			RunE: func(*cobra.Command, []string) error {
+				if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+					return err
+				}
+				time.Sleep(10 * time.Second) // never reads its context
+				return nil
+			},
+		}
+		RootCmd.AddCommand(probe)
+		resetReleaseTokenSource(t)
+		RootCmd.SetArgs([]string{"signal-probe"})
+		_ = Execute()
+		return
+	}
+	helper := exec.Command(os.Args[0], "-test.run=^TestACommandThatIgnoresItsContextEndsOnTheFirstSIGINT$")
+	helper.Env = append(os.Environ(), "CODEFLY_SIGNAL_HELPER=1")
+	helper.Dir = t.TempDir()
+	started := time.Now()
+	err := helper.Run()
+	status, _ := helper.ProcessState.Sys().(syscall.WaitStatus)
+	if !status.Signaled() || status.Signal() != syscall.SIGINT {
+		t.Fatalf("the command ended with %v (%v); want it ended by its first SIGINT", helper.ProcessState, err)
+	}
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("the command outlived its SIGINT by %s", elapsed)
 	}
 }
