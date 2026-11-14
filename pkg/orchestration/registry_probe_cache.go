@@ -92,6 +92,16 @@ func cachedProbe[T any](ctx context.Context, kind, reference, builder string, re
 	c.mu.Unlock()
 
 	value, err, _ := c.flight.Do(kind+"\x00"+reference+"\x00"+builder+"\x00"+strconv.FormatUint(pushes, 10), func() (any, error) {
+		// Missing the answer above and joining a flight are two steps: a probe
+		// that missed while another's read was in flight can arrive here after
+		// that flight has finished and stored its answer. Ask again before reading,
+		// or that probe reads the registry a second time for an answer it holds.
+		c.mu.Lock()
+		answer, ok := c.answers[key]
+		c.mu.Unlock()
+		if ok {
+			return answer, nil
+		}
 		answer, err := read()
 		if err != nil {
 			return answer, err

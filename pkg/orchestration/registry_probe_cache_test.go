@@ -66,7 +66,7 @@ func TestCachedProbeSharesConcurrentReads(t *testing.T) {
 	}
 	close(release)
 	wg.Wait()
-	if reads.Load() > 2 {
+	if reads.Load() != 1 {
 		t.Fatalf("eight concurrent identical probes read %d times", reads.Load())
 	}
 }
