@@ -946,7 +946,7 @@ host's refusal says it, and `--advance <binding>` is the answer
 ([what publish settles](#what-publish-settles)).
 
 **The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
-the codefly companion tag `0.0.9`, whose `/bin/codefly` is a static binary that
+the codefly companion tag `0.0.10`, whose `/bin/codefly` is a static binary that
 carries this verb and executes on `linux/amd64` and `linux/arm64` (the shell runner's
 `deliveryImage`, tag `0.0.4`, carries a glibc binary in an Alpine image and
 cannot exec it). The image follows the ENVIRONMENT: in a paired environment
@@ -965,7 +965,7 @@ run needs a new companion version for all of them (core
 manifest strictly before it sends it, so its core must be at least the
 render's: `0.0.7` (core v0.19.17) refused the bundled page and
 `source_governance` on a hosted cell, which `0.0.8` (core v0.19.27) reads;
-`0.0.9` follows the CLI to core v0.19.28, and
+`0.0.9` followed the CLI to core v0.19.28 and `0.0.10` to core v0.19.29, and
 `TestThePairedDeliveryImageDecodesWhatThisCLIRenders` holds the two together. A
 moved pin changes every cell's `delivery` declaration, so the cell is
 re-rendered with it.
