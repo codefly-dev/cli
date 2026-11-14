@@ -20,9 +20,12 @@ one.
 After integrity verification, publication checks that each exact loader URL is
 reachable using Core's installer credential rule: `GITHUB_TOKEN`, otherwise
 `GH_TOKEN`, otherwise anonymous access. Publishing may use a `gh auth login`
-credential; installer verification deliberately does not. A public release can
-pass without an environment token. A private release needs a credential that
-the installer can actually use.
+credential; installer verification deliberately does not, because it models the
+installer that has nothing but its environment — a CI runner or hosted build. A
+developer's CLI also reads its `gh` login when it installs, so a release that
+passes here is installable both there and on a laptop. A public release can pass
+without an environment token. A private release needs a credential that the
+installer can actually use.
 
 These checks establish published archive integrity and installer access. They
 do not start the agent or establish its runtime capabilities. Core owns download

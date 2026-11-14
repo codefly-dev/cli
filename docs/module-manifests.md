@@ -629,6 +629,36 @@ generation and bytes, which the host answers as a replay. The plan lists each
 under `hostWithdrawals`. No other module's publish writes one, and the removed
 module's tree is deleted outright, so the cell needs no exception for it.
 
+**A delivered withdrawal is never retired.** Publish cannot know when dropping
+one is safe, so it does not. It cannot read a hosted cell's applied state: the
+delivery API is an in-cluster address that admits only the `delivery` account's
+projected token, and nothing writes the Job's receipt back to the tree (the
+native run's `Applied` observation has no GitOps counterpart). Even a confirmed
+apply would not be enough. The carrier is what re-establishes the withdrawal
+after a host database restore (the Job is a Sync hook re-run from the
+ConfigMaps), and core's `Admit` accepts the binding's last live generation —
+still validly signed in the repository's history — on a host that holds no
+record of the binding, or a record older than the withdrawal. A retention
+period changes neither fact. And the tree is the only record of the
+withdrawal, so a host publish with the carrier gone would derive the same
+withdrawal again from history. Retiring one needs the host to acknowledge, in a
+form publish can verify from the delivery repository, that it holds the
+withdrawal somewhere a restore cannot roll back. The delivery API offers no
+such acknowledgement, so the host module's set only grows: its live manifests
+and every withdrawal it carries, all posted by one delivery Job.
+
+**At the bound, the host module stops publishing.** One Job posts at most 50
+documents (`deliveryDocumentBound`: a 1,500-second budget at 30 seconds per
+request, so every document gets its first attempt even when the host is slow on
+all of them). A set past that refuses the host module's publish, naming the
+bound. The other modules of the environment still publish. But the host module
+carries the envelope, its own workloads and every withdrawal, so none of those
+can change until the set fits again. Never delete a withdrawal's carrier by hand
+to get back under the bound: that is the retirement above, without its safety.
+The remedy is a CLI change. One option is to split a module's set across several
+delivery Jobs, each within the budget, which still delivers every carrier. The
+other is the host acknowledgement above, which lets withdrawals retire.
+
 **Held to the host declared now.** Every manifest the render declares is held,
 at publish, to the environment's host block as it is then — the ownership
 domain and the host coordinate — and a
@@ -916,7 +946,7 @@ host's refusal says it, and `--advance <binding>` is the answer
 ([what publish settles](#what-publish-settles)).
 
 **The image.** The paired Job runs `pairedDeliveryImage`, the index digest of
-the codefly companion tag `0.0.8`, whose `/bin/codefly` is a static binary that
+the codefly companion tag `0.0.9`, whose `/bin/codefly` is a static binary that
 carries this verb and executes on `linux/amd64` and `linux/arm64` (the shell runner's
 `deliveryImage`, tag `0.0.4`, carries a glibc binary in an Alpine image and
 cannot exec it). The image follows the ENVIRONMENT: in a paired environment
@@ -934,7 +964,8 @@ run needs a new companion version for all of them (core
 `0.0.7` is the first tag that carries it. The Job's codefly also decodes the
 manifest strictly before it sends it, so its core must be at least the
 render's: `0.0.7` (core v0.19.17) refused the bundled page and
-`source_governance` on Blue, which `0.0.8` (core v0.19.27) reads, and
+`source_governance` on a hosted cell, which `0.0.8` (core v0.19.27) reads;
+`0.0.9` follows the CLI to core v0.19.28, and
 `TestThePairedDeliveryImageDecodesWhatThisCLIRenders` holds the two together. A
 moved pin changes every cell's `delivery` declaration, so the cell is
 re-rendered with it.

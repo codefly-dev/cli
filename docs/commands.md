@@ -3655,8 +3655,14 @@ loader archives and SBOMs, and verifies each resolves through the install URL.
 That final read uses the publisher's authenticated GitHub client through Core's
 agent-download path, so private release archives are verified without requiring
 public access. Asset-CDN requests do not receive the GitHub API credential.
-Installing private agents requires `GITHUB_TOKEN` or `GH_TOKEN` in the install
-process; public agent downloads continue to work without either.
+Installing private agents needs a credential that can read the release:
+`GITHUB_TOKEN`, else `GH_TOKEN`, else — when the CLI is the installer — the
+developer's `gh` login for github.com. The login is read once per command
+from `gh auth token --hostname github.com`'s output and is never logged. It is
+not used if GitHub refuses it, so a revoked login still leaves public downloads
+anonymous. A refusal names every source it tried.
+A CI runner or hosted build has no login, so it still needs one of the two
+variables; public agent downloads work without any.
 A module-agent repository publishes only the immutable Git tag. If the release
 pull request merged but the tag push failed, re-run: the untagged release commit
 is recognised and finished rather than bumped again.

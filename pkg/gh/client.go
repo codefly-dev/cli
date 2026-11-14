@@ -1,14 +1,21 @@
 // Package gh provides a shared authenticated go-github client and token
 // resolution for the CLI's platform (REST API) flows — agent-release
-// publishing and version listing — so they resolve credentials one way.
+// publishing, version listing and, through core's loader, agent release
+// downloads — so they resolve credentials one way.
 package gh
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/redact"
 	"github.com/google/go-github/v89/github"
@@ -46,17 +53,158 @@ func NewClient() (*github.Client, error) {
 // optional (present a token via env and it is never invoked) rather than
 // required.
 func Token() string {
+	if t := environmentToken(); t != "" {
+		return t
+	}
+	token, _ := loginToken(context.Background(), "")
+	return token
+}
+
+// releaseHost is the host every agent release lives on: core's loader reads
+// releases from github.com and nothing else, so the login asked is that
+// host's, whatever gh's default host is.
+const releaseHost = "github.com"
+
+// releaseAPI is the API core's loader reads releases from; a gh login is
+// checked against it before it is handed over. A variable for tests only.
+var releaseAPI = "https://api.github.com"
+
+// ReleaseTokenSource is the CLI's manager.ReleaseTokenSource, the credential
+// core's agent loader reads a private release with: GITHUB_TOKEN, else
+// GH_TOKEN, else the developer's gh login for github.com.
+//
+//   - The environment is read on every call and comes first, so a token
+//     exported for one command still wins and gh is never asked.
+//   - The login is asked once per source — so once per command, however many
+//     agents it downloads — under ctx, so whatever ends the command ends the
+//     lookup; a cancelled lookup is not remembered.
+//   - A login GitHub refuses is not handed over: `gh auth token` prints a
+//     stored token without checking it, and a revoked one would turn every
+//     public download into a 401. The loader reads anonymously instead.
+//   - The token is read from gh's standard output, never enters an argument
+//     list, a log or a file, and lives only in this closure.
+//
+// With no token, it answers every source it tried, for the refusal to name.
+func ReleaseTokenSource(ctx context.Context) func() (string, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var (
+		mu     sync.Mutex
+		asked  bool
+		token  string
+		reason string
+	)
+	return func() (string, []string) {
+		if t := environmentToken(); t != "" {
+			return t, nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !asked {
+			login, why := releaseLogin(ctx)
+			if ctx.Err() != nil {
+				return "", triedSources("the lookup was cancelled")
+			}
+			asked, token, reason = true, login, why
+		}
+		if token != "" {
+			return token, nil
+		}
+		return "", triedSources(reason)
+	}
+}
+
+func triedSources(loginReason string) []string {
+	return []string{"GITHUB_TOKEN", "GH_TOKEN", fmt.Sprintf("the gh CLI login for %s (%s)", releaseHost, loginReason)}
+}
+
+func environmentToken() string {
 	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
 		return t
 	}
-	if t := strings.TrimSpace(os.Getenv("GH_TOKEN")); t != "" {
-		return t
+	return strings.TrimSpace(os.Getenv("GH_TOKEN"))
+}
+
+// releaseLogin is gh's login for github.com, held to GitHub's answer: a
+// token the API refuses (401) is no credential. Any other answer — a network
+// failure included — leaves the token to the download, which reports its own.
+func releaseLogin(ctx context.Context) (string, string) {
+	token, reason := loginToken(ctx, releaseHost)
+	if token == "" {
+		return "", reason
 	}
-	out, err := exec.Command("gh", "auth", "token").Output()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseAPI+"/rate_limit", nil)
 	if err != nil {
-		return ""
+		return token, ""
 	}
-	return strings.TrimSpace(string(out))
+	request.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: loginTimeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return token, ""
+	}
+	_ = response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized {
+		return "", "GitHub refused the login gh holds (401); run `gh auth login` again"
+	}
+	return token, ""
+}
+
+// loginTimeout bounds asking gh for its login: it reads a keychain or a file
+// and answers at once, and a gh that hangs must not hang an agent download.
+// loginWaitDelay bounds the wait for gh's output to close after it exits or
+// is killed, so a child gh leaves holding the pipe cannot outlast the bound.
+const (
+	loginTimeout   = 10 * time.Second
+	loginWaitDelay = time.Second
+)
+
+// loginToken asks gh for its stored token — for hostname when one is named,
+// else for gh's default host — and answers it, or "" and why not. gh's
+// standard error is read only to tell "not logged in" from another failure;
+// it is never relayed, because the reason this returns is printed.
+func loginToken(ctx context.Context, hostname string) (token, reason string) {
+	path, err := exec.LookPath("gh")
+	if err != nil {
+		return "", "gh is not installed"
+	}
+	args := []string{"auth", "token"}
+	if hostname != "" {
+		args = append(args, "--hostname", hostname)
+	}
+	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, path, args...)
+	command.WaitDelay = loginWaitDelay
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			return "", "gh did not answer within " + loginTimeout.String()
+		case ctx.Err() != nil:
+			return "", "the lookup was cancelled"
+		case notLoggedIn(stderr.String()):
+			return "", "gh is not logged in to it; run `gh auth login`"
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", fmt.Sprintf("gh could not answer a token for it (exit status %d)", exit.ExitCode())
+		}
+		return "", "gh could not be run"
+	}
+	if token = strings.TrimSpace(stdout.String()); token == "" {
+		return "", "gh answered no token"
+	}
+	return token, ""
+}
+
+// notLoggedIn recognises gh's own words for a host it holds no login for:
+// "no oauth token found for <host>", and "not logged in" in older releases.
+func notLoggedIn(stderr string) bool {
+	stderr = strings.ToLower(stderr)
+	return strings.Contains(stderr, "no oauth token") || strings.Contains(stderr, "not logged in")
 }
 
 // ParseRemote resolves a git remote URL to its GitHub owner and repository.
