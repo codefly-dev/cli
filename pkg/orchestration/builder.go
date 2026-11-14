@@ -506,8 +506,9 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 				}
 				progress := b.world.buildProgress()
 				ordinal, started := progress.pushing(b.instance.Unique(), im), time.Now()
+				pushed := b.world.registryProbes().pushing(pushReference(b.world.Env, im))
 				pushErr := pushLegacyImage(ctx, b.world.Env, im)
-				b.world.registryProbes().forget(pushReference(b.world.Env, im))
+				pushed()
 				if pushErr != nil {
 					return nil, w.Wrapf(pushErr, "cannot push docker image")
 				}

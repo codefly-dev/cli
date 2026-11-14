@@ -23,8 +23,9 @@ import (
 //     build is a push; a timeout or an auth refusal is not a fact about the image.
 //   - the answer to one reference as the registry gave it. A tag is a claim that
 //     moves when this process pushes it, so a push forgets every answer about
-//     the reference it wrote (forget), and an answer read while
-//     that push was happening is not kept. A reference pinned by digest cannot move.
+//     the reference it writes when it starts and again when it ends (pushing),
+//     and an answer read before or while that push was happening is never kept.
+//     A reference pinned by digest cannot move.
 //   - one question in flight at a time: concurrent identical probes share the
 //     single read instead of each starting a process.
 //
@@ -42,14 +43,17 @@ type probeKey struct {
 type probeCache struct {
 	mu      sync.Mutex
 	answers map[probeKey]any
-	// written counts the pushes of each reference. A read that began before a
-	// push of its reference finished is stale, whatever it returns.
+	// written counts the starts and ends of each reference's pushes. A read
+	// that began before either is stale, whatever it returns.
 	written map[string]uint64
-	flight  singleflight.Group
+	// active counts the pushes of each reference in progress. Nothing read
+	// while one is running is kept: the registry may hold either image.
+	active map[string]int
+	flight singleflight.Group
 }
 
 func newProbeCache() *probeCache {
-	return &probeCache{answers: map[probeKey]any{}, written: map[string]uint64{}}
+	return &probeCache{answers: map[probeKey]any{}, written: map[string]uint64{}, active: map[string]int{}}
 }
 
 type probeCacheKey struct{}
@@ -108,7 +112,7 @@ func cachedProbe[T any](ctx context.Context, kind, reference, builder string, re
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.written[reference] == pushes {
+		if c.written[reference] == pushes && c.active[reference] == 0 {
 			c.answers[key] = answer
 		}
 		return answer, nil
@@ -133,11 +137,32 @@ func typedProbe[T any](answer any, kind, reference string) (T, error) {
 	return typed, nil
 }
 
-// forget drops every answer about reference: this flow has just pushed it, so
-// what the registry said before is no longer what it holds.
-func (c *probeCache) forget(reference string) {
+// pushing marks reference as being pushed by this flow until the returned
+// function is called, which the pusher does whether the push succeeded or not.
+// Both the start and the end drop every answer about reference: from the start
+// the registry may already hold the new image, so an answer read before it
+// begins is never served after, and one read while it runs is never kept.
+func (c *probeCache) pushing(reference string) (done func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.active[reference]++
+	c.forgetLocked(reference)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if c.active[reference]--; c.active[reference] == 0 {
+				delete(c.active, reference)
+			}
+			c.forgetLocked(reference)
+		})
+	}
+}
+
+// forgetLocked drops every answer about reference and makes every read of it
+// already in flight stale. c.mu is held.
+func (c *probeCache) forgetLocked(reference string) {
 	c.written[reference]++
 	for key := range c.answers {
 		if key.reference == reference {
