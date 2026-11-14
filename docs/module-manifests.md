@@ -629,6 +629,24 @@ generation and bytes, which the host answers as a replay. The plan lists each
 under `hostWithdrawals`. No other module's publish writes one, and the removed
 module's tree is deleted outright, so the cell needs no exception for it.
 
+**A delivered withdrawal is never retired.** Publish cannot know when dropping
+one is safe, so it does not. It cannot read a hosted cell's applied state: the
+delivery API is an in-cluster address that admits only the `delivery` account's
+projected token, and nothing writes the Job's receipt back to the tree (the
+native run's `Applied` observation has no GitOps counterpart). Even a confirmed
+apply would not be enough. The carrier is what re-establishes the withdrawal
+after a host database restore (the Job is a Sync hook re-run from the
+ConfigMaps), and core's `Admit` accepts the binding's last live generation —
+still validly signed in the repository's history — on a host that holds no
+record of the binding, or a record older than the withdrawal. A retention
+period changes neither fact. And the tree is the only record of the
+withdrawal, so a host publish with the carrier gone would derive the same
+withdrawal again from history. Retiring one needs the host to acknowledge, in a
+form publish can verify from the delivery repository, that it holds the
+withdrawal somewhere a restore cannot roll back. The delivery API offers no
+such acknowledgement, so the host module's set only grows, up to one Job's
+document bound.
+
 **Held to the host declared now.** Every manifest the render declares is held,
 at publish, to the environment's host block as it is then — the ownership
 domain and the host coordinate — and a
