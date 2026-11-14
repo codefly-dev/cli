@@ -13,8 +13,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/redact"
@@ -78,6 +80,11 @@ var releaseAPI = "https://api.github.com"
 //   - The login is asked once per source — so once per command, however many
 //     agents it downloads — under ctx, so whatever ends the command ends the
 //     lookup; a cancelled lookup is not remembered.
+//   - A SIGINT or SIGTERM while gh is asked ends the lookup (interruptibly),
+//     and changes no one else's signal handling: when signalHandled says the
+//     command is not handling signals itself, the signal is handed back to the
+//     process's default action once the lookup has stopped listening, so a
+//     command that never reads its context still ends on the first Ctrl-C.
 //   - A login GitHub refuses is not handed over: `gh auth token` prints a
 //     stored token without checking it, and a revoked one would turn every
 //     public download into a 401. The loader reads anonymously instead.
@@ -87,7 +94,7 @@ var releaseAPI = "https://api.github.com"
 // With a token, it answers the one source the token came from, so a refusal
 // of that token can say whose it was; with none, every source it tried, for
 // the refusal to name.
-func ReleaseTokenSource(ctx context.Context) func() (string, []string) {
+func ReleaseTokenSource(ctx context.Context, signalHandled func() bool) func() (string, []string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -104,8 +111,11 @@ func ReleaseTokenSource(ctx context.Context) func() (string, []string) {
 		mu.Lock()
 		defer mu.Unlock()
 		if !asked {
-			login, why := releaseLogin(ctx)
-			if ctx.Err() != nil {
+			var login, why string
+			interrupted := interruptibly(ctx, signalHandled, func(ctx context.Context) {
+				login, why = releaseLogin(ctx)
+			})
+			if interrupted || ctx.Err() != nil {
 				return "", triedSources("the lookup was cancelled")
 			}
 			asked, token, reason = true, login, why
@@ -132,6 +142,45 @@ func environmentToken() (token, source string) {
 		}
 	}
 	return "", ""
+}
+
+// interruptibly runs lookup under ctx, cancelled as well by a SIGINT or
+// SIGTERM that arrives while it runs, and answers whether one did. It listens
+// only while lookup runs. A signal it caught is then handed back to the
+// process (raised again) unless signalHandled says a handler of the command's
+// own is listening — that handler received the same signal, and a second one
+// would read as "force quit".
+func interruptibly(ctx context.Context, signalHandled func() bool, lookup func(context.Context)) bool {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(ctx)
+	var caught os.Signal
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case caught = <-signals:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	lookup(ctx)
+	signal.Stop(signals)
+	cancel()
+	<-watched
+	if caught == nil {
+		select {
+		case caught = <-signals: // arrived as the lookup finished
+		default:
+			return false
+		}
+	}
+	if signalHandled == nil || !signalHandled() {
+		if process, err := os.FindProcess(os.Getpid()); err == nil {
+			_ = process.Signal(caught)
+		}
+	}
+	return true
 }
 
 // releaseLogin is gh's login for github.com, held to GitHub's answer: a

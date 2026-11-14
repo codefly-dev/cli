@@ -53,7 +53,7 @@ container images, and deploy services to configured environments.`,
 		// composition whose agents come from private releases renders
 		// without a token exported by hand. Asked at the first download,
 		// never here, once per command, and under the command's context.
-		manager.UseReleaseTokenSource(gh.ReleaseTokenSource(cmd.Context()))
+		manager.UseReleaseTokenSource(gh.ReleaseTokenSource(cmd.Context(), common.SignalHandled))
 		return applyRootOptions()
 	},
 	Run: func(_ *cobra.Command, _ []string) {
@@ -93,16 +93,9 @@ func init() {
 }
 
 // Execute runs the root command and returns any failure to the process boundary.
-//
-// The command runs under a context the first SIGINT or SIGTERM cancels, so
-// Ctrl-C ends whatever it is waiting on under that context — the gh login
-// lookup an agent download makes included — and a second signal force-quits
-// (common.SignalContext).
 func Execute() error {
 	configureSubcommandValidation(RootCmd)
-	ctx, stop := common.SignalContext(context.Background())
-	defer stop()
-	return RootCmd.ExecuteContext(ctx)
+	return RootCmd.Execute()
 }
 
 // subcommandGroup marks a command configureSubcommandValidation gave an action.

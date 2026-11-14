@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -60,7 +62,7 @@ func callsOf(t *testing.T, calls string) []string {
 
 func TestReleaseTokenSourceReadsTheGHLoginForGitHubOnceWhenTheEnvironmentHasNone(t *testing.T) {
 	calls := fakeGH(t, `[ "$*" = "auth token --hostname github.com" ] || exit 1; printf 'gho_fromlogin\n'`)
-	source := ReleaseTokenSource(t.Context())
+	source := ReleaseTokenSource(t.Context(), nil)
 	for range 3 {
 		if token, sources := source(); token != "gho_fromlogin" || len(sources) != 1 || sources[0] != "the gh login (github.com)" {
 			t.Fatalf("source() = %q, %v; want the gh login's token, named as its source", token, sources)
@@ -76,7 +78,7 @@ func TestReleaseTokenSourcePrefersTheEnvironmentAndNeverAsksGH(t *testing.T) {
 		t.Run(variable, func(t *testing.T) {
 			calls := fakeGH(t, `printf 'gho_fromlogin\n'`)
 			t.Setenv(variable, "from-environment")
-			if token, sources := ReleaseTokenSource(t.Context())(); token != "from-environment" || len(sources) != 1 || sources[0] != variable {
+			if token, sources := ReleaseTokenSource(t.Context(), nil)(); token != "from-environment" || len(sources) != 1 || sources[0] != variable {
 				t.Fatalf("source() = %q, %v; want the environment's, named %s", token, sources, variable)
 			}
 			if got := callsOf(t, calls); got != nil {
@@ -91,7 +93,7 @@ func TestReleaseTokenSourcePrefersTheEnvironmentAndNeverAsksGH(t *testing.T) {
 func TestReleaseTokenSourceWithholdsALoginGitHubRefuses(t *testing.T) {
 	fakeGH(t, `printf 'gho_revoked\n'`)
 	githubAPI(t, http.StatusUnauthorized)
-	token, tried := ReleaseTokenSource(t.Context())()
+	token, tried := ReleaseTokenSource(t.Context(), nil)()
 	if token != "" {
 		t.Fatalf("source() handed over %q, which GitHub refuses", token)
 	}
@@ -108,7 +110,7 @@ func TestReleaseTokenSourceWithholdsALoginOnlyOnA401(t *testing.T) {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			fakeGH(t, `printf 'gho_fromlogin\n'`)
 			checks := githubAPI(t, status)
-			token, _ := ReleaseTokenSource(t.Context())()
+			token, _ := ReleaseTokenSource(t.Context(), nil)()
 			if checks.Load() != 1 {
 				t.Fatalf("the login was checked %d times, want once", checks.Load())
 			}
@@ -130,7 +132,7 @@ func TestReleaseTokenSourceTellsTheFailuresApartAndNeverRelaysWhatGHPrinted(t *t
 	} {
 		t.Run(name, func(t *testing.T) {
 			fakeGH(t, scenario.script)
-			token, tried := ReleaseTokenSource(t.Context())()
+			token, tried := ReleaseTokenSource(t.Context(), nil)()
 			joined := strings.Join(tried, ", ")
 			if token != "" || strings.Contains(joined, leaked) {
 				t.Fatalf("source() = %q, tried %q", token, joined)
@@ -148,7 +150,7 @@ func TestReleaseTokenSourceSaysWhenGHIsNotInstalled(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
-	token, tried := ReleaseTokenSource(t.Context())()
+	token, tried := ReleaseTokenSource(t.Context(), nil)()
 	if token != "" || !strings.Contains(strings.Join(tried, ", "), "gh is not installed") {
 		t.Fatalf("source() = %q, %v", token, tried)
 	}
@@ -160,7 +162,7 @@ func TestReleaseTokenSourceStopsWithTheCommand(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(100*time.Millisecond, cancel)
 	started := time.Now()
-	token, tried := ReleaseTokenSource(ctx)()
+	token, tried := ReleaseTokenSource(ctx, nil)()
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("the lookup outlived its command by %s", elapsed)
 	}
@@ -205,7 +207,7 @@ func (c *reopenedContext) Err() error {
 func TestReleaseTokenSourceDoesNotRememberACancelledLookup(t *testing.T) {
 	fakeGH(t, `printf 'gho_fromlogin\n'`)
 	ctx := newReopenedContext()
-	source := ReleaseTokenSource(ctx)
+	source := ReleaseTokenSource(ctx, nil)
 	if token, tried := source(); token != "" || !strings.Contains(strings.Join(tried, ", "), "cancelled") {
 		t.Fatalf("a cancelled lookup answered %q, %v", token, tried)
 	}
@@ -223,5 +225,84 @@ func TestLoginTokenDoesNotWaitForAChildGHLeftBehind(t *testing.T) {
 	loginToken(t.Context(), releaseHost)
 	if elapsed := time.Since(started); elapsed > loginWaitDelay+5*time.Second {
 		t.Fatalf("loginToken waited %s for gh's child", elapsed)
+	}
+}
+
+// interruptGH puts a gh on PATH that, asked the first time, marks that it was
+// asked and hangs; asked again, it answers a token. It answers the mark.
+func interruptGH(t *testing.T) (asked string) {
+	t.Helper()
+	asked = filepath.Join(t.TempDir(), "asked")
+	fakeGH(t, `if [ -e `+asked+` ]; then printf 'gho_fromlogin\n'; exit 0; fi; : > `+asked+`; exec /bin/sleep 30`)
+	return asked
+}
+
+func waitFor(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A Ctrl-C while gh is asked ends the lookup, in a command that handles the
+// signal itself: the signal is not handed back (that handler had it), the
+// lookup is not remembered, and the next ask runs gh again.
+func TestAnInterruptEndsTheLoginLookup(t *testing.T) {
+	asked := interruptGH(t)
+	source := ReleaseTokenSource(t.Context(), func() bool { return true })
+	go func() {
+		waitFor(t, asked)
+		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+	}()
+	started := time.Now()
+	token, tried := source()
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("the interrupted lookup took %s", elapsed)
+	}
+	if token != "" || !strings.Contains(strings.Join(tried, ", "), "cancelled") {
+		t.Fatalf("source() = %q, %v; want the lookup cancelled", token, tried)
+	}
+	if token, _ := source(); token != "gho_fromlogin" {
+		t.Fatalf("after an interrupted lookup the source answered %q; want gh asked again", token)
+	}
+}
+
+// In a command that does not handle signals, a Ctrl-C while gh is asked still
+// ends the process at once, as it would have without the lookup listening:
+// the lookup hands the signal back to the default action.
+func TestAnInterruptDuringTheLookupStillEndsAProcessThatDoesNotHandleIt(t *testing.T) {
+	if dir := os.Getenv("GH_INTERRUPT_HELPER"); dir != "" {
+		t.Setenv("PATH", dir)
+		t.Setenv("GITHUB_TOKEN", "")
+		t.Setenv("GH_TOKEN", "")
+		ReleaseTokenSource(context.Background(), func() bool { return false })()
+		time.Sleep(10 * time.Second) // a command that never reads its context
+		return
+	}
+	asked := interruptGH(t)
+	helper := exec.Command(os.Args[0], "-test.run=^TestAnInterruptDuringTheLookupStillEndsAProcessThatDoesNotHandleIt$")
+	helper.Env = append(os.Environ(), "GH_INTERRUPT_HELPER="+os.Getenv("PATH"))
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, asked)
+	started := time.Now()
+	if err := helper.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	err := helper.Wait()
+	status, _ := helper.ProcessState.Sys().(syscall.WaitStatus)
+	if !status.Signaled() || status.Signal() != syscall.SIGINT {
+		t.Fatalf("the helper ended with %v (%v); want it ended by SIGINT", helper.ProcessState, err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("the helper outlived the SIGINT by %s", elapsed)
 	}
 }

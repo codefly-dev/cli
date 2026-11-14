@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -193,34 +194,37 @@ func TestDaemonCommandsReturnErrorsThroughCobra(t *testing.T) {
 	}
 }
 
-// Execute runs the command under a context the first SIGINT or SIGTERM
-// cancels, so Ctrl-C ends what the command waits on under it (the gh login
-// lookup included) instead of the default handler killing the process mid-way.
-func TestExecuteCancelsTheCommandContextOnASignal(t *testing.T) {
-	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
-		t.Run(signal.String(), func(t *testing.T) {
-			probe := &cobra.Command{
-				Use: "signal-probe",
-				RunE: func(cmd *cobra.Command, _ []string) error {
-					if err := syscall.Kill(os.Getpid(), signal); err != nil {
-						return err
-					}
-					select {
-					case <-cmd.Context().Done():
-						return nil
-					case <-time.After(5 * time.Second):
-						return fmt.Errorf("%s did not cancel the command's context", signal)
-					}
-				},
-			}
-			RootCmd.AddCommand(probe)
-			defer RootCmd.RemoveCommand(probe)
-			defer RootCmd.SetArgs(nil)
-			resetReleaseTokenSource(t)
-			RootCmd.SetArgs([]string{"signal-probe"})
-			if err := Execute(); err != nil {
-				t.Fatal(err)
-			}
-		})
+// The CLI leaves SIGINT and SIGTERM to each command: one that never reads its
+// context still ends on the first Ctrl-C. A process-wide handler would turn
+// that Ctrl-C into a cancellation nobody reads.
+func TestACommandThatIgnoresItsContextEndsOnTheFirstSIGINT(t *testing.T) {
+	if os.Getenv("CODEFLY_SIGNAL_HELPER") != "" {
+		probe := &cobra.Command{
+			Use: "signal-probe",
+			RunE: func(*cobra.Command, []string) error {
+				if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+					return err
+				}
+				time.Sleep(10 * time.Second) // never reads its context
+				return nil
+			},
+		}
+		RootCmd.AddCommand(probe)
+		resetReleaseTokenSource(t)
+		RootCmd.SetArgs([]string{"signal-probe"})
+		_ = Execute()
+		return
+	}
+	helper := exec.Command(os.Args[0], "-test.run=^TestACommandThatIgnoresItsContextEndsOnTheFirstSIGINT$")
+	helper.Env = append(os.Environ(), "CODEFLY_SIGNAL_HELPER=1")
+	helper.Dir = t.TempDir()
+	started := time.Now()
+	err := helper.Run()
+	status, _ := helper.ProcessState.Sys().(syscall.WaitStatus)
+	if !status.Signaled() || status.Signal() != syscall.SIGINT {
+		t.Fatalf("the command ended with %v (%v); want it ended by its first SIGINT", helper.ProcessState, err)
+	}
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("the command outlived its SIGINT by %s", elapsed)
 	}
 }

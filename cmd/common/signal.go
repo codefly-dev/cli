@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -22,15 +23,31 @@ import (
 func SignalContext(parent context.Context) (context.Context, func()) {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	handlers.Add(1)
 	ctx, stop := contextFromSignals(parent, signals, func(code int) {
 		fmt.Fprintln(os.Stderr, "\nForced quit — spawned containers/agents may be left running.")
 		os.Exit(code)
 	})
 
+	var once sync.Once
 	return ctx, func() {
-		signal.Stop(signals)
+		once.Do(func() {
+			signal.Stop(signals)
+			handlers.Add(-1)
+		})
 		stop()
 	}
+}
+
+// handlers counts the SignalContexts listening now.
+var handlers atomic.Int32
+
+// SignalHandled reports whether a command is handling SIGINT and SIGTERM
+// itself (a SignalContext is listening), rather than leaving them to the
+// default action, which ends the process. Code that catches a signal for a
+// moment of its own uses it to decide whether to hand the signal back.
+func SignalHandled() bool {
+	return handlers.Load() > 0
 }
 
 // contextFromSignals owns the first-signal/second-signal state transition.
