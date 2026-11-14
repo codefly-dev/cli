@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -147,6 +148,11 @@ func TestGenerateClientFromContractsDir(t *testing.T) {
 	manifest := string(manifestData)
 	if !strings.Contains(manifest, "contract-digest: sha256:") {
 		t.Fatalf("%s missing contract-digest:\n%s", resources.LibraryConfigurationName, manifest)
+	}
+	// The companion ran in Docker, so it is recorded by the digest of the
+	// image that ran beside its tag (codefly-dev/cli#1275).
+	if !regexp.MustCompile(`(?m)^    companion: \S+:\S+@sha256:[0-9a-f]{64}$`).MatchString(manifest) {
+		t.Fatalf("%s does not record the companion by digest:\n%s", resources.LibraryConfigurationName, manifest)
 	}
 
 	assertLibraryLayout(t, clientOutput, "go", "typescript", "python")
