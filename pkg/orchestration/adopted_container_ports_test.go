@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/runners/dockerrun"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +31,7 @@ func keptContainer(name string, port uint16) container.Summary {
 			dockerrun.LabelCodeflyRecoveryScope:     testRecoveryScope,
 			dockerrun.LabelCodeflyRecoveryNamespace: testRecoveryNamespace,
 		},
-		Ports: []container.Port{{IP: "127.0.0.1", PrivatePort: 5432, PublicPort: port, Type: "tcp"}},
+		Ports: []container.PortSummary{{IP: netip.MustParseAddr("127.0.0.1"), PrivatePort: 5432, PublicPort: port, Type: "tcp"}},
 	}
 }
 
@@ -157,10 +158,10 @@ func suffixed(c *container.Summary, suffix string) {
 
 // A publication covers only its own loopback family.
 func TestPublishesAddressIsPerLoopbackFamily(t *testing.T) {
-	c := container.Summary{Ports: []container.Port{{IP: "0.0.0.0", PublicPort: 5432, Type: "tcp"}}}
+	c := container.Summary{Ports: []container.PortSummary{{IP: netip.MustParseAddr("0.0.0.0"), PublicPort: 5432, Type: "tcp"}}}
 	require.True(t, publishesAddress(&c, "127.0.0.1:5432"))
 	require.False(t, publishesAddress(&c, "[::1]:5432"))
-	c.Ports = []container.Port{{IP: "::", PublicPort: 5432, Type: "tcp"}}
+	c.Ports = []container.PortSummary{{IP: netip.MustParseAddr("::"), PublicPort: 5432, Type: "tcp"}}
 	require.True(t, publishesAddress(&c, "[::1]:5432"))
 	require.False(t, publishesAddress(&c, "127.0.0.1:5432"))
 	require.False(t, publishesAddress(&c, "localhost:5432"), "a name is never attributed")
