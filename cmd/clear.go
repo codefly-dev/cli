@@ -11,8 +11,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/wool"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
@@ -146,7 +146,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		return errors.Join(failures...)
 	}
 
-	dockerCLI, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerCLI, err := client.New(client.FromEnv)
 	if err != nil {
 		w.Info("docker unavailable, skipping container removal (nix-run services are not docker containers)", wool.ErrField(err))
 		clearNixDataNote(w)
@@ -157,7 +157,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 			returnErr = errors.Join(returnErr, fmt.Errorf("close docker client: %w", err))
 		}
 	}()
-	cos, err := dockerCLI.ContainerList(ctx, container.ListOptions{All: true})
+	listed, err := dockerCLI.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
 		w.Info("cannot list containers, docker may be down; skipping", wool.ErrField(err))
 		clearNixDataNote(w)
@@ -167,7 +167,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		return errors.Join(failures...)
 	}
 
-	removed, removeFailures := removeCodeflyContainers(ctx, w, dockerCLI, cos, args, options.dryRun)
+	removed, removeFailures := removeCodeflyContainers(ctx, w, dockerCLI, listed.Items, args, options.dryRun)
 	failures = append(failures, removeFailures...)
 	switch {
 	case removed == 0 && len(args) > 0:
@@ -273,8 +273,8 @@ func removeCodeflyContainers(ctx context.Context, w *wool.Wool, dockerCLI *clien
 		// ContainerKill can error when container is already stopped;
 		// the Remove --force below handles cleanup either way, so
 		// a kill error here is noise, not fatal.
-		_ = dockerCLI.ContainerKill(ctx, c.ID, "SIGKILL")
-		if err := dockerCLI.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+		_, _ = dockerCLI.ContainerKill(ctx, c.ID, client.ContainerKillOptions{Signal: "SIGKILL"})
+		if _, err := dockerCLI.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 			// Don't abort the whole sweep on one stubborn container — warn and
 			// keep going so the rest still get cleaned (was log.Fatalf).
 			w.Warn("cannot remove container", wool.Field("container", strings.TrimPrefix(name, "/")), wool.ErrField(err))

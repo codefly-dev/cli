@@ -9,7 +9,7 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 )
 
 // summary is a container as the Docker engine lists it: created at created,

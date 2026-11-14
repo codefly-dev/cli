@@ -10,8 +10,8 @@ import (
 
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // The loopback and wildcard addresses of each family, as Docker and the
@@ -33,10 +33,8 @@ var listOwnedContainers = func(ctx context.Context, scopeID string) ([]container
 	defer cli.Close()
 	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return cli.ContainerList(listCtx, container.ListOptions{Filters: filters.NewArgs(
-		filters.Arg("label", dockerrun.LabelCodeflyOwner+"=true"),
-		filters.Arg("label", dockerrun.LabelCodeflyRecoveryScope+"="+scopeID),
-	)})
+	listed, err := cli.ContainerList(listCtx, client.ContainerListOptions{Filters: client.Filters{}.Add("label", dockerrun.LabelCodeflyOwner+"=true").Add("label", dockerrun.LabelCodeflyRecoveryScope+"="+scopeID)})
+	return listed.Items, err
 }
 
 // adoptedContainerAddresses answers which loopback addresses the first-Init
@@ -138,7 +136,7 @@ func publishesAddress(c *container.Summary, address string) bool {
 	default:
 		return false
 	}
-	return slices.ContainsFunc(c.Ports, func(p container.Port) bool {
-		return uint64(p.PublicPort) == port && p.Type == "tcp" && slices.Contains(covering, p.IP)
+	return slices.ContainsFunc(c.Ports, func(p container.PortSummary) bool {
+		return uint64(p.PublicPort) == port && p.Type == "tcp" && p.IP.IsValid() && slices.Contains(covering, p.IP.String())
 	})
 }

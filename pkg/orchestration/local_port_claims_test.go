@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
-	dockercontainer "github.com/docker/docker/api/types/container"
+	dockercontainer "github.com/moby/moby/api/types/container"
 	"github.com/stretchr/testify/require"
 )
 
