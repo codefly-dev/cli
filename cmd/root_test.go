@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
@@ -187,5 +190,37 @@ func TestDaemonCommandsReturnErrorsThroughCobra(t *testing.T) {
 		if command.RunE == nil || command.Run != nil {
 			t.Errorf("daemon %s is not exclusively RunE", command.Name())
 		}
+	}
+}
+
+// Execute runs the command under a context the first SIGINT or SIGTERM
+// cancels, so Ctrl-C ends what the command waits on under it (the gh login
+// lookup included) instead of the default handler killing the process mid-way.
+func TestExecuteCancelsTheCommandContextOnASignal(t *testing.T) {
+	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
+		t.Run(signal.String(), func(t *testing.T) {
+			probe := &cobra.Command{
+				Use: "signal-probe",
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					if err := syscall.Kill(os.Getpid(), signal); err != nil {
+						return err
+					}
+					select {
+					case <-cmd.Context().Done():
+						return nil
+					case <-time.After(5 * time.Second):
+						return fmt.Errorf("%s did not cancel the command's context", signal)
+					}
+				},
+			}
+			RootCmd.AddCommand(probe)
+			defer RootCmd.RemoveCommand(probe)
+			defer RootCmd.SetArgs(nil)
+			resetReleaseTokenSource(t)
+			RootCmd.SetArgs([]string{"signal-probe"})
+			if err := Execute(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

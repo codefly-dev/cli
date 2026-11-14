@@ -93,9 +93,16 @@ func init() {
 }
 
 // Execute runs the root command and returns any failure to the process boundary.
+//
+// The command runs under a context the first SIGINT or SIGTERM cancels, so
+// Ctrl-C ends whatever it is waiting on under that context — the gh login
+// lookup an agent download makes included — and a second signal force-quits
+// (common.SignalContext).
 func Execute() error {
 	configureSubcommandValidation(RootCmd)
-	return RootCmd.Execute()
+	ctx, stop := common.SignalContext(context.Background())
+	defer stop()
+	return RootCmd.ExecuteContext(ctx)
 }
 
 // subcommandGroup marks a command configureSubcommandValidation gave an action.
