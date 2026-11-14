@@ -16,8 +16,10 @@ import (
 	providercmd "github.com/codefly-dev/cli/cmd/provider"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/actions/actions"
+	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/fatih/color"
@@ -46,6 +48,11 @@ container images, and deploy services to configured environments.`,
 		// six LoadWorkspaceFromDir call sites means a versioned import resolves
 		// wherever a workspace is loaded, not only where someone remembered.
 		cmd.SetContext(composition.WithWorkspaceResolver(cmd.Context()))
+		// Core's agent loader reads only the environment unless its host says
+		// otherwise; this host also has the developer's gh login, so a
+		// composition whose agents come from private releases renders
+		// without a token exported by hand. Asked per download, never here.
+		manager.UseReleaseTokenSource(gh.ReleaseToken)
 		return applyRootOptions()
 	},
 	Run: func(_ *cobra.Command, _ []string) {
