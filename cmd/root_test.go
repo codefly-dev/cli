@@ -90,6 +90,7 @@ func TestUnknownNestedSubcommandListsAvailableCommands(t *testing.T) {
 		RootCmd.SetErr(previousErr)
 		RootCmd.SilenceErrors = previousSilenceErrors
 	}()
+	resetReleaseTokenSource(t)
 	RootCmd.SetArgs([]string{"build", "agent"})
 	RootCmd.SetOut(&output)
 	RootCmd.SetErr(&output)
@@ -156,6 +157,7 @@ func TestPersistentFlagAfterSubcommandFlagIsApplied(t *testing.T) {
 
 	debug = false
 	_ = RootCmd.PersistentFlags().Set("debug", "false")
+	resetReleaseTokenSource(t)
 	RootCmd.SetArgs([]string{"root-flag-probe", "--number", "1", "--debug"})
 	if err := RootCmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)

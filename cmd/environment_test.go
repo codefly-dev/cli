@@ -27,6 +27,7 @@ func runEnvironmentImport(t *testing.T, dir string) (string, error) {
 	t.Chdir(dir)
 	RootCmd.SetArgs([]string{"environment", "import", "local", "--coordinate-contract", contract})
 	defer RootCmd.SetArgs(nil)
+	resetReleaseTokenSource(t)
 	return captureStdout(t, func() error {
 		return RootCmd.ExecuteContext(context.Background())
 	})

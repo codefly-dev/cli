@@ -17,6 +17,7 @@ func runGitOpsVerb(t *testing.T, dir string, args ...string) (string, error) {
 	t.Chdir(dir)
 	RootCmd.SetArgs(append([]string{"deploy", "gitops"}, args...))
 	defer RootCmd.SetArgs(nil)
+	resetReleaseTokenSource(t)
 	return captureStdout(t, func() error {
 		return RootCmd.ExecuteContext(context.Background())
 	})

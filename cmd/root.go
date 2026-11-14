@@ -51,8 +51,9 @@ container images, and deploy services to configured environments.`,
 		// Core's agent loader reads only the environment unless its host says
 		// otherwise; this host also has the developer's gh login, so a
 		// composition whose agents come from private releases renders
-		// without a token exported by hand. Asked per download, never here.
-		manager.UseReleaseTokenSource(gh.ReleaseToken)
+		// without a token exported by hand. Asked at the first download,
+		// never here, once per command, and under the command's context.
+		manager.UseReleaseTokenSource(gh.ReleaseTokenSource(cmd.Context()))
 		return applyRootOptions()
 	},
 	Run: func(_ *cobra.Command, _ []string) {

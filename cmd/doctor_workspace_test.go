@@ -1040,6 +1040,7 @@ func runDoctorWorkspaceCommand(t *testing.T, args ...string) (string, error) {
 	doctorWorkspaceTimeout = 30 * time.Second
 	RootCmd.SetArgs(append([]string{"doctor", "workspace"}, args...))
 	defer RootCmd.SetArgs(nil)
+	resetReleaseTokenSource(t)
 	return captureStdout(t, func() error {
 		return RootCmd.ExecuteContext(context.Background())
 	})

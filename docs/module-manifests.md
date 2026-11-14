@@ -644,8 +644,20 @@ withdrawal, so a host publish with the carrier gone would derive the same
 withdrawal again from history. Retiring one needs the host to acknowledge, in a
 form publish can verify from the delivery repository, that it holds the
 withdrawal somewhere a restore cannot roll back. The delivery API offers no
-such acknowledgement, so the host module's set only grows, up to one Job's
-document bound.
+such acknowledgement, so the host module's set only grows: its live manifests
+and every withdrawal it carries, all posted by one delivery Job.
+
+**At the bound, the host module stops publishing.** One Job posts at most 50
+documents (`deliveryDocumentBound`: a 1,500-second budget at 30 seconds per
+request, so every document gets its first attempt even when the host is slow on
+all of them). A set past that refuses the host module's publish, naming the
+bound. The other modules of the environment still publish. But the host module
+carries the envelope, its own workloads and every withdrawal, so none of those
+can change until the set fits again. Never delete a withdrawal's carrier by hand
+to get back under the bound: that is the retirement above, without its safety.
+The remedy is a CLI change. One option is to split a module's set across several
+delivery Jobs, each within the budget, which still delivers every carrier. The
+other is the host acknowledgement above, which lets withdrawals retire.
 
 **Held to the host declared now.** Every manifest the render declares is held,
 at publish, to the environment's host block as it is then — the ownership

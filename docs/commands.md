@@ -3657,8 +3657,10 @@ agent-download path, so private release archives are verified without requiring
 public access. Asset-CDN requests do not receive the GitHub API credential.
 Installing private agents needs a credential that can read the release:
 `GITHUB_TOKEN`, else `GH_TOKEN`, else — when the CLI is the installer — the
-developer's `gh` login for github.com, read from `gh auth token --hostname
-github.com`'s output and never logged. A refusal names every source it tried.
+developer's `gh` login for github.com. The login is read once per command
+from `gh auth token --hostname github.com`'s output and is never logged. It is
+not used if GitHub refuses it, so a revoked login still leaves public downloads
+anonymous. A refusal names every source it tried.
 A CI runner or hosted build has no login, so it still needs one of the two
 variables; public agent downloads work without any.
 A module-agent repository publishes only the immutable Git tag. If the release
