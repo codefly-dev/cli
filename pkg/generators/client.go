@@ -239,7 +239,7 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		if applyErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", s.lang, applyErr)
 		}
-		if err := stampPackageVersion(s.lang, s.langDir, version); err != nil {
+		if err := setPackageVersion(s.lang, s.langDir, version); err != nil {
 			return fmt.Errorf("cannot set the %s client's version: %w", s.lang, err)
 		}
 		langExports = append(langExports, export)
@@ -806,15 +806,22 @@ func readExistingLanguageExports(outputDir string) ([]generatedLanguageExport, e
 // regenerating a client published as 0.0.1 keeps 0.0.1. The producer's version
 // it was generated from stays recorded exactly, per source.
 func libraryVersion(outputDir string, entries []ContractEntry) string {
-	version := entries[0].PackageVersion
+	producer := entries[0].PackageVersion
 	if len(entries) > 1 {
-		version = existingTopVersion(outputDir)
+		producer = existingTopVersion(outputDir)
 	}
-	if strings.TrimSpace(version) == "" {
-		return version // refused by the caller: a producer with no version
+	if strings.TrimSpace(producer) == "" {
+		return producer // refused by the caller: a producer with no version
 	}
+	version := normalVersion(producer)
 	for _, existing := range existingLibraryVersions(outputDir) {
 		version = laterVersion(version, existing)
+	}
+	if len(entries) == 1 && version != normalVersion(producer) {
+		// A producer behind the library: a rolled-back pin, or a local service
+		// that never versions. The label stays; the content is the producer's.
+		cli.Warning("library %s keeps version %s: its producer is at %s, which is behind what the library already declares (sources[].version records %s)",
+			filepath.Base(outputDir), version, producer, producer)
 	}
 	return version
 }
@@ -827,29 +834,77 @@ func existingLibraryVersions(outputDir string) []string {
 		versions = append(versions, top)
 	}
 	for _, lang := range []languages.Language{languages.TYPESCRIPT, languages.PYTHON} {
-		path, _ := packageManifest(lang, filepath.Join(outputDir, string(lang)))
-		data, err := os.ReadFile(path) //nolint:gosec // the library's own package manifest
-		if err != nil {
-			continue
-		}
-		if start, end, err := locatePackageVersion(lang, path, data); err == nil {
-			versions = append(versions, strings.Trim(string(data[start:end]), `"'`))
+		if declared, ok := declaredPackageVersion(lang, filepath.Join(outputDir, string(lang))); ok {
+			versions = append(versions, declared)
 		}
 	}
 	return versions
 }
 
-// laterVersion is the later of two versions; current when either is not a
-// version, so an unreadable declaration never replaces a readable one.
+// declaredPackageVersion is the version langDir's package manifest declares,
+// as written.
+func declaredPackageVersion(lang languages.Language, langDir string) (string, bool) {
+	path, ok := packageManifest(lang, langDir)
+	if !ok {
+		return "", false
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // the library's own package manifest
+	if err != nil {
+		return "", false
+	}
+	start, end, err := locatePackageVersion(lang, path, data)
+	if err != nil {
+		return "", false
+	}
+	return strings.Trim(string(data[start:end]), `"'`), true
+}
+
+// setPackageVersion stamps version into langDir's package manifest, unless
+// the manifest declares one this command cannot order (unorderedPackageVersion),
+// which it leaves as it is and says so.
+func setPackageVersion(lang languages.Language, langDir, version string) error {
+	if declared, unordered := unorderedPackageVersion(lang, langDir); unordered {
+		cli.Warning("the %s client declares version %q, which is not a semantic version this command can order against %s; it is left as it is", lang, declared, version)
+		return nil
+	}
+	return stampPackageVersion(lang, langDir, version)
+}
+
+// unorderedPackageVersion is a version langDir's package manifest declares
+// that is not a semantic version — a PEP 440 0.3.0.post1 or 1.0.0a1 — which
+// this command cannot order against the library's, so it never rewrites it:
+// a rewrite could move the package backwards.
+func unorderedPackageVersion(lang languages.Language, langDir string) (string, bool) {
+	declared, ok := declaredPackageVersion(lang, langDir)
+	if !ok {
+		return "", false
+	}
+	_, err := semver.NewVersion(declared)
+	return declared, err != nil
+}
+
+// laterVersion is the later of two versions, written in its normal form (a
+// loose 1.2 or v1.2.0 is 1.2.0), so a declaration's spelling is never copied
+// into every manifest. current, as it is, when it is not a version, and
+// current when candidate is not: an unreadable declaration never replaces a
+// readable one.
 func laterVersion(current, candidate string) string {
 	c, err := semver.NewVersion(current)
 	if err != nil {
 		return current
 	}
 	if k, err := semver.NewVersion(candidate); err == nil && k.GreaterThan(c) {
-		return candidate
+		return k.String()
 	}
-	return current
+	return c.String()
+}
+
+// normalVersion is version in its normal form, or as it is when it is not one.
+func normalVersion(version string) string {
+	if v, err := semver.NewVersion(version); err == nil {
+		return v.String()
+	}
+	return version
 }
 
 // existingTopVersion reads an existing manifest's top-level version:, or
@@ -1047,20 +1102,22 @@ func writeLibraryManifest(ctx context.Context, outputDir, name, version string, 
 // The seams companionUsed reads the run's companion through; tests replace them.
 var (
 	dockerEngineRunning = dockerrun.DockerEngineRunning
-	localImageDigest    = imagedigest.Local
+	publishedDigest     = imagedigest.Published
 )
 
 // companionUsed is the proto companion that generated this library, by tag and
-// by the digest of the image this run used, name:tag@sha256:..., so the record
-// names the bytes that produced the output rather than a tag a registry can
-// repoint (codefly-dev/cli#1275). The digest is read back from the image the
-// daemon holds, right after the run that used it, and is never re-resolved
-// from the registry: that would record whatever the tag points at later.
+// digest, name:tag@sha256:..., so the record names the bytes that produced the
+// output rather than a tag a registry can repoint (codefly-dev/cli#1275).
+//
+// The digest is the one the registry serves for the tag, the same on every
+// machine, and it is recorded only when the image the daemon ran is that one
+// (imagedigest.Published), checked right after the run. A companion built or
+// retagged locally has a repository digest of its own on the containerd image
+// store, which no registry serves, so it is never recorded.
 //
 // The companion runs in Docker whenever the engine is up. Without one, its
-// tools ran on the host and no image produced the output; and an image the
-// daemon holds only as a local build has no registry digest. Both record the
-// tag alone and say why.
+// tools ran on the host and no image produced the output. That, and an image
+// the registry does not serve as it is, record the tag alone and say why.
 func companionUsed(ctx context.Context) string {
 	image, err := coreproto.CompanionImage(ctx)
 	if err != nil {
@@ -1074,7 +1131,7 @@ func companionUsed(ctx context.Context) string {
 		cli.Warning("recording the proto companion %s by tag only: no Docker engine, so the host's tools generated this library", reference)
 		return reference
 	}
-	digest, err := localImageDigest(ctx, reference)
+	digest, err := publishedDigest(ctx, reference)
 	if err != nil {
 		cli.Warning("recording the proto companion %s by tag only: %v", reference, err)
 		return reference

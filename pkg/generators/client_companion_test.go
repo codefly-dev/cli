@@ -14,13 +14,13 @@ import (
 )
 
 // stubCompanionRun replaces what companionUsed reads of the run: whether the
-// engine was up, and the digest the daemon holds for the image.
+// engine was up, and the registry digest the daemon's image was found to be.
 func stubCompanionRun(t *testing.T, engine bool, digest func(context.Context, string) (string, error)) {
 	t.Helper()
-	previousEngine, previousDigest := dockerEngineRunning, localImageDigest
+	previousEngine, previousDigest := dockerEngineRunning, publishedDigest
 	dockerEngineRunning = func(context.Context) bool { return engine }
-	localImageDigest = digest
-	t.Cleanup(func() { dockerEngineRunning, localImageDigest = previousEngine, previousDigest })
+	publishedDigest = digest
+	t.Cleanup(func() { dockerEngineRunning, publishedDigest = previousEngine, previousDigest })
 }
 
 func recordedCompanion(t *testing.T) string {
@@ -69,8 +69,8 @@ func TestTheLibraryRecordsTheCompanionThatRanByDigest(t *testing.T) {
 }
 
 // With nothing to pin, the record keeps the tag rather than inventing a digest:
-// without an engine the host's tools ran, and a locally built image has no
-// registry digest.
+// without an engine the host's tools ran, and a locally built image is not the
+// one the registry serves (imagedigest.Published refuses it).
 func TestTheCompanionIsRecordedByTagWhenNoImageDigestExists(t *testing.T) {
 	image, err := coreproto.CompanionImage(t.Context())
 	if err != nil {
@@ -81,7 +81,9 @@ func TestTheCompanionIsRecordedByTagWhenNoImageDigestExists(t *testing.T) {
 	if got := recordedCompanion(t); got != image.FullName() || read {
 		t.Fatalf("with no engine: companion = %q (digest read: %v), want %q", got, read, image.FullName())
 	}
-	stubCompanionRun(t, true, func(context.Context, string) (string, error) { return "", errors.New("no registry digest") })
+	stubCompanionRun(t, true, func(context.Context, string) (string, error) {
+		return "", errors.New("the image the daemon holds is not the one its registry serves")
+	})
 	if got := recordedCompanion(t); got != image.FullName() {
 		t.Fatalf("with no digest: companion = %q, want %q", got, image.FullName())
 	}

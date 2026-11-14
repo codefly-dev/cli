@@ -528,14 +528,14 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			if len(buildResult.Images) != 1 {
 				return nil, w.NewError("snapshot build returned %d images for %s; exactly one deployable image is required", len(buildResult.Images), b.instance.Unique())
 			}
-			b.imageDigest, err = imagedigest.Local(ctx, deployed)
+			b.imageDigest, err = imagedigest.Published(ctx, deployed)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
 			}
 		} else if b.world.CaptureImageDigest && b.world.Push && len(buildResult.Images) == 1 {
 			// The image is already pushed; resolving its digest is best-effort
 			// for reporting, so a lookup failure must not fail the build.
-			if digest, digestErr := imagedigest.Local(ctx, deployed); digestErr != nil {
+			if digest, digestErr := imagedigest.Published(ctx, deployed); digestErr != nil {
 				w.Warn("built and pushed but could not resolve image digest", wool.ErrField(digestErr))
 			} else {
 				b.imageDigest = digest

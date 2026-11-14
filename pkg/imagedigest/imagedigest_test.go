@@ -3,20 +3,68 @@ package imagedigest
 import (
 	"strings"
 	"testing"
+
+	"github.com/distribution/reference"
+	"github.com/stretchr/testify/require"
 )
 
-func TestFromRepoDigests(t *testing.T) {
-	a, b := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
-	if got, err := fromRepoDigests("img", []string{"ghcr.io/x/img@" + a, "mirror.io/x/img@" + a}); err != nil || got != a {
-		t.Fatalf("one digest under two names = %q, %v; want %q", got, err, a)
-	}
+var (
+	digestA = "sha256:" + strings.Repeat("a", 64)
+	digestB = "sha256:" + strings.Repeat("b", 64)
+)
+
+func named(t *testing.T, image string) reference.Named {
+	t.Helper()
+	n, err := reference.ParseNormalizedNamed(image)
+	require.NoError(t, err)
+	return n
+}
+
+// Only a digest in the image's own repository is the image's: the same image
+// tagged under another name carries that name's digest, not this one's.
+func TestOnlyTheImagesOwnRepositoryDigestCounts(t *testing.T) {
+	image := named(t, "ghcr.io/codefly-dev/proto:0.0.25")
+	require.Equal(t, []string{digestA}, digestsIn(image, []string{"ghcr.io/codefly-dev/proto@" + digestA, "ghcr.io/codefly-dev/proto@" + digestA}))
+	require.Empty(t, digestsIn(image, []string{"ghcr.io/other/proto@" + digestA, "mirror.io/codefly-dev/proto@" + digestB}))
+	require.Empty(t, digestsIn(image, []string{"ghcr.io/codefly-dev/proto@sha256:short", "ghcr.io/codefly-dev/proto"}))
+	// Names compare as docker normalises them.
+	require.Equal(t, []string{digestA}, digestsIn(named(t, "golang:1.27"), []string{"docker.io/library/golang@" + digestA}))
+	require.Len(t, digestsIn(image, []string{"ghcr.io/codefly-dev/proto@" + digestA, "ghcr.io/codefly-dev/proto@" + digestB}), 2)
+}
+
+// A digest is published only when the registry serves it and the daemon's
+// image in the same repository is it. On the containerd image store a build
+// that was never pushed has a repository digest of its own (equal to its image
+// ID): that digest is not the registry's and must never be taken for it.
+func TestPublishedNeedsTheRegistrysDigestOnTheDaemonsImage(t *testing.T) {
+	image := "ghcr.io/codefly-dev/proto:0.0.25"
+	got, err := published(image, named(t, image), digestA, []string{"ghcr.io/codefly-dev/proto@" + digestA})
+	require.NoError(t, err)
+	require.Equal(t, digestA, got)
+
 	for name, references := range map[string][]string{
-		"none":      nil,
-		"malformed": {"ghcr.io/x/img@sha256:short", "ghcr.io/x/img"},
-		"ambiguous": {"ghcr.io/x/img@" + a, "ghcr.io/x/img@" + b},
+		"a never-pushed containerd build": {"ghcr.io/codefly-dev/proto@" + digestB},
+		"the digest under another name":   {"ghcr.io/other/proto@" + digestA},
+		"no repository digest":            nil,
 	} {
-		if got, err := fromRepoDigests("img", references); err == nil {
-			t.Errorf("%s: got %q, want an error", name, got)
-		}
+		_, err := published(image, named(t, image), digestA, references)
+		require.Error(t, err, name)
 	}
+}
+
+func TestRegistryReferencesResolveAsDockerDoes(t *testing.T) {
+	repository, ref, err := Repository("golang:1.27-bookworm")
+	require.NoError(t, err)
+	require.Equal(t, "docker.io/library/golang", repository.Reference.Registry+"/"+repository.Reference.Repository)
+	require.Equal(t, "1.27-bookworm", ref)
+	require.False(t, repository.PlainHTTP)
+
+	repository, ref, err = Repository("localhost:5000/app@sha256:" + strings.Repeat("b", 64))
+	require.NoError(t, err)
+	require.Equal(t, "sha256:"+strings.Repeat("b", 64), ref)
+	require.True(t, repository.PlainHTTP, "a loopback registry is plain HTTP, as docker reaches it")
+
+	_, ref, err = Repository("ghcr.io/org/app")
+	require.NoError(t, err)
+	require.Equal(t, "latest", ref)
 }

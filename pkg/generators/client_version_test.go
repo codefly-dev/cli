@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/languages"
+	"github.com/codefly-dev/core/wool"
 )
 
 // A generated client carries the library's version, the producer's own, not
@@ -142,6 +144,79 @@ func TestARegeneratedLibraryNeverMovesItsVersionBack(t *testing.T) {
 	write("python/pyproject.toml", "[project]\nname = \"client\"\nversion = \"dev\"\n")
 	if got := libraryVersion(output, local); got != "0.0.1" {
 		t.Fatalf("libraryVersion = %q, want 0.0.1", got)
+	}
+}
+
+// A loose declaration (1.2, v1.2.0) is compared as the version it means and
+// written in its normal form, never copied verbatim into every manifest.
+func TestTheKeptLibraryVersionIsWrittenInItsNormalForm(t *testing.T) {
+	output := t.TempDir()
+	if err := os.WriteFile(filepath.Join(output, "library.codefly.yaml"), []byte("kind: library\nversion: v1.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := libraryVersion(output, []ContractEntry{{PackageVersion: "0.0.0"}}); got != "1.2.0" {
+		t.Fatalf("libraryVersion = %q, want 1.2.0", got)
+	}
+	if got := libraryVersion(t.TempDir(), []ContractEntry{{PackageVersion: "v0.4"}}); got != "0.4.0" {
+		t.Fatalf("libraryVersion = %q, want the producer's 0.4.0", got)
+	}
+}
+
+// A producer behind what the library declares (a rolled-back pin) keeps the
+// library's label on the producer's content, so it is said, not silent.
+func TestAProducerBehindTheLibraryIsWarned(t *testing.T) {
+	var warnings []string
+	cli.SetOutputSink(func(level wool.Loglevel, msg string) {
+		if level == wool.WARN {
+			warnings = append(warnings, msg)
+		}
+	})
+	t.Cleanup(func() { cli.SetOutputSink(nil) })
+	output := t.TempDir()
+	if err := os.WriteFile(filepath.Join(output, "library.codefly.yaml"), []byte("kind: library\nversion: 1.3.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := libraryVersion(output, []ContractEntry{{PackageVersion: "1.2.0"}}); got != "1.3.0" {
+		t.Fatalf("libraryVersion = %q, want 1.3.0 kept", got)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "keeps version 1.3.0") || !strings.Contains(warnings[0], "at 1.2.0") {
+		t.Fatalf("warnings = %q, want one naming 1.3.0 kept over the producer's 1.2.0", warnings)
+	}
+	warnings = nil
+	if got := libraryVersion(output, []ContractEntry{{PackageVersion: "1.4.0"}}); got != "1.4.0" || len(warnings) != 0 {
+		t.Fatalf("a producer ahead: %q, warnings %q", got, warnings)
+	}
+}
+
+// A PEP 440 version (0.3.0.post1, 1.0.0a1) cannot be ordered against a
+// semantic one, so it is never rewritten: 0.3.0.post1 rewritten to a producer's
+// 0.3.0 would move the package backwards.
+func TestAPEP440PackageVersionIsNeverRewritten(t *testing.T) {
+	for declared, unordered := range map[string]bool{"0.3.0.post1": true, "1.0.0a1": true, "1.0.0.dev0": true, "0.3.0": false, "1.0.0-rc.1": false} {
+		langDir := t.TempDir()
+		pyproject := "[project]\nname = \"client\"\nversion = \"" + declared + "\"\n"
+		if err := os.WriteFile(filepath.Join(langDir, "pyproject.toml"), []byte(pyproject), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := unorderedPackageVersion(languages.PYTHON, langDir); ok != unordered || (ok && got != declared) {
+			t.Errorf("unorderedPackageVersion(%q) = %q, %v; want unordered=%v", declared, got, ok, unordered)
+		}
+	}
+	if _, ok := unorderedPackageVersion(languages.PYTHON, t.TempDir()); ok {
+		t.Error("a missing pyproject.toml is not an unordered version")
+	}
+	// What generation calls leaves such a version exactly as written.
+	langDir := t.TempDir()
+	pyproject := "[project]\nname = \"client\"\nversion = \"0.3.0.post1\"\n"
+	path := filepath.Join(langDir, "pyproject.toml")
+	if err := os.WriteFile(path, []byte(pyproject), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPackageVersion(languages.PYTHON, langDir, "0.3.0"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != pyproject {
+		t.Fatalf("pyproject.toml was rewritten:\n%s", got)
 	}
 }
 
