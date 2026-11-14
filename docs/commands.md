@@ -4345,6 +4345,17 @@ from. `library.codefly.yaml` always carries a `sources:` list (one element for
 `generate client`, one per aggregated contract for `sync solution-sdk` below) so
 both commands share one schema.
 
+The library's version — `library.codefly.yaml`'s `version:` and every package
+manifest's (`package.json`, `pyproject.toml`) — is the producer's version, and a
+regeneration never moves it backwards: a library already declaring a later
+version (one a release stamped, or a local service still at `0.0.0`
+regenerating a client published as `0.0.1`) keeps it, while `sources[].version`
+records the producer's exactly. `generated-by.companion` names the proto
+companion that ran by tag and digest (`ghcr.io/codefly-dev/proto:<tag>@sha256:…`),
+the digest read back from the image the run used; with no Docker engine (the
+host's tools ran) or no registry digest, it is the tag alone and the command
+says why.
+
 Every requested language is generated into scratch directories before anything
 under the library is written. A run that fails in the proto companion (a
 contract that does not compile, a buf dependency that does not resolve) leaves

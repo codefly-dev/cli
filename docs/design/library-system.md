@@ -537,7 +537,7 @@ sources:
     contract-digest: sha256:…
 generated-by:
   codefly: 0.1.140
-  companion: ghcr.io/codefly-dev/proto:0.0.13
+  companion: ghcr.io/codefly-dev/proto:0.0.13@sha256:…   # the image that ran
   facade: true
 ```
 
