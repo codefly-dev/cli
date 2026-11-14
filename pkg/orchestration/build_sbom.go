@@ -114,7 +114,7 @@ func recipePlatforms(recipe *builderv0.DockerBuildRecipe) []string {
 }
 
 // inspectLocalImageID resolves the image ID the daemon holds for a loaded
-// image. inspectImageDigest reads RepoDigests, which an image that was never
+// image. imagedigest.Local reads RepoDigests, which an image that was never
 // pushed does not have.
 func inspectLocalImageID(ctx context.Context, image string) (string, error) {
 	output, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Output()

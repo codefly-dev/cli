@@ -14,10 +14,12 @@ import (
 	semver "github.com/Masterminds/semver/v3"
 	hopv1 "github.com/codefly-dev/authority/libraries/hop/go/gen/authority/hop/v1"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/imagedigest"
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/shared"
 	"google.golang.org/protobuf/encoding/protowire"
 	googleproto "google.golang.org/protobuf/proto"
@@ -1020,10 +1022,7 @@ func writeLibraryManifest(ctx context.Context, outputDir, name, version string, 
 	}
 
 	codeflyVersion, _ := cli.GetCurrentVersion()
-	companion := ""
-	if image, err := coreproto.CompanionImage(ctx); err == nil {
-		companion = image.FullName()
-	}
+	companion := companionUsed(ctx)
 
 	doc := manifest{
 		Kind:      "library",
@@ -1043,6 +1042,44 @@ func writeLibraryManifest(ctx context.Context, outputDir, name, version string, 
 		return err
 	}
 	return shared.WriteFileAtomic(ctx, filepath.Join(outputDir, resources.LibraryConfigurationName), data, 0o644)
+}
+
+// The seams companionUsed reads the run's companion through; tests replace them.
+var (
+	dockerEngineRunning = dockerrun.DockerEngineRunning
+	localImageDigest    = imagedigest.Local
+)
+
+// companionUsed is the proto companion that generated this library, by tag and
+// by the digest of the image this run used, name:tag@sha256:..., so the record
+// names the bytes that produced the output rather than a tag a registry can
+// repoint (codefly-dev/cli#1275). The digest is read back from the image the
+// daemon holds, right after the run that used it, and is never re-resolved
+// from the registry: that would record whatever the tag points at later.
+//
+// The companion runs in Docker whenever the engine is up. Without one, its
+// tools ran on the host and no image produced the output; and an image the
+// daemon holds only as a local build has no registry digest. Both record the
+// tag alone and say why.
+func companionUsed(ctx context.Context) string {
+	image, err := coreproto.CompanionImage(ctx)
+	if err != nil {
+		return ""
+	}
+	if image.Digest != "" {
+		return image.FullName()
+	}
+	reference := image.FullName()
+	if !dockerEngineRunning(ctx) {
+		cli.Warning("recording the proto companion %s by tag only: no Docker engine, so the host's tools generated this library", reference)
+		return reference
+	}
+	digest, err := localImageDigest(ctx, reference)
+	if err != nil {
+		cli.Warning("recording the proto companion %s by tag only: %v", reference, err)
+		return reference
+	}
+	return reference + "@" + digest
 }
 
 func anyProtobuf(entries []ContractEntry) bool {
