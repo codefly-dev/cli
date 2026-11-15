@@ -78,13 +78,13 @@ func TestTheSignedSidecarOnTheWireCarriesTheDeclaration(t *testing.T) {
 		wantEdges   [][2]string
 		wantSidecar bool
 	}{
-		"a named selector with ordered edges": {`installation_role: installer
+		"a named selector with ordered edges": {`installation_role: admin
 edge_dependencies:
   - module: robin
     presence: required
   - module: annotations
     presence: optional
-`, "installer", [][2]string{{"robin", "required"}, {"annotations", "optional"}}, true},
+`, "admin", [][2]string{{"robin", "required"}, {"annotations", "optional"}}, true},
 		"the none selector alone is reason enough for a sidecar": {
 			"installation_role: none\n", "none", nil, true},
 		"edges alone are reason enough for a sidecar": {`edge_dependencies:
@@ -213,7 +213,7 @@ edge_dependencies:
 // open.
 func TestTheProducedCarriersAgreeUnderAuthoritysRule(t *testing.T) {
 	for name, declaration := range map[string]string{
-		"a named selector with ordered edges": `installation_role: installer
+		"a named selector with ordered edges": `installation_role: admin
 edge_dependencies:
   - module: robin
     presence: required
@@ -251,7 +251,7 @@ edge_dependencies:
 // genuinely produced pair and asserts Authority refuses. Each case starts from
 // a pair that agrees, so the refusal is the disagreement and nothing else.
 func TestAuthorityRefusesEveryDisagreementTheRuleNames(t *testing.T) {
-	ordered := `installation_role: installer
+	ordered := `installation_role: admin
 edge_dependencies:
   - module: robin
     presence: required
@@ -264,7 +264,7 @@ edge_dependencies:
 		want        string
 	}{
 		"selector mismatch": {ordered, func(d *delivered.Document) {
-			d.InstallationRole = "viewer"
+			d.InstallationRole = "user"
 		}, "installation_role differs"},
 		"selector one-sided: document declares nothing": {ordered, func(d *delivered.Document) {
 			d.InstallationRole = ""

@@ -57,7 +57,7 @@ func TestApplyDeliversBothHalvesToAHostItDials(t *testing.T) {
 		Host:      solutionhost.HostTarget{Coordinate: "local", Domain: "local"},
 		Release:   solutionhost.Release{Publisher: "test", Name: "wiki", Version: "0.1.0"},
 		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}},
-		Authority: &solutionhost.Authority{Principal: "wiki", InstallationRole: "installer"},
+		Authority: &solutionhost.Authority{Principal: "wiki", InstallationRole: "admin"},
 	}
 	payload, err := solutionhost.SignedPayload(manifest)
 	require.NoError(t, err)
@@ -68,8 +68,8 @@ func TestApplyDeliversBothHalvesToAHostItDials(t *testing.T) {
 	carrier, err := solutionhost.MarshalSigned(signed)
 	require.NoError(t, err)
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{
-		InstallationRole: "installer",
-		Roles:            []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}},
+		InstallationRole: "admin",
+		Roles:            []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}},
 	})
 	require.NoError(t, err)
 	document, err := gitops.PreparedPairedDocument(carrier, declaration, signer)
@@ -97,9 +97,9 @@ func TestApplyDeliversBothHalvesToAHostItDials(t *testing.T) {
 		"raw and trimmed: the projection's trailing newline is not part of the token, and the host adds the bearer scheme")
 	var policy compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(host.seen[0].GetAuthority().GetDocument(), &policy))
-	require.Equal(t, []string{"installer", "editor", "viewer"},
-		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName(), policy.GetRoles()[2].GetName()})
-	require.Equal(t, "installer", policy.GetInstallationRole())
+	require.Equal(t, []string{"admin", "user"},
+		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName()})
+	require.Equal(t, "admin", policy.GetInstallationRole())
 	require.Contains(t, output.String(), "delivered wiki.json")
 	require.NotContains(t, output.String(), "projected-delivery-token", "a Job's log is a published record")
 }

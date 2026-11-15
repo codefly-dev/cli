@@ -45,7 +45,7 @@ type ContractResolver func(*modulecontract.Contract) (*modulecontract.Resolved, 
 // Roles reads the roles the module at dir declares in its module contract,
 // in the authority's spelling, in the order written: what the authority's
 // document carries for it (AuthorityManifestV1.roles). Core's reader holds
-// them to its rules — an installer among them, each scope and each
+// them to its rules — exactly admin and user, each scope and each
 // installation-owned scope within the unit's own kinds or a permission its
 // bindings ask for on a person's behalf, an installation-owned scope naming
 // no ids, a scope reached through a binding naming one it declares that a

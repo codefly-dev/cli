@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/authority/libraries/authority-core/go/decide"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/memstore"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/workcontext"
 	"github.com/stretchr/testify/require"
@@ -47,7 +48,7 @@ func TestDeliveredOwnerAwareSolutionIssuesForPerson(t *testing.T) {
 				if err := tx.PutInstallation(inst); err != nil {
 					return err
 				}
-				return tx.PutRoleGrant(domain.RoleGrant{InstallationID: inst.ID, PersonID: "person", Role: "viewer"})
+				return tx.PutRoleGrant(domain.RoleGrant{InstallationID: inst.ID, PersonID: "person", Role: modulecontract.UserRole})
 			}))
 			public, private, err := ed25519.GenerateKey(nil)
 			require.NoError(t, err)
@@ -71,7 +72,7 @@ func TestDeliveredOwnerAwareSolutionIssuesForPerson(t *testing.T) {
 			require.Equal(t, []string{"read"}, scopes[0].GetActions())
 			require.Equal(t, inst.PrincipalID, scopes[0].GetResourceOwnerId())
 			// The delivered owned scope stays bounded to this installation's IDs.
-			roleScopes, err := decide.RoleScopes(m, inst, []string{"viewer"})
+			roleScopes, err := decide.RoleScopes(m, inst, []string{modulecontract.UserRole})
 			require.NoError(t, err)
 			require.Len(t, roleScopes, 2)
 			for _, scope := range roleScopes {

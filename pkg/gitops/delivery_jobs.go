@@ -72,14 +72,14 @@ const (
 
 	// pairedDeliveryImage is the image a PAIRED delivery Job runs, which must
 	// execute codefly itself rather than a shell script: the index digest of
-	// tag 0.0.10, the codefly companion built by its recipe (core
-	// companions/codefly/Dockerfile at codefly-dev/core#926, merge 8678ee75)
+	// tag 0.0.11, the codefly companion built by its recipe (core
+	// companions/codefly/Dockerfile at core_ref c446f742, codefly-dev/core#929)
 	// and published and attested by this repository's Companions workflow
-	// (run 43642449958, `codefly companion publish`, which cross-compiles the
-	// CLI into bin/linux/<arch>/codefly) from deps-audit at ad4d25d1, so its
-	// binary embeds codefly/core v0.19.29 (read back from both architectures'
-	// build info). The pin follows the CLI's core, as the test below holds it
-	// to.
+	// (run 43712550709, `codefly companion publish`, which cross-compiles the
+	// CLI into bin/linux/<arch>/codefly) from blue-delivery at 8a87d630, so its
+	// binary embeds codefly/core v0.19.30 and authority-core 00d983d2 (read
+	// back from its build info). The pin follows the CLI's core, as the test
+	// below holds it to.
 	//
 	// That binary decodes what this CLI renders strictly, so its core must be
 	// at least this CLI's. The integration test
@@ -97,7 +97,7 @@ const (
 	// every cell. Moving this one changes the carrier a paired cell file
 	// declares (cellDelivery) just the same, so a paired cell is re-rendered
 	// and published with, or before, the first Job that runs it.
-	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:7d1a4a94551c6b287d3a55bbe09ce82638e2f93a182f1ee80ca1d315d41415c3"
+	pairedDeliveryImage = "ghcr.io/codefly-dev/codefly@sha256:be17a26f92f6d8470e3d494e1d250760b00c16c349396db8c4a938bc5f0c9fe0"
 
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"

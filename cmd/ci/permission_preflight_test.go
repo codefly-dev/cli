@@ -22,9 +22,12 @@ queues: []
 scope_ceilings:
   - {resource_kind: app.entry, actions: [read]}
 roles:
-  - name: installer
+  - name: admin
     scopes:
       - {resource_kind: app.entry, actions: [typo]}
+  - name: user
+    scopes:
+      - {resource_kind: app.entry, actions: [read]}
 bindings: []
 destinations: []
 `,

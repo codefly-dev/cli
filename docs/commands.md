@@ -860,7 +860,7 @@ This is what a cell's delivery Job runs: a GitOps publish toward a host whose
 delivery endpoint declares `codefly.dev/composition` writes one paired document
 per manifest into the delivery overlay and renders the manifest Job to run
 `/bin/codefly delivery apply` with the projected token, from the codefly
-companion `0.0.8`, pinned by digest. `0.0.7` was the first tag whose static
+companion `0.0.11`, pinned by digest. `0.0.7` was the first tag whose static
 binary carries this verb, but its core refuses the
 `authority.source_governance` field this CLI renders; the companion's core must
 be at least the CLI's, which `TestThePairedDeliveryImageDecodesWhatThisCLIRenders`
@@ -2887,7 +2887,7 @@ What it creates:
 | `services/backend` | the entry service: presents the solution's identity, serves the API the page calls, and is the workload a host installs |
 | `services/web` | the shell that serves the page where no host shell mounts it — not published, because a host that federates the remote needs no shell. It **mounts the solution's own `./Page`**, the same module a host federates, and its generic login/signup routes are removed: a solution has no sign-in of its own, the authority's edge signs the person in |
 | `solution.codefly.yaml` | what the solution exposes, and the route name it addresses each consumed module by |
-| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the standard roles **installer / editor / viewer** — the same three wiki declares. The authority requires `installer` by name and refuses a solution without it |
+| `module.contract.codefly.yaml` | the principal its credentials are issued to, with `owner_aware: true`, the solution's own `scope_ceilings`, and the two page roles **admin / user**, nothing else. Core refuses any other role name, and roles without either: `admin` is what whoever installs the solution holds and administers the installation, `user` is what a person does with it day to day |
 | `module.package.codefly.yaml` | the published identity; without it the render declares no presence and nobody can install the solution |
 | `services/backend/solution.frontend.codefly.yaml` | the page's title, order and `./Page` remote |
 | `configurations/local/fixture-composition.yaml` | who, in the development fixture, has this solution **installed**. Without it the authority refuses every capability ("not installed in this organization") and the page can only render its not-installed branch. `teams` is what admits anyone but the owner |
@@ -3040,6 +3040,7 @@ Every rule is one that silently broke something. The two worth knowing:
 
 | | |
 |---|---|
+| `page_roles_not_admin_user` | Every unit that must declare roles — any solution, with a page or without one, and a module page — declares exactly two, `admin` and `user`; the authority refuses to admit a solution without `admin`, page or not. Core refuses any other role name, or roles without either, when the contract is read (reported as `module_contract_unreadable` with core's reason); what it cannot refuse is a contract declaring **no** roles, because a unit without a page rightly declares none. The authority then refuses to admit the solution — at `runtime-run`, after the whole composition has booted. |
 | `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
 | `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
 | `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
@@ -3051,7 +3052,7 @@ consumer repository can gate on it instead of hand-rolling the equivalent.
 
 **Permissions.** The contract is read through Core's own loader, which refuses
 a role granting a scope no binding backs and no ceiling covers — *"role
-`installer` grants `documents:read`, which is neither within the module's own
+`admin` grants `documents:read`, which is neither within the module's own
 scope ceilings nor a scope one of its bindings spells out"*. That is the
 missing-permission class, caught before install rather than at the first
 refused call. What a composition's values resolve each binding to is not

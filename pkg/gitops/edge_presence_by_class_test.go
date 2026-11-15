@@ -14,7 +14,7 @@ import (
 // delivered, annotations optional on a development cell and required in
 // production. It is written once and delivered twice below; nothing about it
 // changes between the two environments.
-const perClassDeclaration = `installation_role: installer
+const perClassDeclaration = `installation_role: admin
 edge_dependencies:
   - module: robin
     presence: required
@@ -112,7 +112,7 @@ func TestAClassTheContractDoesNotNameIsRefused(t *testing.T) {
 // for everywhere, and it reaches both carriers unchanged whatever the
 // environment's class is, including none.
 func TestAPlainPresenceIsUnaffectedByTheEnvironmentClass(t *testing.T) {
-	plain := `installation_role: installer
+	plain := `installation_role: admin
 edge_dependencies:
   - module: robin
     presence: required

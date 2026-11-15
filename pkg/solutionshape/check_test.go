@@ -55,7 +55,11 @@ scope_ceilings:
     - resource_kind: wiki.page
       actions: [read, write]
 roles:
-    - name: installer
+    - name: admin
+      scopes:
+        - resource_kind: wiki.page
+          actions: [read, write]
+    - name: user
       scopes:
         - resource_kind: wiki.page
           actions: [read, write]
@@ -411,11 +415,15 @@ scope_ceilings:
     - resource_kind: wiki.page
       actions: [read, write]
 roles:
-    - name: installer
+    - name: admin
       scopes:
           - resource_kind: wiki.page
             actions: [read, write]
           - resource_kind: documents
+            actions: [read]
+    - name: user
+      scopes:
+          - resource_kind: wiki.page
             actions: [read]
 bindings: []
 `)
@@ -488,15 +496,18 @@ func TestAPageShellFindsItsAppWhereTheManifestSaysItIs(t *testing.T) {
 	}
 }
 
-// TestAContractWithNoInstallerRoleFails covers the rule the authority states
-// at runtime and nothing else catches. A solution is a unit a person installs,
-// so a contract offering no installer role is refused — at `runtime-run`,
-// after the whole composition has booted. Seven of nine solutions in one fleet
-// declared no role at all and the shape checker called them all conformant.
-func TestAContractWithNoInstallerRoleFails(t *testing.T) {
+// TestAContractWithoutThePageRolesFails covers the rule the authority states
+// at runtime and nothing else catches. A solution is a unit a person
+// installs, through its page, so it declares exactly admin and user, and a
+// contract offering a person no role is refused — at `runtime-run`, after the
+// whole composition has booted. Core cannot refuse a contract with no roles,
+// because a unit without a page rightly declares none; once seven of nine
+// solutions in one fleet declared no role at all and the shape checker called
+// them all conformant.
+func TestAContractWithoutThePageRolesFails(t *testing.T) {
 	dir := conformingSolution(t)
-	if checkFor(t, Inspect("wiki", dir), CodeInstallerRoleMissing).Status != StatusOK {
-		t.Fatal("a contract declaring the installer role was reported")
+	if checkFor(t, Inspect("wiki", dir), CodePageRolesNotAdminUser).Status != StatusOK {
+		t.Fatal("a contract declaring admin and user was reported")
 	}
 
 	// Strip the roles: the contract still reads, and everything else passes.
@@ -509,11 +520,42 @@ scope_ceilings: []
 bindings: []
 `)
 	report := Inspect("wiki", dir)
-	if checkFor(t, report, CodeInstallerRoleMissing).Status != StatusFail {
-		t.Fatal("a contract with no installer role was not reported")
+	check := checkFor(t, report, CodePageRolesNotAdminUser)
+	if check.Status != StatusFail {
+		t.Fatal("a contract with no roles was not reported")
+	}
+	if !strings.Contains(check.Message, "no roles") {
+		t.Fatalf("the failure does not say the contract declares no roles: %q", check.Message)
 	}
 	if report.Conforms() {
 		t.Fatal("a solution the authority refuses to admit was called conformant")
+	}
+}
+
+// TestAContractWithARetiredRoleNameIsUnreadable. installer, editor and viewer
+// are no longer page roles: core refuses the contract when it is read, naming
+// the two a page has, so the doctor reports it unreadable with core's own
+// reason rather than restating the rule.
+func TestAContractWithARetiredRoleNameIsUnreadable(t *testing.T) {
+	dir := conformingSolution(t)
+	writeContract(t, dir, "[read, write]", `    - name: installer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, write]
+    - name: viewer
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read]`)
+	report := Inspect("wiki", dir)
+	check := checkFor(t, report, CodeContractUnreadable)
+	if check.Status != StatusFail {
+		t.Fatalf("a contract declaring installer and viewer was %s, want fail", check.Status)
+	}
+	if !strings.Contains(check.Message, `neither "admin" nor "user"`) {
+		t.Fatalf("the failure does not name the two page roles: %q", check.Message)
+	}
+	if report.Conforms() {
+		t.Fatal("a contract core refuses was called conformant")
 	}
 }
 
@@ -572,37 +614,45 @@ func TestARoleGrantingWhatNoOperationRequiresWarns(t *testing.T) {
 		{
 			name:    "an action no route spells is checked by nothing",
 			ceiling: "[read, write, publish]",
-			roles: `    - name: installer
+			roles: `    - name: admin
       scopes:
           - resource_kind: wiki.page
-            actions: [read, write, publish]`,
+            actions: [read, write, publish]
+    - name: user
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, write]`,
 			// read and write are each required by a route; publish by none.
-			surplus: []string{"installer grants wiki.page:publish"},
+			surplus: []string{"admin grants wiki.page:publish"},
 		},
 		{
-			name:    "every role is judged, not only the installer",
+			name:    "every role is judged, not only the admin",
 			ceiling: "[read, write, publish]",
-			roles: `    - name: installer
+			roles: `    - name: admin
       scopes:
           - resource_kind: wiki.page
             actions: [read]
-    - name: editor
+    - name: user
       scopes:
           - resource_kind: wiki.page
             actions: [read, publish]`,
-			surplus: []string{"editor grants wiki.page:publish"},
+			surplus: []string{"user grants wiki.page:publish"},
 		},
 		{
 			name:    "an installation-owned scope grants just as much",
 			ceiling: "[read, write, publish]",
-			roles: `    - name: installer
+			roles: `    - name: admin
       scopes:
           - resource_kind: wiki.page
             actions: [read]
       installation_owned_scopes:
           - resource_kind: wiki.page
-            actions: [publish]`,
-			surplus: []string{"installer grants wiki.page:publish"},
+            actions: [publish]
+    - name: user
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read]`,
+			surplus: []string{"admin grants wiki.page:publish"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -642,7 +692,7 @@ scope_ceilings:
     - resource_kind: wiki.page
       actions: [read, write]
 roles:
-    - name: installer
+    - name: admin
       scopes:
           - resource_kind: wiki.page
             actions: [read, write]
@@ -650,6 +700,12 @@ roles:
             actions: [read, write]
           - resource_kind: documents.collection
             actions: [read, create]
+    - name: user
+      scopes:
+          - resource_kind: wiki.page
+            actions: [read, write]
+          - resource_kind: documents
+            actions: [read]
 bindings:
     - id: documents
       operations: [invoke]

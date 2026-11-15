@@ -323,6 +323,6 @@ installations:
   # useless local run. finance and engineering are the fixture's acme teams,
   # so maya, rémi, alex and dev can all open it; no-roles, who is in no team,
   # still cannot, and that is the fixture showing a real refusal.
-  - {organization: acme, target: %s, role: viewer, owner: alex, teams: [finance, engineering]}
+  - {organization: acme, target: %s, role: user, owner: alex, teams: [finance, engineering]}
 `, titleFromName(name), name, name, name)
 }

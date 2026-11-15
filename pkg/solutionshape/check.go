@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/composition"
@@ -79,7 +80,7 @@ const (
 	CodeConsumedWithoutBinding  = "consumed_module_without_binding"
 	CodePageShellHasNoApp       = "page_shell_has_no_app"
 	CodePageExportedTooWidely   = "page_shell_exported_too_widely"
-	CodeInstallerRoleMissing    = "installer_role_missing"
+	CodePageRolesNotAdminUser   = "page_roles_not_admin_user"
 	CodeBackendContractMissing  = "backend_contract_missing"
 	// CodeRoleScopeUnreached and CodeOperationPoliciesUnread are declared in
 	// reached.go, beside the check that reports them.
@@ -304,7 +305,7 @@ func (r *Report) checkContract(dir string, consumed []string) *modulecontract.Co
 	r.ok(CodeContractMissing, fmt.Sprintf("the contract declares principal %q", contract.Principal))
 	r.checkConsumedModulesHaveAuthority(consumed, contract)
 
-	r.checkInstallerRole(contract)
+	r.checkPageRoles(contract)
 
 	// The one that fails silently, and the reason this checker exists.
 	if contract.OwnerAware {
@@ -316,36 +317,48 @@ func (r *Report) checkContract(dir string, consumed []string) *modulecontract.Co
 	return contract
 }
 
-// checkInstallerRole holds the contract to the role the host requires of a
-// solution. A solution is a unit a PERSON installs, so the authority refuses
-// to admit one that offers a person no role to hold on it:
-//
-//	state: forbidden: <name> declares 0 role(s) and none is "installer":
-//	a solution declares an installer role
+// checkPageRoles holds the contract to the roles the host requires of a
+// solution. A solution is a unit a PERSON installs, and every unit that must
+// declare roles — any solution, page or not, and a module page — declares
+// exactly two: admin, which whoever installs it holds and which administers
+// the installation, and user, what a person does with it day to day. The
+// authority refuses to admit a solution without an admin role whether or not
+// it has a page, so a headless solution is held to it here too; the code's
+// name says "page" because the page roles are what the two are called.
 //
 // It is reported here because of WHEN that refusal arrives: at `runtime-run`,
 // after the whole composition — authority, store, every consumed module — has
-// booted. Every document reads fine until then, `manifest.Validate` passes,
-// and the three consumer-repository gates pass. Of the nine solutions in one
-// fleet, seven declared no role at all and only the two that are actually
-// run, wiki and proposals, declared one; the shape checker called all nine
-// conformant.
+// booted. Core's contract rules refuse a role named anything else, or roles
+// without admin or without user, when the contract is read, so such a
+// contract is reported as unreadable before this check runs. What core cannot
+// refuse is a contract that declares no roles at all, because a unit without
+// a page rightly declares none; for a solution that is the silent failure,
+// and once seven of nine solutions in one fleet carried it while the shape
+// checker called them all conformant. The set is still compared whole here,
+// so this check never depends on which rule core applies first.
 //
-// Only the role's EXISTENCE is checked. What it should grant is the
-// solution's own business, and core's Contract.Validate already refuses a
-// role granting a scope no ceiling covers or no binding spells out — a rule
-// this package must not restate, having once shipped a permissions check that
-// failed wiki and proposals, the only two solutions known to work.
-func (r *Report) checkInstallerRole(contract *modulecontract.Contract) {
+// Only the roles' NAMES are checked. What they grant is the solution's own
+// business, and core's Contract.Validate already refuses a role granting a
+// scope no ceiling covers or no binding spells out — a rule this package must
+// not restate, having once shipped a permissions check that failed the only
+// two solutions known to work.
+func (r *Report) checkPageRoles(contract *modulecontract.Contract) {
+	declared := make([]string, 0, len(contract.Roles))
 	for index := range contract.Roles {
-		if contract.Roles[index].Name == modulecontract.InstallerRole {
-			r.ok(CodeInstallerRoleMissing, "the contract declares the installer role")
-			return
-		}
+		declared = append(declared, contract.Roles[index].Name)
 	}
-	r.fail(CodeInstallerRoleMissing,
-		fmt.Sprintf("the contract declares %d role(s) and none is %q", len(contract.Roles), modulecontract.InstallerRole),
-		"the authority refuses to admit a solution that offers a person no role to hold on it, and it refuses at runtime-run — after the whole composition has booted and every document has read fine. Declare an installer role scoped within the contract's own scope_ceilings")
+	slices.Sort(declared)
+	if slices.Equal(declared, []string{modulecontract.AdminRole, modulecontract.UserRole}) {
+		r.ok(CodePageRolesNotAdminUser, fmt.Sprintf("the contract declares the two roles, %q and %q", modulecontract.AdminRole, modulecontract.UserRole))
+		return
+	}
+	found := "no roles"
+	if len(declared) > 0 {
+		found = fmt.Sprintf("role(s) %s", strings.Join(declared, ", "))
+	}
+	r.fail(CodePageRolesNotAdminUser,
+		fmt.Sprintf("the contract declares %s, not exactly %q and %q", found, modulecontract.AdminRole, modulecontract.UserRole),
+		fmt.Sprintf("every unit that must declare roles — any solution, with a page or without one, and a module page — declares exactly %[1]q and %[2]q, and the authority refuses to admit a solution without %[1]q, at runtime-run, after the whole composition has booted and every document has read fine. Declare exactly two roles scoped within the contract's own scope_ceilings: %[1]q, which whoever installs the unit holds and which administers the installation, and %[2]q, what a person does with it day to day", modulecontract.AdminRole, modulecontract.UserRole))
 }
 
 // checkPackage holds the published identity, and the one thing about it that

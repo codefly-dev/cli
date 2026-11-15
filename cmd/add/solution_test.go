@@ -542,17 +542,24 @@ func TestTheInstallationAdmitsTheFixturesPeople(t *testing.T) {
 	}
 }
 
-// TestTheContractDeclaresARoleBesidesInstaller. The organization is installed
-// as viewer, so the contract has to declare that role: a role the contract
-// does not name is one the authority never issues.
-func TestTheContractDeclaresARoleBesidesInstaller(t *testing.T) {
+// TestTheContractDeclaresAdminAndUser. A unit with a page declares exactly
+// admin and user, and the organization is installed as user, so the contract
+// has to declare that role: a role the contract does not name is one the
+// authority never issues.
+func TestTheContractDeclaresAdminAndUser(t *testing.T) {
 	contract := solutionContract("notes")
 	var names []string
 	for index := range contract.Roles {
 		names = append(names, contract.Roles[index].Name)
 	}
-	if !slices.Equal(names, []string{"installer", "editor", "viewer"}) {
-		t.Fatalf("the contract must declare the standard set installer/editor/viewer, got %v", names)
+	if !slices.Equal(names, []string{"admin", "user"}) {
+		t.Fatalf("the contract must declare exactly admin and user, got %v", names)
+	}
+	if err := contract.Validate(); err != nil {
+		t.Fatalf("core refuses the scaffolded contract: %v", err)
+	}
+	if !strings.Contains(fixtureComposition("notes"), "role: user") {
+		t.Fatal("the fixture must install the organization as user, a role the contract declares")
 	}
 }
 

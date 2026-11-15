@@ -355,14 +355,14 @@ const contractPreamble = `# What this solution asks for (codefly/module-contract
 # to say. A call the authority holds to a person IN PERSON takes no binding
 # here — the page makes it, as the person.
 #
-# ROLES. A solution is a unit a person installs, and the authority refuses to
-# admit one that offers a person no role to hold on it ("declares 0 role(s)
-# and none is \"installer\""). The installer role below is scoped to this
-# solution's own page, the one resource a scaffold knows it has. Name the
-# solution's real resource kinds in scope_ceilings and widen the role to them,
-# and add a role per other kind of person who uses it (wiki: editor, viewer;
-# proposals: reviewer, viewer). A role may grant a scope only within a
-# ceiling, or through a binding it names, so the two cannot drift apart.
+# ROLES. A solution has a page, and a unit with a page declares exactly two
+# roles, both required: admin, which whoever installs it holds and which
+# administers the installation, and user, what a person does with it day to
+# day. Core refuses any other role name, and roles without either. Both below
+# are scoped to this solution's own page, the one resource a scaffold knows it
+# has. Name the solution's real resource kinds in scope_ceilings and widen the
+# two roles to them. A role may grant a scope only within a ceiling, or
+# through a binding it names, so the two cannot drift apart.
 `
 
 // solutionContract is the module contract the solution ships: the principal
@@ -386,17 +386,17 @@ const (
 )
 
 func solutionContract(name string) *modulecontract.Contract {
-	// The solution's own permission vocabulary, and the one role the host
-	// requires. A solution is a unit a PERSON installs, so the authority
-	// refuses to admit one that offers a person no role to hold on it:
+	// The solution's own permission vocabulary, and the two roles a unit
+	// with a page declares. A solution is a unit a PERSON installs, so the
+	// authority refuses to admit one that offers a person no role to hold on
+	// it, and core refuses roles that are not exactly admin and user:
 	//
-	//	state: forbidden: <name> declares 0 role(s) and none is "installer":
-	//	a solution declares an installer role
+	//	the contract declares 0 role(s) and none is "admin"
 	//
-	// That refusal happens at `runtime-run`, after the whole composition has
-	// booted, and every document reads fine until then — which is how seven
-	// of the nine solutions in one fleet came to declare no role at all. Only
-	// the two that are actually run, wiki and proposals, declare one.
+	// A missing role is refused at `runtime-run`, after the whole composition
+	// has booted, and every document reads fine until then — which is how
+	// seven of the nine solutions in one fleet once came to declare no role
+	// at all.
 	//
 	// The kind is derived, not guessed at: every solution this command
 	// scaffolds exposes a page, so `<name>.page` is the one resource it is
@@ -418,27 +418,23 @@ func solutionContract(name string) *modulecontract.Contract {
 			ResourceKind: name + ".page",
 			Actions:      []string{readAction, writeAction},
 		}},
-		// installer / editor / viewer, the standard set — the same three wiki
-		// declares, and now every solution in the fleet.
+		// admin / user, the two roles every unit with a page declares, and
+		// nothing else: core refuses any other name (`role-admin-or-user`)
+		// and roles without either (`role-admin`, `role-user`).
 		//
-		// `installer` is required BY NAME: the authority refuses a solution
-		// without it. `viewer` is what the organization is installed as, so
-		// the people of an installation can open the solution at all —
-		// without a second role only the owner holds anything and everyone
-		// else is refused by name. `editor` is the write position between
-		// them, so a solution that grows one does not have to invent a name
-		// for it; proposals calls its middle role `reviewer`, which is the
-		// same position in its own domain's word.
+		// `admin` is what whoever installs the solution holds: it
+		// administers the installation. `user` is what the organization is
+		// installed as, so the people of an installation can open the
+		// solution at all — without it only the owner holds anything and
+		// everyone else is refused by name. A scaffold knows one resource,
+		// so both read and write it; the admin widens as the solution grows
+		// administrative actions of its own.
 		//
-		// Every role must grant something: core refuses `role "installer"
-		// grants nothing`.
+		// Every role must grant something: core refuses `role "user" grants
+		// nothing`.
 		Roles: []modulecontract.Role{
-			{Name: modulecontract.InstallerRole, Scopes: ownScope},
-			{Name: "editor", Scopes: ownScope},
-			{Name: "viewer", Scopes: []modulecontract.CeilingScope{{
-				ResourceKind: name + ".page",
-				Actions:      []string{readAction},
-			}}},
+			{Name: modulecontract.AdminRole, Scopes: ownScope},
+			{Name: modulecontract.UserRole, Scopes: ownScope},
 		},
 		Bindings:     []modulecontract.Binding{},
 		Destinations: []modulecontract.Destination{},
