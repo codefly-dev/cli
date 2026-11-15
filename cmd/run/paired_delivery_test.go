@@ -78,7 +78,7 @@ func TestLauncherReservesGenerationFromChangedSolutionRoles(t *testing.T) {
 	contractPath := filepath.Join(workspace.Dir(), "modules", "model", modulecontract.FileName)
 	var conns []*grpc.ClientConn
 	for _, action := range []string{"read", "read", "write", "write"} {
-		contract := fmt.Sprintf("schema: codefly/module-contract/v1\nprincipal: model\nnamespaces: []\nqueues: []\nscope_ceilings:\n  - resource_kind: model.item\n    actions: [read, write]\nroles:\n  - name: installer\n    scopes:\n      - resource_kind: model.item\n        actions: [%s]\nbindings: []\ndestinations: []\n", action)
+		contract := fmt.Sprintf("schema: codefly/module-contract/v1\nprincipal: model\nnamespaces: []\nqueues: []\nscope_ceilings:\n  - resource_kind: model.item\n    actions: [read, write]\nroles:\n  - name: admin\n    scopes:\n      - resource_kind: model.item\n        actions: [%s]\n  - name: user\n    scopes:\n      - resource_kind: model.item\n        actions: [read]\nbindings: []\ndestinations: []\n", action)
 		require.NoError(t, os.WriteFile(contractPath, []byte(contract), 0600))
 		// The production retry path constructs a new deliverer each attempt,
 		// over the run's one connection to the host.

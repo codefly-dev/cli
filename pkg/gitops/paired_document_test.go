@@ -37,7 +37,7 @@ func preparedPairManifest(binding string, generation uint64) *solutionhost.Modul
 		Host:      solutionhost.HostTarget{Coordinate: "local", Domain: "local"},
 		Release:   solutionhost.Release{Publisher: "test", Name: binding, Version: "0.1.0"},
 		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}},
-		Authority: &solutionhost.Authority{Principal: binding, InstallationRole: "installer"},
+		Authority: &solutionhost.Authority{Principal: binding, InstallationRole: "admin"},
 	}
 }
 
@@ -50,8 +50,8 @@ func TestAPreparedDocumentBindsTheAuthorityHalfToTheCoreBytes(t *testing.T) {
 	manifest := preparedPairManifest("wiki", 7)
 	carrier := signedCarrierOf(t, manifest, signer)
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{
-		InstallationRole: "installer",
-		Roles:            []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}},
+		InstallationRole: "admin",
+		Roles:            []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}},
 	})
 	require.NoError(t, err)
 
@@ -70,10 +70,10 @@ func TestAPreparedDocumentBindsTheAuthorityHalfToTheCoreBytes(t *testing.T) {
 	require.Equal(t, uint64(7), policy.GetGeneration())
 	require.Equal(t, delivery.Digest(request.GetCarrier().GetDocument()), policy.GetCoreManifestDigest(),
 		"bound to the exact Core bytes beside it")
-	require.Equal(t, []string{"installer", "editor", "viewer"},
-		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName(), policy.GetRoles()[2].GetName()},
+	require.Equal(t, []string{"admin", "user"},
+		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName()},
 		"the roles a module declares travel here and nowhere else: core's Authority has no roles field")
-	require.Equal(t, "installer", policy.GetInstallationRole())
+	require.Equal(t, "admin", policy.GetInstallationRole())
 }
 
 // The two producers of the authority half — a native run and a publish
@@ -84,7 +84,7 @@ func TestBothProducersOfTheAuthorityHalfAgreeByteForByte(t *testing.T) {
 	manifest := preparedPairManifest("wiki", 3)
 	carrier := signedCarrierOf(t, manifest, signer)
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{
-		InstallationRole: "installer",
+		InstallationRole: "admin",
 		EdgeDependencies: []*compositionv1.EdgeDependencyV1{{Module: "accounts"}, {Module: "documents"}},
 	})
 	require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestAnUnchangedPairEncodesIdentically(t *testing.T) {
 // with no roles and look like a success.
 func TestAPairedDocumentIsNotPreparedWithoutTheReleaseKey(t *testing.T) {
 	carrier := signedCarrierOf(t, preparedPairManifest("wiki", 2), nativeSigner(t))
-	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{InstallationRole: "installer"})
+	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{InstallationRole: "admin"})
 	require.NoError(t, err)
 	_, err = PreparedPairedDocument(carrier, declaration, nil)
 	require.ErrorContains(t, err, "signed by the release key")
@@ -189,13 +189,13 @@ func TestPrepareWritesAPairedDocumentPerSettledCarrier(t *testing.T) {
 			if module != "wiki" {
 				return nil, nil
 			}
-			return []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}}, nil
+			return []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}}, nil
 		},
 		Installation: func(_ context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error) {
 			if module != "wiki" {
 				return "", nil, nil
 			}
-			return "installer", nil, nil
+			return "admin", nil, nil
 		},
 	}
 	out := t.TempDir()
@@ -207,9 +207,9 @@ func TestPrepareWritesAPairedDocumentPerSettledCarrier(t *testing.T) {
 	require.NotNil(t, wiki.GetAuthority())
 	var policy compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(wiki.GetAuthority().GetDocument(), &policy))
-	require.Equal(t, []string{"installer", "editor", "viewer"},
-		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName(), policy.GetRoles()[2].GetName()})
-	require.Equal(t, "installer", policy.GetInstallationRole())
+	require.Equal(t, []string{"admin", "user"},
+		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName()})
+	require.Equal(t, "admin", policy.GetInstallationRole())
 
 	accounts := readPrepared(t, out, "accounts.json")
 	require.Nil(t, accounts.GetAuthority(), "a module that declares nothing carries no authority half")
@@ -226,7 +226,7 @@ func TestPrepareRefusesAnUnsignedCarrierRatherThanDropTheAuthorityHalf(t *testin
 	writeOverlayCarrier(t, overlay, manifest, nil)
 	_, err := PreparePairedDocuments(context.Background(), overlay, t.TempDir(),
 		AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
-			return []*compositionv1.RoleV1{{Name: "installer"}}, nil
+			return []*compositionv1.RoleV1{{Name: "admin"}}, nil
 		}}, nativeSigner(t))
 	require.ErrorContains(t, err, "carries no signature")
 	require.ErrorContains(t, err, "wiki")
@@ -248,7 +248,7 @@ func TestWhatPrepareWritesIsWhatApplySends(t *testing.T) {
 	out := t.TempDir()
 	_, err := PreparePairedDocuments(context.Background(), overlay, out, AuthoritySources{
 		Installation: func(context.Context, string) (string, []*compositionv1.EdgeDependencyV1, error) {
-			return "installer", []*compositionv1.EdgeDependencyV1{{Module: "accounts"}}, nil
+			return "admin", []*compositionv1.EdgeDependencyV1{{Module: "accounts"}}, nil
 		},
 	}, signer)
 	require.NoError(t, err)
@@ -261,7 +261,7 @@ func TestWhatPrepareWritesIsWhatApplySends(t *testing.T) {
 	require.Equal(t, uint64(5), receipts[0].Generation, "the generation the render settled, read from the signed document")
 	var policy compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(host.seen[0].GetAuthority().GetDocument(), &policy))
-	require.Equal(t, "installer", policy.GetInstallationRole())
+	require.Equal(t, "admin", policy.GetInstallationRole())
 	require.Equal(t, []string{"accounts"}, []string{policy.GetEdgeDependencies()[0].GetModule()})
 	require.Equal(t, delivery.Digest(host.seen[0].GetCarrier().GetDocument()), policy.GetCoreManifestDigest())
 }

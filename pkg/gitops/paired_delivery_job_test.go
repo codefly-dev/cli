@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 )
 
@@ -28,12 +29,12 @@ func compositionTarget() *DeliveryTarget {
 }
 
 // pairedOptions are publishOptions toward a composition host, reading every
-// module's declaration as one that declares the three roles.
+// module's declaration as one that declares the two page roles.
 func pairedOptions(signer *fakeSigner) deliveryPublishOptions {
 	opts := publishOptions(signer)
 	opts.Target = compositionTarget()
 	opts.Declarations = &AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
-		return []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}}, nil
+		return []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}}, nil
 	}}
 	return opts
 }
@@ -99,7 +100,7 @@ func TestAPairedPublishWritesAPairedDocumentPerManifestAndTheCodeflyJob(t *testi
 	var policy compositionv1.AuthorityManifestV1
 	require.NotNil(t, documents["example.prod.crm"].GetAuthority())
 	require.NoError(t, proto.Unmarshal(documents["example.prod.crm"].GetAuthority().GetDocument(), &policy))
-	require.Len(t, policy.GetRoles(), 3, "the roles reach the host on the authority half")
+	require.Len(t, policy.GetRoles(), 2, "the roles reach the host on the authority half")
 	require.Nil(t, documents["example.prod.billing"].GetAuthority(), "a withdrawal carries no authority half")
 	kustomization := string(overlayFile(t, repository, kustomizationFile))
 	for binding := range documents {
@@ -285,13 +286,13 @@ func TestAChangedDeclarationAtAnUnchangedManifestAdvancesTheGeneration(t *testin
 		}}
 		return opts
 	}
-	first := declaring("installer", "editor", "viewer")
+	first := declaring("admin")
 	_, err := repository.settle(repository.stageRender(t, "crm"), &first)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), settledGenerationOf(t, repository, "example.prod.crm"))
 	repository.deliver(t)
 
-	grown := declaring("installer", "editor", "viewer", "auditor")
+	grown := declaring("admin", "user")
 	_, err = repository.settle(repository.stageRender(t, "crm"), &grown)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "a declaration change at an unchanged manifest is the next generation")
@@ -299,10 +300,10 @@ func TestAChangedDeclarationAtAnUnchangedManifestAdvancesTheGeneration(t *testin
 	var policy compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(pair.GetAuthority().GetDocument(), &policy))
 	require.Equal(t, uint64(2), policy.GetGeneration(), "the authority half is signed at the new generation")
-	require.Len(t, policy.GetRoles(), 4)
+	require.Len(t, policy.GetRoles(), 2)
 	repository.deliver(t)
 
-	same := declaring("installer", "editor", "viewer", "auditor")
+	same := declaring("admin", "user")
 	_, err = repository.settle(repository.stageRender(t, "crm"), &same)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), settledGenerationOf(t, repository, "example.prod.crm"), "the same pair keeps its generation")
@@ -416,7 +417,7 @@ func TestAnUnchangedPairIsDeliveredAsTheBaseCarriesIt(t *testing.T) {
 
 	grown := pairedOptions(signer)
 	grown.Declarations = &AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
-		return []*compositionv1.RoleV1{{Name: "installer"}, {Name: "editor"}, {Name: "viewer"}, {Name: "auditor"}}, nil
+		return []*compositionv1.RoleV1{{Name: "admin", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "crm.deal", Actions: []string{"read"}}}}, {Name: "user"}}, nil
 	}}
 	_, err = repository.settle(repository.stageRender(t, "crm"), &grown)
 	require.NoError(t, err)

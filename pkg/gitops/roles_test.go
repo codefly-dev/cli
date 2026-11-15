@@ -31,16 +31,13 @@ scope_ceilings:
   - resource_kind: wiki.page
     actions: [read, write, publish]
 roles:
-  - name: installer
+  - name: admin
     scopes:
       - resource_kind: wiki.page
         actions: [read, write, publish]
-  - name: editor
+  - name: user
     scopes:
       - {resource_kind: wiki.page, actions: [read, write]}
-  - name: viewer
-    scopes:
-      - {resource_kind: wiki.page, actions: [read]}
 bindings: []
 destinations: []
 `
@@ -58,9 +55,8 @@ var (
 	// exactly what the retired roles.codefly.yaml declaring the same roles
 	// delivered.
 	wikiRoles = []*compositionv1.RoleV1{
-		{Name: modulecontract.InstallerRole, Scopes: []*authorityv1.WorkScopeV1{wikiPage}},
-		{Name: "editor", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}}},
-		{Name: "viewer", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
+		{Name: modulecontract.AdminRole, Scopes: []*authorityv1.WorkScopeV1{wikiPage}},
+		{Name: modulecontract.UserRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}}},
 	}
 )
 
@@ -112,9 +108,11 @@ func TestASolutionsRolesAreReadFromItsModuleContract(t *testing.T) {
 // of the delivery's readers, naming the role, where the author reads it.
 func TestARolesCoreRefusesIsRefusedByTheDelivery(t *testing.T) {
 	for name, c := range map[string]struct{ document, reason string }{
-		"no installer":                      {strings.Replace(wikiContract, "name: installer", "name: owner", 1), `none is "installer"`},
-		"a role beyond the kind's actions":  {strings.Replace(wikiContract, "actions: [read, write]}", "actions: [read, write, delete]}", 1), `role "editor" grants wiki.page:delete`},
-		"a role on a kind nothing asks for": {strings.Replace(wikiContract, "{resource_kind: wiki.page, actions: [read]}", "{resource_kind: documents, actions: [read]}", 1), `role "viewer" grants documents:read`},
+		"a role neither admin nor user":     {strings.Replace(wikiContract, "name: admin", "name: owner", 1), `role "owner" is neither "admin" nor "user"`},
+		"a retired role name":               {strings.Replace(wikiContract, "name: user", "name: viewer", 1), `role "viewer" is neither "admin" nor "user"`},
+		"no user":                           {strings.Replace(wikiContract, "  - name: user\n    scopes:\n      - {resource_kind: wiki.page, actions: [read, write]}\n", "", 1), `none is "user"`},
+		"a role beyond the kind's actions":  {strings.Replace(wikiContract, "actions: [read, write]}", "actions: [read, write, delete]}", 1), `role "user" grants wiki.page:delete`},
+		"a role on a kind nothing asks for": {strings.Replace(wikiContract, "{resource_kind: wiki.page, actions: [read, write]}", "{resource_kind: documents, actions: [read]}", 1), `role "user" grants documents:read`},
 		"a kind that starts with a digit":   {strings.ReplaceAll(wikiContract, "wiki.page", "2wiki.page"), ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -159,7 +157,7 @@ func TestContractRolesReachTheAuthorityDocument(t *testing.T) {
 	require.True(t, proto.Equal(wikiPage, doc.GetScopeCeilings()[0]))
 }
 
-// ownedContract declares a viewer that reads the wiki's own pages and, of the
+// ownedContract declares a user that reads the wiki's own pages and, of the
 // collections it consumes through a binding, only those its installation owns.
 const ownedContract = `schema: codefly/module-contract/v1
 principal: shop
@@ -169,12 +167,12 @@ scope_ceilings:
   - resource_kind: wiki.page
     actions: [read, write]
 roles:
-  - name: installer
+  - name: admin
     scopes:
       - {resource_kind: wiki.page, actions: [read, write]}
     installation_owned_scopes:
       - {resource_kind: documents.collection, actions: [read, write]}
-  - name: viewer
+  - name: user
     scopes:
       - {resource_kind: wiki.page, actions: [read]}
     installation_owned_scopes:
@@ -197,12 +195,12 @@ func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
 	doc := deliveredAuthorityDocument(t, writeContract(t, ownedContract))
 	requireRoles(t, []*compositionv1.RoleV1{
 		{
-			Name:                    modulecontract.InstallerRole,
+			Name:                    modulecontract.AdminRole,
 			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}},
 			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read", "write"}}},
 		},
 		{
-			Name:                    "viewer",
+			Name:                    modulecontract.UserRole,
 			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
 			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read"}}},
 		},
@@ -213,14 +211,14 @@ func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
 	// both before anything is delivered.
 	for name, c := range map[string]struct{ document, reason string }{
 		"ids":           {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents.collection, actions: [read], resource_ids: [a]}", 1), "resource_ids"},
-		"beyond a kind": {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents, actions: [read]}", 1), `role "viewer" grants installation-owned documents:read`},
+		"beyond a kind": {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents, actions: [read]}", 1), `role "user" grants installation-owned documents:read`},
 	} {
 		_, err := Roles(writeContract(t, c.document), composed)
 		require.ErrorContains(t, err, c.reason, name)
 	}
 }
 
-// reachContract names, for its viewer, what the agent it binds reaches: the
+// reachContract names, for its user, what the agent it binds reaches: the
 // model's profiles and the documents' read, through that binding; and
 // declares one of its own kinds shared.
 const reachContract = `schema: codefly/module-contract/v1
@@ -234,10 +232,10 @@ scope_ceilings:
     actions: [read]
     shared: true
 roles:
-  - name: installer
+  - name: admin
     scopes:
       - {resource_kind: wiki.page, actions: [read]}
-  - name: viewer
+  - name: user
     scopes:
       - {resource_kind: model.profiles, actions: [invoke, read], through: agent}
       - {resource_kind: wiki.page, actions: [read]}
@@ -258,8 +256,8 @@ destinations: []
 func TestReachThroughABindingAndSharedKindsReachTheAuthorityDocument(t *testing.T) {
 	doc := deliveredAuthorityDocument(t, writeContract(t, reachContract))
 	requireRoles(t, []*compositionv1.RoleV1{
-		{Name: modulecontract.InstallerRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
-		{Name: "viewer", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
+		{Name: modulecontract.AdminRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
+		{Name: modulecontract.UserRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
 			Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
 				{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}},
 	}, doc.GetRoles())
@@ -279,16 +277,16 @@ func TestAnOmittedOptionalBindingCarriesNoReachThrough(t *testing.T) {
 	optional := strings.Replace(reachContract, "  - id: agent\n    operations: [invoke]\n", "  - id: agent\n    optional: true\n    operations: [invoke]\n", 1)
 	require.NotEqual(t, reachContract, optional)
 	dir := writeContract(t, optional)
-	viewerOwn := []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}
-	installer := &compositionv1.RoleV1{Name: modulecontract.InstallerRole, Scopes: viewerOwn}
+	userOwn := []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}
+	admin := &compositionv1.RoleV1{Name: modulecontract.AdminRole, Scopes: userOwn}
 
 	roles, err := Roles(dir, resolvedWith(nil))
 	require.NoError(t, err)
-	requireRoles(t, []*compositionv1.RoleV1{installer, {Name: "viewer", Scopes: viewerOwn}}, roles)
+	requireRoles(t, []*compositionv1.RoleV1{admin, {Name: modulecontract.UserRole, Scopes: userOwn}}, roles)
 
 	roles, err = Roles(dir, composed)
 	require.NoError(t, err)
-	requireRoles(t, []*compositionv1.RoleV1{installer, {Name: "viewer", Scopes: viewerOwn,
+	requireRoles(t, []*compositionv1.RoleV1{admin, {Name: modulecontract.UserRole, Scopes: userOwn,
 		Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
 			{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}}}, roles)
 }

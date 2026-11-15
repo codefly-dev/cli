@@ -95,8 +95,8 @@ func writeAuthorityWorkspace(t *testing.T) (*resources.Workspace, *resources.Mod
 // declaration supplied, so a case about which agent runs "api" states that
 // rather than re-laying the whole composition beside it.
 // declaringContract is the smallest valid contract for shop that carries an
-// installation declaration: one ceiling, one role within it, and whatever the
-// case declares. Core validates the selector against the declared roles, so a
+// installation declaration: one ceiling, the two page roles within it, and
+// whatever the case declares. Core validates the selector against the declared roles, so a
 // case naming a role must declare it.
 func declaringContract(declaration string) string {
 	return `schema: codefly/module-contract/v1
@@ -107,7 +107,9 @@ scope_ceilings: [{resource_kind: shop.orders, actions: [read]}]
 bindings: []
 destinations: []
 roles:
-  - name: installer
+  - name: admin
+    scopes: [{resource_kind: shop.orders, actions: [read]}]
+  - name: user
     scopes: [{resource_kind: shop.orders, actions: [read]}]
 ` + declaration
 }
@@ -231,7 +233,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 // (contracts/module rules.go), and the host resolves the principal through
 // its catalogue; neither is the CLI's to repeat.
 func TestTheInstallationDeclarationIsCarriedVerbatim(t *testing.T) {
-	declared := `installation_role: installer
+	declared := `installation_role: admin
 edge_dependencies:
   - module: robin
     presence: required
@@ -244,7 +246,7 @@ edge_dependencies:
 
 	authority, err := shopAuthority(t, workspace, module, services, env)
 	require.NoError(t, err)
-	require.Equal(t, "installer", authority.InstallationRole)
+	require.Equal(t, "admin", authority.InstallationRole)
 	// Declaration order, not sorted: "robin" before "annotations" is the
 	// authored order and sorting would reorder them.
 	require.Equal(t, []modulecontract.EdgeDependency{

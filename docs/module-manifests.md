@@ -369,7 +369,7 @@ across both signed documents.** A unit declares, at the top level of its
 holds and which modules it reaches with the person's Work Context:
 
 ```yaml
-installation_role: installer        # or "none", or omitted
+installation_role: admin            # or "none", or omitted
 edge_dependencies:
   - module: robin                   # the signed principal, not a name or binding id
     presence: required              # "required" or "optional", no default
@@ -380,7 +380,7 @@ edge_dependencies:
 `installation_role` has three states and core validates all of them: **omitted**
 is undeclared, the literal **`none`** is no standing machine authority, and any
 other value must name a role the unit itself declares. Matching is strictly
-literal — no trimming or case-folding in any owner, so `" installer "`,
+literal — no trimming or case-folding in any owner, so `" admin "`,
 `" none "` and `" "` are refused rather than resolved, and an empty string is
 not `none`. `edge_dependencies` declares presence only: it grants nothing, and
 each `module` is the exact signed principal the host resolves through its own
@@ -456,7 +456,7 @@ producer.
 **A solution's roles are part of its contract.** A unit a person uses declares
 the roles a person may hold on an installation of it in the same
 `module.contract.codefly.yaml`, as `roles` beside its `scope_ceilings`, under
-core's rules (an `installer` among them; each scope within the unit's own kinds,
+core's rules (exactly two, `admin` and `user`, both required; each scope within the unit's own kinds,
 or a permission at another module one of its bindings spells out for `invoke`
 or `lookup`) — see core's `docs/module-contract.md`. The core manifest names the
 kinds alone; for a composition-interface host the delivery carries each own
