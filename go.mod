@@ -12,11 +12,11 @@ require (
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
 	github.com/codefly-dev/authority/libraries/authority-client/go v0.2.1-0.20261115131434-3574603a5f27
-	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.1-0.20261115152119-a137ddca2525
+	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.1-0.20261115171111-fecafe1e3c12
 	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261109220601-1f0887616bde
 	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261109220601-1f0887616bde
 	github.com/codefly-dev/authority/libraries/hop/go v0.2.1-0.20261112001640-6ec380ea8d52
-	github.com/codefly-dev/core v0.19.32-0.20261115151155-b6ed1a1e5736
+	github.com/codefly-dev/core v0.19.32
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
