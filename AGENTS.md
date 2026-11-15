@@ -44,6 +44,12 @@ is supposed to inject, you are encoding something true only on your machine for 
 X back and confirm it breaks. Do not trust an error message before checking it: a reported
 digest mismatch has meant a missing token, with the digest verified correct by hand.
 
+**No cluster tests.** No test — CI job, workflow step, make target, script or build-tagged
+suite — starts k3s, k3d, kind, minikube or any Kubernetes cluster. Authorization and admission
+are proven in-process against the authority core; a deployment is validated by `codefly run`
+and a hosted dev cell, never by a test. `codefly run cluster` run by a person is product, not a
+test ([development contract, rule 5](https://github.com/obin-ai/handbook/blob/main/getting-started/development.md#5-no-cluster-tests)).
+
 **Say what you did not verify.** Unverified is not the same as working. If you could not
 exercise a path — no cluster, no credentials, agents not rebuilt — the PR says so.
 

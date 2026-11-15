@@ -55,8 +55,8 @@ var (
 	// exactly what the retired roles.codefly.yaml declaring the same roles
 	// delivered.
 	wikiRoles = []*compositionv1.RoleV1{
-		{Name: modulecontract.AdminRole, Scopes: []*authorityv1.WorkScopeV1{wikiPage}},
-		{Name: modulecontract.UserRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}}},
+		{Name: "admin", Scopes: []*authorityv1.WorkScopeV1{wikiPage}},
+		{Name: "user", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}}},
 	}
 )
 
@@ -93,7 +93,7 @@ func TestASolutionsRolesAreReadFromItsModuleContract(t *testing.T) {
 	roles, err := Roles(dir, composed)
 	require.NoError(t, err)
 	requireRoles(t, wikiRoles, roles)
-	ceilings, err := ScopeCeilings(dir)
+	ceilings, err := ScopeCeilings(dir, composed)
 	require.NoError(t, err)
 	require.Len(t, ceilings, 1, "a kind is declared once, whatever else the contract carries")
 	require.True(t, proto.Equal(wikiPage, ceilings[0]))
@@ -104,32 +104,23 @@ func TestASolutionsRolesAreReadFromItsModuleContract(t *testing.T) {
 	require.Nil(t, roles)
 }
 
-// Core's rules are the CLI's: a role core's reader refuses is refused by both
-// of the delivery's readers, naming the role, where the author reads it.
-func TestARolesCoreRefusesIsRefusedByTheDelivery(t *testing.T) {
-	for name, c := range map[string]struct{ document, reason string }{
-		"a role neither admin nor user":     {strings.Replace(wikiContract, "name: admin", "name: owner", 1), `role "owner" is neither "admin" nor "user"`},
-		"a retired role name":               {strings.Replace(wikiContract, "name: user", "name: viewer", 1), `role "viewer" is neither "admin" nor "user"`},
-		"no admin":                          {strings.Replace(wikiContract, "  - name: admin\n    scopes:\n      - resource_kind: wiki.page\n        actions: [read, write, publish]\n", "", 1), `none is "admin"`},
-		"no user":                           {strings.Replace(wikiContract, "  - name: user\n    scopes:\n      - {resource_kind: wiki.page, actions: [read, write]}\n", "", 1), `none is "user"`},
-		"a role beyond the kind's actions":  {strings.Replace(wikiContract, "actions: [read, write]}", "actions: [read, write, delete]}", 1), `role "user" grants wiki.page:delete`},
-		"a role on a kind nothing asks for": {strings.Replace(wikiContract, "{resource_kind: wiki.page, actions: [read, write]}", "{resource_kind: documents, actions: [read]}", 1), `role "user" grants documents:read`},
-		"a kind that starts with a digit":   {strings.ReplaceAll(wikiContract, "wiki.page", "2wiki.page"), ""},
+// The CLI holds no authorization rule: a role core's reader once refused —
+// another name, a missing admin or user, a grant beyond what the unit asks
+// for — is rendered as declared, and the host refuses it where the delivery is
+// read (authority-core's decide). Only the kind grammar is the reader's: core's,
+// which accepts a kind the retired declaration's own grammar refused.
+func TestTheDeliveryRendersRolesAsDeclared(t *testing.T) {
+	for name, document := range map[string]string{
+		"a role neither admin nor user":    strings.Replace(wikiContract, "name: admin", "name: owner", 1),
+		"a role beyond the kind's actions": strings.Replace(wikiContract, "actions: [read, write]}", "actions: [read, write, delete]}", 1),
+		"a kind that starts with a digit":  strings.ReplaceAll(wikiContract, "wiki.page", "2wiki.page"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			dir := writeContract(t, c.document)
+			dir := writeContract(t, document)
 			_, rolesErr := Roles(dir, composed)
-			_, ceilingsErr := ScopeCeilings(dir)
-			if c.reason == "" {
-				// One kind grammar: core's, which accepts a kind the
-				// retired declaration's own grammar refused.
-				require.NoError(t, rolesErr)
-				require.NoError(t, ceilingsErr)
-				return
-			}
-			require.ErrorIs(t, rolesErr, modulecontract.ErrInvalid)
-			require.ErrorContains(t, rolesErr, c.reason)
-			require.ErrorContains(t, ceilingsErr, c.reason)
+			_, ceilingsErr := ScopeCeilings(dir, composed)
+			require.NoError(t, rolesErr)
+			require.NoError(t, ceilingsErr)
 		})
 	}
 }
@@ -142,7 +133,7 @@ func TestTheRetiredRolesDeclarationIsRefusedByName(t *testing.T) {
 	retired := filepath.Join(dir, "roles.codefly.yaml")
 	require.NoError(t, os.WriteFile(retired, []byte("schema: codefly/solution-roles/v1\n"), 0o644))
 	_, rolesErr := Roles(dir, composed)
-	_, ceilingsErr := ScopeCeilings(dir)
+	_, ceilingsErr := ScopeCeilings(dir, composed)
 	for _, err := range []error{rolesErr, ceilingsErr} {
 		require.ErrorContains(t, err, retired)
 		require.ErrorContains(t, err, modulecontract.FileName)
@@ -196,27 +187,22 @@ func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
 	doc := deliveredAuthorityDocument(t, writeContract(t, ownedContract))
 	requireRoles(t, []*compositionv1.RoleV1{
 		{
-			Name:                    modulecontract.AdminRole,
+			Name:                    "admin",
 			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}},
 			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read", "write"}}},
 		},
 		{
-			Name:                    modulecontract.UserRole,
+			Name:                    "user",
 			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
 			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read"}}},
 		},
 	}, doc.GetRoles())
 
-	// Core's rules hold the installation-owned scopes too: one naming ids has
-	// no field for them, and one beyond what the unit asks for is refused,
-	// both before anything is delivered.
-	for name, c := range map[string]struct{ document, reason string }{
-		"ids":           {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents.collection, actions: [read], resource_ids: [a]}", 1), "resource_ids"},
-		"beyond a kind": {strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents, actions: [read]}", 1), `role "user" grants installation-owned documents:read`},
-	} {
-		_, err := Roles(writeContract(t, c.document), composed)
-		require.ErrorContains(t, err, c.reason, name)
-	}
+	// The reader holds the installation-owned scopes' structure: one naming
+	// ids has no field for them, refused before anything is delivered. What
+	// one may grant is the host's to hold.
+	_, err := Roles(writeContract(t, strings.Replace(ownedContract, "{resource_kind: documents.collection, actions: [read]}", "{resource_kind: documents.collection, actions: [read], resource_ids: [a]}", 1)), composed)
+	require.ErrorContains(t, err, "resource_ids")
 }
 
 // reachContract names, for its user, what the agent it binds reaches: the
@@ -257,8 +243,8 @@ destinations: []
 func TestReachThroughABindingAndSharedKindsReachTheAuthorityDocument(t *testing.T) {
 	doc := deliveredAuthorityDocument(t, writeContract(t, reachContract))
 	requireRoles(t, []*compositionv1.RoleV1{
-		{Name: modulecontract.AdminRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
-		{Name: modulecontract.UserRole, Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
+		{Name: "admin", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
+		{Name: "user", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
 			Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
 				{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}},
 	}, doc.GetRoles())
@@ -279,15 +265,15 @@ func TestAnOmittedOptionalBindingCarriesNoReachThrough(t *testing.T) {
 	require.NotEqual(t, reachContract, optional)
 	dir := writeContract(t, optional)
 	userOwn := []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}
-	admin := &compositionv1.RoleV1{Name: modulecontract.AdminRole, Scopes: userOwn}
+	admin := &compositionv1.RoleV1{Name: "admin", Scopes: userOwn}
 
 	roles, err := Roles(dir, resolvedWith(nil))
 	require.NoError(t, err)
-	requireRoles(t, []*compositionv1.RoleV1{admin, {Name: modulecontract.UserRole, Scopes: userOwn}}, roles)
+	requireRoles(t, []*compositionv1.RoleV1{admin, {Name: "user", Scopes: userOwn}}, roles)
 
 	roles, err = Roles(dir, composed)
 	require.NoError(t, err)
-	requireRoles(t, []*compositionv1.RoleV1{admin, {Name: modulecontract.UserRole, Scopes: userOwn,
+	requireRoles(t, []*compositionv1.RoleV1{admin, {Name: "user", Scopes: userOwn,
 		Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
 			{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}}}, roles)
 }
@@ -313,10 +299,10 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 	require.NoError(t, err)
 	d := NewCompositionDelivery(conn, signer,
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
-		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
+		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir, composed) },
 		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir, composed) },
-		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil).
-		ReadingSharedKinds(func(context.Context, string) ([]string, error) { return SharedKinds(dir) })
+		func(context.Context, string) (bool, error) { return OwnerAware(dir, composed) }, nil).
+		ReadingSharedKinds(func(context.Context, string) ([]string, error) { return SharedKinds(dir, composed) })
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},

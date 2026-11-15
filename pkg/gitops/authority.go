@@ -10,11 +10,13 @@ import (
 	"strings"
 
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+	"github.com/codefly-dev/authority/libraries/authority-core/go/declare"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/solutionhost"
@@ -33,37 +35,6 @@ import (
 // request asks beyond it, and never widens the grant from it. The principal is
 // always the module's own name.
 
-// workspaceValues is the provider the render resolves contract slots from:
-// the workspace configurations the environment provides, enumerated per group
-// exactly as supplied — every record, in both spellings of a key, a key
-// supplied twice, a key classified public here and secret there — and nothing
-// decided. Normalisation, ambiguity and secret precedence are core's resolution
-// rules, once (modulecontract.Values), so two renderers cannot read one
-// composition into two authority requests; core's resolution kit fails a
-// provider that selects.
-type workspaceValues struct {
-	provided *configurations.WorkspaceConfigurations
-}
-
-// Records implements modulecontract.Values: a group's records as the
-// composition supplies them, across every information that contributes to
-// the group.
-func (values workspaceValues) Records(group string) ([]modulecontract.Record, error) {
-	if values.provided == nil {
-		return nil, nil
-	}
-	var records []modulecontract.Record
-	for _, info := range values.provided.Infos {
-		if info.GetName() != group {
-			continue
-		}
-		for _, value := range info.GetConfigurationValues() {
-			records = append(records, modulecontract.Record{Key: value.GetKey(), Value: value.GetValue(), Secret: value.GetSecret()})
-		}
-	}
-	return records, nil
-}
-
 // moduleAuthority is the authority block of a module's manifest: its
 // principal, always, and what its request asks for, resolved against the
 // composition's public configuration.
@@ -77,26 +48,33 @@ func moduleAuthority(
 	resolvers ...WorkspaceConfigurationResolver,
 ) (*solutionhost.Authority, error) {
 	authority := &solutionhost.Authority{Principal: module.Name}
-	if err := refuseRetiredRoles(module.Dir()); err != nil {
+	if err := solutionhost.RefuseRetiredRoles(module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", module.Name, err)
 	}
 	if request.undeclared != "" {
 		return authority, nil
 	}
-	// The principal is the module's own name, and the contract is held to it
-	// before anything resolves: a module claiming another module's principal
+	// The authority library renders the request (declare.Module), the one render
+	// every producer calls: the principal is the module's own name, held
+	// before anything resolves — a module claiming another module's principal
 	// would claim its grant, and a binding addressed to the module itself
-	// ({self: true}) resolves to the contract's principal — this name.
-	if request.contract.Principal != module.Name {
-		return nil, fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, request.contract.Principal, module.Name)
-	}
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
+	// ({self: true}) resolves to the contract's principal, this name — then
+	// the contract resolves against the composition's public configuration.
+	var provided *configurations.WorkspaceConfigurations
+	declaration, resolved, err := declare.Module(module.Dir(), module.Name, request.contract, func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+		var readErr error
+		if provided, readErr = configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace)); readErr != nil {
+			return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, readErr)
+		}
+		return resolveContract(ctx, workspace, env, provided, contract)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
+		return nil, err
 	}
-	resolved, err := resolveContract(ctx, workspace, env, provided, request.contract)
-	if err != nil {
-		return nil, fmt.Errorf("module %s: %w", module.Name, err)
+	if declaration == nil {
+		// Core declares nothing for a module with no contract; the request
+		// names none only when it is undeclared, answered above.
+		return authority, nil
 	}
 	if err := refuseUnaddressableConsumption(workspace, module, request, resolved); err != nil {
 		return nil, err
@@ -133,13 +111,11 @@ func moduleAuthority(
 				wool.Field("module", module.Name), wool.Field("binding", declared.ID))
 		}
 	}
-	for _, binding := range resolved.Bindings {
-		operations := make(map[string][]string, len(binding.Operations))
-		for _, operation := range binding.Operations {
-			operations[operation] = append([]string(nil), binding.Scopes[operation]...)
-		}
-		authority.Bindings = append(authority.Bindings, solutionhost.AuthorityBinding{ID: binding.ID, Audience: binding.Audience, Operations: operations})
-	}
+	// The authority block as core renders it: the delivered bindings, the
+	// installation declaration carried verbatim (an edge's presence resolved
+	// for the class), the scopes that govern the module's sources, its queues,
+	// namespaces and own kinds. The CLI decides nothing about any of them.
+	authority = &declaration.Authority
 	// A module that installs prepared bindings also asks for each one it
 	// installs (runnable_grants.go).
 	if installsPreparedBindings(services) {
@@ -153,28 +129,6 @@ func moduleAuthority(
 		}
 		if err := appendPreparedBindings(authority, module.Name, selectPreparedGrants(grants, keys)); err != nil {
 			return nil, err
-		}
-	}
-	// The installation declaration, carried VERBATIM. Core validated it
-	// (contracts/module rules.go: strict literal selector, no trim or
-	// case-fold) and the paired agreement rule compares it byte-for-byte on
-	// both signed carriers, where empty and "none" differ and nil and [] are
-	// equivalent zero edges. So the CLI normalizes nothing, defaults nothing,
-	// sorts nothing and re-parses nothing: an edge list keeps its declaration
-	// order, and EdgeDependency.Module stays the signed principal the host
-	// resolves through its catalogue — never a name, binding id or release.
-	authority.InstallationRole = resolved.InstallationRole
-	authority.EdgeDependencies = append([]modulecontract.EdgeDependency(nil), resolved.EdgeDependencies...)
-	// The scopes that govern a source tied to an installation of the module,
-	// as core resolved them ("<kind>:<action>", sorted). The host reads them
-	// off this signed manifest and holds them to the module's roles; the CLI
-	// decides nothing about them.
-	authority.SourceGovernance = append([]string(nil), resolved.SourceGovernance...)
-	authority.Queues = append([]string(nil), resolved.Queues...)
-	authority.Namespaces = append([]string(nil), resolved.Namespaces...)
-	for _, ceiling := range resolved.ScopeCeilings {
-		if !slices.Contains(authority.ResourceKinds, ceiling.ResourceKind) {
-			authority.ResourceKinds = append(authority.ResourceKinds, ceiling.ResourceKind)
 		}
 	}
 	return authority, nil
@@ -196,8 +150,11 @@ func resolveContract(ctx context.Context, workspace *resources.Workspace, env *e
 		}
 		return HostMethodPolicies(ctx, workspace, env, callee)
 	})
-	return contract.Resolve(workspaceValues{provided: provided},
-		modulecontract.WithCallees(callees), modulecontract.WithEnvironmentClass(env.Class))
+	var infos []*basev0.ConfigurationInformation
+	if provided != nil {
+		infos = provided.Infos
+	}
+	return solutionhost.Resolver(infos, env.Class, callees)(contract)
 }
 
 // WorkspaceContractResolver resolves a module's contract exactly as its
@@ -205,14 +162,18 @@ func resolveContract(ctx context.Context, workspace *resources.Workspace, env *e
 // workspace's public configuration for env, so the authority document's half
 // reads the same resolution — an optional binding the composition leaves out
 // is left out of both.
+//
+// Within one module's declaration (AuthoritySources.Declaration) every reader
+// shares one resolution (onceResolver): the configurations are read and the
+// callees loaded once per module, not once per field.
 func WorkspaceContractResolver(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ContractResolver {
-	return func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+	return onceResolver(ctx, func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
 		provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
 		if err != nil {
 			return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", contract.Principal, err)
 		}
 		return resolveContract(ctx, workspace, env, provided, contract)
-	}
+	})
 }
 
 // authorityRequest is what a module asks for authority with, from exactly one

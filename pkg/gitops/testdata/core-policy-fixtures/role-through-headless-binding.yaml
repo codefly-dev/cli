@@ -1,0 +1,25 @@
+# A person's capability travels only an operation a person causes: a scope is
+# never reached through a headless-only binding.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read]
+roles:
+    - name: admin
+      scopes:
+          - resource_kind: documents
+            actions: [read]
+            through: evaluation
+    - name: user
+      scopes: [{resource_kind: assistant.tasks, actions: [read]}]
+bindings:
+    - id: evaluation
+      operations: [headless]
+      audience: {from: assistant/evaluation-audience}
+      calls:
+          headless:
+              - /evaluation.v1.Definitions/Publish
+destinations: []

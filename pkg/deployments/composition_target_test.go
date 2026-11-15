@@ -1,7 +1,6 @@
 package deployments
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -11,16 +10,13 @@ import (
 	"encoding/pem"
 	"math/big"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func TestCompositionTargetRequiresExplicitScopeAndRetainedIdentity(t *testing.T) {
@@ -50,13 +46,7 @@ func TestCompositionTargetRequiresExplicitScopeAndRetainedIdentity(t *testing.T)
 }
 
 func TestCompositionTargetTLSRejectsUnauthenticatedRouting(t *testing.T) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
-		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
-	require.NoError(t, err)
-	ca := base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	ca := testClusterCA(t)
 	for _, test := range []struct {
 		name   string
 		change func(map[string]any)
@@ -88,62 +78,96 @@ func TestCompositionTargetTLSRejectsUnauthenticatedRouting(t *testing.T) {
 	}
 }
 
-func TestDisposableK3dCompositionTargetIdentity(t *testing.T) {
-	q := requireDisposableK3d(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	initial, err := InspectLocalKubernetesTarget(ctx, q.env)
+// testClusterCA is a throwaway certificate authority, base64 the way a
+// kubeconfig carries certificate-authority-data.
+func testClusterCA(t *testing.T) string {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	require.NoError(t, err)
+	return base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func targetNamespaceDocument(name, uid, phase string, deleting bool) string {
+	metadata := map[string]any{"name": name, "uid": uid}
+	if deleting {
+		metadata["deletionTimestamp"] = "2026-11-15T00:00:00Z"
+	}
+	encoded, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": metadata,
+		"status": map[string]any{"phase": phase}})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+// The target identity is an approval gate: a digest retained at approval must
+// stop matching when the namespace it was taken from is replaced, and the
+// inspection must refuse a deleting or missing namespace rather than fall back.
+// A stub kubectl answers the namespace reads, so no cluster is started.
+func TestCompositionTargetIdentityBindsTheLiveNamespace(t *testing.T) {
+	harness := newKubernetesCommandHarness(t)
+	const secretToken = "secret-bearer-token"
+	config := map[string]any{
+		"apiVersion": "v1", "current-context": "k3d-dev",
+		"contexts": []any{map[string]any{"name": "k3d-dev", "context": map[string]any{"cluster": "k3d-dev", "user": "admin"}}},
+		"clusters": []any{map[string]any{"name": "k3d-dev", "cluster": map[string]any{
+			"server": "https://127.0.0.1:6443", "certificate-authority-data": testClusterCA(t)}}},
+		"users": []any{map[string]any{"name": "admin", "user": map[string]any{"token": secretToken}}},
+	}
+	encoded, err := json.Marshal(config)
+	require.NoError(t, err)
+	harness.writeSelected(string(encoded))
+	harness.writeOwned(string(encoded))
+	env := harness.environment("k3d-dev")
+	env.Namespace = "payments"
+	harness.clusterHas("namespace", "kube-system", targetNamespaceDocument("kube-system", "system-uid", "Active", false))
+	harness.clusterHas("namespace", "payments", targetNamespaceDocument("payments", "payments-uid-1", "Active", false))
+
+	initial, err := InspectLocalKubernetesTarget(t.Context(), env)
 	require.NoError(t, err)
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, initial.Identity)
-	require.Equal(t, q.namespace, initial.Binding.Namespace)
-	require.NotEmpty(t, initial.Binding.SystemNamespaceUID)
-	require.NotEmpty(t, initial.Binding.NamespaceUID)
-	require.Equal(t, q.target.ClusterIdentity, initial.Binding.ClusterIdentity)
-	checked, err := RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.NoError(t, err)
-	require.Equal(t, initial.Binding, checked.Binding)
-	workspace := t.TempDir()
-	resource, err := q.env.Resource()
-	require.NoError(t, err)
-	configuration, err := yaml.Marshal(&resources.Workspace{Name: "live-target", Layout: "modules", Environments: []*resources.Environment{resource}})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, resources.WorkspaceConfigurationName), configuration, 0o600))
-	command := exec.CommandContext(ctx, "go", "run", "../../cmd/codefly", "composition", "--workspace", workspace,
-		"inspect-local-target", q.env.Name, "--expected-identity", initial.Identity)
-	command.Env = append(os.Environ(), "GOWORK=off")
-	var narration bytes.Buffer
-	command.Stderr = &narration
-	output, err := command.Output()
-	require.NoError(t, err, "%s\n%s", output, narration.String())
-	var cliInspection KubernetesTargetInspection
-	require.NoError(t, json.Unmarshal(output, &cliInspection), "%s", output)
-	require.Equal(t, initial.Identity, cliInspection.Identity, "real CLI command must use the same live target binding")
+	require.Equal(t, KubernetesTargetBinding{Schema: "codefly/kubernetes-target/v1", ClusterIdentity: initial.Binding.ClusterIdentity,
+		SystemNamespaceUID: "system-uid", Namespace: "payments", NamespaceUID: "payments-uid-1"}, initial.Binding)
+	require.NotEmpty(t, initial.Binding.ClusterIdentity)
 	data, err := json.Marshal(initial)
 	require.NoError(t, err)
-	for _, secret := range []string{q.kubeconfig, "client-key", "client-certificate", "certificate-authority-data", "token"} {
+	for _, secret := range []string{secretToken, harness.kubeconfig, "certificate-authority-data", "token"} {
 		require.NotContains(t, string(data), secret)
 	}
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "annotate", "namespace", q.namespace, "example.test/observation=changed")
-	checked, err = RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.NoError(t, err, "ordinary metadata updates must not change target identity")
+
+	checked, err := RecheckLocalKubernetesTarget(t.Context(), env, initial.Identity)
+	require.NoError(t, err, "an unchanged namespace keeps its identity")
 	require.Equal(t, initial.Identity, checked.Identity)
 
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "patch", "namespace", q.namespace, "--type=merge", "-p", `{"metadata":{"finalizers":["example.test/hold"]}}`)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "delete", "namespace", q.namespace, "--wait=false")
-	checked, err = RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.ErrorContains(t, err, "active, non-deleting identity")
+	// Each half of the refusal alone: a namespace being deleted while the
+	// API server still reports it Active (finalization), and one not being
+	// deleted that is not Active.
+	for _, refused := range []struct {
+		name     string
+		phase    string
+		deleting bool
+	}{{"deleting yet Active", "Active", true}, {"not deleting, not Active", "Terminating", false}} {
+		harness.clusterHas("namespace", "payments", targetNamespaceDocument("payments", "payments-uid-1", refused.phase, refused.deleting))
+		checked, err = RecheckLocalKubernetesTarget(t.Context(), env, initial.Identity)
+		require.ErrorContains(t, err, "active, non-deleting identity", refused.name)
+		require.Nil(t, checked, refused.name)
+	}
+
+	require.NoError(t, os.Remove(filepath.Join(harness.resourceDir, "namespace.payments.json")))
+	checked, err = InspectLocalKubernetesTarget(t.Context(), env)
+	require.ErrorContains(t, err, `inspect target namespace "payments"`, "a missing namespace cannot fall back to the context's default")
 	require.Nil(t, checked)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "patch", "namespace", q.namespace, "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "wait", "--for=delete", "namespace/"+q.namespace, "--timeout=60s")
-	checked, err = InspectLocalKubernetesTarget(ctx, q.env)
-	require.Error(t, err, "missing namespace cannot fall back to default")
-	require.Nil(t, checked)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "create", "namespace", q.namespace)
-	current, err := InspectLocalKubernetesTarget(ctx, q.env)
+
+	harness.clusterHas("namespace", "payments", targetNamespaceDocument("payments", "payments-uid-2", "Active", false))
+	current, err := InspectLocalKubernetesTarget(t.Context(), env)
 	require.NoError(t, err)
-	require.NotEqual(t, initial.Binding.NamespaceUID, current.Binding.NamespaceUID)
+	require.Equal(t, "payments-uid-2", current.Binding.NamespaceUID)
 	require.NotEqual(t, initial.Identity, current.Identity)
-	checked, err = RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.ErrorContains(t, err, "differs from the retained binding")
+	checked, err = RecheckLocalKubernetesTarget(t.Context(), env, initial.Identity)
+	require.ErrorContains(t, err, "requalification and approval are required")
 	require.Nil(t, checked)
 }

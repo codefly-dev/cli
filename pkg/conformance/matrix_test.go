@@ -74,13 +74,13 @@ func TestValidateRejects(t *testing.T) {
 			want: "must say what blocks it",
 		},
 		{
-			name: "a qualified cluster row without a pinned kubernetes version",
+			name: "a row that starts a cluster",
 			matrix: func() Matrix {
 				r := validRow()
 				r.Backend = "k3d"
 				return validMatrix(r)
 			}(),
-			want: "must pin a kubernetes version",
+			want: "unknown backend",
 		},
 		{
 			name: "an unsupported row carrying evidence",
@@ -123,15 +123,6 @@ func TestValidateRejects(t *testing.T) {
 			name:   "a repeated row identifier",
 			matrix: validMatrix(validRow(), validRow()),
 			want:   "repeats row",
-		},
-		{
-			name: "a kubernetes version without a cluster backend",
-			matrix: func() Matrix {
-				r := validRow()
-				r.Kubernetes = "v1.31.5"
-				return validMatrix(r)
-			}(),
-			want: "without a cluster backend",
 		},
 		{
 			name: "an inexact agent pin",

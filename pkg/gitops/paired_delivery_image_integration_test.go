@@ -38,9 +38,12 @@ const (
 // two: the image is pinned by digest here and go.mod moves on its own. So this
 // reads the core version out of the binary in every platform of the pinned
 // index — the bytes a cell runs, not a record of them — and fails when it is
-// older than the core this CLI is built with.
+// older than the manifest's wire floor (pairedManifestFloor), which moves only
+// when the manifest's fields do (TestTheModuleManifestWireIsFrozenAtTheFloor).
+// It is never held to the CLI's own core: a core release that leaves the
+// manifest alone, an authorization rule above all, rebuilds no companion.
 func TestThePairedDeliveryImageDecodesWhatThisCLIRenders(t *testing.T) {
-	want := cliCoreVersion(t)
+	want := pairedManifestFloor
 	repository, digest, found := strings.Cut(pairedDeliveryImage, "@")
 	require.True(t, found, "pairedDeliveryImage %q is not pinned by digest", pairedDeliveryImage)
 	repo, err := remote.NewRepository(repository)
@@ -60,7 +63,7 @@ func TestThePairedDeliveryImageDecodesWhatThisCLIRenders(t *testing.T) {
 	require.ElementsMatch(t, []string{archAMD64, archARM64}, keys(measured), "a delivery Job lands on either architecture")
 	for arch, got := range measured {
 		require.GreaterOrEqual(t, semver.Compare(got, want), 0,
-			"the codefly in %s (linux/%s) embeds %s %s, older than the %s this CLI renders with: "+
+			"the codefly in %s (linux/%s) embeds %s %s, older than %s, the oldest core that decodes the manifest this CLI renders (pairedManifestFloor): "+
 				"publish a codefly companion from this checkout (core docs/runbooks/publish-companions.md) and pin its index digest as pairedDeliveryImage",
 			pairedDeliveryImage, arch, coreModule, got, want)
 	}
@@ -77,14 +80,6 @@ func keys(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-// cliCoreVersion is the core this test binary — so this CLI — is built with.
-func cliCoreVersion(t *testing.T) string {
-	t.Helper()
-	info, ok := debug.ReadBuildInfo()
-	require.True(t, ok, "the test binary carries no build information")
-	return dependencyVersion(t, info, coreModule)
 }
 
 func dependencyVersion(t *testing.T, info *debug.BuildInfo, path string) string {

@@ -1,10 +1,10 @@
 package gitops
 
 import (
+	"context"
 	"testing"
 
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
-	"github.com/codefly-dev/authority/libraries/authority-core/go/delivered"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -59,10 +59,8 @@ func TestOneContractDeliversOptionalToDevelopmentAndRequiredToProduction(t *test
 			require.Equal(t, "annotations", policy.GetEdgeDependencies()[1].GetModule())
 			require.Equal(t, want, policy.GetEdgeDependencies()[1].GetPresence())
 
-			// And the two agree under Authority's real paired rule.
-			doc := documentOf(t, sidecar, manifest)
-			_, err := delivered.Module(manifest, &doc)
-			require.NoError(t, err, "the two carriers disagree: one resolved the presence and the other did not")
+			// And the two agree: one did not resolve the presence the other did.
+			agree(t, manifest, sidecar)
 
 			// A delivered manifest carries one presence and nothing of the
 			// declaration it was resolved from; core's own manifest validation
@@ -87,7 +85,7 @@ func TestAnEnvironmentWithNoClassIsRefusedByNameRatherThanDefaulted(t *testing.T
 	require.Contains(t, err.Error(), "annotations")
 	require.Contains(t, err.Error(), "declares no class")
 
-	_, _, err = InstallationDeclaration(module.Dir(), env.Class)
+	_, _, err = InstallationDeclaration(module.Dir(), WorkspaceContractResolver(context.Background(), workspace, env))
 	require.ErrorIs(t, err, modulecontract.ErrInvalid)
 	require.Contains(t, err.Error(), "annotations")
 	require.Contains(t, err.Error(), "development, production")
@@ -126,9 +124,7 @@ edge_dependencies:
 				{Module: "robin", Presence: modulecontract.PresenceRequired},
 				{Module: "annotations", Presence: modulecontract.PresenceOptional},
 			}, manifest.Authority.EdgeDependencies)
-			doc := documentOf(t, sidecar, manifest)
-			_, err := delivered.Module(manifest, &doc)
-			require.NoError(t, err)
+			agree(t, manifest, sidecar)
 		})
 	}
 }

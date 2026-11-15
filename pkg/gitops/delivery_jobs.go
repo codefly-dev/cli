@@ -78,14 +78,16 @@ const (
 	// (run 43712550709, `codefly companion publish`, which cross-compiles the
 	// CLI into bin/linux/<arch>/codefly) from blue-delivery at 8a87d630, so its
 	// binary embeds codefly/core v0.19.30 and authority-core 00d983d2 (read
-	// back from its build info). The pin follows the CLI's core, as the test
-	// below holds it to.
+	// back from its build info).
 	//
-	// That binary decodes what this CLI renders strictly, so its core must be
-	// at least this CLI's. The integration test
-	// TestThePairedDeliveryImageDecodesWhatThisCLIRenders reads the core out of
-	// the pinned image and fails when it is older: a core bump here moves this
-	// pin in the same change, from a companion built from that change.
+	// That binary decodes the module manifest this CLI renders strictly, so
+	// its core must be at least the manifest's wire floor
+	// (pairedManifestFloor), never the CLI's own core: the integration test
+	// TestThePairedDeliveryImageDecodesWhatThisCLIRenders reads the core out
+	// of the pinned image and fails when it is older than the floor, and the
+	// floor moves only when the manifest's fields do
+	// (TestTheModuleManifestWireIsFrozenAtTheFloor). A core or authority
+	// library release that leaves the manifest alone moves neither.
 	//
 	// It is a SEPARATE pin because deliveryImage's /bin/codefly cannot execute:
 	// at 0.0.4 the cross-compiled binary was dynamically linked against glibc

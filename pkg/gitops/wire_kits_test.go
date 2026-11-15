@@ -12,9 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
@@ -136,29 +134,6 @@ func kitVerdict(authority *solutionhost.Authority, err error) (verdict error, pa
 		return nil, true
 	}
 	return fmt.Errorf("the renderer failed for a reason the kit does not name, so this run proves nothing about the reader: %w", err), false
-}
-
-// TestTheResolutionKitRunsThroughTheRendersProvider: core's resolution kit
-// drives the provider the render resolves slots from, built from one group's
-// records the way the workspace configurations hold them — competing
-// spellings, a key supplied twice, a public and a secret occurrence, a
-// missing key, a multi-line or empty value, and the resolved resource kinds.
-// A provider that selected among the records would fail it.
-func TestTheResolutionKitRunsThroughTheRendersProvider(t *testing.T) {
-	modulecontract.RunResolution(t, workspaceValuesOf)
-}
-
-// workspaceValuesOf is the render's provider over one group's records, held
-// the way a workspace configuration read holds them: one information named
-// for the group, carrying every record as a configuration value.
-func workspaceValuesOf(group string, records []modulecontract.Record) modulecontract.Values {
-	values := make([]*basev0.ConfigurationValue, 0, len(records))
-	for _, record := range records {
-		values = append(values, &basev0.ConfigurationValue{Key: record.Key, Value: record.Value, Secret: record.Secret})
-	}
-	return workspaceValues{provided: &configurations.WorkspaceConfigurations{
-		Infos: []*basev0.ConfigurationInformation{{Name: group, ConfigurationValues: values}},
-	}}
 }
 
 // TestTheModuleContractKitAdapterFailsOnUnrelatedErrors: the adapter between

@@ -632,7 +632,7 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 			if err != nil {
 				return nil, err
 			}
-			return gitops.ScopeCeilings(dir)
+			return gitops.ScopeCeilings(dir, gitops.WorkspaceContractResolver(ctx, cluster.composed(), cluster.env))
 		},
 		func(ctx context.Context, module string) ([]*compositionv1.RoleV1, error) {
 			dir, err := load(ctx, module)
@@ -646,21 +646,21 @@ func (cluster *launcher) newCompositionDelivery(conn grpc.ClientConnInterface) *
 			if err != nil {
 				return false, err
 			}
-			return gitops.OwnerAware(dir)
+			return gitops.OwnerAware(dir, gitops.WorkspaceContractResolver(ctx, cluster.composed(), cluster.env))
 		},
 		func(ctx context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error) {
 			dir, err := load(ctx, module)
 			if err != nil {
 				return "", nil, err
 			}
-			return gitops.InstallationDeclaration(dir, cluster.env.Class)
+			return gitops.InstallationDeclaration(dir, gitops.WorkspaceContractResolver(ctx, cluster.composed(), cluster.env))
 		})
 	return delivery.ReadingSharedKinds(func(ctx context.Context, module string) ([]string, error) {
 		dir, err := load(ctx, module)
 		if err != nil {
 			return nil, err
 		}
-		return gitops.SharedKinds(dir)
+		return gitops.SharedKinds(dir, gitops.WorkspaceContractResolver(ctx, cluster.composed(), cluster.env))
 	})
 }
 

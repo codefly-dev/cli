@@ -1,0 +1,33 @@
+# A role granting a permission at a module no binding asks for.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read, write, publish]
+roles:
+    - name: admin
+      scopes:
+          - resource_kind: assistant.tasks
+            actions: [read]
+          - resource_kind: tracing.trace
+            actions: [read]
+    - name: user
+      scopes: [{resource_kind: assistant.tasks, actions: [read]}]
+bindings:
+    - id: documents
+      operations: [invoke]
+      audience: {from: assistant/evidence-audience}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents
+                actions: [read, write]
+    - id: evaluation
+      operations: [headless]
+      audience: {from: assistant/annotations-prefix}
+      scope_ceiling:
+          headless:
+              - resource_kind: evaluation.definitions
+                actions: [publish]
+destinations: []

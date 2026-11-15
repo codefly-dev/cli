@@ -1,0 +1,34 @@
+# A role granting a permission only a headless binding asks for: no person
+# is in a headless operation, so no role can hold what it carries.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read, write, publish]
+roles:
+    - name: admin
+      scopes:
+          - resource_kind: assistant.tasks
+            actions: [read]
+          - resource_kind: evaluation.definitions
+            actions: [publish]
+    - name: user
+      scopes: [{resource_kind: assistant.tasks, actions: [read]}]
+bindings:
+    - id: documents
+      operations: [invoke]
+      audience: {from: assistant/evidence-audience}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents
+                actions: [read, write]
+    - id: evaluation
+      operations: [headless]
+      audience: {from: assistant/annotations-prefix}
+      scope_ceiling:
+          headless:
+              - resource_kind: evaluation.definitions
+                actions: [publish]
+destinations: []

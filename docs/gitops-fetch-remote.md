@@ -78,14 +78,10 @@ teardown, so recovery from a partial creation or deletion is always the same:
    (`docker inspect <name>`) and remove it manually only after confirming it is
    not owned by another workspace or environment, then re-run `up`.
 
-## Disposable k3d qualification
+## Testing
 
-`TestLocalFetchRemoteLifecycle` in `pkg/gitops` stands the remote up on a
-throwaway k3d cluster and proves host loopback exposure, private reachability of
-the exact revision over container DNS + TLS with CA trust, a private key that is
-never leaked into the served repository, and a validated teardown that preserves
-the mirror. It is disabled by default; enable it with real Docker and k3d:
-
-```bash
-CODEFLY_GITOPS_K3D_QUALIFY=1 go test ./pkg/gitops/ -run TestLocalFetchRemoteLifecycle -count=1
-```
+`go test ./pkg/gitops` proves the remote's spec, identity, TLS material, Docker
+arguments, audit and ownership refusal, and the mirror serving the reviewed
+revision, in-process. No test starts a cluster: reachability from inside a
+cluster network is validated by a local `codefly run cluster` and a hosted dev
+cell.
