@@ -50,7 +50,7 @@ func producedCarriers(t *testing.T, declaration, class string) (*solutionhost.Mo
 	_, manifest := renderShopManifest(t, workspace, module, env)
 
 	// The same reader the delivery uses, over the same contract.
-	role, edges, err := InstallationDeclaration(module.Dir(), class)
+	role, edges, err := InstallationDeclaration(module.Dir(), uncomposed(class))
 	require.NoError(t, err)
 	sidecar, err := proto.MarshalOptions{Deterministic: true}.Marshal(&compositionv1.AuthorityManifestV1{
 		InstallationRole: role, EdgeDependencies: edges,
@@ -107,7 +107,7 @@ edge_dependencies:
 				func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, nil },
 				func(context.Context, string) (bool, error) { return false, nil },
 				func(_ context.Context, _ string) (string, []*compositionv1.EdgeDependencyV1, error) {
-					return InstallationDeclaration(dir, "")
+					return InstallationDeclaration(dir, uncomposed(""))
 				})
 			d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare,
 				Token: func(string) (string, error) { return "credential", nil }}
@@ -163,7 +163,7 @@ func TestAnInstallationOnlyChangeAdvancesTheGeneration(t *testing.T) {
 		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return nil, nil },
 		func(context.Context, string) (bool, error) { return false, nil },
 		func(_ context.Context, _ string) (string, []*compositionv1.EdgeDependencyV1, error) {
-			return InstallationDeclaration(dir, "")
+			return InstallationDeclaration(dir, uncomposed(""))
 		})
 	d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare,
 		Token: func(string) (string, error) { return "credential", nil }}

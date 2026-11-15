@@ -197,14 +197,14 @@ func TestTheAuthorityDocumentIsSignedAndBoundToItsManifest(t *testing.T) {
 // with their actions; a module publishing none declares none.
 func TestScopeCeilingsAreReadFromTheModuleContract(t *testing.T) {
 	dir := t.TempDir()
-	if got, err := ScopeCeilings(dir); err != nil || got != nil {
+	if got, err := ScopeCeilings(dir, uncomposed("")); err != nil || got != nil {
 		t.Fatalf("no contract: %v %v", got, err)
 	}
 	contract := "schema: codefly/module-contract/v1\nprincipal: runtime\nnamespaces: []\nqueues: []\nscope_ceilings:\n    - resource_kind: runtime.tasks\n      actions: [execute, start]\nbindings: []\ndestinations: []\n"
 	if err := os.WriteFile(filepath.Join(dir, "module.contract.codefly.yaml"), []byte(contract), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ScopeCeilings(dir)
+	got, err := ScopeCeilings(dir, uncomposed(""))
 	if err != nil {
 		t.Fatal(err)
 	}

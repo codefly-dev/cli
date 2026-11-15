@@ -296,9 +296,9 @@ func TestASolutionsDeclaredKindsAreNamedInItsManifest(t *testing.T) {
 
 	workspace, module = writeConsumingSolutionWorkspace(t, consumptionFixture(t, "agentless.yaml"))
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(wikiContract), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), retiredRolesFileName), []byte("schema: codefly/solution-roles/v1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), solutionhost.RetiredRolesFileName), []byte("schema: codefly/solution-roles/v1\n"), 0o644))
 	env = selectedEnvironment(t, workspace, "staging")
 	_, err = shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
-	require.ErrorContains(t, err, retiredRolesFileName)
+	require.ErrorContains(t, err, solutionhost.RetiredRolesFileName)
 	require.ErrorContains(t, err, modulecontract.FileName)
 }

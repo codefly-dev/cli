@@ -93,7 +93,7 @@ func TestASolutionsRolesAreReadFromItsModuleContract(t *testing.T) {
 	roles, err := Roles(dir, composed)
 	require.NoError(t, err)
 	requireRoles(t, wikiRoles, roles)
-	ceilings, err := ScopeCeilings(dir)
+	ceilings, err := ScopeCeilings(dir, composed)
 	require.NoError(t, err)
 	require.Len(t, ceilings, 1, "a kind is declared once, whatever else the contract carries")
 	require.True(t, proto.Equal(wikiPage, ceilings[0]))
@@ -119,7 +119,7 @@ func TestARolesCoreRefusesIsRefusedByTheDelivery(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := writeContract(t, c.document)
 			_, rolesErr := Roles(dir, composed)
-			_, ceilingsErr := ScopeCeilings(dir)
+			_, ceilingsErr := ScopeCeilings(dir, composed)
 			if c.reason == "" {
 				// One kind grammar: core's, which accepts a kind the
 				// retired declaration's own grammar refused.
@@ -142,7 +142,7 @@ func TestTheRetiredRolesDeclarationIsRefusedByName(t *testing.T) {
 	retired := filepath.Join(dir, "roles.codefly.yaml")
 	require.NoError(t, os.WriteFile(retired, []byte("schema: codefly/solution-roles/v1\n"), 0o644))
 	_, rolesErr := Roles(dir, composed)
-	_, ceilingsErr := ScopeCeilings(dir)
+	_, ceilingsErr := ScopeCeilings(dir, composed)
 	for _, err := range []error{rolesErr, ceilingsErr} {
 		require.ErrorContains(t, err, retired)
 		require.ErrorContains(t, err, modulecontract.FileName)
@@ -313,10 +313,10 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 	require.NoError(t, err)
 	d := NewCompositionDelivery(conn, signer,
 		func(context.Context, string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil },
-		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir) },
+		func(context.Context, string) ([]*authorityv1.WorkScopeV1, error) { return ScopeCeilings(dir, composed) },
 		func(context.Context, string) ([]*compositionv1.RoleV1, error) { return Roles(dir, composed) },
-		func(context.Context, string) (bool, error) { return OwnerAware(dir) }, nil).
-		ReadingSharedKinds(func(context.Context, string) ([]string, error) { return SharedKinds(dir) })
+		func(context.Context, string) (bool, error) { return OwnerAware(dir, composed) }, nil).
+		ReadingSharedKinds(func(context.Context, string) ([]string, error) { return SharedKinds(dir, composed) })
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},
