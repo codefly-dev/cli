@@ -4,10 +4,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/codefly-dev/core/solutionhost"
-
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+	"github.com/codefly-dev/authority/libraries/authority-core/go/declare"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 )
 
@@ -57,16 +56,16 @@ func onceResolver(ctx context.Context, resolve ContractResolver) ContractResolve
 }
 
 // The contract's half of the authority's document, each field in the
-// authority's spelling. Core renders it (solutionhost.DeclareModule), the one
+// authority's spelling. The authority library renders it (declare.Module), the one
 // render every producer calls: the CLI reads its fields here and decides
 // nothing about them. Each reads the module contract at dir, resolved by
 // resolve; a module that publishes no contract declares none, and one still
 // shipping the retired roles declaration is refused naming it.
 
-// ownDocument is the module at dir's half of the authority's document, as core
-// renders it: nil when it publishes no contract.
-func ownDocument(dir string, resolve ContractResolver) (*solutionhost.AuthorityDocument, error) {
-	declaration, _, err := solutionhost.DeclareModule(dir, "", nil, resolve)
+// ownDocument is the module at dir's half of the authority's document, as the
+// authority library renders it: nil when it publishes no contract.
+func ownDocument(dir string, resolve ContractResolver) (*declare.AuthorityDocument, error) {
+	declaration, _, err := declare.Module(dir, "", nil, resolve)
 	if err != nil || declaration == nil {
 		return nil, err
 	}
@@ -149,7 +148,7 @@ func OwnerAware(dir string, resolve ContractResolver) (bool, error) {
 
 // wireScopes spells core's declared scopes as the authority's interface does:
 // nil for none.
-func wireScopes(scopes []solutionhost.DeclaredScope) []*authorityv1.WorkScopeV1 {
+func wireScopes(scopes []declare.DeclaredScope) []*authorityv1.WorkScopeV1 {
 	if len(scopes) == 0 {
 		return nil
 	}

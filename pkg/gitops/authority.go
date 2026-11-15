@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+	"github.com/codefly-dev/authority/libraries/authority-core/go/declare"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -53,14 +54,14 @@ func moduleAuthority(
 	if request.undeclared != "" {
 		return authority, nil
 	}
-	// Core renders the request (solutionhost.DeclareModule), the one render
+	// The authority library renders the request (declare.Module), the one render
 	// every producer calls: the principal is the module's own name, held
 	// before anything resolves — a module claiming another module's principal
 	// would claim its grant, and a binding addressed to the module itself
 	// ({self: true}) resolves to the contract's principal, this name — then
 	// the contract resolves against the composition's public configuration.
 	var provided *configurations.WorkspaceConfigurations
-	declaration, resolved, err := solutionhost.DeclareModule(module.Dir(), module.Name, request.contract, func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+	declaration, resolved, err := declare.Module(module.Dir(), module.Name, request.contract, func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
 		var readErr error
 		if provided, readErr = configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace)); readErr != nil {
 			return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, readErr)
