@@ -76,13 +76,20 @@ func TestTheModuleManifestWireIsFrozenAtTheFloor(t *testing.T) {
 		"core's module manifest wire moved since %s: a paired image on that core refuses it. Raise pairedManifestFloor, publish a codefly companion, pin it as pairedDeliveryImage, and update the golden", pairedManifestFloor)
 }
 
-// wireManifest is a manifest with every section the CLI renders filled.
+// wireManifest is a manifest with every section the CLI renders filled:
+// identity, host, release, workloads, its group, a federated page with its
+// payload (a bundled page is the other spelling of the same section), its
+// endpoints, and an authority block with every list and every operation.
 func wireManifest() *solutionhost.ModuleManifest {
 	return &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "ws.blue.shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 3,
 		Host:      solutionhost.HostTarget{Coordinate: "local", Domain: "local"},
 		Release:   solutionhost.Release{Publisher: "acme", Name: "shop", Version: "1.2.3"},
 		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}, {Service: "worker", Container: "run"}},
+		Group:     &solutionhost.SolutionGroup{ID: "operations", Title: "Operations", Order: 2},
+		Frontend: &solutionhost.Frontend{Title: "Shop", Order: 10, ExposedModule: "./Page", HostContract: 1,
+			Payload: &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}},
+		Endpoints: []solutionhost.Endpoint{{Name: "grpc", Service: "api", API: "grpc", Address: "http://api.shop.svc.cluster.local:9090"}},
 		Authority: &solutionhost.Authority{
 			Principal: "shop", InstallationRole: "admin",
 			EdgeDependencies: []modulecontract.EdgeDependency{{Module: "robin", Presence: modulecontract.PresenceRequired}, {Module: "notes", Presence: modulecontract.PresenceOptional}},
