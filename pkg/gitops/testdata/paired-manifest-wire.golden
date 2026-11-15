@@ -1,0 +1,74 @@
+field alias `alias`
+field authority `authority,omitempty`
+field authority.bindings `bindings,omitempty`
+field authority.bindings.audience `audience`
+field authority.bindings.id `id`
+field authority.bindings.operations `operations`
+field authority.edge_dependencies `edge_dependencies,omitempty`
+field authority.edge_dependencies.module `module`
+field authority.edge_dependencies.presence `presence`
+field authority.edge_dependencies.presence_by_class `presence_by_class,omitempty`
+field authority.installation_role `installation_role,omitempty`
+field authority.namespaces `namespaces,omitempty`
+field authority.principal `principal`
+field authority.queues `queues,omitempty`
+field authority.resource_kinds `resource_kinds,omitempty`
+field authority.source_governance `source_governance,omitempty`
+field binding `binding`
+field endpoints `endpoints,omitempty`
+field endpoints.address `address`
+field endpoints.api `api`
+field endpoints.name `name`
+field endpoints.service `service`
+field frontend `frontend,omitempty`
+field frontend.bundled `bundled,omitempty`
+field frontend.bundled.export `export`
+field frontend.bundled.package `package`
+field frontend.dashboard `dashboard,omitempty`
+field frontend.exposed_module `exposed_module,omitempty`
+field frontend.host_contract `host_contract,omitempty`
+field frontend.order `order`
+field frontend.payload `payload,omitempty`
+field frontend.payload.artifact `artifact`
+field frontend.payload.digest `digest`
+field frontend.payload.media_type `media_type`
+field frontend.surfaces `surfaces,omitempty`
+field frontend.surfaces.applies `applies`
+field frontend.surfaces.client `client`
+field frontend.surfaces.contract `contract`
+field frontend.surfaces.description `description,omitempty`
+field frontend.surfaces.events `events,omitempty`
+field frontend.surfaces.id `id`
+field frontend.surfaces.module `module`
+field frontend.surfaces.title `title`
+field frontend.title `title`
+field generation `generation`
+field group `group,omitempty`
+field group.id `id`
+field group.order `order`
+field group.title `title`
+field host `host`
+field host.coordinate `coordinate`
+field host.domain `domain`
+field kind `kind`
+field release `release`
+field release.name `name`
+field release.publisher `publisher`
+field release.version `version`
+field removed `removed,omitempty`
+field schema `schema`
+field workloads `workloads,omitempty`
+field workloads.container `container`
+field workloads.service `service`
+const modulecontract.OperationHeadless = "headless"
+const modulecontract.OperationInvoke = "invoke"
+const modulecontract.OperationLookup = "lookup"
+const modulecontract.PresenceOptional = "optional"
+const modulecontract.PresenceRequired = "required"
+const solutionhost.KindModule = "module"
+const solutionhost.KindSolution = "solution"
+const solutionhost.SchemaModuleEnvelopeV1 = "codefly/module-envelope/v1"
+const solutionhost.SchemaModuleManifestV1 = "codefly/module-manifest/v1"
+var solutionhost.operations = invoke lookup headless
+var solutionhost.kinds = module solution
+canonical {"alias":"shop","authority":{"bindings":[{"audience":"shop","id":"self","operations":{"invoke":["shop.item:read"]}},{"audience":"store","id":"store","operations":{"headless":["store.item:read"],"invoke":["store.item:read","store.item:write"],"lookup":["store.item:read"]}}],"edge_dependencies":[{"module":"robin","presence":"required"},{"module":"notes","presence":"optional"}],"installation_role":"admin","namespaces":["shop"],"principal":"shop","queues":["orders"],"resource_kinds":["shop.item"],"source_governance":["shop.item:write"]},"binding":"ws.blue.shop","generation":3,"host":{"coordinate":"local","domain":"local"},"kind":"solution","release":{"name":"shop","publisher":"acme","version":"1.2.3"},"schema":"codefly/module-manifest/v1","workloads":[{"container":"app","service":"api"},{"container":"run","service":"worker"}]}

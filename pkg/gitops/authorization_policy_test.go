@@ -1,7 +1,10 @@
 package gitops
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,53 +12,50 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// policyPackages are the authority library's packages that decide: the host
-// applies them to every delivery, and a product proves its roles against them
-// in its own test (roleplan). The CLI links none of them, so a change to a role
-// or permission rule never needs a CLI release; it renders through declare,
-// which projects a contract and decides nothing, and names roles through
-// domain's constants alone.
-var policyPackages = []string{
-	"github.com/codefly-dev/authority/libraries/authority-core/go/decide",
-	"github.com/codefly-dev/authority/libraries/authority-core/go/authority",
-	"github.com/codefly-dev/authority/libraries/authority-core/go/delivered",
-	"github.com/codefly-dev/authority/libraries/authority-core/go/roleplan",
-}
+// authorityCore is the authority library's module. Its packages that decide
+// (decide, authority, delivered, roleplan, and any added later) are the
+// host's: it applies them to every delivery, and a product proves its roles
+// against them in its own test (roleplan).
+const authorityCore = "github.com/codefly-dev/authority/libraries/authority-core/go/"
 
-// The CLI carries no authorization policy: none of its packages links one that
-// decides, and the core it reads contracts with decides nothing about roles.
-// A failure here is a policy rule creeping back into the CLI or core, which
-// would bind every future rule change to a CLI release again: put the rule in
-// authority-core's decide, where the host applies it.
+// linkedAuthorityCore is all the CLI may link of it, tests included: declare,
+// which projects a contract into the authority's document and decides
+// nothing, and domain, whose role-name constants the scaffold writes.
+var linkedAuthorityCore = []string{authorityCore + "declare", authorityCore + "domain"}
+
+// The CLI carries no authorization policy, in its code or its tests: of the
+// authority library it links only declare and domain, and the core it reads
+// contracts with decides nothing about roles. A failure here is a policy rule
+// creeping back into the CLI or core, which would bind every future rule
+// change to a CLI release again: put the rule in authority-core's decide,
+// where the host applies it, and prove it there.
 func TestTheCLICarriesNoAuthorizationPolicy(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/codefly-dev/cli/...").Output()
-	require.NoError(t, err, "go list the CLI's dependencies")
-	linked := map[string]bool{}
+	out, err := exec.Command("go", "list", "-deps", "-test", "github.com/codefly-dev/cli/...").Output()
+	require.NoError(t, err, "go list the CLI's dependencies, tests included")
+	var linked []string
 	for _, path := range strings.Fields(string(out)) {
-		linked[path] = true
+		// A test variant reads "pkg [pkg.test]"; Fields splits it, so keep
+		// the package paths alone.
+		if strings.HasPrefix(path, authorityCore) && !slices.Contains(linked, path) {
+			linked = append(linked, path)
+		}
 	}
-	require.True(t, linked["github.com/codefly-dev/authority/libraries/authority-core/go/declare"], "the CLI renders through declare; a listing without it lists something else")
-	for _, path := range policyPackages {
-		require.False(t, linked[path], "the CLI links %s, which decides authorization: a policy change would need a CLI release", path)
+	require.Contains(t, linked, authorityCore+"declare", "the CLI renders through declare; a listing without it lists something else")
+	for _, path := range linked {
+		require.Contains(t, linkedAuthorityCore, path, "the CLI links %s: only declare and domain of the authority library are the CLI's; a package that decides would make a policy change need a CLI release", path)
 	}
 
-	// Core reads roles as declared: a contract declaring a role other than
-	// admin and user, granting nothing core could hold it to, reads. Core once
-	// refused it (role-admin-or-user, role-within-request); the host does now.
-	_, err = modulecontract.Parse([]byte(`schema: codefly/module-contract/v1
-principal: wiki
-owner_aware: true
-namespaces: []
-queues: []
-scope_ceilings:
-    - resource_kind: wiki.page
-      actions: [read]
-roles:
-    - name: viewer
-      scopes:
-          - resource_kind: elsewhere.thing
-            actions: [delete]
-bindings: []
-`))
-	require.NoError(t, err, "core's contract reader decides a role policy again")
+	// Core reads roles as declared: every contract core's reader refused
+	// before v0.19.32 for an authorization rule (its conformance fixtures,
+	// kept here as core v0.19.31 shipped them) reads now. The host refuses
+	// each where a new delivery is admitted (authority-core decide).
+	fixtures, err := filepath.Glob(filepath.Join("testdata", "core-policy-fixtures", "*.yaml"))
+	require.NoError(t, err)
+	require.Len(t, fixtures, 16, "the sixteen contracts core refused for an authorization rule")
+	for _, path := range fixtures {
+		document, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, err = modulecontract.Parse(document)
+		require.NoError(t, err, "core's contract reader decides a policy again: %s", filepath.Base(path))
+	}
 }

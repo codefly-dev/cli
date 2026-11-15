@@ -1,0 +1,26 @@
+# A binding addressed to the module itself has no downstream: a scope is never
+# reached through one.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read, start]
+roles:
+    - name: admin
+      scopes:
+          - resource_kind: documents
+            actions: [read]
+            through: occurrences
+    - name: user
+      scopes: [{resource_kind: assistant.tasks, actions: [read]}]
+bindings:
+    - id: occurrences
+      operations: [invoke]
+      audience: {self: true}
+      scope_ceiling:
+          invoke:
+              - resource_kind: assistant.tasks
+                actions: [start]
+destinations: []

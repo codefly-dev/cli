@@ -1,0 +1,29 @@
+# A role granting an action beyond the unit's own ceiling on its own kind.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read, write, publish]
+roles:
+    - name: admin
+      scopes: [{resource_kind: assistant.tasks, actions: [read, delete]}]
+    - name: user
+      scopes: [{resource_kind: assistant.tasks, actions: [read]}]
+bindings:
+    - id: documents
+      operations: [invoke]
+      audience: {from: assistant/evidence-audience}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents
+                actions: [read, write]
+    - id: evaluation
+      operations: [headless]
+      audience: {from: assistant/annotations-prefix}
+      scope_ceiling:
+          headless:
+              - resource_kind: evaluation.definitions
+                actions: [publish]
+destinations: []

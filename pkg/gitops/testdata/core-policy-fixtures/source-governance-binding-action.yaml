@@ -1,0 +1,35 @@
+# A governing action the unit's own ceiling does not declare: only the
+# documents binding underwrites the editors' write on the pages kind.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.pages
+      actions: [read, publish]
+    - resource_kind: assistant.profiles
+      actions: [read]
+      shared: true
+roles:
+    - name: admin
+      scopes: [{resource_kind: assistant.pages, actions: [read, publish]}]
+    - name: user
+      scopes:
+          - {resource_kind: assistant.pages, actions: [read, write]}
+          - {resource_kind: assistant.profiles, actions: [read]}
+          - {resource_kind: documents, actions: [read, write]}
+source_governance:
+    scopes:
+        - resource_kind: assistant.pages
+          actions: [write]
+bindings:
+    - id: documents
+      operations: [invoke]
+      audience: {from: assistant/documents-audience}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents
+                actions: [read, write]
+              - resource_kind: assistant.pages
+                actions: [write]
+destinations: []

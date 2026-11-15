@@ -1,0 +1,27 @@
+# An installation-owned scope beyond what the unit serves or a binding asks
+# for: held to the same ceiling as scopes.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read, write]
+roles:
+    - name: admin
+      scopes:
+          - resource_kind: assistant.tasks
+            actions: [read, write]
+    - name: user
+      installation_owned_scopes:
+          - resource_kind: documents.collection
+            actions: [read, write]
+bindings:
+    - id: collections
+      operations: [invoke]
+      audience: {from: assistant/collections-audience}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents.collection
+                actions: [read]
+destinations: []

@@ -1,0 +1,28 @@
+# A unit with a page declaring admin alone: a page declares exactly admin and
+# user, and without user there is nothing for a person to hold day to day.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [read, write, publish]
+roles:
+    - name: admin
+      scopes: [{resource_kind: assistant.tasks, actions: [read, write, publish]}]
+bindings:
+    - id: documents
+      operations: [invoke]
+      audience: {from: assistant/evidence-audience}
+      scope_ceiling:
+          invoke:
+              - resource_kind: documents
+                actions: [read, write]
+    - id: evaluation
+      operations: [headless]
+      audience: {from: assistant/annotations-prefix}
+      scope_ceiling:
+          headless:
+              - resource_kind: evaluation.definitions
+                actions: [publish]
+destinations: []
