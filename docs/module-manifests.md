@@ -965,7 +965,8 @@ run needs a new companion version for all of them (core
 manifest strictly before it sends it, so its core must be at least the
 render's: `0.0.7` (core v0.19.17) refused the bundled page and
 `source_governance` on a hosted cell, which `0.0.8` (core v0.19.27) reads;
-`0.0.9` followed the CLI to core v0.19.28 and `0.0.10` to core v0.19.29, and
+`0.0.9` followed the CLI to core v0.19.28, `0.0.10` to core v0.19.29 and
+`0.0.11` to core v0.19.30 (the page roles `admin` and `user`), and
 `TestThePairedDeliveryImageDecodesWhatThisCLIRenders` holds the two together. A
 moved pin changes every cell's `delivery` declaration, so the cell is
 re-rendered with it.
