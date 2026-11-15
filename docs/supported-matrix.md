@@ -98,7 +98,7 @@ matter most for a support claim:
 
 - **No row reaches a cluster, and none will.** No test of any kind starts
   k3s, k3d, kind or any Kubernetes cluster, so `Validate` knows no cluster
-  backend. A deployment is validated by `codefly run` and a hosted cell, never
+  backend. A deployment is validated by `codefly run` and a hosted dev cell, never
   by a conformance row.
 - **No macOS row is qualified.** CI has no macOS runner, so every released
   darwin binary ships without lifecycle evidence.

@@ -2422,7 +2422,7 @@ Flags:
       --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --env string                                                                        Environment to promote (default "local")
-      --local                                                                             Use a disposable local file Git remote for k3d qualification
+      --local                                                                             Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
       --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
@@ -2445,7 +2445,7 @@ Flags:
       --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                                                                       Promotion pull request body
       --env string                                                                        Environment to promote (default "local")
-      --local                                                                             Use a disposable local file Git remote for k3d qualification
+      --local                                                                             Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
       --merge-timeout duration                                                            With --all, how long to wait for one promotion's required checks (or merge queue) before stopping (default 30m0s)
       --message string                                                                    Signed commit message
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
@@ -2560,7 +2560,7 @@ Flags:
       --allow-unresolved-contracts   Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
       --body string                  Promotion pull request body
       --env string                   Environment to promote (default "local")
-      --local                        Use a disposable local file Git remote for k3d qualification
+      --local                        Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
       --message string               Signed commit message
       --promotion-branch string      Promotion branch (deterministic default when empty)
       --resign                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied

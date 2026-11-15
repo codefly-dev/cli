@@ -173,4 +173,4 @@ go test ./pkg/deployments ./pkg/gitops
 
 Every stage is proven in-process against a fake target. No test starts a
 cluster; what a live API server does with a rollout is validated by a local
-`codefly run cluster` and a hosted cell.
+`codefly run cluster` and a hosted dev cell.
