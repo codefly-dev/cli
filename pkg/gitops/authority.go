@@ -70,6 +70,11 @@ func moduleAuthority(
 	if err != nil {
 		return nil, err
 	}
+	if declaration == nil {
+		// Core declares nothing for a module with no contract; the request
+		// names none only when it is undeclared, answered above.
+		return authority, nil
+	}
 	if err := refuseUnaddressableConsumption(workspace, module, request, resolved); err != nil {
 		return nil, err
 	}
@@ -156,14 +161,18 @@ func resolveContract(ctx context.Context, workspace *resources.Workspace, env *e
 // workspace's public configuration for env, so the authority document's half
 // reads the same resolution — an optional binding the composition leaves out
 // is left out of both.
+//
+// Within one module's declaration (AuthoritySources.Declaration) every reader
+// shares one resolution (onceResolver): the configurations are read and the
+// callees loaded once per module, not once per field.
 func WorkspaceContractResolver(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ContractResolver {
-	return func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+	return onceResolver(ctx, func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
 		provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime(), orchestration.ModuleArtifactResolverFor(workspace))
 		if err != nil {
 			return nil, fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", contract.Principal, err)
 		}
 		return resolveContract(ctx, workspace, env, provided, contract)
-	}
+	})
 }
 
 // authorityRequest is what a module asks for authority with, from exactly one

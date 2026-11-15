@@ -143,14 +143,23 @@ func TestCompositionTargetIdentityBindsTheLiveNamespace(t *testing.T) {
 	require.NoError(t, err, "an unchanged namespace keeps its identity")
 	require.Equal(t, initial.Identity, checked.Identity)
 
-	harness.clusterHas("namespace", "payments", targetNamespaceDocument("payments", "payments-uid-1", "Terminating", true))
-	checked, err = RecheckLocalKubernetesTarget(t.Context(), env, initial.Identity)
-	require.ErrorContains(t, err, "active, non-deleting identity")
-	require.Nil(t, checked)
+	// Each half of the refusal alone: a namespace being deleted while the
+	// API server still reports it Active (finalization), and one not being
+	// deleted that is not Active.
+	for _, refused := range []struct {
+		name     string
+		phase    string
+		deleting bool
+	}{{"deleting yet Active", "Active", true}, {"not deleting, not Active", "Terminating", false}} {
+		harness.clusterHas("namespace", "payments", targetNamespaceDocument("payments", "payments-uid-1", refused.phase, refused.deleting))
+		checked, err = RecheckLocalKubernetesTarget(t.Context(), env, initial.Identity)
+		require.ErrorContains(t, err, "active, non-deleting identity", refused.name)
+		require.Nil(t, checked, refused.name)
+	}
 
 	require.NoError(t, os.Remove(filepath.Join(harness.resourceDir, "namespace.payments.json")))
 	checked, err = InspectLocalKubernetesTarget(t.Context(), env)
-	require.Error(t, err, "a missing namespace cannot fall back to the context's default")
+	require.ErrorContains(t, err, `inspect target namespace "payments"`, "a missing namespace cannot fall back to the context's default")
 	require.Nil(t, checked)
 
 	harness.clusterHas("namespace", "payments", targetNamespaceDocument("payments", "payments-uid-2", "Active", false))

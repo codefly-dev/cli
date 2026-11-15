@@ -1,6 +1,9 @@
 package gitops
 
 import (
+	"context"
+	"sync"
+
 	"github.com/codefly-dev/core/solutionhost"
 
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
@@ -13,6 +16,45 @@ import (
 // which bindings the composition delivers and which class an edge's presence
 // resolves for.
 type ContractResolver func(*modulecontract.Contract) (*modulecontract.Resolved, error)
+
+// oneResolution is the memo one module's declaration shares, by principal.
+type oneResolution struct {
+	mu sync.Mutex
+	by map[string]resolution
+}
+
+type resolution struct {
+	resolved *modulecontract.Resolved
+	err      error
+}
+
+type oneResolutionKey struct{}
+
+// withOneResolution scopes ctx to one module's declaration: every reader of it
+// that resolves through onceResolver shares one resolution.
+func withOneResolution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, oneResolutionKey{}, &oneResolution{by: map[string]resolution{}})
+}
+
+// onceResolver is resolve, answered once per contract principal within a
+// context scoped by withOneResolution, and resolved every time outside one,
+// so a long run never serves a resolution its composition has moved past.
+func onceResolver(ctx context.Context, resolve ContractResolver) ContractResolver {
+	memo, _ := ctx.Value(oneResolutionKey{}).(*oneResolution)
+	if memo == nil {
+		return resolve
+	}
+	return func(contract *modulecontract.Contract) (*modulecontract.Resolved, error) {
+		memo.mu.Lock()
+		defer memo.mu.Unlock()
+		if held, ok := memo.by[contract.Principal]; ok {
+			return held.resolved, held.err
+		}
+		resolved, err := resolve(contract)
+		memo.by[contract.Principal] = resolution{resolved, err}
+		return resolved, err
+	}
+}
 
 // The contract's half of the authority's document, each field in the
 // authority's spelling. Core renders it (solutionhost.DeclareModule), the one
