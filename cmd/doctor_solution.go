@@ -104,8 +104,7 @@ module_package_unreadable, module_package_publishes_shell,
 frontend_declaration_missing, frontend_declaration_unreadable,
 page_shell_missing, module_interface_missing, entry_endpoint_not_exported,
 page_shell_exported_too_widely, consumed_module_without_binding,
-page_shell_has_no_app, page_roles_not_admin_user, backend_contract_missing,
-operation_policies_unread, role_grants_unreached_scope, and with --env:
+page_shell_has_no_app, backend_contract_missing, and with --env:
 not_rendered_for_environment, module_envelope_not_rendered,
 module_envelope_unreadable, module_envelope_omits_binding,
 module_envelope_admits_every_binding.`,

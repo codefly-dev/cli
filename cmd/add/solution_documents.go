@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
@@ -430,11 +431,12 @@ func solutionContract(name string) *modulecontract.Contract {
 		// so both read and write it; the admin widens as the solution grows
 		// administrative actions of its own.
 		//
-		// Every role must grant something: core refuses `role "user" grants
-		// nothing`.
+		// Which roles exist, and that each grants something, is the
+		// authority's policy, which its host applies to every delivery: the
+		// names come from the authority library, never spelled here.
 		Roles: []modulecontract.Role{
-			{Name: modulecontract.AdminRole, Scopes: ownScope},
-			{Name: modulecontract.UserRole, Scopes: ownScope},
+			{Name: domain.AdminRole, Scopes: ownScope},
+			{Name: domain.UserRole, Scopes: ownScope},
 		},
 		Bindings:     []modulecontract.Binding{},
 		Destinations: []modulecontract.Destination{},
