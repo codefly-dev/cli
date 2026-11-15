@@ -164,6 +164,8 @@ type AuthoritySources struct {
 // an empty declaration are different things to the host, and a nil here is
 // what keeps a withdrawal Core-only.
 func (s AuthoritySources) Declaration(ctx context.Context, module string) ([]byte, error) {
+	// Every reader below renders the same module: one resolution serves them.
+	ctx = withOneResolution(ctx)
 	var methods []*compositionv1.MethodPolicyV1
 	declared := false
 	if s.Methods != nil {

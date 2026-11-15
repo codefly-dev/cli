@@ -251,7 +251,7 @@ func PublishedPolicies(dir string) (map[string]domain.MethodPolicy, error) {
 // OwnDeclaration reads, from the module contract at dir, the principal the
 // module is delivered under and whether it declares that it checks owners.
 func OwnDeclaration(dir string) (principal string, ownerAware bool, err error) {
-	if err := solutionhost.RefuseRetiredRoles(dir); err != nil {
+	if err = solutionhost.RefuseRetiredRoles(dir); err != nil {
 		return "", false, err
 	}
 	contract, err := modulecontract.Load(dir)
