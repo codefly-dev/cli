@@ -318,11 +318,13 @@ func (r *Report) checkContract(dir string, consumed []string) *modulecontract.Co
 }
 
 // checkPageRoles holds the contract to the roles the host requires of a
-// solution. A solution is a unit a PERSON installs, through its page, and a
-// unit with a page declares exactly two roles: admin, which whoever installs
-// it holds and which administers the installation, and user, what a person
-// does with it day to day. The authority refuses to admit a solution that
-// offers a person no role to hold on it.
+// solution. A solution is a unit a PERSON installs, and every unit that must
+// declare roles — any solution, page or not, and a module page — declares
+// exactly two: admin, which whoever installs it holds and which administers
+// the installation, and user, what a person does with it day to day. The
+// authority refuses to admit a solution without an admin role whether or not
+// it has a page, so a headless solution is held to it here too; the code's
+// name says "page" because the page roles are what the two are called.
 //
 // It is reported here because of WHEN that refusal arrives: at `runtime-run`,
 // after the whole composition — authority, store, every consumed module — has
@@ -347,7 +349,7 @@ func (r *Report) checkPageRoles(contract *modulecontract.Contract) {
 	}
 	slices.Sort(declared)
 	if slices.Equal(declared, []string{modulecontract.AdminRole, modulecontract.UserRole}) {
-		r.ok(CodePageRolesNotAdminUser, fmt.Sprintf("the contract declares the two page roles, %q and %q", modulecontract.AdminRole, modulecontract.UserRole))
+		r.ok(CodePageRolesNotAdminUser, fmt.Sprintf("the contract declares the two roles, %q and %q", modulecontract.AdminRole, modulecontract.UserRole))
 		return
 	}
 	found := "no roles"
@@ -356,7 +358,7 @@ func (r *Report) checkPageRoles(contract *modulecontract.Contract) {
 	}
 	r.fail(CodePageRolesNotAdminUser,
 		fmt.Sprintf("the contract declares %s, not exactly %q and %q", found, modulecontract.AdminRole, modulecontract.UserRole),
-		fmt.Sprintf("the authority refuses to admit a solution that offers a person no role to hold on it, and it refuses at runtime-run — after the whole composition has booted and every document has read fine. Declare exactly two roles scoped within the contract's own scope_ceilings: %q, which whoever installs the solution holds and which administers the installation, and %q, what a person does with it day to day", modulecontract.AdminRole, modulecontract.UserRole))
+		fmt.Sprintf("every unit that must declare roles — any solution, with a page or without one, and a module page — declares exactly %[1]q and %[2]q, and the authority refuses to admit a solution without %[1]q, at runtime-run, after the whole composition has booted and every document has read fine. Declare exactly two roles scoped within the contract's own scope_ceilings: %[1]q, which whoever installs the unit holds and which administers the installation, and %[2]q, what a person does with it day to day", modulecontract.AdminRole, modulecontract.UserRole))
 }
 
 // checkPackage holds the published identity, and the one thing about it that

@@ -226,7 +226,7 @@ func TestPrepareRefusesAnUnsignedCarrierRatherThanDropTheAuthorityHalf(t *testin
 	writeOverlayCarrier(t, overlay, manifest, nil)
 	_, err := PreparePairedDocuments(context.Background(), overlay, t.TempDir(),
 		AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
-			return []*compositionv1.RoleV1{{Name: "admin"}}, nil
+			return []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}}, nil
 		}}, nativeSigner(t))
 	require.ErrorContains(t, err, "carries no signature")
 	require.ErrorContains(t, err, "wiki")

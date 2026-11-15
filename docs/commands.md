@@ -860,7 +860,7 @@ This is what a cell's delivery Job runs: a GitOps publish toward a host whose
 delivery endpoint declares `codefly.dev/composition` writes one paired document
 per manifest into the delivery overlay and renders the manifest Job to run
 `/bin/codefly delivery apply` with the projected token, from the codefly
-companion `0.0.8`, pinned by digest. `0.0.7` was the first tag whose static
+companion `0.0.11`, pinned by digest. `0.0.7` was the first tag whose static
 binary carries this verb, but its core refuses the
 `authority.source_governance` field this CLI renders; the companion's core must
 be at least the CLI's, which `TestThePairedDeliveryImageDecodesWhatThisCLIRenders`
@@ -3040,7 +3040,7 @@ Every rule is one that silently broke something. The two worth knowing:
 
 | | |
 |---|---|
-| `page_roles_not_admin_user` | A solution has a page, and a unit with a page declares exactly two roles, `admin` and `user`. Core refuses any other role name, or roles without either, when the contract is read (reported as `module_contract_unreadable` with core's reason); what it cannot refuse is a contract declaring **no** roles, because a unit without a page rightly declares none. The authority then refuses to admit the solution — at `runtime-run`, after the whole composition has booted. |
+| `page_roles_not_admin_user` | Every unit that must declare roles — any solution, with a page or without one, and a module page — declares exactly two, `admin` and `user`; the authority refuses to admit a solution without `admin`, page or not. Core refuses any other role name, or roles without either, when the contract is read (reported as `module_contract_unreadable` with core's reason); what it cannot refuse is a contract declaring **no** roles, because a unit without a page rightly declares none. The authority then refuses to admit the solution — at `runtime-run`, after the whole composition has booted. |
 | `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
 | `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
 | `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |

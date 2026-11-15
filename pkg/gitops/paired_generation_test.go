@@ -123,7 +123,7 @@ func TestNativeGenerationIncludesEachAuthorityPolicyInput(t *testing.T) {
 					if input != "role" {
 						return nil, nil
 					}
-					return []*compositionv1.RoleV1{{Name: "viewer", Scopes: scopes()}}, nil
+					return []*compositionv1.RoleV1{{Name: "admin", Scopes: scopes()}, {Name: "user", Scopes: scopes()}}, nil
 				}, func(context.Context, string) (bool, error) { return input == "owner-aware" && action == "write", nil }, nil)
 			d := &NativeDeliverer{Signer: signer, StateDir: t.TempDir(), Prepare: composition.Prepare, Token: func(string) (string, error) { return "credential", nil }}
 			_, err := d.Deliver(t.Context(), pairedManifest())

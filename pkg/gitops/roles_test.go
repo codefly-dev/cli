@@ -110,6 +110,7 @@ func TestARolesCoreRefusesIsRefusedByTheDelivery(t *testing.T) {
 	for name, c := range map[string]struct{ document, reason string }{
 		"a role neither admin nor user":     {strings.Replace(wikiContract, "name: admin", "name: owner", 1), `role "owner" is neither "admin" nor "user"`},
 		"a retired role name":               {strings.Replace(wikiContract, "name: user", "name: viewer", 1), `role "viewer" is neither "admin" nor "user"`},
+		"no admin":                          {strings.Replace(wikiContract, "  - name: admin\n    scopes:\n      - resource_kind: wiki.page\n        actions: [read, write, publish]\n", "", 1), `none is "admin"`},
 		"no user":                           {strings.Replace(wikiContract, "  - name: user\n    scopes:\n      - {resource_kind: wiki.page, actions: [read, write]}\n", "", 1), `none is "user"`},
 		"a role beyond the kind's actions":  {strings.Replace(wikiContract, "actions: [read, write]}", "actions: [read, write, delete]}", 1), `role "user" grants wiki.page:delete`},
 		"a role on a kind nothing asks for": {strings.Replace(wikiContract, "{resource_kind: wiki.page, actions: [read, write]}", "{resource_kind: documents, actions: [read]}", 1), `role "user" grants documents:read`},
