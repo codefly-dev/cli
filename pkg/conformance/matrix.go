@@ -68,7 +68,6 @@ type Row struct {
 	OS            string   `json:"os"`
 	Arch          string   `json:"arch"`
 	Backend       string   `json:"backend"`
-	Kubernetes    string   `json:"kubernetes,omitempty"`
 	Prerequisites []string `json:"prerequisites,omitempty"`
 	GateEnv       string   `json:"gate_env,omitempty"`
 	BuildTag      string   `json:"build_tag,omitempty"`
@@ -135,14 +134,12 @@ var (
 	ciEntryPattern = regexp.MustCompile(`^[a-z0-9.-]+\.ya?ml#[a-z0-9-]+$`)
 )
 
-// backendCluster is the only backend that reaches Kubernetes, so it is the
-// only one for which a pinned cluster version is meaningful.
-const backendCluster = "k3d"
-
+// No backend starts a cluster: no test of any kind boots k3s, k3d, kind or any
+// Kubernetes cluster, so a cluster row is an unknown backend.
 var (
 	knownOS       = map[string]bool{"linux": true, "darwin": true, "windows": true}
 	knownArch     = map[string]bool{"amd64": true, "arm64": true}
-	knownBackends = map[string]bool{"none": true, "native": true, "docker": true, "nix": true, backendCluster: true}
+	knownBackends = map[string]bool{"none": true, "native": true, "docker": true, "nix": true}
 )
 
 // Validate enforces the invariants that make the matrix a claim rather than a
@@ -203,9 +200,6 @@ func (r *Row) validate() error {
 	if !knownBackends[r.Backend] {
 		return fmt.Errorf("conformance row %s has unknown backend %q", r.ID, r.Backend)
 	}
-	if r.Kubernetes != "" && r.Backend != backendCluster {
-		return fmt.Errorf("conformance row %s declares a kubernetes version without a cluster backend", r.ID)
-	}
 	if err := r.validatePrerequisites(); err != nil {
 		return err
 	}
@@ -240,9 +234,6 @@ func (r *Row) validateStatusEvidence() error {
 		}
 		if len(r.Blockers) > 0 {
 			return fmt.Errorf("conformance row %s is qualified but still lists blockers", r.ID)
-		}
-		if r.Backend == backendCluster && r.Kubernetes == "" {
-			return fmt.Errorf("conformance row %s is a qualified cluster row and must pin a kubernetes version", r.ID)
 		}
 	case StatusNotYetQualified:
 		if len(r.CI) > 0 {

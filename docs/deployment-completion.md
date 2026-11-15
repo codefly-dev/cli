@@ -169,8 +169,8 @@ success — that is when they matter.
 
 ```bash
 go test ./pkg/deployments ./pkg/gitops
-CODEFLY_DEPLOYMENTS_K3D_QUALIFY=1 go test ./pkg/deployments -run DisposableK3d
 ```
 
-The qualification suite creates and deletes a disposable k3d cluster; it needs
-`docker`, `k3d` and `kubectl` on `PATH`.
+Every stage is proven in-process against a fake target. No test starts a
+cluster; what a live API server does with a rollout is validated by a local
+`codefly run cluster` and a hosted cell.

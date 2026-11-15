@@ -65,7 +65,6 @@ Keep the required rows and receipt verifier enabled; absence is still a failure.
 | `linux-amd64-docker-generate` | qualified | linux/amd64 | docker | `docker`, `buf` | `generate-qualification.yml` — `generate`, reported as `docker-generate` |
 | `linux-amd64-docker-mcp-run` | not-yet-qualified | linux/amd64 | docker | `docker` | `CODEFLY_MCP_RUN_QUALIFY=1`, developer machine only |
 | `linux-amd64-network-mcp-agent` | not-yet-qualified | linux/amd64 | native | — | `CODEFLY_MCP_AGENT_QUALIFY=1`, developer machine only |
-| `linux-amd64-k3d-deploy` | not-yet-qualified | linux/amd64 | k3d | `docker`, `k3d`, `kubectl`, `ssh-keygen`, `git` | `CODEFLY_GITOPS_K3D_QUALIFY=1`, developer machine only |
 | `darwin-arm64-native-user-service` | not-yet-qualified | darwin/arm64 | native | `launchctl` | `CODEFLY_SERVICE_INTEGRATION=1`, developer machine only |
 | `windows-amd64-native-run` | unsupported | windows/amd64 | native | — | none |
 
@@ -97,10 +96,10 @@ decides, with rename detection off: a file moved into `docs/` or renamed to
 The matrix carries the blocker for every `not-yet-qualified` row. The two that
 matter most for a support claim:
 
-- **No deployment row is qualified.** `linux-amd64-k3d-deploy` is the only row
-  that reaches a cluster, and no CI job provisions k3d. It also creates its
-  cluster at k3d's default k3s image; a qualified cluster row must pin an
-  explicit Kubernetes version, which `Validate` enforces.
+- **No row reaches a cluster, and none will.** No test of any kind starts
+  k3s, k3d, kind or any Kubernetes cluster, so `Validate` knows no cluster
+  backend. A deployment is validated by `codefly run` and a hosted cell, never
+  by a conformance row.
 - **No macOS row is qualified.** CI has no macOS runner, so every released
   darwin binary ships without lifecycle evidence.
 
@@ -112,7 +111,7 @@ guard each of these tests:
 - The row is listed in `CODEFLY_CONFORMANCE_REQUIRED` → the test **runs**. A
   missing prerequisite, or a runner whose OS/architecture is not the row's,
   **fails**. It never skips.
-- The row's own opt-in is set (`CODEFLY_GITOPS_K3D_QUALIFY=1`, …) → the test
+- The row's own opt-in is set (`CODEFLY_MCP_RUN_QUALIFY=1`, …) → the test
   runs, and a missing prerequisite fails: you asked for that backend.
 - Neither → the test skips, naming the row and how to enable it.
 
@@ -123,9 +122,8 @@ nothing enforces, and a row cannot claim support nothing can check.
 ### Prerequisites are a union; a caller may narrow
 
 A row's `prerequisites` are the union over its tests, and no single test needs
-all of them: only the solution-SDK fixture runs `buf`, and only the two ArgoCD
-shapes need `kubectl` and `ssh-keygen`. A call site names the subset it uses —
-`conformancetest.Gate(t, "linux-amd64-k3d-deploy", "docker", "k3d", "git")` —
+all of them: only the solution-SDK fixture runs `buf`. A call site names the
+subset it uses — `conformancetest.Gate(t, "linux-amd64-docker-generate", "docker")` —
 and outside a CI claim only that subset must be present, so a partial local
 toolchain still qualifies the tests it can run. A **claimed** row is always
 held to every prerequisite it declares: narrowing is a local convenience, never

@@ -2044,15 +2044,10 @@ exact ownership labels, and refuses teardown when ownership or network identity
 drifts. See [gitops-fetch-remote.md](gitops-fetch-remote.md) for the developer
 and recovery workflow. `codefly doctor` audits any remote it finds.
 
-Maintainers can run the disposable local qualifications (k3d, an in-network Git
-remote, and pinned Argo CD) with:
-
-```bash
-CODEFLY_GITOPS_K3D_QUALIFY=1 \
-  go test ./pkg/gitops -run TestLocalK3dDisposableGitQualification -v -count=1
-CODEFLY_GITOPS_K3D_QUALIFY=1 \
-  go test ./pkg/gitops -run TestLocalFetchRemoteLifecycle -v -count=1
-```
+No test starts a cluster: the remote, the render and the publication are
+proven in-process (`go test ./pkg/gitops`), and a delivery reconciling on a
+cluster is validated by `codefly run cluster` and a hosted cell, never by a
+test.
 
 ### `codefly deploy dev <module>/<service>` — the dev escape hatch
 

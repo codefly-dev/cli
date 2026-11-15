@@ -117,29 +117,6 @@
       ]
     },
     {
-      "id": "linux-amd64-k3d-deploy",
-      "status": "not-yet-qualified",
-      "summary": "GitOps publication rendered, applied and reconciled by ArgoCD on a disposable k3d cluster, for the service, solution and fetch-remote shapes.",
-      "os": "linux",
-      "arch": "amd64",
-      "backend": "k3d",
-      "prerequisites": [
-        "docker",
-        "k3d",
-        "kubectl",
-        "ssh-keygen",
-        "git"
-      ],
-      "gate_env": "CODEFLY_GITOPS_K3D_QUALIFY",
-      "blockers": [
-        "No CI job provisions k3d, so the only deployment row has never run outside a developer machine.",
-        "The cluster is created at k3d's default k3s image; qualification requires an explicitly pinned kubernetes version."
-      ],
-      "gates": [
-        "pkg/gitops"
-      ]
-    },
-    {
       "id": "darwin-arm64-native-user-service",
       "status": "not-yet-qualified",
       "summary": "The native user-service manager installing, starting and uninstalling a real launchd service.",
