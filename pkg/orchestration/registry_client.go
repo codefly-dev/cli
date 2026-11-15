@@ -8,21 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
+	"github.com/codefly-dev/cli/pkg/imagedigest"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
-	"github.com/distribution/reference"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
 )
 
 // The reuse decision's registry reads, answered in process.
@@ -56,98 +51,13 @@ type registryManifest struct {
 // recommended limit is 4 MiB.
 const maxRegistryManifestBytes = 4 << 20
 
-// registryHTTP is the process's one registry client.
-var registryHTTP = sync.OnceValues(func() (*auth.Client, error) {
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("load the docker registry credentials: %w", err)
-	}
-	return &auth.Client{
-		Cache:      auth.NewCache(),
-		Credential: oncePerHost(credentials.Credential(store)),
-	}, nil
-})
-
-// oncePerHost asks the credential store once per registry host for a few
-// minutes. A credential helper is a process (docker-credential-gcloud runs
-// gcloud), and docker itself pays for it on every command; one render asks the
-// same host dozens of times. The answer is short-lived because a helper's
-// credential may be (an access token is), and a run can outlive it. A failure
-// is not kept, so the next read asks again.
-func oncePerHost(read auth.CredentialFunc) auth.CredentialFunc {
-	type answer struct {
-		credential auth.Credential
-		at         time.Time
-	}
-	var mu sync.Mutex
-	known := map[string]answer{}
-	return func(ctx context.Context, host string) (auth.Credential, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if kept, ok := known[host]; ok && time.Since(kept.at) < registryCredentialLifetime {
-			return kept.credential, nil
-		}
-		credential, err := read(ctx, host)
-		if err == nil {
-			known[host] = answer{credential, time.Now()}
-		}
-		return credential, err
-	}
-}
-
-// registryCredentialLifetime is how long a credential helper's answer is
-// reused: well inside the hour an access token it hands out lives.
-const registryCredentialLifetime = 5 * time.Minute
-
-// registryRepository resolves an image reference the way docker does (a bare
-// `golang:1.25` is docker.io/library/golang:1.25) to its repository and the
-// tag or digest to fetch.
-func registryRepository(image string) (*remote.Repository, string, error) {
-	named, err := reference.ParseNormalizedNamed(image)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse image reference %s: %w", image, err)
-	}
-	named = reference.TagNameOnly(named)
-	var ref string
-	switch typed := named.(type) {
-	case reference.Digested:
-		ref = typed.Digest().String()
-	case reference.Tagged:
-		ref = typed.Tag()
-	}
-	repository, err := remote.NewRepository(named.Name())
-	if err != nil {
-		return nil, "", err
-	}
-	client, err := registryHTTP()
-	if err != nil {
-		return nil, "", err
-	}
-	repository.Client = client
-	repository.PlainHTTP = loopbackRegistry(reference.Domain(named))
-	return repository, ref, nil
-}
-
-// loopbackRegistry is a registry on this machine, which docker and buildx reach
-// over plain HTTP.
-func loopbackRegistry(host string) bool {
-	if name, _, err := net.SplitHostPort(host); err == nil {
-		host = name
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	return ip != nil && ip.IsLoopback()
-}
-
 // fetchRegistryManifest reads the manifest a reference names. The digest is
 // over the bytes served, exactly what `imagetools inspect --raw` printed and
 // was hashed before; a registry's "no such manifest" is errImageNotFound.
 func fetchRegistryManifest(ctx context.Context, image string) (registryManifest, error) {
 	probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
 	defer cancel()
-	repository, ref, err := registryRepository(image)
+	repository, ref, err := imagedigest.Repository(image)
 	if err != nil {
 		return registryManifest{}, err
 	}
@@ -189,7 +99,7 @@ func imageLabels(ctx context.Context, image string, manifest registryManifest) (
 	if labels, ok := digestLabels(manifest.digest); ok {
 		return labels, nil
 	}
-	repository, _, err := registryRepository(image)
+	repository, _, err := imagedigest.Repository(image)
 	if err != nil {
 		return nil, err
 	}

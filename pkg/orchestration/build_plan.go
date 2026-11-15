@@ -726,9 +726,9 @@ func (b *Builder) buildRecipe(
 func (b *Builder) runImageBuild(
 	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, args []string,
 ) (time.Duration, error) {
-	// Pushed or not, finished or not, what the registry said about this
-	// reference before the build is no longer something to rely on.
-	defer b.world.registryProbes().forget(recipe.GetImage())
+	// From the moment the build starts, pushed or not, finished or not, what the
+	// registry said about this reference is no longer something to rely on.
+	defer b.world.registryProbes().pushing(recipe.GetImage())()
 	command := exec.CommandContext(ctx, "docker", args...)
 	var transcript *buildTranscript
 	if b.world.buildsConcurrently() {

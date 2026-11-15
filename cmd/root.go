@@ -53,7 +53,7 @@ container images, and deploy services to configured environments.`,
 		// composition whose agents come from private releases renders
 		// without a token exported by hand. Asked at the first download,
 		// never here, once per command, and under the command's context.
-		manager.UseReleaseTokenSource(gh.ReleaseTokenSource(cmd.Context()))
+		manager.UseReleaseTokenSource(gh.ReleaseTokenSource(cmd.Context(), common.SignalHandled))
 		return applyRootOptions()
 	},
 	Run: func(_ *cobra.Command, _ []string) {

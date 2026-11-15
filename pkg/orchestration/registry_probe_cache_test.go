@@ -29,7 +29,7 @@ func TestCachedProbeReadsOnceAndForgetsAfterAPush(t *testing.T) {
 		t.Fatal("a different question must not be answered from the manifest")
 	}
 
-	cache.forget("registry/a:1")
+	cache.pushing("registry/a:1")()
 	third, _ := cachedProbe(ctx, "manifest", "registry/a:1", "", read)
 	if third == first || reads.Load() != 3 {
 		t.Fatalf("a push left the old answer in place: %q after %d reads", third, reads.Load())
@@ -77,7 +77,7 @@ func TestAnAnswerReadAcrossAPushIsNotKept(t *testing.T) {
 	var reads atomic.Int32
 	got, _ := cachedProbe(ctx, "manifest", "registry/d:1", "", func() (string, error) {
 		reads.Add(1)
-		cache.forget("registry/d:1") // the push lands while the read is in flight
+		cache.pushing("registry/d:1")() // the push lands while the read is in flight
 		return "sha256:before", nil
 	})
 	if got != "sha256:before" {
@@ -87,6 +87,48 @@ func TestAnAnswerReadAcrossAPushIsNotKept(t *testing.T) {
 	if reads.Load() != 2 {
 		t.Fatalf("an answer that predates a push was kept (%d reads)", reads.Load())
 	}
+}
+
+// A push moves the tag from the moment it starts: an answer read before it is
+// not served while it runs, and nothing read while it runs is kept, by it or
+// after it.
+func TestNoAnswerFromBeforeOrDuringAPushIsServedOnceItStarts(t *testing.T) {
+	cache := newProbeCache()
+	ctx := withProbes(context.Background(), cache)
+	var reads atomic.Int32
+	read := func() (string, error) { return "sha256:" + string(rune('a'+reads.Add(1))), nil }
+	probe := func() string {
+		got, err := cachedProbe(ctx, "manifest", "registry/f:1", "", read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	before := probe()
+	done := cache.pushing("registry/f:1")
+	if during := probe(); during == before || reads.Load() != 2 {
+		t.Fatalf("an answer from before the push was served while it ran: %q after %d reads", during, reads.Load())
+	}
+	if again := probe(); reads.Load() != 3 {
+		t.Fatalf("an answer read while the push ran was kept: %q after %d reads", again, reads.Load())
+	}
+	done()
+	done() // the end is idempotent: a second call must not end another push
+	probe()
+	if after := probe(); reads.Load() != 4 {
+		t.Fatalf("after the push the answer must be read once and kept: %q after %d reads", after, reads.Load())
+	}
+
+	// Two overlapping pushes: the first one ending does not end the second.
+	first, second := cache.pushing("registry/f:1"), cache.pushing("registry/f:1")
+	first()
+	probe()
+	probe()
+	if reads.Load() != 6 {
+		t.Fatalf("an answer was kept while a second push was still running (%d reads)", reads.Load())
+	}
+	second()
 }
 
 // Two flows never share an answer: an image that vanished between two commands,

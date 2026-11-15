@@ -49,3 +49,22 @@ func TestContextFromSignalsStopIsIdempotent(t *testing.T) {
 		t.Fatal("stop did not cancel context")
 	}
 }
+
+// SignalHandled says whether a SignalContext is listening, and stops saying so
+// once every one has stopped, however many times each stop is called.
+func TestSignalHandledFollowsTheListeningContexts(t *testing.T) {
+	if SignalHandled() {
+		t.Fatal("no SignalContext is listening yet")
+	}
+	_, stopFirst := SignalContext(context.Background())
+	_, stopSecond := SignalContext(context.Background())
+	stopFirst()
+	stopFirst()
+	if !SignalHandled() {
+		t.Fatal("the second SignalContext is still listening")
+	}
+	stopSecond()
+	if SignalHandled() {
+		t.Fatal("every SignalContext has stopped")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/distribution/reference"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/codefly-dev/cli/pkg/imagedigest"
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -102,7 +103,7 @@ func localRuntimeImageReference(ctx context.Context, image string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	digest, err := inspectImageDigest(ctx, image)
+	digest, err := imagedigest.Local(ctx, image)
 	if err != nil {
 		return "", fmt.Errorf("local runtime requires a container engine exposing a loaded repository digest: %w", err)
 	}

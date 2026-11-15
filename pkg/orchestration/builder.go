@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/imagedigest"
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
@@ -506,8 +506,9 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 				}
 				progress := b.world.buildProgress()
 				ordinal, started := progress.pushing(b.instance.Unique(), im), time.Now()
+				pushed := b.world.registryProbes().pushing(pushReference(b.world.Env, im))
 				pushErr := pushLegacyImage(ctx, b.world.Env, im)
-				b.world.registryProbes().forget(pushReference(b.world.Env, im))
+				pushed()
 				if pushErr != nil {
 					return nil, w.Wrapf(pushErr, "cannot push docker image")
 				}
@@ -527,14 +528,14 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 			if len(buildResult.Images) != 1 {
 				return nil, w.NewError("snapshot build returned %d images for %s; exactly one deployable image is required", len(buildResult.Images), b.instance.Unique())
 			}
-			b.imageDigest, err = inspectImageDigest(ctx, deployed)
+			b.imageDigest, err = imagedigest.Published(ctx, deployed)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
 			}
 		} else if b.world.CaptureImageDigest && b.world.Push && len(buildResult.Images) == 1 {
 			// The image is already pushed; resolving its digest is best-effort
 			// for reporting, so a lookup failure must not fail the build.
-			if digest, digestErr := inspectImageDigest(ctx, deployed); digestErr != nil {
+			if digest, digestErr := imagedigest.Published(ctx, deployed); digestErr != nil {
 				w.Warn("built and pushed but could not resolve image digest", wool.ErrField(digestErr))
 			} else {
 				b.imageDigest = digest
@@ -579,40 +580,6 @@ func pushLegacyImage(ctx context.Context, env *environments.Environment, image s
 		}
 	}
 	return runDocker(ctx, "push", pushed)
-}
-
-func inspectImageDigest(ctx context.Context, image string) (string, error) {
-	output, err := exec.CommandContext(
-		ctx,
-		"docker",
-		"image",
-		"inspect",
-		"--format",
-		"{{json .RepoDigests}}",
-		image,
-	).Output()
-	if err != nil {
-		return "", fmt.Errorf("inspect %s repository digests: %w", image, err)
-	}
-	var references []string
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(output))), &references); err != nil {
-		return "", fmt.Errorf("decode %s repository digests: %w", image, err)
-	}
-	var digest string
-	for _, reference := range references {
-		_, candidate, ok := strings.Cut(reference, "@")
-		if !ok || !sha256Digest.MatchString(candidate) {
-			continue
-		}
-		if digest != "" && digest != candidate {
-			return "", fmt.Errorf("image %s resolves to multiple repository digests", image)
-		}
-		digest = candidate
-	}
-	if digest == "" {
-		return "", fmt.Errorf("image %s has no registry-backed sha256 digest; build and push the local snapshot first", image)
-	}
-	return digest, nil
 }
 
 // deploymentImageArchitecture is the architecture deployment nodes run. A
