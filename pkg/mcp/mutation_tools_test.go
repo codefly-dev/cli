@@ -170,8 +170,8 @@ func TestAddServiceUnknownModule(t *testing.T) {
 }
 
 // TestAddServiceCreatesViaAgentCreateFlow downloads a real agent from GitHub
-// and runs its Create flow end to end. Opt-in like CODEFLY_GITOPS_K3D_QUALIFY
-// (docs/commands.md) since it requires network access.
+// and runs its Create flow end to end. Opt-in (docs/supported-matrix.md) since
+// it requires network access.
 func TestAddServiceCreatesViaAgentCreateFlow(t *testing.T) {
 	conformancetest.Gate(t, "linux-amd64-network-mcp-agent")
 

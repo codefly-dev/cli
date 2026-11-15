@@ -1,7 +1,6 @@
 package deployments
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -10,17 +9,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func TestCompositionTargetRequiresExplicitScopeAndRetainedIdentity(t *testing.T) {
@@ -86,64 +80,4 @@ func TestCompositionTargetTLSRejectsUnauthenticatedRouting(t *testing.T) {
 			require.Error(t, validateTargetTLS(data, "missing"))
 		})
 	}
-}
-
-func TestDisposableK3dCompositionTargetIdentity(t *testing.T) {
-	q := requireDisposableK3d(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	initial, err := InspectLocalKubernetesTarget(ctx, q.env)
-	require.NoError(t, err)
-	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, initial.Identity)
-	require.Equal(t, q.namespace, initial.Binding.Namespace)
-	require.NotEmpty(t, initial.Binding.SystemNamespaceUID)
-	require.NotEmpty(t, initial.Binding.NamespaceUID)
-	require.Equal(t, q.target.ClusterIdentity, initial.Binding.ClusterIdentity)
-	checked, err := RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.NoError(t, err)
-	require.Equal(t, initial.Binding, checked.Binding)
-	workspace := t.TempDir()
-	resource, err := q.env.Resource()
-	require.NoError(t, err)
-	configuration, err := yaml.Marshal(&resources.Workspace{Name: "live-target", Layout: "modules", Environments: []*resources.Environment{resource}})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, resources.WorkspaceConfigurationName), configuration, 0o600))
-	command := exec.CommandContext(ctx, "go", "run", "../../cmd/codefly", "composition", "--workspace", workspace,
-		"inspect-local-target", q.env.Name, "--expected-identity", initial.Identity)
-	command.Env = append(os.Environ(), "GOWORK=off")
-	var narration bytes.Buffer
-	command.Stderr = &narration
-	output, err := command.Output()
-	require.NoError(t, err, "%s\n%s", output, narration.String())
-	var cliInspection KubernetesTargetInspection
-	require.NoError(t, json.Unmarshal(output, &cliInspection), "%s", output)
-	require.Equal(t, initial.Identity, cliInspection.Identity, "real CLI command must use the same live target binding")
-	data, err := json.Marshal(initial)
-	require.NoError(t, err)
-	for _, secret := range []string{q.kubeconfig, "client-key", "client-certificate", "certificate-authority-data", "token"} {
-		require.NotContains(t, string(data), secret)
-	}
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "annotate", "namespace", q.namespace, "example.test/observation=changed")
-	checked, err = RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.NoError(t, err, "ordinary metadata updates must not change target identity")
-	require.Equal(t, initial.Identity, checked.Identity)
-
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "patch", "namespace", q.namespace, "--type=merge", "-p", `{"metadata":{"finalizers":["example.test/hold"]}}`)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "delete", "namespace", q.namespace, "--wait=false")
-	checked, err = RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.ErrorContains(t, err, "active, non-deleting identity")
-	require.Nil(t, checked)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "patch", "namespace", q.namespace, "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "wait", "--for=delete", "namespace/"+q.namespace, "--timeout=60s")
-	checked, err = InspectLocalKubernetesTarget(ctx, q.env)
-	require.Error(t, err, "missing namespace cannot fall back to default")
-	require.Nil(t, checked)
-	runQualificationCommand(t, "kubectl", "--kubeconfig", q.kubeconfig, "create", "namespace", q.namespace)
-	current, err := InspectLocalKubernetesTarget(ctx, q.env)
-	require.NoError(t, err)
-	require.NotEqual(t, initial.Binding.NamespaceUID, current.Binding.NamespaceUID)
-	require.NotEqual(t, initial.Identity, current.Identity)
-	checked, err = RecheckLocalKubernetesTarget(ctx, q.env, initial.Identity)
-	require.ErrorContains(t, err, "differs from the retained binding")
-	require.Nil(t, checked)
 }

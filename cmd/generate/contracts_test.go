@@ -335,8 +335,7 @@ services:
 
 // The tests below scaffold a real go-grpc service and run buf inside the
 // proto companion, so they need Docker and network access. Gated like the
-// other agent-backed qualification tests (see docs/commands.md
-// "CODEFLY_GITOPS_K3D_QUALIFY").
+// other agent-backed qualification tests (docs/supported-matrix.md).
 
 func TestGenerateContractsSkipsRestWithoutOpenAPI(t *testing.T) {
 	ctx := context.Background()
@@ -472,8 +471,7 @@ services:
 
 // The tests below scaffold a real go-grpc service and run buf inside the
 // proto companion, so they need Docker and network access. Gated like the
-// other agent-backed qualification tests (see docs/commands.md
-// "CODEFLY_GITOPS_K3D_QUALIFY").
+// other agent-backed qualification tests (docs/supported-matrix.md).
 
 func buildCodeflyBinary(t *testing.T) string {
 	t.Helper()
