@@ -345,19 +345,3 @@ func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, map[string]str
 	}
 	return out, selected, nil
 }
-
-// ScopeCeilings reads the module's own resource kinds with the actions declared
-// on each, from its module contract's scope_ceilings: the one declaration of
-// them, a solution's as much as a module's. A module that publishes no
-// contract declares none.
-func ScopeCeilings(dir string) ([]*authorityv1.WorkScopeV1, error) {
-	contract, err := ownContract(dir)
-	if err != nil || contract == nil {
-		return nil, err
-	}
-	out := make([]*authorityv1.WorkScopeV1, 0, len(contract.ScopeCeilings))
-	for _, ceiling := range contract.ScopeCeilings {
-		out = append(out, &authorityv1.WorkScopeV1{ResourceKind: ceiling.ResourceKind, Actions: append([]string(nil), ceiling.Actions...)})
-	}
-	return out, nil
-}

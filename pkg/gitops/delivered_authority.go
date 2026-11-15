@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,8 +18,10 @@ import (
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/workingrender"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -248,12 +251,15 @@ func PublishedPolicies(dir string) (map[string]domain.MethodPolicy, error) {
 // OwnDeclaration reads, from the module contract at dir, the principal the
 // module is delivered under and whether it declares that it checks owners.
 func OwnDeclaration(dir string) (principal string, ownerAware bool, err error) {
-	contract, err := ownContract(dir)
-	if err != nil {
+	if err := solutionhost.RefuseRetiredRoles(dir); err != nil {
 		return "", false, err
 	}
-	if contract == nil {
+	contract, err := modulecontract.Load(dir)
+	if errors.Is(err, os.ErrNotExist) {
 		return "", false, fmt.Errorf("%s publishes no module contract", dir)
+	}
+	if err != nil {
+		return "", false, err
 	}
 	return contract.Principal, contract.OwnerAware, nil
 }

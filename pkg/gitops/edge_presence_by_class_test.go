@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"testing"
 
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
@@ -87,7 +88,7 @@ func TestAnEnvironmentWithNoClassIsRefusedByNameRatherThanDefaulted(t *testing.T
 	require.Contains(t, err.Error(), "annotations")
 	require.Contains(t, err.Error(), "declares no class")
 
-	_, _, err = InstallationDeclaration(module.Dir(), env.Class)
+	_, _, err = InstallationDeclaration(module.Dir(), WorkspaceContractResolver(context.Background(), workspace, env))
 	require.ErrorIs(t, err, modulecontract.ErrInvalid)
 	require.Contains(t, err.Error(), "annotations")
 	require.Contains(t, err.Error(), "development, production")
