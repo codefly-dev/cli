@@ -83,5 +83,5 @@ teardown, so recovery from a partial creation or deletion is always the same:
 `go test ./pkg/gitops` proves the remote's spec, identity, TLS material, Docker
 arguments, audit and ownership refusal, and the mirror serving the reviewed
 revision, in-process. No test starts a cluster: reachability from inside a
-cluster network is validated by a local `codefly run cluster` and a hosted
+cluster network is validated by a local `codefly run cluster` and a hosted dev
 cell.

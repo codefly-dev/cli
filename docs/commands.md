@@ -920,8 +920,8 @@ codefly run cluster --env local --app-project platform           # every compose
 codefly run cluster documents --env local --app-project platform --yes
 ```
 
-It installs Argo CD if the cluster has none (the release the k3d qualification
-pins). It provisions the modules' namespaces, writes the local host's trust
+It installs Argo CD if the cluster has none (the release pinned by
+`argoCDCommit` in `pkg/deployments/local_cluster.go`). It provisions the modules' namespaces, writes the local host's trust
 anchor — one public-key verification policy admitting the
 listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
 host restarted) when the cluster is recreated — then for each module renders it (images built and pushed),
@@ -2046,7 +2046,7 @@ and recovery workflow. `codefly doctor` audits any remote it finds.
 
 No test starts a cluster: the remote, the render and the publication are
 proven in-process (`go test ./pkg/gitops`), and a delivery reconciling on a
-cluster is validated by `codefly run cluster` and a hosted cell, never by a
+cluster is validated by `codefly run cluster` and a hosted dev cell, never by a
 test.
 
 ### `codefly deploy dev <module>/<service>` — the dev escape hatch

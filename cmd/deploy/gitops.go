@@ -713,7 +713,7 @@ func init() {
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")
-		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote for k3d qualification")
+		command.Flags().BoolVar(&gitOpsLocal, "local", false, "Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)")
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().BoolVar(&gitOpsAllowUnresolvedContracts, "allow-unresolved-contracts", false,
