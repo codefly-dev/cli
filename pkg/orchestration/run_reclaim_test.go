@@ -29,6 +29,17 @@ type exitedRun struct {
 	recovered []int
 	removed   []string
 	networks  []string
+	// present is the containers the engine still holds, by id.
+	present map[string]container.Summary
+	// otherRunLive is whether another run is live in the workspace.
+	otherRunLive bool
+}
+
+// storeAgentRemovesItsContainers makes the store agent remove its containers
+// when it is stopped or destroyed, and leave their network, as the agent of a
+// disposable run does on Stop.
+func (run *exitedRun) storeAgentRemovesItsContainers() {
+	run.managers[2].onTeardown = func() { clear(run.present) }
 }
 
 func newExitedRun(t *testing.T, started time.Time) *exitedRun {
@@ -71,21 +82,37 @@ func newExitedRun(t *testing.T, started time.Time) *exitedRun {
 		}}
 		return c
 	}
+	run.present = map[string]container.Summary{
+		"minio":   onNetwork(summary("minio", 4100, started.Add(time.Second), "")),
+		"gateway": onNetwork(summary("gateway", 4100, started.Add(2*time.Second), "")),
+	}
 	listOwnedContainers = func(context.Context, string) ([]container.Summary, error) {
-		return []container.Summary{
-			onNetwork(summary("minio", 4100, started.Add(time.Second), "")),
-			onNetwork(summary("gateway", 4100, started.Add(2*time.Second), "")),
-		}, nil
+		var listed []container.Summary
+		for _, c := range run.present {
+			listed = append(listed, c)
+		}
+		return listed, nil
 	}
 	removeRunContainer = func(_ context.Context, id string) error {
 		run.removed = append(run.removed, id)
+		delete(run.present, id)
 		return nil
 	}
+	// The engine removes a network once: one a container is still attached
+	// to is kept, and one already removed is not found.
 	removeRunNetwork = func(_ context.Context, name string) (bool, error) {
+		for _, c := range run.present {
+			if _, attached := c.NetworkSettings.Networks[name]; attached {
+				return false, nil
+			}
+		}
+		if slices.Contains(run.networks, name) {
+			return false, nil
+		}
 		run.networks = append(run.networks, name)
 		return true, nil
 	}
-	otherRunsLive = func(context.Context, *World) bool { return false }
+	otherRunsLive = func(context.Context, *World) bool { return run.otherRunLive }
 	return run
 }
 
@@ -111,13 +138,46 @@ func TestARunsExitTakesBackWhatItsAgentsLeft(t *testing.T) {
 			require.Equal(t, []int{700}, run.recovered)
 			if !failed {
 				require.Empty(t, run.removed, "a stopped run keeps its containers for the next run to reuse")
-				require.Empty(t, run.networks)
+				require.Empty(t, run.networks, "and the network they are attached to")
 				return
 			}
 			slices.Sort(run.removed)
 			require.Equal(t, []string{"gateway", "minio"}, run.removed)
 			require.Equal(t, []string{"codefly-saas-object-storage-network"}, run.networks, "the shared network once, and never the engine's bridge")
 			require.Equal(t, []string{"codefly-saas-object-storage-network"}, reclaim.Networks)
+		})
+	}
+}
+
+// A run whose agents removed their containers as it ended — stopped by the
+// operator, or destroyed by the SDK session that owns it — takes back the
+// network those containers were on, which the agent left: it was noted before
+// the teardown reached the agent, and nothing is attached to it any more.
+// While another run is live in the workspace nothing is removed.
+func TestARunThatEndedWithoutItsContainersRemovesTheirNetwork(t *testing.T) {
+	started := time.Unix(1_800_000_000, 0)
+	for name, tc := range map[string]struct {
+		end          func(*Flow) error
+		otherRunLive bool
+		want         []string
+	}{
+		"stopped":                         {end: (*Flow).Stop, want: []string{"codefly-saas-object-storage-network"}},
+		"destroyed":                       {end: (*Flow).Shutdown, want: []string{"codefly-saas-object-storage-network"}},
+		"stopped while another run lives": {end: (*Flow).Stop, otherRunLive: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := newExitedRun(t, started)
+			run.storeAgentRemovesItsContainers()
+			run.otherRunLive = tc.otherRunLive
+
+			require.NoError(t, tc.end(run.flow))
+			require.Empty(t, run.present, "the agent removed its containers")
+
+			reclaim, err := run.flow.ReclaimAfterRun(context.Background(), started, false)
+			require.NoError(t, err)
+			require.Empty(t, run.removed, "the run removes no container itself")
+			require.Equal(t, tc.want, run.networks)
+			require.Equal(t, tc.want, reclaim.Networks)
 		})
 	}
 }

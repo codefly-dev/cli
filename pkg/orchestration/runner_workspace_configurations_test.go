@@ -518,15 +518,25 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	require.NoError(t, err)
 	require.Regexp(t, `^http://localhost:\d+$`, value)
 
-	// With ephemeral ports the proposal is not the address: every call takes a
-	// fresh port from the kernel, so it must refuse rather than hand out one the
-	// producer will not be listening on.
+	// With ephemeral ports the first naming allocates the producer's port and
+	// pins it, so the address read here is the one the producer's Init proposes.
 	world.temporaryPorts = true
 	localNetwork.WithTemporaryPorts()
-	_, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
-	require.Error(t, err, "an ephemeral port cannot be derived before the producer initializes")
-	require.Contains(t, err.Error(), "--temporary-ports")
-	require.Contains(t, err.Error(), "saas/accounts")
+	confs, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	value, err = resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
+	require.NoError(t, err)
+	runtimeContext, err := resources.NewRuntimeContext(resources.RuntimeContextNative)
+	require.NoError(t, err)
+	proposal, err := world.localNetworkMappings(ctx, accountsIdentity, accountsEndpoints, runtimeContext)
+	require.NoError(t, err)
+	found := false
+	for _, mapping := range proposal {
+		for _, instance := range mapping.GetInstances() {
+			found = found || instance.GetAddress() == value
+		}
+	}
+	require.True(t, found, "the producer's Init proposes the address its consumer read: %s", value)
 }
 
 // loadService loads one service of a workspace by module and name.
@@ -786,8 +796,7 @@ func TestTheFlowPlanGateRefusesARootGroupsVisibilityViolation(t *testing.T) {
 // this PR refused nothing here either, so no rollback of this PR can make it
 // fail. The same is true of every "must not refuse" test in this package
 // (TestTheFlowPlanGateDoesNotRefuseARootProducerOutsideTheRunClosure,
-// TestARunDoesNotRefuseARootValueThatDidNotSurviveResolution,
-// TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet). What they
+// TestARunDoesNotRefuseARootValueThatDidNotSurviveResolution). What they
 // constrain is the refusal mechanism going too far, so they are killed by the
 // targeted mutation that widens it — not by removing it.
 func TestTheFlowPlanGateAcceptsAVisibleRootGroupReference(t *testing.T) {

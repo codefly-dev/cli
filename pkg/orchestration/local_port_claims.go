@@ -52,7 +52,26 @@ func (c *localPortClaims) settle(destination string) {
 // (localProducerMappings) — so the first one claims the port and pins it in
 // core's override seam, and every later one, the Init included, proposes the
 // same address. A hot reload keeps it the same way pinAcceptedPorts does.
+//
+// Under --temporary-ports the kernel hands out a fresh port on every
+// allocation, so the first naming allocates and pins under the claims' lock,
+// and a concurrent or later one reads the pin. Two services whose workspace
+// configurations reference each other's endpoints then resolve: each derives
+// the other's address before either initializes, and each Init proposes the
+// address the other was given.
 func (world *World) localNetworkMappings(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint, runtimeContext *basev0.RuntimeContext) ([]*basev0.NetworkMapping, error) {
+	if world.temporaryPorts {
+		world.ports.mu.Lock()
+		defer world.ports.mu.Unlock()
+		mappings, err := world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
+		if err != nil {
+			return nil, err
+		}
+		if overrides := acceptedPortOverrides(mappings); len(overrides) > 0 {
+			world.LocalNetworkManager.WithPortOverrides(overrides)
+		}
+		return mappings, nil
+	}
 	world.claimLocalPorts(ctx, identity, endpoints, runtimeContext)
 	return world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
 }

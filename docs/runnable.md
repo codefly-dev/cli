@@ -351,14 +351,23 @@ HTTP-based (`http`, `connect`, `rest` or `mcp`), because a prepared call carries
 HTTP base URL; it resolves in the same environment and scope as the owners.
 Nothing infers such an endpoint: the composition that runs the hop names it.
 
+A local file carries a declared call endpoint by reference, not by address:
+each binding's `call.address` is `${endpoint:<module>/<service>/<endpoint>}`,
+the reference syntax every workspace configuration value uses, and the run that
+delivers the `runnable-bindings` group resolves it to the address that run
+allocated. One file is therefore right for every naming scope, a
+session-qualified one included, and `--check` under another scope agrees. A
+binding sent to its owner's listener (no call endpoint) still carries the
+address of the scope it was generated under.
+
 Only the address moves. Each owner is still loaded and held to its served
 Connect surface (operation and Lookup) and its published contract before the
 address is replaced, so a hop never makes an unserved or stale operation look
 callable. The operation, the Connect procedure or REST verb and path, the
 contract, its digest and the policy stay the owner's. One generation names at
 most one call endpoint, and the output file is the profile's: two generations
-for different scopes into one profile overwrite each other, so parallel runs
-use separate workspaces or profiles.
+of owner-addressed bindings for different scopes into one profile overwrite
+each other, so parallel runs of those use separate workspaces or profiles.
 
 ### Identity and coexistence
 

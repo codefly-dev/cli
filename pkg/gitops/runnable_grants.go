@@ -16,7 +16,6 @@ import (
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	corerunnable "github.com/codefly-dev/core/runnable"
 )
 
 // --- What a module that installs prepared bindings is granted ---
@@ -80,7 +79,7 @@ func preparedGrants(provided *configurations.WorkspaceConfigurations) ([]prepare
 			continue
 		}
 		for _, value := range info.GetConfigurationValues() {
-			prepared, err := corerunnable.DecodePrepared([]byte(value.GetValue()))
+			prepared, err := runnablespkg.DecodeUnresolvedPrepared(value.GetValue())
 			if err != nil {
 				return nil, fmt.Errorf("%s/%s is not a prepared binding; regenerate it with `codefly generate runnable-bindings`: %w", runnablespkg.RunnableBindingsGroup, value.GetKey(), err)
 			}

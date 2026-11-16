@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -137,6 +138,95 @@ var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// runNetworks is every network a container of this run was attached to, noted
+// while the container still existed (noteRunNetworks).
+type runNetworks struct {
+	mu    sync.Mutex
+	names map[string]bool
+}
+
+func (n *runNetworks) add(name string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.names == nil {
+		n.names = map[string]bool{}
+	}
+	n.names[name] = true
+}
+
+func (n *runNetworks) sorted() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	names := make([]string, 0, len(n.names))
+	for name := range n.names {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// ReachesDocker reports whether a service in runtimeContext can reach the
+// Docker control plane: every context but an explicit Local or Nix one.
+func ReachesDocker(runtimeContext string) bool {
+	return runtimeContext != resources.RuntimeContextNative && runtimeContext != resources.RuntimeContextNix
+}
+
+// noteRunNetworks records the networks the containers of this run's agents are
+// attached to. Stop and Shutdown call it before they reach an agent: an agent
+// that removes its containers there (a disposable run's, or any on Destroy)
+// may leave their network, and a removed container no longer names it. A
+// container's age is not asked here, unlike createdByRun: a noted network is
+// only ever removed once nothing is attached to it.
+func (flow *Flow) noteRunNetworks(ctx context.Context) {
+	if flow == nil || flow.world == nil || !slices.ContainsFunc(flow.SelectableRuntimeContexts(), ReachesDocker) {
+		return
+	}
+	scopeID, _, ok := strings.Cut(flow.containerRecoveryIdentity, ":")
+	if !ok || scopeID == "" {
+		return
+	}
+	listed, err := listOwnedContainers(ctx, scopeID)
+	if err != nil {
+		return
+	}
+	for i := range listed {
+		if !createdByRun(&listed[i], &flow.world.agents, time.Time{}) {
+			continue
+		}
+		for _, name := range userNetworks(&listed[i]) {
+			flow.world.networks.add(name)
+		}
+	}
+}
+
+// RemoveNetworksThisRunLeftEmpty removes the networks noted for this run that
+// codefly created and nothing is attached to any more, once its agents are
+// gone, whichever way the run ended. A run stopped on purpose that keeps its
+// containers keeps their network with them; one whose containers are gone,
+// removed by its agents on Stop or Destroy, takes the network back.
+func (flow *Flow) RemoveNetworksThisRunLeftEmpty(ctx context.Context) ([]string, error) {
+	if flow == nil || flow.world == nil || flow.world.Workspace == nil {
+		return nil, nil
+	}
+	noted := flow.world.networks.sorted()
+	if len(noted) == 0 || otherRunsLive(ctx, flow.world) {
+		return nil, nil
+	}
+	var removed []string
+	var failures []error
+	for _, name := range noted {
+		gone, err := removeRunNetwork(ctx, name)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("remove network %s: %w", name, err))
+			continue
+		}
+		if gone {
+			removed = append(removed, name)
+		}
+	}
+	return removed, errors.Join(failures...)
 }
 
 // RunRemovals names what RemoveContainersCreatedByThisRun took back.

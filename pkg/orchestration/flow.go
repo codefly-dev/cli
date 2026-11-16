@@ -252,6 +252,10 @@ type World struct {
 	// agents is every agent pid this run spawned (run_containers.go).
 	agents spawnedAgents
 
+	// networks is every network this run's containers were attached to when
+	// a teardown began (run_containers.go).
+	networks runNetworks
+
 	// PrepareExternalWorkload admits the excluded root's declared identity for
 	// the process driving its dependencies. It does not claim an agent started
 	// that process or publish any endpoint as ready. The returned abandon callback
@@ -444,8 +448,8 @@ type World struct {
 	runtimeContextFor func(*resources.Service) string
 
 	// temporaryPorts mirrors Flow.temporaryPorts: with ephemeral ports a
-	// producer's address is not a function of its identity, so it cannot be
-	// derived before that producer initializes (localProducerMappings).
+	// producer's address is not a function of its identity, so the first
+	// mapping that names it allocates and pins it (localNetworkMappings).
 	temporaryPorts bool
 
 	// ports claims each endpoint's derived host port on this machine before

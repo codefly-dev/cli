@@ -273,60 +273,53 @@ func TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor(t *testing.T) {
 	require.NotContains(t, err.Error(), "${endpoint:", "a diagnostic must not reconstruct the reference")
 }
 
-// The same unresolved reference under `codefly run` is not refused — it is
-// dropped, and warned about. The producer is in the run and has recorded no
-// endpoint, which is what --temporary-ports guarantees for anything that has
-// not initialized yet, and a root group's reference orders nothing. Refusing
-// here would fail a run whose consumer merely starts first.
+// The same reference under `codefly run --temporary-ports` resolves: the
+// producer is in the run and has not initialized, a root group's reference
+// orders nothing, and the first naming of the producer's address allocates and
+// pins it (localNetworkMappings), so the value is delivered.
 //
-// Also the regression guard for that: before this revision,
-// referencedProducerMappings treated any failure to derive as fatal, so a
-// composition whose root group held a reference could not be run with
-// --temporary-ports at all (`codefly ci`, `test --temporary-ports`). The run
-// below sets exactly that flag.
-//
-// Being a guard against this PR's own intermediate state is the whole of its
-// claim: the tolerance also holds on the behaviour before the PR, so the test
-// survives a wholesale rollback and proves nothing about the delta. Making
-// root-only local derivation fatal again fails both subtests.
-func TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet(t *testing.T) {
+// Before that pin, an address allocated at initialization could not be known
+// here: referencedProducerMappings once treated that as fatal, so a composition
+// whose root group held a reference could not be run with --temporary-ports at
+// all, and then dropped the value with a warning.
+func TestARunWithTemporaryPortsResolvesARootReferenceBeforeItsProducerInitializes(t *testing.T) {
 	for _, consumer := range []struct{ module, name string }{
 		{"payments", "worker"},
-		// The producer resolving its OWN root-group reference. It cannot be
-		// repaired by ordering something before it: Runner.Init resolves the
-		// workspace configurations before it generates its own proposed
-		// mappings, so under --temporary-ports a service genuinely cannot know
-		// its own ephemeral address at the moment it reads the group.
+		// The producer resolving its OWN root-group reference: Runner.Init
+		// resolves the workspace configurations before it generates its own
+		// proposed mappings, which then read the pinned port.
 		{"platform", "authority"},
 	} {
 		t.Run(consumer.module+"/"+consumer.name, func(t *testing.T) {
-			requireTemporaryPortsDropsTheRootReference(t, consumer.module, consumer.name)
+			requireTemporaryPortsResolvesTheRootReference(t, consumer.module, consumer.name)
 		})
 	}
 }
 
-func requireTemporaryPortsDropsTheRootReference(t *testing.T, module, name string) {
+func requireTemporaryPortsResolvesTheRootReference(t *testing.T, module, name string) {
 	t.Helper()
 	world, _ := referenceValidityWorld(t,
 		referenceValidityWorkspace(t, "platform/authority/admin", "public"),
 		func(world *World) {
 			world.Mode = RunMode
 			// The producer recorded its endpoints at Load, as every service of a
-			// run does, so producerNetworkMappings really does reach
-			// localProducerMappings — which is where --temporary-ports says it
-			// cannot know an address allocated at initialization. Without the
-			// recording the call returns early and the branch under test is
-			// never entered.
+			// run does, so producerNetworkMappings reaches localProducerMappings.
 			recordParityEndpoints(t, world, "platform", "authority")
 			world.temporaryPorts = true
+			world.LocalNetworkManager.WithTemporaryPorts()
 		})
 	service, err := loadService(context.Background(), t, world.Workspace, module, name)
 	require.NoError(t, err)
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
-	require.NoError(t, err, "a run must not fail because a root group's reference is not placeable yet")
-	_, delivered := groupValue(confs, "work-context", "authority-endpoint")
-	require.False(t, delivered, "the value is dropped, and warned about, not invented")
+	require.NoError(t, err)
+	first, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.True(t, delivered, "the reference resolves before its producer initializes")
+
+	confs, err = world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	second, _ := groupValue(confs, "work-context", "authority-endpoint")
+	require.Equal(t, first, second, "every read names the same address")
 }
 
 // requireKnownRootGroup, directly: a World whose root-group source cannot name a

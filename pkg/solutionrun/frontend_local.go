@@ -104,7 +104,36 @@ func (b LocalFrontend) Forget(ctx context.Context, module string) error {
 		return err
 	}
 	defer func() { _ = guard.Unlock() }()
+	// The record stops vouching for the copy's install before the copy is
+	// removed: a removal cut short (the run killed, a file that will not go)
+	// leaves part of node_modules behind, and a record still naming its
+	// lockfile would have the next build skip the install and run against it.
+	if err := b.forgetInstall(module); err != nil {
+		return err
+	}
 	return os.RemoveAll(b.stagingDir(module))
+}
+
+// forgetInstall clears the install a module's record vouches for, keeping the
+// bundle it still reuses. No record is nothing to clear.
+func (b LocalFrontend) forgetInstall(module string) error {
+	path := filepath.Join(b.StateDir, module+".json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var record localFrontendRecord
+	if json.Unmarshal(data, &record) != nil || record.Installed == "" {
+		return nil
+	}
+	record.Installed = ""
+	if data, err = json.Marshal(record); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // ForgetAll forgets every module's staged copy under StateDir.

@@ -3,6 +3,7 @@ package generate
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -97,7 +98,10 @@ modules, for example. Declared there, the file and its --check depend on the
 workspace alone. --call-endpoint overrides the declaration for one invocation,
 and an explicitly empty value sends each call to its owner. It must be an HTTP-based
 endpoint of a workspace module, and it is resolved like an owner's (same
-environment, same naming scope). Only the address moves: the owner is still
+environment, same naming scope). A local environment's file carries it as the
+reference ${endpoint:<module>/<service>/<endpoint>}, which the run that delivers
+the group resolves to the address it allocated, so one file serves every naming
+scope. Only the address moves: the owner is still
 loaded and held to its served surface and published contract, and the
 operation, the Connect procedure or REST verb and path, the contract, its
 digest and the policy stay the owner's. The endpoint forwards the call; the
@@ -355,7 +359,10 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 			if err != nil {
 				return nil, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
-			lines[key] = string(value)
+			lines[key], err = resolver.referenced(string(value))
+			if err != nil {
+				return nil, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
+			}
 		}
 	}
 	for _, key := range sortedKeys(env.RunnableScopeSelections) {
@@ -639,6 +646,32 @@ type endpointResolver struct {
 	// prepared call is sent to instead of the owner's listener; empty sends
 	// each call to its owner.
 	through string
+	// throughReference is the ${endpoint:…} reference to that endpoint a local
+	// environment's file carries in place of through (referenced).
+	throughReference string
+}
+
+// referenced returns an encoded binding as a local environment's file holds
+// it: the call endpoint's address replaced by a reference to that endpoint.
+// A local address belongs to one naming scope, so a literal one made the file
+// right for the scope it was generated under and no other; the run that
+// delivers the group resolves the reference to the address it allocated, as it
+// does for every workspace configuration value. The binding is encoded with
+// the resolved address first, so it is held to every rule a prepared binding
+// is, and reads back through runnables.DecodeUnresolvedPrepared.
+func (r *endpointResolver) referenced(value string) (string, error) {
+	if r.throughReference == "" {
+		return value, nil
+	}
+	quoted, err := json.Marshal(r.through)
+	if err != nil {
+		return "", err
+	}
+	address := `"address":` + string(quoted)
+	if strings.Count(value, address) != 1 {
+		return "", fmt.Errorf("the prepared binding does not carry the call endpoint's address exactly once")
+	}
+	return strings.Replace(value, address, `"address":"`+r.throughReference+`"`, 1), nil
 }
 
 func newEndpointResolver(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*endpointResolver, error) {
@@ -759,6 +792,9 @@ func (r *endpointResolver) callThrough(ctx context.Context, coordinate string) e
 	}
 	if r.through, err = r.address(ctx, identity, endpoints, endpoint); err != nil {
 		return fmt.Errorf("--call-endpoint %q: %w", coordinate, err)
+	}
+	if r.env.Local() {
+		r.throughReference = "${endpoint:" + reference.Module + "/" + reference.Service + "/" + reference.Name + "}"
 	}
 	return nil
 }

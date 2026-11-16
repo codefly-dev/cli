@@ -36,22 +36,24 @@ type RunReclaim struct {
 // ReclaimAfterRun takes back what this run's agents started and left behind,
 // once they have exited: their orphaned process groups on every exit, then —
 // when removeContainers, for a failed run — the containers they created and
-// the networks those leave empty. The groups go first: a group still
-// registered in the workspace reads as another live run, and while one is
-// live no container is removed.
+// the networks those leave empty, and on every exit the networks its
+// containers were attached to at teardown and no longer are. The groups go
+// first: a group still registered in the workspace reads as another live run,
+// and while one is live no container or network is removed.
 func (flow *Flow) ReclaimAfterRun(ctx context.Context, started time.Time, removeContainers bool) (RunReclaim, error) {
 	var reclaim RunReclaim
 	recovered, groupsErr := flow.RecoverProcessGroupsOfThisRun(ctx)
 	reclaim.ProcessGroups = recovered
-	if !removeContainers {
-		return reclaim, groupsErr
+	var containersErr error
+	if removeContainers {
+		reclaim.RunRemovals, containersErr = flow.RemoveContainersCreatedByThisRun(ctx, started)
+		if containersErr != nil {
+			containersErr = fmt.Errorf("remove the failed run's containers: %w", containersErr)
+		}
 	}
-	removals, containersErr := flow.RemoveContainersCreatedByThisRun(ctx, started)
-	reclaim.RunRemovals = removals
-	if containersErr != nil {
-		containersErr = fmt.Errorf("remove the failed run's containers: %w", containersErr)
-	}
-	return reclaim, errors.Join(groupsErr, containersErr)
+	networks, networksErr := flow.RemoveNetworksThisRunLeftEmpty(ctx)
+	reclaim.Networks = append(reclaim.Networks, networks...)
+	return reclaim, errors.Join(groupsErr, containersErr, networksErr)
 }
 
 // listRegisteredProcessGroups lists the pgids of every live registered group.
