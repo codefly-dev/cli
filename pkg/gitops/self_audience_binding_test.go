@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
 )

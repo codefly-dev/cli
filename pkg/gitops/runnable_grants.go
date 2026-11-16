@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
@@ -16,7 +17,6 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // --- What a module that installs prepared bindings is granted ---

@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // --- Settling module manifests at publish ---

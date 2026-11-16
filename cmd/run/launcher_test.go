@@ -2,17 +2,17 @@ package run
 
 import (
 	"context"
-	"github.com/codefly-dev/core/workloadidentity"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity/native"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
 

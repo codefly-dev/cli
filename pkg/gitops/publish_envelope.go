@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/run/fixture"
-	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
 

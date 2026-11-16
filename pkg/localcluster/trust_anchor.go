@@ -11,10 +11,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // The local host's trust anchor (the host's registration contract, "The local

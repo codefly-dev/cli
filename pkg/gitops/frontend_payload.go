@@ -9,13 +9,13 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	clicomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // FrontendArtifactName is the name a release declares its component's

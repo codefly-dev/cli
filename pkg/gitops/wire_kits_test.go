@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"

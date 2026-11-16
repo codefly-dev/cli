@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // hostedPaymentsInstances is the module instance the hosted fixture declares:

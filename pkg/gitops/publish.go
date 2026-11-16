@@ -20,13 +20,13 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/google/go-github/v89/github"
 )
 

@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 

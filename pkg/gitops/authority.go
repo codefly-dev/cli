@@ -12,6 +12,7 @@ import (
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/declare"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
@@ -19,7 +20,6 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 )
 

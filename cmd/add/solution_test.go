@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution/manifest"
-	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
 

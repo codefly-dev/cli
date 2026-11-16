@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )

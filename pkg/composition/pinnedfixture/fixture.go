@@ -71,9 +71,9 @@ func (fixture *Fixture) Requests() int64 {
 
 const (
 	Owner     = "codefly-dev"
-	RepoName  = "module-saas-starter"
-	PackageID = "codefly/saas-starter"
-	Signer    = "https://github.com/codefly-dev/module-saas-starter/.github/workflows/release.yml@refs/heads/main"
+	RepoName  = "module-billing"
+	PackageID = "codefly/billing"
+	Signer    = "https://github.com/codefly-dev/module-billing/.github/workflows/release.yml@refs/heads/main"
 	Commit    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
 
@@ -312,7 +312,7 @@ func (fixture *Fixture) handle(writer http.ResponseWriter, request *http.Request
 // LoadModuleTrust/ResolvePinnedModule can side-parse it.
 func WriteWorkspace(t *testing.T, dir string, fixture *Fixture) {
 	t.Helper()
-	doc := fmt.Sprintf(`name: wiki
+	doc := fmt.Sprintf(`name: notes
 layout: modules
 module-trust:
   repositories:

@@ -98,6 +98,7 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
 	github.com/codefly-dev/authority/libraries/resources/go v0.0.0-20261109220601-1f0887616bde // indirect
+	github.com/codefly-dev/authority/libraries/solutionhost/go v0.0.0-00010101000000-000000000000
 	github.com/codefly-dev/gortk v0.2.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
