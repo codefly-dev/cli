@@ -150,6 +150,13 @@ func resolveContract(ctx context.Context, workspace *resources.Workspace, env *e
 		}
 		return HostMethodPolicies(ctx, workspace, env, callee)
 	})
+	callees.contract = func(name string) (*modulecontract.Contract, error) {
+		callee, loadErr := workspace.LoadModuleFromName(ctx, name)
+		if loadErr != nil {
+			return nil, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
+		}
+		return modulecontract.Load(callee.Dir())
+	}
 	var infos []*basev0.ConfigurationInformation
 	if provided != nil {
 		infos = provided.Infos
@@ -327,6 +334,24 @@ func refuseUndeclaredDestinations(module string, contract *modulecontract.Resolv
 type composedCallees struct {
 	read     func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)
 	policies map[string]map[string]*compositionv1.MethodPolicyV1
+	// contract reads a composed module's published module contract, for the
+	// bundles it publishes (Bundle); nil reads none.
+	contract func(module string) (*modulecontract.Contract, error)
+}
+
+// Bundle implements modulecontract.Bundles: a bundle a composed module
+// publishes is read from that module's own contract, its includes expanded
+// there (modulecontract.Contract.Bundle), so a role including it names none of
+// the module's kinds.
+func (c *composedCallees) Bundle(module, name string) ([]modulecontract.CeilingScope, error) {
+	if c.contract == nil {
+		return nil, fmt.Errorf("no composed module contracts are read here")
+	}
+	contract, err := c.contract(module)
+	if err != nil {
+		return nil, err
+	}
+	return contract.Bundle(name)
 }
 
 func newComposedCallees(read func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)) *composedCallees {

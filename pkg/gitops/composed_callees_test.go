@@ -2,11 +2,13 @@ package gitops
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 )
 
 // The store's own declarations, as its published contracts carry them.
@@ -73,4 +75,38 @@ func TestACallCarriesWhatItsCalleeDeclaresBesideWhatItRequires(t *testing.T) {
 	if err != nil || strings.Join(got, ",") != "documents:write,documents.collection:create" {
 		t.Fatalf("CreateDocument: %v %v", got, err)
 	}
+}
+
+// A composed module's bundle is read from that module's own contract, its
+// includes expanded there; a module the workspace does not compose is an
+// error naming why.
+func TestComposedCalleesAnswerABundleFromThePublishersContract(t *testing.T) {
+	callees := newComposedCallees(func(string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil })
+	if _, err := callees.Bundle("agent", "talk"); err == nil {
+		t.Fatal("a bundle was answered with no contracts to read")
+	}
+	callees.contract = func(module string) (*modulecontract.Contract, error) {
+		if module != "agent" {
+			return nil, fmt.Errorf("%s is not composed", module)
+		}
+		return modulecontract.Parse([]byte(`schema: codefly/module-contract/v1
+principal: agent
+namespaces: []
+queues: []
+scope_ceilings: [{resource_kind: agent.turns, actions: [read, run]}]
+bindings: []
+destinations: []
+bundles:
+  - {name: talk, scopes: [{resource_kind: agent.turns, actions: [run]}]}
+  - {name: review, includes: [talk], scopes: [{resource_kind: agent.turns, actions: [read]}]}
+`))
+	}
+	got, err := callees.Bundle("agent", "review")
+	if err != nil || len(got) != 1 || strings.Join(got[0].Actions, ",") != "read,run" {
+		t.Fatalf("review: %+v, %v", got, err)
+	}
+	if _, err := callees.Bundle("notes", "talk"); err == nil || !strings.Contains(err.Error(), "notes is not composed") {
+		t.Fatalf("an uncomposed module: %v", err)
+	}
+	var _ modulecontract.Bundles = callees
 }
