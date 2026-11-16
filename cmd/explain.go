@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/helpprovider"
+	"github.com/codefly-dev/core/discovery"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -300,21 +301,12 @@ func helpWorkspaceContext(start string) string {
 }
 
 func findHelpWorkspaceFile(start string) (string, []byte) {
-	directory, err := filepath.Abs(start)
-	if err != nil {
-		return "", nil
-	}
-	for {
-		data, err := os.ReadFile(filepath.Join(directory, "workspace.codefly.yaml"))
-		if err == nil {
+	for _, directory := range discovery.Ancestors(start, discovery.Ceilings) {
+		if data, err := os.ReadFile(filepath.Join(directory, "workspace.codefly.yaml")); err == nil {
 			return directory, data
 		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			return "", nil
-		}
-		directory = parent
 	}
+	return "", nil
 }
 
 func readHelpModuleFile(root string, module helpModuleReference) ([]byte, bool) {

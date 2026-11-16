@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/core/discovery"
 	"github.com/codefly-dev/core/resources"
 	"golang.org/x/mod/modfile"
 )
@@ -296,16 +297,11 @@ func physicalWorkspacePath(base, value string) (string, error) {
 }
 
 func nearestFile(start, name string) string {
-	current := filepath.Clean(start)
-	for {
+	for _, current := range discovery.Ancestors(start, discovery.Ceilings) {
 		candidate := filepath.Join(current, name)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		current = parent
 	}
+	return ""
 }

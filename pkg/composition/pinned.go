@@ -18,6 +18,7 @@ import (
 	"github.com/Masterminds/semver"
 	"github.com/codefly-dev/cli/pkg/gh"
 	corecomposition "github.com/codefly-dev/core/composition"
+	"github.com/codefly-dev/core/discovery"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/google/go-github/v89/github"
@@ -831,23 +832,15 @@ func decodeTrustSignerKey(encoded string) (ed25519.PublicKey, error) {
 
 // NearestOverlayDir returns the directory of the codefly.local.yaml that
 // resources.LoadLocalOverlay would load starting from start (searching
-// upward, nearest first), or "" when none exists anywhere up the tree. Both
+// upward, nearest first, within start's repository: discovery.Repository, the
+// bound core applies), or "" when there is none. Both
 // `run`'s materialization and `doctor workspace`'s module-trust check must
 // agree on this search so a directive in an ancestor overlay (the
 // shared-monorepo layout) is honored identically by both, and so both find the
 // GitResolvedRecordName sidecar that annotates that overlay.
 func NearestOverlayDir(start string) string {
-	current := start
-	for {
-		if _, err := os.Stat(filepath.Join(current, resources.LocalOverlayConfigurationName)); err == nil {
-			return current
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		current = parent
-	}
+	directory, _ := discovery.Find(start, resources.LocalOverlayConfigurationName, discovery.Repository)
+	return directory
 }
 
 // ResolutionRecordName is the machine-local sidecar that records what each
