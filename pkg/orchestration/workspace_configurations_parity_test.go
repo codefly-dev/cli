@@ -673,7 +673,7 @@ func workspaceSecretEnvironmentKey(t *testing.T, group, key string) string {
 
 // The refusal and the tolerance that used to be pinned here are now
 // TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor and
-// TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet, in
+// TestARunWithTemporaryPortsResolvesARootReferenceBeforeItsProducerInitializes, in
 // root_group_reference_validity_test.go. They were replaced rather than moved:
 // these two resolved over a World with no Dependencies and no SharedState, so
 // producer discovery short-circuited before it began — which made the render

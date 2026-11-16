@@ -444,8 +444,8 @@ type World struct {
 	runtimeContextFor func(*resources.Service) string
 
 	// temporaryPorts mirrors Flow.temporaryPorts: with ephemeral ports a
-	// producer's address is not a function of its identity, so it cannot be
-	// derived before that producer initializes (localProducerMappings).
+	// producer's address is not a function of its identity, so the first
+	// mapping that names it allocates and pins it (localNetworkMappings).
 	temporaryPorts bool
 
 	// ports claims each endpoint's derived host port on this machine before

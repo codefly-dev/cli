@@ -424,10 +424,9 @@ func (flow *Flow) CheckRoutingSnapshot(ctx context.Context, workspace *resources
 // service's first Init dials the port it is proposed on 127.0.0.1 and ::1 and
 // refuses, naming the holder, if anything answers
 // (Runner.checkInitialPortAvailability), so the run never comes up with the
-// hop routing to a squatter. --temporary-ports never derives an address at
-// all. A process that binds a loopback address on the same port after that
-// probe, or a routed service that crashes or is withdrawn mid-run, is not
-// covered.
+// hop routing to a squatter. A process that binds a loopback address on the
+// same port after that probe, or a routed service that crashes or is withdrawn
+// mid-run, is not covered.
 func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.NetworkMapping) error {
 	routes, err := routing.DecodeRouting(raw)
 	if err != nil {

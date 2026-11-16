@@ -558,9 +558,8 @@ func (world *World) referencedProducerMappings(
 	// (ServiceDependencies.addConfigurationReferenceEdges), so a failure there is
 	// a real fault. A root group's reference is ordered by nothing, so the same
 	// failure is the run simply being early — fatal would break every run of a
-	// composition whose root group holds a reference, which is what
-	// --temporary-ports guarantees (localProducerMappings cannot know an address
-	// allocated at initialization). Those are dropped, and
+	// composition whose root group holds a reference to a producer that
+	// recorded nothing this run can derive an address from. Those are dropped, and
 	// refuseDroppedWorkspaceConfigurationValues is where the drop is warned
 	// about.
 	fatal := make(map[string]bool)
@@ -859,23 +858,14 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 // is a pure function of the producer's identity, so deriving it for a producer
 // of this run that has not initialized yet yields the address it will serve.
 //
-// Under --temporary-ports it is not: every call takes a fresh ephemeral port
-// from the kernel, so a derived address is a free port nothing listens on, and
-// two consumers of one group would each get a different one. Deriving there
-// would hand out a plausible address for a service that is not behind it, which
-// fails at connect time far from its cause — so say so instead. The producer
-// initializing first makes its recorded mappings authoritative and never reaches
-// this — but only a reference in a group the consumer DECLARES is ordered that
-// way (core's ServiceDependencies.addConfigurationReferenceEdges reads a
-// consumer's declared groups and no more), so a root group's reference can reach
-// here legitimately. referencedProducerMappings drops that case rather than
-// failing the run.
+// Under --temporary-ports the kernel chooses the port, so the proposal is the
+// address because localNetworkMappings pins the first allocation: every later
+// proposal for the producer, its own Init included, offers that port. A root
+// group's reference, which orders nothing, and two services whose groups
+// reference each other, which cannot both be ordered first, resolve this way.
 func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
 	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
 		return nil, nil
-	}
-	if world.temporaryPorts {
-		return nil, fmt.Errorf("its address is allocated at initialization (--temporary-ports), so this run cannot know it before %s initializes: order it before this service, or declare it as a dependency for the referenced endpoint", identity.Unique())
 	}
 	runtimeContext, err := resources.NewRuntimeContext(world.runtimeContextFor(service))
 	if err != nil {

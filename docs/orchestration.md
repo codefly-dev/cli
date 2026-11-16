@@ -688,25 +688,26 @@ references resolved against nothing.
   `exclude-workspace-configurations` trims the **run** only — build and
   deployment operations ignore profiles.
 
-- **A root group's `${endpoint:…}` does not order the run**, so under
-  `--temporary-ports` its producer may have no address yet. Core's dependency
+- **A root group's `${endpoint:…}` does not order the run.** Core's dependency
   graph orders a consumer after the producers of the groups it *declares*
   (`ServiceDependencies.addConfigurationReferenceEdges`, core
   `architecture/service_dependencies.go`, reads a consumer's
   `workspace-configuration-dependencies` and no more), so nothing puts the
   producer of a root group's reference first.
 
-  Note what this does **not** mean, because the earlier wording here had the
-  mechanism wrong: with deterministic ports a consumer that merely starts early
-  still resolves, because a producer's address is derived from the endpoints it
-  recorded at **Load**, and every service of a run loads before any initializes.
-  The value is lost only where no address can exist yet — under
-  `--temporary-ports`, where each address is allocated at initialization
-  (`codefly ci`, `test --temporary-ports`), or where the producer recorded no
-  endpoint at all. There it is dropped; a *declared* group's reference is
-  ordered, so the same failure there stays a hard error.
-  `TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet` pins the drop,
-  and `TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor` pins that the
+  A consumer that merely starts early still resolves, because a producer's
+  address is derived from the endpoints it recorded at **Load**, and every
+  service of a run loads before any initializes. Under `--temporary-ports`
+  (`codefly ci`, `test --temporary-ports`) the first mapping that names a
+  producer allocates its ports and pins them, so its own Init proposes the
+  address its consumers already read; two services whose groups reference each
+  other resolve the same way
+  (`TestMutualReferencesResolveToTheAddressEachInitProposes`). The value is
+  lost only where the producer recorded no endpoint at all. There it is
+  dropped; a *declared* group's reference is ordered, so the same failure there
+  stays a hard error.
+  `TestARunWithTemporaryPortsResolvesARootReferenceBeforeItsProducerInitializes`
+  pins the resolution, and `TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor` pins that the
   render refuses rather than emitting a manifest with the value missing.
 
 - **A run of fewer services than the composition does not contain the producer**
