@@ -18,17 +18,26 @@ type recordingManager struct {
 	unique       string
 	stopCalls    int
 	destroyCalls int
+	// onTeardown, when set, is what the agent does to the engine as it is
+	// stopped or destroyed.
+	onTeardown func()
 }
 
 func (m *recordingManager) Unique() string { return m.unique }
 
 func (m *recordingManager) RunnerDoStop(context.Context) (*OutputProperty, error) {
 	m.stopCalls++
+	if m.onTeardown != nil {
+		m.onTeardown()
+	}
 	return &OutputProperty{}, nil
 }
 
 func (m *recordingManager) RunnerDoDestroy(context.Context) (*OutputProperty, error) {
 	m.destroyCalls++
+	if m.onTeardown != nil {
+		m.onTeardown()
+	}
 	return &OutputProperty{}, nil
 }
 

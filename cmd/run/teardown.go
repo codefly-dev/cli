@@ -30,9 +30,9 @@ func removesContainers(failed bool, runtimeContexts []string) bool {
 }
 
 // reclaimRun takes back what the run's agents started and left behind once
-// they have exited: their orphaned process groups whichever way the run
-// ended, and, for a failed run, the containers they created and the networks
-// those leave empty.
+// they have exited: whichever way the run ended, their orphaned process
+// groups and the networks its containers left empty, and, for a failed run,
+// the containers they created.
 func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time, failed bool) error {
 	if flow == nil {
 		return nil
@@ -47,7 +47,7 @@ func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time
 		cli.Info("removed %d containers the failed run started: %v", len(reclaimed.Containers), reclaimed.Containers)
 	}
 	if len(reclaimed.Networks) > 0 {
-		cli.Info("removed %d networks the failed run's containers left empty: %v", len(reclaimed.Networks), reclaimed.Networks)
+		cli.Info("removed %d networks this run's containers left empty: %v", len(reclaimed.Networks), reclaimed.Networks)
 	}
 	return err
 }

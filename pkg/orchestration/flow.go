@@ -252,6 +252,10 @@ type World struct {
 	// agents is every agent pid this run spawned (run_containers.go).
 	agents spawnedAgents
 
+	// networks is every network this run's containers were attached to when
+	// a teardown began (run_containers.go).
+	networks runNetworks
+
 	// PrepareExternalWorkload admits the excluded root's declared identity for
 	// the process driving its dependencies. It does not claim an agent started
 	// that process or publish any endpoint as ready. The returned abandon callback

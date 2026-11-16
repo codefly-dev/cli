@@ -651,7 +651,7 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 // native run holding one container-pinned service still creates containers —
 // and deciding from the flag alone left them with no ownership guard.
 func shouldSweepStaleContainers(selectedRuntime string) bool {
-	return selectedRuntime != resources.RuntimeContextNative && selectedRuntime != resources.RuntimeContextNix
+	return orchestration.ReachesDocker(selectedRuntime)
 }
 
 // loadRequiredServiceForRun keeps terminal access aligned with the execution
