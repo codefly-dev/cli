@@ -1085,7 +1085,7 @@ Flags:
 
 ```
       --dir string            Repository directory to scan (default: current directory)
-      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/,github.com/obin-ai/])
+      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/])
       --format string         Report format: text or json (default "text")
       --go-modules            Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them
       --include-testdata      Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose
@@ -3202,7 +3202,6 @@ Subcommands:
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
 - [`codefly generate runnables`](#codefly-generate-runnables)
-- [`codefly generate tenant-overlays`](#codefly-generate-tenant-overlays)
 
 ## `codefly generate client`
 
@@ -3576,49 +3575,6 @@ Flags:
 ```
       --check           do not write; exit 1 with a unified diff if the on-disk tree differs from what would be generated
       --output string   output directory for derived runnables (default: <module dir>/contracts/runnables)
-```
-
-## `codefly generate tenant-overlays`
-
-Generate overlays/<tenant>-<cloud>/ from a tenant model
-
-```
-Expand a tenant model into per-tenant Kustomize overlays.
-
-Instead of hand-authoring one overlay per tenant × cloud, declare the matrix
-once in a tenant model file. Each generated overlays/<tenant>-<cloud>/ layers
-the shared base and patches only what varies between tenants: the
-VirtualService host and the External Secrets store reference.
-
-The base directory named by the model must exist and contain a VirtualService.
-
-Example tenant model:
-
-  schema-version: codefly.dev/tenant-model/v1
-  base: base
-  tenants:
-    - name: acme
-      cloud: aws
-      host: acme.example.com
-      secret-store: acme-aws
-    - name: acme
-      cloud: gcp
-      host: acme.gcp.example.com
-      secret-store: acme-gcp
-
-Example:
-  codefly generate tenant-overlays --model deployment/kustomize/tenants.codefly.yaml
-```
-
-```
-codefly generate tenant-overlays [flags]
-```
-
-Flags:
-
-```
-      --model string   path to the tenant model file (required)
-      --root string    deployment tree root containing the base (default: tenant model directory)
 ```
 
 ## `codefly get`
