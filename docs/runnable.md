@@ -142,7 +142,7 @@ Each value is a list of Core `ScopeSelection` messages (`slot`, `invoke`,
 environments:
   - name: staging
     runnable-scope-selections:
-      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
+      STARTERKIT__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
         - slot: source
           invoke:
             - resource_kind: datasource.sources
@@ -163,10 +163,10 @@ row is a binding and needs its own selection. Saas-starter serves this operation
 and its Lookup on `connect`; its `authority` listener does not serve them even
 though both endpoints carry the complete descriptor. Receipt pruning is a
 separate operation and selection key,
-`SAAS_STARTER__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
+`STARTERKIT__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
 
 ```sh
-codefly generate runnables saas-starter
+codefly generate runnables starterkit
 codefly generate runnable-bindings --env staging
 codefly generate runnable-bindings --env staging --check
 ```
@@ -206,7 +206,7 @@ its consuming module's name, and the value is a JSON array of existing prepared
 operation ids (which already identify the providing module/service/operation):
 
 ```dotenv
-ROBIN=["DOCUMENTS__DOCUMENTS_GRPC_GET_DOCUMENT_CONTENT"]
+SIDEKICK=["DOCUMENTS__DOCUMENTS_GRPC_GET_DOCUMENT_CONTENT"]
 RUNTIME=[]
 ```
 
@@ -434,8 +434,7 @@ Completing these paths requires coordinated work:
 
 - The shared contracts (create, build evidence, invocation framing) are tracked in [codefly-dev/core#472](https://github.com/codefly-dev/core/issues/472).
 - The language agents live in [runnable-python](https://github.com/codefly-dev/runnable-python) and [runnable-go](https://github.com/codefly-dev/runnable-go). Python implements native Builder gRPC and the shared invocation framing; Go currently has typed bindings.
-- The durable surfaces are Orchestration's, coordinated through
-  [obin-ai/module-runtime#63](https://github.com/obin-ai/module-runtime/issues/63).
+- The durable surfaces are Orchestration's.
 
 [codefly-dev/cli#638](https://github.com/codefly-dev/cli/issues/638) is the
 milestone that tracks all of them.

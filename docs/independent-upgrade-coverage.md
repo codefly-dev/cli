@@ -382,8 +382,7 @@ in `/tmp/cli752-agent-declaration-clean-f8b447dd`. Linked build metadata is diag
 provenance only, never a replacement for the failing runtime declaration check.
 
 Authentic packaged contract/usage evidence and real consumer qualification also
-depend on module-saas-starter#852 and obin-ai/platform-obin#25, as tracked in
-#753. Fixtures and source-built agent tests do not replace that evidence.
+depend on a packaged module and a consuming composition, as tracked in #753. Fixtures and source-built agent tests do not replace that evidence.
 
 Runtime module/solution onboarding without restarting the host is not delivered
 by these changes. Configuration delivery, registration and actual host

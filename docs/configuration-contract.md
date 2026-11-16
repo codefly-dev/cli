@@ -1,7 +1,7 @@
 # Producer Configuration Contract
 
 Codefly defines the configuration contract. Infrastructure producers, including
-infra-base, emit it. The CLI does not translate a producer's resource
+infra-kit, emit it. The CLI does not translate a producer's resource
 inventory, database engine conventions, proxy mode, or credential naming scheme.
 
 `environments.CoordinateContract` schema `codefly/coordinate/v1` wraps the existing
@@ -165,7 +165,7 @@ destination and a source:
   "schemaVersion": 1,
   "bindings": [
     {"configuration": "docs", "key": "README",
-     "source": {"module": "wiki", "path": "docs/install.md"}}
+     "source": {"module": "quill", "path": "docs/install.md"}}
   ]
 }
 ```
@@ -358,7 +358,7 @@ contract:
 
 ```yaml
 environments:
-  blue:
+  aurora:
     exclude-services:
       - service: saas/vault
         withdrawn-from: [saas/accounts]
@@ -369,7 +369,7 @@ environments:
 ```
 
 ```bash
-codefly environment import blue --coordinate-contract blue.json --product-intent delivery.environments.yaml
+codefly environment import aurora --coordinate-contract aurora.json --product-intent delivery.environments.yaml
 ```
 
 This optional input accepts only `environments.<name>.exclude-services` and,
@@ -378,7 +378,7 @@ optionally, `environments.<name>.service-secrets` with `generate` and
 
 ```yaml
 environments:
-  blue:
+  aurora:
     exclude-services: []
     service-secrets:
       generate:
@@ -484,7 +484,7 @@ Retired `codefly/cell/v1` is rejected, not converted. Its database-to-`store` tr
 `password_auth` inference, manufactured `secret-store`/`<namespace>/store` handoff
 and implicit delivery paths are removed. The producer must emit the resolved
 Codefly environment directly, and the CLI import fixtures must move with it.
-No compatibility shim reads infra-base's private format. Producers and CLI must
+No compatibility shim reads infra-kit's private format. Producers and CLI must
 qualify against the CLI-owned coordinate contract before release.
 
 Workload identity projection validates a staged manifest tree and atomically
@@ -569,8 +569,8 @@ independently of container configuration bindings.
 
 ## Qualification limits
 
-The actual infra-base fixture and its immutable source provenance are under
-`pkg/environments/testdata/coordinates`. The Lodestar output selects Accounts'
+The actual infra-kit fixture and its immutable source provenance are under
+`pkg/environments/testdata/coordinates`. The Meridian output selects Accounts'
 writer identity, public identity keys its source reads, exact remote secret
 references, the existing registration-digest expression, cluster and GitOps
 target. The integration test imports this emitted JSON and verifies effective

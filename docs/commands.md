@@ -323,7 +323,7 @@ single service, so naming more than one root with any of them is rejected.
 
 ```bash
 codefly run service api
-codefly run service lastlogin-go/backend wiki/backend   # One graph, shared host started once
+codefly run service beacon-go/backend quill/backend   # One graph, shared host started once
 codefly run service api --standalone              # Run without dependencies
 codefly run service api --runtime-context nix     # Use nix runtime context
 codefly run service api --service-path ./my-svc   # Override service path for this run
@@ -847,8 +847,8 @@ developer-signed document delivered to a real host is refused there, far from
 the cause.
 
 ```bash
-codefly delivery prepare --overlay deployments/environments/blue/modules/wiki/delivery \
-  --out ./prepared --env blue
+codefly delivery prepare --overlay deployments/environments/aurora/modules/quill/delivery \
+  --out ./prepared --env aurora
 codefly delivery prepare --overlay ./delivery --out ./prepared --env local --developer
 ```
 
@@ -1154,7 +1154,7 @@ and the workspace is a git checkout; the render says so when it cannot. The
 parent of the commit that will hold the rendered trees and the file — a render
 cannot name the commit it is committed in — and equal to it only when the
 render changed nothing. A consumer that pins the cell to an exact commit sets
-`revision` itself (infra-base's pin writes the commit it reviewed); a cell
+`revision` itself (infra-kit's pin writes the commit it reviewed); a cell
 tracking the branch reads the branch head. It is
 regenerated whole — a workload absent from it is not delivered — and is what
 the cell's infrastructure derives its namespaces, mesh contract, admission set
@@ -1673,8 +1673,8 @@ deliver from — `deployments/modules` for an environment on the default gitops
 path, `deployments/environments/<env>/modules` for one that declares its own —
 and an Argo application follows it. A render written there would put one
 environment's tree on another's delivery path, and two environments rendered in
-one checkout would overwrite each other. Rendering `blue` and then `staging`
-leaves `.codefly/renders/blue/…` and `.codefly/renders/staging/…` side by side;
+one checkout would overwrite each other. Rendering `aurora` and then `staging`
+leaves `.codefly/renders/aurora/…` and `.codefly/renders/staging/…` side by side;
 `publish --env <env>` reads only `.codefly/renders/<env>/modules/<module>`
 (refusing with the render command when there is none), and a delivered tree
 changes only through publish, which copies the working render into a clone of
@@ -1749,7 +1749,7 @@ service-secrets:
         # key + property: address a field inside a structured remote document
         # (an Azure Key Vault JSON secret, a Vault KV path)
         CODEFLY__…__IDENTITY_CLIENT_SECRET:
-          key: lodestar-identity
+          key: meridian-identity
           property: client_secret
         # key + property + secret-store: this one key is read through a store of
         # its own (a cell keeps its identity provider's secrets apart); the
@@ -1757,7 +1757,7 @@ service-secrets:
         # ExternalSecret data item's sourceRef.storeRef, so one ExternalSecret
         # still owns the service's Secret.
         CODEFLY__…__IDENTITY_CLIENT_ID:
-          key: workos-app
+          key: idkit-app
           property: client_id
           secret-store:
             name: platform-identity
@@ -1765,7 +1765,7 @@ service-secrets:
       # defaults template: applies to every key not listed above; "{service}"
       # and "{key}" are substituted
       defaults:
-        key: lodestar-{service}
+        key: meridian-{service}
         property: "{key}"
 ```
 
@@ -1931,8 +1931,8 @@ the remedy is to remove the extra reader, never to re-mint the key.
 `--rotate` replaces a stored value. It is explicit and narrow:
 
 ```bash
-codefly deploy secrets --env blue --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD --dry-run
-codefly deploy secrets --env blue --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD
+codefly deploy secrets --env aurora --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD --dry-run
+codefly deploy secrets --env aurora --rotate tracing/evidence/clickhouse:CLICKHOUSE_PASSWORD
 ```
 
 The selector is spelled like the `service-secrets.generate` entry that declares
@@ -2131,9 +2131,9 @@ artifact and render its manifests into the owned gitops tree, in the solution's
 own namespace.
 
 ```bash
-codefly deploy solution lastlogin --env production \
+codefly deploy solution beacon --env production \
   --agent codefly.dev:solution-generic:0.0.1 \
-  --source ./solutions/lastlogin --reference ghcr.io/example/lastlogin:0.0.1
+  --source ./solutions/beacon --reference ghcr.io/example/beacon:0.0.1
 ```
 
 No `codefly:solution` executor is published today, so this command cannot
@@ -2144,7 +2144,7 @@ workspace by `source` + `version` is a module — its services run on service
 agents — and renders like one:
 
 ```bash
-codefly deploy gitops render lastlogin --env production
+codefly deploy gitops render beacon --env production
 ```
 
 ### `codefly deploy init`
@@ -2161,9 +2161,9 @@ Add resources to the workspace.
 
 ```bash
 codefly add module backend                                     # Add a module
-codefly add module saas --agent=saas-starter                   # Scaffold and pin a module template
+codefly add module saas --agent=starterkit                   # Scaffold and pin a module template
 codefly add module host --source=../saas-host/modules/host     # Compose an out-of-repo module (location → codefly.local.yaml)
-codefly add module documents --worktree=obin-ai/module-document-store@main  # Compose by identity; the resolver finds your local worktree
+codefly add module documents --worktree=northwind/module-document-store@main  # Compose by identity; the resolver finds your local worktree
 codefly add service api --agent=go-grpc                        # Add a service with an agent
 codefly add dependency api --dependency=backend/db             # Add a service dependency (module/service, or a service of the same module)
 codefly add library utils                                      # Add a library
@@ -2290,9 +2290,9 @@ pointer is what your review actually gates on; see #731.
 ```yaml
 modules:
     - name: saas
-      source: obin-ai/lodestar
+      source: northwind/meridian
       version: "0.0.62"
-      path: platform/lodestar/modules/saas
+      path: platform/meridian/modules/saas
 ```
 
 A composition that vendors its sources — a submodule per producer repository —
@@ -2302,9 +2302,9 @@ with no `codefly.local.yaml` in play:
 ```yaml
 modules:
     - name: saas
-      source: obin-ai/lodestar
+      source: northwind/meridian
       version: "0.0.62"
-      path: platform/lodestar/modules/saas
+      path: platform/meridian/modules/saas
 ```
 
 The resolver prefers the `path` and drops the `version` with it, so a submodule
@@ -2339,7 +2339,7 @@ imported workspace pins — with its source's default branch and releases (one
 commit-only history kept under `CODEFLY_HOME/currency`):
 
 - a **commit** pin is current at the tip of the default branch; behind, it
-  reports `saas pins codefly-dev/module-saas-starter at commit 49d5158e: 4
+  reports `saas pins codefly-dev/module-starterkit at commit 49d5158e: 4
   commits behind main (188b1fb2)`, or "not in the history of main" for a commit
   no branch reaches (an unmerged PR head);
 - a **tag** pin is current when it is the newest release; a range when it
@@ -2364,7 +2364,7 @@ current or held, or — only under `--skip-workspace-readiness` — the pins it
 found behind. `plan` and `publish` of that render do not compare the pins with
 their sources again: a render takes minutes, other merges move a pinned
 source's main meanwhile, and judging again refused, as `N commits behind
-main`, exactly the commits the render was right to ship (on 2026-11-13 a Blue
+main`, exactly the commits the render was right to ship (on 2026-11-13 a Aurora
 round was only published by writing `pin-holds` at what it had rendered). What
 the check is for still holds: a publication refuses a render whose pins moved
 at all since it rendered (it is of another composition), so what is delivered
@@ -2384,7 +2384,7 @@ composition being checked, which may hold any module of the graph:
 pin-holds:
     - name: runtime                  # a module, or an imported workspace
       pin: b1760e6a6f8d41615cd03bc8df54e0c3f6dcf93b   # the exact value held
-      reason: page commands change staging; moved after Blue QA
+      reason: page commands change staging; moved after Aurora QA
       until: 2026-11-20              # a hold ends
 ```
 
@@ -2416,9 +2416,9 @@ silently trusted. Declare which repositories and signers are trusted in
 ```yaml
 module-trust:
   repositories:
-    codefly/saas-starter: https://github.com/codefly-dev/module-saas-starter
+    codefly/starterkit: https://github.com/codefly-dev/module-starterkit
   signers:
-    codefly/saas-starter:
+    codefly/starterkit:
       <signature identity written into provenance.json>: <base64 ed25519 public key>
 ```
 
@@ -2488,7 +2488,7 @@ module-resolution:
 
 modules:
     - name: saas
-      source: codefly-dev/module-saas-starter
+      source: codefly-dev/module-starterkit
       version: "0.0.68"
 ```
 
@@ -2544,9 +2544,9 @@ resolve:
     saas:
         services:
             accounts:
-                path: /Users/me/module-saas-starter/module/services/accounts
+                path: /Users/me/module-starterkit/module/services/accounts
             auth-gateway:
-                worktree: codefly-dev/module-saas-starter@feat/gateway-x
+                worktree: codefly-dev/module-starterkit@feat/gateway-x
             telemetry:
                 version: "0.0.66"
 ```
@@ -2571,8 +2571,8 @@ interface: hand-editing `codefly.local.yaml` is equally supported and is what
 the resolver actually reads.
 
 ```bash
-codefly override service saas/accounts --path ~/module-saas-starter/module/services/accounts
-codefly override service saas/auth-gateway --worktree codefly-dev/module-saas-starter@feat/gateway-x
+codefly override service saas/accounts --path ~/module-starterkit/module/services/accounts
+codefly override service saas/auth-gateway --worktree codefly-dev/module-starterkit@feat/gateway-x
 codefly override service saas/telemetry --version 0.0.66
 codefly override service saas/accounts --clear   # back to the module's own copy
 ```
@@ -2739,8 +2739,8 @@ at all:
 
 A module's optional `module:` subpath is joined after that, so with
 `CODEFLY_MODULE_CACHE=~/development/vendors` a module composed as
-`codefly-dev/module-saas-starter` at `0.0.68` is browsable at
-`~/development/vendors/codefly-dev/module-saas-starter/v0.0.68/`. A verified
+`codefly-dev/module-starterkit` at `0.0.68` is browsable at
+`~/development/vendors/codefly-dev/module-starterkit/v0.0.68/`. A verified
 package stays addressed by digest under either root — that addressing is what
 makes every cache hit checkable against what was verified — so it keeps its own
 reserved subdirectory rather than sharing the browsable tree. A value that is
@@ -2781,7 +2781,7 @@ the path, and for a verified package its artifact digest and commit.
 ```yaml
 resolved:
     saas:
-        source: codefly-dev/module-saas-starter
+        source: codefly-dev/module-starterkit
         requested: "0.1.0"
         mode: verified
         version: 0.1.0
@@ -2846,8 +2846,8 @@ contract and handler before building. See [Runnables](runnable.md).
 **`add solution`:**
 
 ```sh
-codefly add solution wiki --package-id obin/wiki \
-    --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
+codefly add solution quill --package-id northwind/quill \
+    --consumes connect:documents/documents/grpc --consumes connect:sidekick/chat/connect
 ```
 
 **The backend is scaffolded by a solution agent, not a service agent.** The two
@@ -2855,7 +2855,7 @@ are different things and the CLI refuses the wrong one rather than quietly
 substituting it:
 
 ```
-$ codefly add solution demo --package-id obin/demo --agent go
+$ codefly add solution demo --package-id northwind/demo --agent go
 --agent go is the SERVICE agent: it scaffolds a service, not a solution — no
 declared operation, no published policy, no page remote, and delivery refuses
 the result. Pass --agent solution-go
@@ -2986,7 +2986,7 @@ broken.
 
 ```bash
 codefly doctor solution
-codefly doctor solution wiki --json
+codefly doctor solution quill --json
 ```
 
 It exists because the shape was previously checkable only against somebody's
@@ -3000,7 +3000,7 @@ Every rule is one that silently broke something. The two worth knowing:
 | | |
 |---|---|
 | `owner_aware_missing` | The authority issues a person a capability at a solution **only** when its module contract declares `owner_aware: true`, and refuses by name otherwise. Without it the solution receives no owner-selected scope and can act for nobody — and nothing fails at build time to tell you. |
-| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (wiki reaches robin, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
+| `consumed_module_without_binding` | A module named in `api.consumes` that the contract declares no binding for. A **warning**: correct when the module is reached with the viewer's own credential (quill reaches sidekick, tracing and annotations that way), a bug when the solution calls it on a person's behalf — and the two look identical until a call is refused. |
 | `module_edge_declared` | A solution reaches every module through the **host's door** — a saas host's gateway and frontend, or the authority's hop beside the authority interface. A `service-dependencies` entry naming anything else renders into a mesh allow rule straight to that module's service, past the authority's check. |
 
 Exit codes: `0` every judged solution conforms (warnings allowed), `1` at least
@@ -3056,8 +3056,8 @@ leaving the rest of the module — and every committed file — untouched. It ed
 the gitignored `codefly.local.yaml` overlay and nothing else.
 
 ```bash
-codefly override service saas/accounts --path ~/module-saas-starter/module/services/accounts
-codefly override service saas/auth-gateway --worktree codefly-dev/module-saas-starter@feat/gateway-x
+codefly override service saas/accounts --path ~/module-starterkit/module/services/accounts
+codefly override service saas/auth-gateway --worktree codefly-dev/module-starterkit@feat/gateway-x
 codefly override service saas/telemetry --version 0.0.66
 codefly override service saas/accounts --clear
 ```
@@ -3141,7 +3141,7 @@ codefly sync solution-sdk --language python --check               # CI drift gat
 ```
 
 Run from a solution workspace (`workspace.codefly.yaml` plus a module whose
-`service-entry` is the solution backend, as in `core-solutions/solutions/*`).
+`service-entry` is the solution backend, as in `solution-kit/solutions/*`).
 Reads the single declaration `api.consumes` in `solution.codefly.yaml` (the
 solution manifest core's `solution/manifest` package defines) — through core's
 `LoadConsumption`, which holds `api.consumes` strictly and leaves the executor
@@ -3268,7 +3268,7 @@ merging is what preserved it.
 operator stating that one bare key is the old spelling of one qualified service:
 
 ```
-codefly environment import blue --coordinate-contract contract.json \
+codefly environment import aurora --coordinate-contract contract.json \
   --retire-service-key service-config:object-storage=documents/object-storage \
   --retire-service-key service-identity:object-storage=documents/object-storage
 ```
@@ -3347,11 +3347,11 @@ secret are refused before writing, by name. A product-owned field the contract
 declares too is refused. With the flag, the intent is the only source of those
 fields: an entry it no longer carries is withdrawn, and `exclude-services: []`
 clears the selection; without the flag, existing merge behavior is unchanged. See
-[the configuration contract](configuration-contract.md) for the blue/green example.
+[the configuration contract](configuration-contract.md) for the aurora/green example.
 
 An imported environment may declare `configuration-source: hosted` and select
-`configuration-profiles: [blue, local]`. Import generates a `profile.codefly.yaml`
-in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
+`configuration-profiles: [aurora, local]`. Import generates a `profile.codefly.yaml`
+in `configurations/aurora/` deriving from `hosted`, using Core's profile inheritance.
 The profile chain selects the first directory at each location; inheritance adds
 shared groups and per-profile values. Import validates every inherited source:
 only flat `.env` inputs, the module envelope (`module-envelope.json`, which every
@@ -3360,8 +3360,8 @@ files contain empty placeholders, symlinks are refused, and sources may
 not contain environment-specific runnable bindings. Dry-run writes nothing.
 Import refuses authored destination files and retires only its own earlier copied
 outputs, preserving the environment's separately generated runnable bindings.
-Run `codefly generate runnable-bindings --env blue` after import so addresses are
-resolved for blue rather than copied from a sibling.
+Run `codefly generate runnable-bindings --env aurora` after import so addresses are
+resolved for aurora rather than copied from a sibling.
 
 The cell inventory also carries `source.path` when publication uses a root other
 than `deployments`. Consumers must use that root to discover the published module
@@ -3392,17 +3392,17 @@ selects each workspace's profile through the existing profile resolver, then
 assembles the group before endpoint resolution and run/render injection.
 No generated endpoint address needs to be copied into either file.
 
-For `edge`, platform-core declares `MODULES=robin,tracing` and the module
-upstream keys; platform-obin declares `MODULES=wiki`, `WIKI_REST` and `FRONTEND`.
-Codefly produces `MODULES=robin,tracing,wiki` and retains every upstream key.
+For `edge`, platform-base declares `MODULES=sidekick,tracing` and the module
+upstream keys; platform-northwind declares `MODULES=quill`, `QUILL_REST` and `FRONTEND`.
+Codefly produces `MODULES=sidekick,tracing,quill` and retains every upstream key.
 Other duplicate env keys are refused by name, even if their values agree;
 matching retains Core's case-insensitive, dash/underscore-equivalent rules.
 `append` keys use the exact spelling in the consuming file and require a
 nonempty delimiter and plaintext values on both sides. Empty or duplicate list
 items, secrets, templates and unresolved `${profile}` values cannot be appended.
 
-For `fixture-grants`, platform-core's `roles` list contains the module roles;
-platform-obin's `roles` list contains only wiki roles, plus its `installations`.
+For `fixture-grants`, platform-base's `roles` list contains the module roles;
+platform-northwind's `roles` list contains only quill roles, plus its `installations`.
 YAML mappings combine recursively and sequences append in imported-then-own
 order. A scalar collision or a type mismatch is refused with its complete key
 path, such as `fixture-grants key $.settings.mode`. Lists are ordered additions;
@@ -3507,7 +3507,7 @@ Module generators read ports from here rather than declaring them.
 ```
 
 `module` is the name the workspace composes the module under, which the named
-ports are hashed on: the same `authority` endpoint composed as `saas-starter`
+ports are hashed on: the same `authority` endpoint composed as `starterkit`
 deploys on 6003. The text output, without `--json`, is unchanged and takes no
 environment.
 
@@ -3822,7 +3822,7 @@ written by a command rather than by hand — `codefly update workspace
 
 **Which of the two survives a merge.** `codefly ci prerelease` refuses a dev version in a
 service's `agent.version` on the default branch, because a tag cut from that branch would ship a
-module pinning an unreleased agent — which is exactly what `module-saas-starter` v0.0.85 and
+module pinning an unreleased agent — which is exactly what `module-starterkit` v0.0.85 and
 `module-runtime` v0.1.5 did. Use a service pin on a branch, for as long as the branch lives. The
 committed route is the workspace-wide `agent-overrides` entry **with a label**: a comment naming
 the issue it stands in for. Even that is refused by `codefly ci prerelease --release`, so a dev
@@ -3842,9 +3842,9 @@ A publish never creates a repository on its own. Pass `--create-missing-reposito
 `--create-missing-repository` needs a GitHub credential with repository-creation scope (`GITHUB_TOKEN`, or `gh auth login`); without one the publish fails naming what is missing rather than silently skipping the creation. When the repository it publishes into is private, the reported install hint carries `GOPRIVATE` for the owner's namespace, because a bare `go get` resolves through the public module proxy and cannot see a private repository. If the repository already exists and is public while a private one was requested, the publish proceeds and warns: its visibility is not a publish's to rewrite.
 
 ```bash
-codefly publish library authkit --dry-run           # show what would be published, touch nothing
-codefly publish library authkit --version 1.2.0
-codefly publish library authkit --language go,python
+codefly publish library signkit --dry-run           # show what would be published, touch nothing
+codefly publish library signkit --version 1.2.0
+codefly publish library signkit --language go,python
 ```
 
 Configure `workspace.codefly.yaml`:
@@ -3866,11 +3866,11 @@ If a language export publishes and a later one in the same run fails, the comman
 Generate and publish a client library for every API contract the module's `interface:` block exports (`codefly generate contracts`), in every language the contract kind supports — `go`, `typescript` and `python` for protobuf, `go` and `typescript` for OpenAPI. Each endpoint becomes one codefly library named `<module>-<service>-<endpoint>-client`, so two contract endpoints on one service never contend for the same immutable package version. Libraries are generated from the committed package contract and proto sources and published at the **module package version** through the workspace's `libraries.publish` stores. This is how a module's consumers — other modules, solutions — get its client: an immutable published handle, never a vendored copy of generated code.
 
 ```bash
-codefly publish clients saas-starter --dry-run          # plan + identities; no toolchain, no network
-codefly publish clients saas-starter --check            # CI gate: every client of this version is recorded as published
-codefly publish clients saas-starter                    # generate (Docker) and publish what is still missing
-codefly publish clients saas-starter --language go      # one language only
-codefly publish clients saas-starter --output ./libraries   # keep the generated libraries instead of a temp dir
+codefly publish clients starterkit --dry-run          # plan + identities; no toolchain, no network
+codefly publish clients starterkit --check            # CI gate: every client of this version is recorded as published
+codefly publish clients starterkit                    # generate (Docker) and publish what is still missing
+codefly publish clients starterkit --language go      # one language only
+codefly publish clients starterkit --output ./libraries   # keep the generated libraries instead of a temp dir
 ```
 
 Like `publish library`, this creates no repository unless `--create-missing-repository` is passed, and creates a private one unless `--public-repository` is passed as well. Publishing is not required to consume a module's clients: a Codefly workspace carries the proto companion the CLI pin resolves, so `generate client` reproduces them from the module package's contract, and a per-language SDK repository that carries the generated tree distributes them under its own tag.
@@ -3902,8 +3902,8 @@ The exported package is the published unit: before generating, the command requi
 Resolve the highest published version of a library export satisfying a semantic version constraint, via the store `codefly publish library` published it to, and print the durable install handle (import path, install command, ref, digest). With `--destination`, also runs the language's native install command there (`go get`, `npm install`, or `pip install`). It never vendors source — the registry decision is that consumers pin an immutable handle, not a local copy.
 
 ```bash
-codefly install library authkit@^1.0.0 --language go
-codefly install library authkit@^1.0.0 --language go --destination ./services/api
+codefly install library signkit@^1.0.0 --language go
+codefly install library signkit@^1.0.0 --language go --destination ./services/api
 ```
 
 ---
@@ -4121,11 +4121,11 @@ Generate client code from service APIs.
 
 ```bash
 codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service
-codefly generate client --from package:codefly/saas-starter@0.1.0 --language go,typescript --services AuditService  # From a composed module package's contract
-codefly generate client --from contracts:module-saas-starter/contracts/api --language python --no-facade  # From a `generate contracts` export, bindings only
+codefly generate client --from package:codefly/starterkit@0.1.0 --language go,typescript --services AuditService  # From a composed module package's contract
+codefly generate client --from contracts:module-starterkit/contracts/api --language python --no-facade  # From a `generate contracts` export, bindings only
 codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files, in the proto companion
-codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
-codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
+codefly generate contracts starterkit                                                  # Export a module's interface endpoints as API contracts
+codefly generate contracts starterkit --check                                          # CI drift gate: fail if the on-disk catalog is stale
 codefly generate runnables documents                                                     # Derive a Runnable package, and so a tool, per method served behind the hop
 codefly generate runnables documents --check                                             # CI drift gate: fail if the derived packages are stale
 codefly generate runnable-bindings --env staging                                         # Bind every derived operation to its owner endpoint as the environment resolves it
@@ -4384,7 +4384,7 @@ are reachable only from inside the library.
 ##### Library layout
 
 ```
-libraries/saas-starter-accounts-client/
+libraries/starterkit-accounts-client/
   library.codefly.yaml
   contract/
     catalog.codefly.json         # the endpoint's catalog entry (narrowed with --services)
@@ -4521,7 +4521,7 @@ explicit empty-versus-absent semantics, can replace this input.
 
 After adopting this setting, regenerate contracts and runnables together. Older
 catalogs may list the full surface on every endpoint; derivation cannot infer
-runtime restrictions missing from the published catalog. For saas-starter,
+runtime restrictions missing from the published catalog. For starterkit,
 authority's source is `ModuleAuthorityProcedures`; Connect's source is its full
 service registration catalog. The gateway route catalog alone omits internal
 procedures and is not a complete listener inventory.
@@ -5723,7 +5723,7 @@ change a method's authority policy or authorize shadowing a published method.
 `codefly environment images <env> --file images.yaml` replaces the environment's
 image-selection policy; `--dry-run` shows the workspace diff and `{}` clears it.
 The same `build-images` object can arrive through `environment import` from
-infra-base's coordinate contract, with `requires_capabilities: [build-image-bindings]`.
+infra-kit's coordinate contract, with `requires_capabilities: [build-image-bindings]`.
 An imported policy replaces the whole object so removed overrides cannot linger.
 An omitted object preserves an operator-owned policy; an explicit `{}` clears it.
 

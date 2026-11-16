@@ -18,7 +18,7 @@ integration.
 
 ## How to work here
 
-These rules are fleet-wide (obin-ai/handbook#68) and outrank anything below them.
+These rules are this repository's own contributor rules and outrank anything below them.
 
 **A gap in the tooling is a bug in the tooling** — never a reason to reach around it. If
 `codefly` cannot express what you need, the deliverable is the missing capability, not a
@@ -48,7 +48,7 @@ digest mismatch has meant a missing token, with the digest verified correct by h
 suite — starts k3s, k3d, kind, minikube or any Kubernetes cluster. Authorization and admission
 are proven in-process against the authority core; a deployment is validated by `codefly run`
 and a hosted dev cell, never by a test. `codefly run cluster` run by a person is product, not a
-test ([development contract, rule 5](https://github.com/obin-ai/handbook/blob/main/getting-started/development.md#5-no-cluster-tests)).
+test.
 
 **Say what you did not verify.** Unverified is not the same as working. If you could not
 exercise a path — no cluster, no credentials, agents not rebuilt — the PR says so.

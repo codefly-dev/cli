@@ -296,7 +296,7 @@ its installations:
 ```yaml
 source_governance:
   scopes:
-    - {resource_kind: wiki.page, actions: [write]}
+    - {resource_kind: quill.page, actions: [write]}
 ```
 
 Core validates it (one of the unit's own, unshared kinds, an action its own
@@ -371,7 +371,7 @@ holds and which modules it reaches with the person's Work Context:
 ```yaml
 installation_role: admin            # or "none", or omitted
 edge_dependencies:
-  - module: robin                   # the signed principal, not a name or binding id
+  - module: sidekick                   # the signed principal, not a name or binding id
     presence: required              # "required" or "optional", no default
   - module: annotations
     presence: optional
@@ -394,7 +394,7 @@ declares `presence_by_class` in place of `presence`:
 
 ```yaml
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required                 # the same presence everywhere
   - module: annotations
     presence_by_class: {development: optional, production: required}
@@ -406,11 +406,11 @@ already names:
 
 ```yaml
 environments:
-  - name: blue
+  - name: aurora
     class: development
 ```
 
-It is declared and never derived: `blue`, `green` and `dev` are all
+It is declared and never derived: `aurora`, `green` and `dev` are all
 development cells, and a class read off an environment's name would make a
 production environment development the day someone named one `prod-2`. It
 reaches no agent and no module, and it is not a protection floor — what a cell
@@ -540,7 +540,7 @@ A binding may be addressed to a **list of audiences** the composition writes —
 for a generic module that reaches whichever modules a composition wires to it,
 such as a store of comments reaching the owner of each kind of thing commented
 on. It declares `audiences: {from: <group>/<key>-audiences}` in place of
-`audience`, the value comma-separated with no space (`robin,documents`), and,
+`audience`, the value comma-separated with no space (`sidekick,documents`), and,
 for a bare-action ceiling, `resource_kinds: {from: <group>/<key>-resource-kinds}`
 whose value is `<audience>=<kind>` pairs. The render delivers it **once per
 listed audience**, in core's resolution: binding `<binding>:<audience>`
@@ -983,7 +983,7 @@ decides a principal it states. The file is resolved through the
 environment's own configuration profile and the profiles it derives from
 (`derives-from` in `profile.codefly.yaml`), the most derived copy winning, the
 way a single-file declaration such as `dns.codefly.yaml` is: so every cell
-whose profile derives from one shared profile (`blue` → `hosted-development` →
+whose profile derives from one shared profile (`aurora` → `hosted-development` →
 `hosted`) is delivered the ceiling `configurations/hosted/module-envelope.json`
 states, and a new cell needs no envelope file of its own. Only the
 environment's own profile is resolved, never a later profile of its chain: a
@@ -1242,7 +1242,7 @@ tree it applies.
       "module": "documents", "service": "api", "namespace": "cell-documents",
       "account": "api", "principal": "spiffe://cluster.example/ns/cell-documents/sa/api",
       "endpoint": "grpc", "port": 9090, "targetPort": 9090,
-      "principals": ["spiffe://cluster.example/ns/cell-saas/sa/auth-gateway", "spiffe://cluster.example/ns/cell-wiki/sa/backend"]
+      "principals": ["spiffe://cluster.example/ns/cell-saas/sa/auth-gateway", "spiffe://cluster.example/ns/cell-quill/sa/backend"]
     },
     {
       "module": "saas", "service": "auth-gateway", "namespace": "cell-saas",
@@ -1670,7 +1670,7 @@ manifest running as that (namespace, account). A module that still requires a pr
 `MODULE_IDENTITY_PREFIX` at boot (annotations 0.2.14) fails on this path by
 design: its SDK must read the projected token instead.
 
-**The local host's trust anchor** (module-saas-starter#1066, its
+**The local host's trust anchor** (module-starterkit#1066, its
 `SOLUTION_REGISTRATION.md` §8 "The local profile's trust anchor"). A host
 reads one public policy file from its constant anchor path. On a local cluster
 the run provides it, as a cell's platform does:
@@ -1695,10 +1695,11 @@ contract says the composition's Deployment carries the mount — which is this
 render's output. So on any environment that declares a host and is not a
 local k3d one, the render mounts that ConfigMap into the verifier's
 authenticating container at the host's constant path,
-`/etc/obin/delivery-trust` (`gitops.HostedTrustAnchorPath`, the other half of
-the host's own constant, which it refuses to relocate from inside a pod), as
+the one the host declares (`solutionhost.HostedTrustAnchorPath` in the host's
+library, read through `gitops.HostedTrustAnchorPath`; the host refuses to
+relocate it from inside a pod), as
 one projected volume with one ConfigMap source, no `items`, read-only — the
-shape the platform's admission pins (obin-ai/infra-base#1366); a pod
+shape the platform's admission pins; a pod
 mounting the anchor any other way is refused by the cell. The render declares
 nothing about the ConfigMap's content: the platform owns what the anchor
 says, the render owns only that the pod reads it where the host looks. The
@@ -1997,7 +1998,7 @@ In the first case the methods held are the table the host receives (above).
 
 The host's own module — the module of the `host.delivery` service, `saas` for
 `delivery: saas/accounts/connect` whatever `host.component` says (`saas` on a
-local environment, `platform-obin` on a cell) — is not behind the hop: its
+local environment, `platform-northwind` on a cell) — is not behind the hop: its
 methods are the host's, never fronted by the policies the host receives, so the
 first case does not hold it. Only that one module is set aside; every other module in the
 composition is still refused by name, and the host module's own

@@ -53,7 +53,6 @@ The running agent must advertise `runtime-init-image/v1` before the CLI builds
 and supplies a recipe image through `InitRequest.runtime_image` (field 10).
 Bindings alone do not prove adoption. An older recipe-producing agent without
 the capability is refused before image execution. This handoff follows
-[handbook proposal #260](https://github.com/obin-ai/handbook/pull/260) and
 [Core #748](https://github.com/codefly-dev/core/issues/748).
 
 The image tag is `codefly-local/runtime:sha256-<64 hex digits>`. The hash uses
