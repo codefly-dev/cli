@@ -1038,8 +1038,11 @@ func writeLibraryManifest(ctx context.Context, outputDir, name, version string, 
 		Path    string   `yaml:"path"`
 		Exports []string `yaml:"exports"`
 	}
+	// generated-by names what produced the bytes, by content: the companion
+	// image by digest and whether the facade ran. It never names the CLI's own
+	// version, so a CLI release that generates the same bytes regenerates
+	// nothing downstream.
 	type generatedByEntry struct {
-		Codefly   string `yaml:"codefly"`
 		Companion string `yaml:"companion,omitempty"`
 		Facade    bool   `yaml:"facade"`
 	}
@@ -1076,7 +1079,6 @@ func writeLibraryManifest(ctx context.Context, outputDir, name, version string, 
 		})
 	}
 
-	codeflyVersion, _ := cli.GetCurrentVersion()
 	companion := companionUsed(ctx)
 
 	doc := manifest{
@@ -1086,7 +1088,6 @@ func writeLibraryManifest(ctx context.Context, outputDir, name, version string, 
 		Languages: languageEntries,
 		Sources:   sources,
 		GeneratedBy: generatedByEntry{
-			Codefly:   codeflyVersion,
 			Companion: companion,
 			Facade:    facade && anyProtobuf(entries),
 		},
