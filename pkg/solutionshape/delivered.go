@@ -216,7 +216,7 @@ func (r *Report) InspectDelivered(trees []string, environment string) {
 	}
 	r.fail(CodeEnvelopeOmitsBinding,
 		fmt.Sprintf("environment %q admits none of these operation bindings its manifests declare: %s", environment, strings.Join(named, ", ")),
-		"widen the ceiling for exactly these bindings (`obinctl module-envelope generate` derives what the applied manifests ask for; narrow it, then write it into the environment's module-envelope and re-render). Until then the host drops each one, no tool derives from it, and an installation refuses with \"module ... changed since review\"")
+		"widen the ceiling for exactly these bindings (derive what the applied manifests ask for, narrow it, then write it into the environment's module-envelope and re-render). Until then the host drops each one, no tool derives from it, and an installation refuses with \"module ... changed since review\"")
 }
 
 func sortedKeys(m map[string][]string) []string {

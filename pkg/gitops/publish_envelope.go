@@ -48,7 +48,7 @@ const (
 	// environment's host holds one.
 	deliveredEnvelopeID = "module-envelope"
 	// envelopeDeliveryPath is the host's envelope delivery route.
-	envelopeDeliveryPath = "/platform/_delivery/envelope"
+	envelopeDeliveryPath = solutionhost.EnvelopeDeliveryPath
 	// moduleEnvelopeConfigMap names the envelope's ConfigMap, its documentLabel
 	// value, and (with .yaml) its file in the overlay; moduleEnvelopeDocument
 	// is the key of the readable canonical document beside the carrier.

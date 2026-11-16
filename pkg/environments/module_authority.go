@@ -3,6 +3,7 @@ package environments
 import (
 	"context"
 	"fmt"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"slices"
 	"strings"
 
@@ -44,10 +45,10 @@ const FederationConfiguration = "federation"
 // itself, the ownership domains it accepts a binding under, and how it checks
 // a delivered carrier, for which the only value is pinned keys.
 const (
-	FederationHostCoordinateKey       = "SOLUTION_HOST_COORDINATE"
-	FederationHostOwnershipDomainsKey = "SOLUTION_HOST_OWNERSHIP_DOMAINS"
-	FederationHostTrustPolicyKey      = "SOLUTION_HOST_TRUST_POLICY"
-	FederationHostTrustPolicyKeys     = "keys"
+	FederationHostCoordinateKey       = solutionhost.HostCoordinateKey
+	FederationHostOwnershipDomainsKey = solutionhost.HostOwnershipDomainsKey
+	FederationHostTrustPolicyKey      = solutionhost.HostTrustPolicyKey
+	FederationHostTrustPolicyKeys     = solutionhost.HostTrustPolicyKeys
 )
 
 // RenderOwnedWorkspaceConfiguration names the groups supplied per workload by

@@ -2,10 +2,9 @@
 // module is judged against.
 //
 // It exists because "the right shape" was, until now, checkable only against
-// somebody's survey of the solutions that happened to exist — which is how
-// obin-ai/core-solutions reached nine solutions in four different states, two
-// of them unable to receive a person capability at all and nobody able to see
-// it. A shape nothing can check is a convention, and a convention drifts.
+// somebody's survey of the solutions that happened to exist — which is how one
+// repository reached nine solutions in four different states, two of them
+// unable to receive a person capability at all and nobody able to see it. A shape nothing can check is a convention, and a convention drifts.
 //
 // Every rule here is one that silently broke something. None is a style
 // preference, and a rule whose breach only looks untidy does not belong here.
@@ -243,7 +242,6 @@ func (r *Report) checkEntryService(dir string) {
 	// frontend; under the host authority interface it is the authority's hop,
 	// and ONLY in a manifest that also requires that interface — without it,
 	// an edge to the hop is a path to a module service like any other.
-	// This is the same table core-solutions' check_solution_mesh.py holds.
 	interfaces := map[string]bool{}
 	for _, dependency := range service.ServiceDependencies {
 		if dependency != nil && dependency.Interface != "" {
@@ -352,9 +350,8 @@ func (r *Report) checkPackage(dir string) *composition.PackageManifest {
 //
 // `codefly generate contracts` writes the contract and adds the entry, but it
 // refuses unless the package also declares the "contracts" artifact root,
-// which is why the remediation names both. Of the nine solutions in one
-// fleet, the two that are actually run — wiki and proposals — declare them
-// and the other seven declare neither.
+// which is why the remediation names both. Solutions that are actually run
+// declare them; a scaffold that was never run often declares neither.
 func (r *Report) checkBackendContract(packaged *composition.PackageManifest) {
 	for index := range packaged.Services {
 		service := &packaged.Services[index]
@@ -523,14 +520,14 @@ func interfaceKey(reference string) string {
 // missing-permission question, and it cannot be answered from these documents
 // alone. A role reaches another module's authority two ways: by naming a
 // binding in role.Bindings, and by declaring that module's resource kinds in
-// role.Scopes — which is how wiki and proposals do it, granting `documents`
-// and `documents.collection` with no RoleBinding at all. A binding's own kinds
+// role.Scopes — granting, say, `documents` and `documents.collection` with no
+// RoleBinding at all. A binding's own kinds
 // are composition SLOTS, so which kinds it covers is not known until the
 // composition supplies values.
 //
 // A first draft of this package failed any binding no role named by id. It
-// reported wiki and proposals — the two solutions that have been running
-// longest — as broken, which is how the second mechanism was found. The real
+// reported the solutions that had been running longest as broken, which is
+// how the second mechanism was found. The real
 // answer needs modulecontract.Contract.Resolve(values) against a composition's
 // configuration, which is a composition-scoped check and not a
 // directory-scoped one.

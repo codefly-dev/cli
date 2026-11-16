@@ -50,7 +50,7 @@ import (
 // It is deliberately only as strong as a laptop needs: the issuer lives for
 // the run and its key is never written. The host reads the run's
 // workload-identity anchor and its delivery trust anchor from the two paths the
-// run names (CODEFLY_NATIVE_IDENTITY_ANCHOR, SOLUTION_HOST_LOCAL_TRUST_ANCHOR),
+// run names (CODEFLY_NATIVE_IDENTITY_ANCHOR, solutionhost.LocalTrustAnchorKey),
 // under the run's own state, so nothing is written outside the workspace. The
 // host refuses both settings in a pod, and nothing here imitates a cluster:
 // there is no API server, CA, pod or ServiceAccount, only credentials the run
@@ -388,7 +388,7 @@ func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string
 	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
-		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
+		out[solutionhost.LocalTrustAnchorKey] = cluster.hostAnchorDir
 	}
 	return out
 }

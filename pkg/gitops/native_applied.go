@@ -111,7 +111,7 @@ func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*Ap
 	if err != nil {
 		return nil, false, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(d.DeliveryURL, "/")+"/platform/_delivery/applied/"+url.PathEscape(binding), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(d.DeliveryURL, "/")+solutionhost.AppliedDeliveryPath+url.PathEscape(binding), nil)
 	if err != nil {
 		return nil, false, err
 	}
