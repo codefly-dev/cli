@@ -1,6 +1,6 @@
 # Daemon Architecture
 
-The daemon subsystem manages background codefly processes -- long-running services, the Mind Gateway, and agent health monitoring.
+The daemon subsystem manages background codefly processes -- long-running services and agent health monitoring.
 
 ## Overview
 
@@ -8,12 +8,12 @@ The daemon subsystem manages background codefly processes -- long-running servic
 ┌──────────────────────────────────────────────────┐
 │                  codefly daemon                  │
 │                                                  │
-│  ┌────────────┐  ┌───────────┐  ┌─────────────┐ │
-│  │   Start    │  │  Monitor  │  │   Gateway   │ │
-│  │            │  │           │  │             │ │
-│  │ Re-exec    │  │ CPU/Mem   │  │ Mind gRPC   │ │
-│  │ + detach   │  │ tracking  │  │ server      │ │
-│  └────────────┘  └───────────┘  └─────────────┘ │
+│  ┌────────────┐  ┌───────────┐                  │
+│  │   Start    │  │  Monitor  │                  │
+│  │            │  │           │                  │
+│  │ Re-exec    │  │ CPU/Mem   │                  │
+│  │ + detach   │  │ tracking  │                  │
+│  └────────────┘  └───────────┘                  │
 │                                                  │
 │  State: ~/.codefly/daemon.pid                    │
 │  Logs:  ~/.codefly/daemon.log                    │
@@ -31,19 +31,6 @@ codefly daemon start
 codefly daemon start -- --runtime-context nix
 codefly daemon start -- -d --service-path ./my-svc
 ```
-
-**Gateway mode:** Start the Mind Gateway gRPC server instead of running services.
-
-```bash
-codefly daemon start --gateway
-codefly daemon start --gateway --dir /path/to/workspace --port 50051
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--gateway` | false | Start Mind Gateway instead of services |
-| `--dir` | `.` | Working directory (gateway mode only) |
-| `--port` | 50051 | gRPC listen port (gateway mode only) |
 
 ### `codefly daemon stop`
 
@@ -101,14 +88,6 @@ codefly daemon monitor --kill-orphans # Kill orphaned agent processes
 |------|-------------|
 | `-w`, `--watch` | Run continuously (check every 30s) |
 | `--kill-orphans` | Kill orphaned go-grpc/go-generic agent processes |
-
-### `codefly daemon gateway`
-
-Runs the Mind Gateway gRPC server in the foreground. This is typically invoked by `daemon start --gateway`, not directly.
-
-```bash
-codefly daemon gateway --dir /workspace --port 50051
-```
 
 ---
 
@@ -195,56 +174,3 @@ PID      CPU%   MEM(MB)  PROCESS
 Warnings:
   HIGH MEM: PID 12346 (codefly) at 640MB
 ```
-
----
-
-## Gateway Mode
-
-The gateway mode starts a Mind Gateway gRPC server as a daemon. This is used by the Mind engineering platform to communicate with the local codefly workspace.
-
-```bash
-codefly daemon start --gateway --dir /path/to/workspace --port 50051
-```
-
-The gateway:
-
-- Listens on the specified gRPC port (default 50051)
-- Writes a port file for service discovery
-- Cleans up the port file on exit
-- Responds to SIGINT for graceful shutdown
-
-### The effect boundary
-
-Every Gateway method is classified as an effect or an observation, once, in
-`pkg/gateway/effect`. The classification is enforced for every request by a
-unary and a stream interceptor installed where the server is registered, so it
-is not something a method has to remember.
-
-- A request carrying **no** Work Context capability is served exactly as
-  before. Ordinary Gateway use is unaffected.
-- A request carrying a capability is a **governed** request. A governed
-  *effect* — anything that writes the workspace, runs code, moves repository
-  history, touches a forge or drives a live process — is **refused with
-  `Unimplemented`, before its handler runs**. The gateway holds none of the
-  four live sources core's verifier requires (the authorization revision, the
-  replay store, the grant source, the seal source), so it cannot turn a
-  presented capability into a verified one and will not admit an unverified
-  one.
-- A governed *observation* is served. It records nothing either way, so
-  refusing it would deny reads to a governed caller and protect nothing.
-- A method the classification does not name is refused outright. A new RPC
-  declares what it does before it serves anything; `pkg/gateway/effect`'s
-  inventory test walks the generated service descriptor, so this surfaces at
-  test time rather than in production.
-
-The container executor (`pkg/gateway/dockerexec`) is a second implementation of
-the same contract and is reached without an interceptor, so it calls the same
-boundary from its effect methods.
-
-This replaces a per-call-site gate. Previously three methods — `ApplyEdit`,
-`ApplySymbolPatch` and `Test` — asked whether the request was governed, and the
-other fifty-four performed the effect with the capability in the metadata
-ignored. `--governed-execution` arms the receipt journal, its attestor and
-recovery; it does not make a governed effect servable. That becomes possible
-when the component holding those four sources verifies the capability and hands
-the recorder a verified one.

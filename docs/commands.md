@@ -50,8 +50,8 @@ CODEFLY_HELP_PROVIDER=/path/to/provider codefly explain run service
 ```
 
 The provider is a separate executable rather than an LLM client embedded in
-the CLI or the Mind Gateway. This keeps the Homebrew CLI independent of a
-running Mind process, model SDK, network connection, or API key. When no
+the CLI. This keeps the Homebrew CLI independent of a
+model SDK, network connection, or API key. When no
 provider is installed, or when it fails, `codefly explain` still prints the
 static help and exits successfully.
 
@@ -1904,7 +1904,7 @@ service-secrets:
   generate:
     - scope: workspace            # a workspace configuration group
       configuration: internal-auth
-      keys: [CODEFLY_INTERNAL_TOKEN, CODEFLY_GATEWAY_TOKEN]
+      keys: [CODEFLY_INTERNAL_TOKEN, CODEFLY_API_TOKEN]
     - scope: service              # a service configuration, of every service
       configuration: postgres     # or of the `services` listed
       keys: [POSTGRES_PASSWORD, POSTGRES_READ_ONLY_PASSWORD, POSTGRES_READ_WRITE_PASSWORD]
@@ -4748,7 +4748,6 @@ Manage the background daemon process.
 ```bash
 codefly daemon start                          # Start services as background daemon
 codefly daemon start -- --runtime-context nix # Forward flags to run service
-codefly daemon start --gateway                # Start Mind Gateway gRPC server
 codefly daemon stop                           # Stop the daemon
 codefly daemon restart                        # Stop and restart
 codefly daemon status                         # Check if daemon is running

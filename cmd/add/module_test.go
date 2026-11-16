@@ -322,11 +322,11 @@ func addTestDigest(contents string) string {
 
 func TestNormalizeRemoteToOwnerRepo(t *testing.T) {
 	cases := map[string]string{
-		"git@github.com:northwind/module-host.git":         "northwind/module-host",
-		"https://github.com/northwind/module-host.git":     "northwind/module-host",
-		"https://user@github.com/Northwind/Module-Host": "northwind/module-host",
-		"git@gitlab.com:group/proj.git":                    "group/proj",
-		"ssh://git@github.com/northwind/module-host.git":   "northwind/module-host",
+		"git@github.com:northwind/module-host.git":       "northwind/module-host",
+		"https://github.com/northwind/module-host.git":   "northwind/module-host",
+		"https://user@github.com/Northwind/Module-Host":  "northwind/module-host",
+		"git@gitlab.com:group/proj.git":                  "group/proj",
+		"ssh://git@github.com/northwind/module-host.git": "northwind/module-host",
 		// A look-alike host must not smuggle its way into the slug: the whole
 		// host is stripped, leaving the real owner/repo.
 		"https://github.com.example/foo/bar": "foo/bar",

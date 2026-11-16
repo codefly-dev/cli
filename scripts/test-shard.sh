@@ -36,7 +36,6 @@ pkg/orchestration ^Test[A-F]
 pkg/orchestration ^Test[^A-F]
 pkg/composition ^Test[A-R]
 pkg/composition ^Test[^A-R]
-pkg/gateway
 '
 
 # Seconds per package under -race (same run), for packing the rest.
@@ -48,7 +47,6 @@ cmd/ci 25
 cmd/publish 23
 pkg/conformance 20
 pkg/engine 17
-pkg/gateway/dockerexec 10
 pkg/librarystore 9
 cmd/run 7
 cmd/common 6

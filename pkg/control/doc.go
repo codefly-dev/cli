@@ -10,8 +10,6 @@
 //   - pkg/web   — the dashboard/CLI gRPC service (observe a live flow; stop it)
 //   - pkg/mcp   — MCP tools over stdio (a mix of direct plugin-gRPC calls and
 //     shelling out to the `codefly` binary)
-//   - pkg/gateway — the Mind Gateway gRPC service (the richest surface: files,
-//     git, build/test/lint, terminals — but no Run or Deploy)
 //
 // A long-lived adapter creates one engine.WorkspaceHost and binds a Plane to it.
 // The host owns agent processes, active flows, source behavior, and tools;

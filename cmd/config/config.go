@@ -157,7 +157,7 @@ Generated configurations are always secrets: 0600, in a 0700 directory, refused
 when git would track the file. The value is never printed.
 
 Examples:
-  codefly config generate internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
+  codefly config generate internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_API_TOKEN
   codefly config generate mutation_permit ED25519_SEED_BASE64 --format base64 --service coordination/work-coordinator`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -221,7 +221,7 @@ the readiness gate a launcher can run before starting a service. It never prints
 a value.
 
 Examples:
-  codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
+  codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_API_TOKEN
   codefly config check runtime EXECUTION_SCHEDULER_TOKEN --service mind/mind`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {

@@ -158,7 +158,7 @@ implemented. Don't rely on a list kept here — it drifts the moment a command l
 - **pkg/mcp/** — Model Context Protocol server exposing codefly to AI tools. See [docs/mcp-server.md](docs/mcp-server.md).
 - **pkg/cliupdate/** — Version stamping (`version`/`commit`/`buildDate` set via ldflags at
   release), self-update, and the release-signing certificate.
-- **pkg/platform/** / **pkg/gateway/** — Platform ops and Mind Gateway gRPC server.
+- **pkg/platform/** — Platform ops.
 - **pkg/agentkinds/** — the one owner of the short agent kind a user types (`runnable`)
   ↔ the kind core registers (`codefly:runnable`). Used by `codefly agent install --kind`
   and the MCP `list_agents`/`agent_info` schemas so the convention has a single copy.

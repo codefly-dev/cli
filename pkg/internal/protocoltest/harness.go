@@ -60,7 +60,7 @@ func Install(t *testing.T, names ...string) []string {
 // hard-coded -race made a job without a race-instrumented cache (a cold
 // coverage run) compile the peer's whole dependency graph under -race in every
 // package that installs it, which alone took about three minutes on a CI
-// runner and pushed pkg/gateway past its four-minute test timeout.
+// runner and pushed the largest package past its four-minute test timeout.
 func peerBuildArgs(binary string) []string {
 	args := []string{"build"}
 	if raceEnabled {

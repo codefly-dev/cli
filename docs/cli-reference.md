@@ -1809,7 +1809,7 @@ the readiness gate a launcher can run before starting a service. It never prints
 a value.
 
 Examples:
-  codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
+  codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_API_TOKEN
   codefly config check runtime EXECUTION_SCHEDULER_TOKEN --service mind/mind
 ```
 
@@ -1840,7 +1840,7 @@ Generated configurations are always secrets: 0600, in a 0700 directory, refused
 when git would track the file. The value is never printed.
 
 Examples:
-  codefly config generate internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
+  codefly config generate internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_API_TOKEN
   codefly config generate mutation_permit ED25519_SEED_BASE64 --format base64 --service coordination/work-coordinator
 ```
 
@@ -1928,36 +1928,12 @@ codefly daemon <subcommand>
 
 Subcommands:
 
-- [`codefly daemon gateway`](#codefly-daemon-gateway)
 - [`codefly daemon logs`](#codefly-daemon-logs)
 - [`codefly daemon monitor`](#codefly-daemon-monitor)
 - [`codefly daemon restart`](#codefly-daemon-restart)
 - [`codefly daemon start`](#codefly-daemon-start)
 - [`codefly daemon status`](#codefly-daemon-status)
 - [`codefly daemon stop`](#codefly-daemon-stop)
-
-## `codefly daemon gateway`
-
-Serve Codefly workspace operations to Mind over gRPC
-
-```
-Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.
-```
-
-```
-codefly daemon gateway [flags]
-```
-
-Flags:
-
-```
-      --dir string                          Working directory containing mind.yaml (default ".")
-      --execution-authority-issuer string   Exact Work Context issuer
-      --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
-      --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
-      --governed-execution                  Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context
-      --port int                            gRPC listen port (default 50051)
-```
 
 ## `codefly daemon logs`
 
@@ -2024,18 +2000,6 @@ Examples:
 
 ```
 codefly daemon start [-- flags passed to 'run service']
-```
-
-Flags:
-
-```
-      --dir string                          Working directory for gateway (requires --gateway) (default ".")
-      --execution-authority-issuer string   Exact Work Context issuer
-      --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
-      --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
-      --gateway                             Start the Mind Gateway gRPC server instead of running services
-      --governed-execution                  Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context
-      --port int                            gRPC port for gateway (requires --gateway) (default 50051)
 ```
 
 ## `codefly daemon status`

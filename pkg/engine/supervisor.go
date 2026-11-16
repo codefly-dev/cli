@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codefly-dev/cli/pkg/gateway/effect"
-
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
@@ -96,21 +94,17 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 	// ListAllCommands spawned a language agent, because the three RPCs that
 	// read a service's command and dependency metadata were classed as
 	// observations and reach this funnel. Classification alone could not fix
-	// that: the next RPC to need an agent starts ungated again, exactly as the
-	// per-call-site gate did before pkg/gateway/effect.
+	// that: the next RPC to need an agent starts ungated again, exactly as a
+	// per-call-site gate does.
 	//
 	// So the refusal is here, where the process is started, and it does not
 	// depend on whether a session happens to be warm — the early returns above
 	// this would otherwise make the same request succeed or refuse according to
 	// cache state. A governed caller gets one answer.
 	//
-	// Every RPC that can reach this point is classed Effect in
-	// pkg/gateway/effect, and TestNoObservationStartsAnAgent walks the
-	// observations to keep that true: an observation that reaches here surfaces
-	// this refusal, which fails that test by name.
 	agentStartAttempts.Add(1)
-	if effect.Carried(ctx) {
-		return nil, effect.RefuseGoverned()
+	if governed(ctx) {
+		return nil, refuseGoverned()
 	}
 	descriptor, err := resolveServiceDescriptor(ctx, target)
 	if err != nil {
