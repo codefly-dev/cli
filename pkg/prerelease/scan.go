@@ -29,12 +29,18 @@ const (
 )
 
 // DefaultFirstParty are the module path prefixes whose pseudo-versions are
-// first-party to this fleet: a prerelease of something the fleet itself
-// publishes and could instead release. A third-party pseudo-version is somebody
-// else's release cadence and is none of this gate's business.
+// first-party wherever the gate runs: Codefly's own modules, which every
+// repository this CLI builds depends on. A third-party pseudo-version is
+// somebody else's release cadence and is none of this gate's business.
+//
+// The scanned repository's own organisation is first-party too, and is never
+// written here: each go.mod adds the owner of the module it declares (see
+// ownerPrefix), so a repository's requires on its siblings are checked without
+// the CLI naming any organisation but its own. Never the other way round: a
+// default that omitted the consumer's organisation would let its gate pass
+// without checking anything.
 var DefaultFirstParty = []string{
 	"github.com/codefly-dev/",
-	"github.com/obin-ai/",
 }
 
 // Options configures a scan.
