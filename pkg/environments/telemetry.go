@@ -112,7 +112,7 @@ func (env *Environment) TelemetryCarriers(module, service string) map[string]str
 		"OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
 		"OTEL_SERVICE_NAME":           module + "/" + service,
 		// Only deployment.environment.name: the platform's tracing attribute
-		// contract (obin.trace.attributes v1, which a producer enforces
+		// contract (versioned, and which a producer enforces
 		// fail-closed before it exports anything) lets a producer set
 		// service.name and deployment.environment.name and no other resource
 		// key. service.namespace is a specification key the contract does not

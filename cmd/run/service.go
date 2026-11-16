@@ -49,7 +49,7 @@ on container-recovery scope.
 
 Examples:
   codefly run service app/backend
-  codefly run service lastlogin-go/backend lastlogin-python/backend wiki/backend`,
+  codefly run service greeter-go/backend greeter-python/backend notes/backend`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runServiceCommand,
 }

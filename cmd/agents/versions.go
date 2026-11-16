@@ -24,8 +24,7 @@ import (
 
 // ciPlatform is the os/arch a released agent must ship an asset for to be
 // downloadable inside CI. A git tag can exist with no artifact for this
-// platform — that gap (module-saas-starter#3) is exactly what these commands
-// surface.
+// platform — that gap is exactly what these commands surface.
 const ciPlatform = "linux_amd64"
 
 const latestAgentVersion = "latest"

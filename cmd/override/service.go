@@ -44,10 +44,10 @@ This works on every workspace layout. On a flat (single-module) workspace the
 module name is the workspace's own name, and ` + "`codefly run service --service-path`" + `
 remains the per-run spelling for the service you are launching.`,
 	Example: `  # Run saas/accounts from a local checkout
-  codefly override service saas/accounts --path ~/module-saas-starter/module/services/accounts
+  codefly override service billing/api --path ~/module-billing/module/services/api
 
   # Take it from the checkout you have on a feature branch
-  codefly override service saas/auth-gateway --worktree codefly-dev/module-saas-starter@feat/gateway-x
+  codefly override service billing/gateway --worktree acme/module-billing@feat/gateway-x
 
   # Run it at a published module version
   codefly override service saas/telemetry --version 0.0.66

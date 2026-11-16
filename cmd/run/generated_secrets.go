@@ -71,8 +71,8 @@ func provisionGeneratedSecrets(ctx context.Context, workspace *resources.Workspa
 // author itself. The generated file is an own group of that name, and an own
 // group replaces the inherited one whole (core's workspace composition) — so
 // writing it, or reading one an earlier run wrote, silently drops every key
-// the composed workspace supplies: a workspace importing platform-core lost
-// the hop's MODULES that way, and with it every hop route. Declaring the group
+// the composed workspace supplies: a workspace importing a platform would lose
+// that platform's keys that way, and with them whatever routes they carry. Declaring the group
 // in `configuration-extensions` makes the generated keys extend the inherited
 // group instead, which is then the composition's own answer. A group the
 // workspace authors (an own file holding a key the generator does not write)

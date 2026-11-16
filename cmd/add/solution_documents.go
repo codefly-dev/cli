@@ -18,9 +18,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// A solution has ONE shape. It is the one obin-ai/core-solutions' `wiki` has
-// been running on, not the smaller one the demos carry, and every solution is
-// conformed to it rather than a second being offered beside it.
+// A solution has ONE shape: the one running solutions are deployed on, not the
+// smaller one a demo carries, and every solution is conformed to it rather than
+// a second being offered beside it.
 //
 // Two Codefly services and one page:
 //
@@ -42,8 +42,8 @@ import (
 // reaches a module on a context minted for the solution's own audience, so
 // relaying such a call puts the solution between the person and the module and
 // admission refuses it. A backend that does not relay those calls is no
-// intervening actor, and wiki is the proof: it keeps its backend and reaches
-// robin, tracing and annotations from the page.
+// intervening actor: it keeps its backend and reaches those modules from the
+// page.
 const (
 	solutionEntryService = "backend"
 	solutionPageService  = "web"
@@ -106,7 +106,7 @@ func solutionAgentFor(agent string) (string, error) {
 //
 // It is the one value here with no derivation behind it — core publishes no
 // "current authority range" for a scaffold to read — so it is the range the
-// running solutions require (wiki's services/backend/service.codefly.yaml),
+// running solutions require in their backend's service.codefly.yaml,
 // and --authority-interface overrides it for a composition on another.
 const authorityInterfaceRange = "codefly.dev/authority@>=0.2.0 <0.4.0"
 
@@ -155,8 +155,8 @@ func solutionModuleInterface() *resources.ModuleInterface {
 //
 // Every consumed module is reached THROUGH that hop and gets no entry here. A
 // service-dependency on a module renders into a mesh allow rule straight to
-// that module's service, past the check — which is what core-solutions'
-// check-solution-mesh gate refuses, and what cmd/sync/solution_sdk.go's
+// that module's service, past the check — which a solution repository's mesh
+// gate refuses, and what cmd/sync/solution_sdk.go's
 // missingServiceDependencies already declines to add.
 //
 // The hop is `kind: external`: composed by the workspace that composes this
@@ -194,9 +194,9 @@ type authoredDependency struct {
 //	[<id>=]<protocol>:<module>/<service>/<endpoint>
 //
 // The id defaults to the producing module's name, and `as` — the route name
-// the solution addresses it by — defaults to the id. core-solutions'
-// check-consumed-apis gate requires all three of id, as and protocol on every
-// entry, so none is left for core's defaults to supply.
+// the solution addresses it by — defaults to the id. All three of id, as and
+// protocol are written on every entry, so none is left for core's defaults to
+// supply and a gate that requires them passes.
 //
 // Entries carry NO scopes and no audience, deliberately. A solution declares
 // its authority ONCE, in module.contract.codefly.yaml, and the CLI refuses a

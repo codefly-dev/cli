@@ -2004,8 +2004,7 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, envi
 // the environment and so could always deliver such a document; this writer
 // built its manager without one, so the first root-owned document a composition
 // handed every service made `--output-env` refuse the whole run at Init with
-// core's "configuration document requires origin, name and environment" — the
-// shape platform-core's composition gate met on 0.1.219.
+// core's "configuration document requires origin, name and environment".
 func AppendServiceProcessConfigurationsToFile(
 	ctx context.Context,
 	filePath string,

@@ -16,7 +16,7 @@ import (
 // A bounded build phase finishes when its last build finishes, so which build
 // is started last decides the phase's wall clock. The plan hands the phase over
 // in topological order, which on a real render starts the longest build last:
-// `deploy gitops render --all --env blue` built 25 images, the longest of them
+// `deploy gitops render --all` built 25 images, the longest of them
 // 1020s, and reached that build only after the other 24 had been dispatched.
 // Replaying those durations (build_makespan_test.go) gives 25.7 minutes at four
 // at once dispatched in plan order and 17.0 minutes dispatched longest first —

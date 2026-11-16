@@ -53,7 +53,7 @@ var SolutionCmd = &cobra.Command{
 		}
 		// A solution runs on the platform it composes. Its entry's declared
 		// service dependencies reach the host alone; what it consumes through
-		// its manifest's api.consumes (robin, documents, ...) and what those
+		// its manifest's api.consumes and what those
 		// modules reach through configuration references the dependency graph
 		// never sees. Those are the composition's roots — the same list `run
 		// workspace` boots — seeded here as co-roots beside the entry, so the

@@ -75,7 +75,7 @@ var readSourceHead = composition.ReadSourceHead
 
 // currencyPin is one pin the check judges: a module or an imported workspace.
 type currencyPin struct {
-	label   string // "saas", "workspace platform-core"
+	label   string // "billing", "workspace platform"
 	name    string // the name a hold uses
 	source  string
 	version string

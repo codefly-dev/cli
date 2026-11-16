@@ -164,7 +164,7 @@ func ValidateEnvironmentExclusions(ctx context.Context, workspace *resources.Wor
 	// No "environment %q:" prefix here: validateExclusionsAgainst names the
 	// environment inside each message, because a prefix is a separate link in
 	// the error chain and the plain renderer shows only the leaf — which is how
-	// a `--env blue` refusal printed no environment at all and sent its reader
+	// an `--env <name>` refusal printed no environment at all and sent its reader
 	// to re-declare something that was already declared.
 	return env.validateExclusionsAgainst(graph)
 }

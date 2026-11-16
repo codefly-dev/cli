@@ -67,10 +67,10 @@ moved without a package version bump is refused: bump module.package.codefly.yam
 first. Re-running after a partial failure publishes only what is still missing.
 
 Examples:
-  codefly publish clients saas-starter --dry-run     # plan + identities, no toolchain, no network
-  codefly publish clients saas-starter --check       # CI gate: every client of this version is recorded as published
-  codefly publish clients saas-starter --language go
-  codefly publish clients saas-starter --output ./libraries   # keep the generated libraries`,
+  codefly publish clients billing --dry-run          # plan + identities, no toolchain, no network
+  codefly publish clients billing --check            # CI gate: every client of this version is recorded as published
+  codefly publish clients billing --language go
+  codefly publish clients billing --output ./libraries        # keep the generated libraries`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		moduleName := ""

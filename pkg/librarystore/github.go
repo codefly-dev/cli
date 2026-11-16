@@ -107,7 +107,7 @@ func (s *GitHubStore) authToken() string {
 	return s.cachedToken
 }
 
-// repositoryName is the per-export repository name, e.g. "authkit-go".
+// repositoryName is the per-export repository name, e.g. "payments-go".
 func repositoryName(language Language, name string) string {
 	return fmt.Sprintf("%s-%s", name, language)
 }

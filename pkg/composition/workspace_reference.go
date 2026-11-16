@@ -16,7 +16,7 @@ import (
 // "requires host resolution". Nothing registered one, so a versioned workspace
 // import could not resolve at all and every consumer had to use `path:` --
 // which means a checkout per machine, and a composition that renders a
-// committed artifact cannot depend on that (obin-ai/platform-obin#104).
+// committed artifact cannot depend on that.
 //
 // A workspace is the same kind of artifact as a module: a repository at an
 // immutable tag (or a commit pin, for validation), with an optional subpath. So it is pulled by exactly the same

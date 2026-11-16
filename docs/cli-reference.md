@@ -1060,7 +1060,8 @@ What is read, in files git tracks and nothing else:
                           version
   workspace.codefly.yaml  the top-level agent-overrides block, whose values are
                           versions under an agent identity
-  go.mod                  first-party requires (codefly-dev/*, obin-ai/*),
+  go.mod                  first-party requires (codefly-dev/* and the
+                          organisation of the go.mod's own module),
                           reported but not refused unless --go-modules
 
 testdata/ trees are skipped, because a fixture's job can be to carry a bad pin;
@@ -3676,8 +3677,8 @@ Resolve the highest published version of a library export satisfying a
 semantic version constraint, and print its durable install handle.
 
 Examples:
-  codefly install library authkit@^1.0.0 --language go
-  codefly install library authkit@^1.0.0 --language go --destination ./services/api
+  codefly install library payments@^1.0.0 --language go
+  codefly install library payments@^1.0.0 --language go --destination ./services/api
 ```
 
 ```
@@ -4470,10 +4471,10 @@ moved without a package version bump is refused: bump module.package.codefly.yam
 first. Re-running after a partial failure publishes only what is still missing.
 
 Examples:
-  codefly publish clients saas-starter --dry-run     # plan + identities, no toolchain, no network
-  codefly publish clients saas-starter --check       # CI gate: every client of this version is recorded as published
-  codefly publish clients saas-starter --language go
-  codefly publish clients saas-starter --output ./libraries   # keep the generated libraries
+  codefly publish clients billing --dry-run          # plan + identities, no toolchain, no network
+  codefly publish clients billing --check            # CI gate: every client of this version is recorded as published
+  codefly publish clients billing --language go
+  codefly publish clients billing --output ./libraries        # keep the generated libraries
 ```
 
 ```
@@ -4552,9 +4553,9 @@ Configure workspace.codefly.yaml:
       python: {owner: codefly-dev}
 
 Examples:
-  codefly publish library authkit --dry-run
-  codefly publish library authkit --version 1.2.0
-  codefly publish library authkit --language go,python
+  codefly publish library payments --dry-run
+  codefly publish library payments --version 1.2.0
+  codefly publish library payments --language go,python
 ```
 
 ```
@@ -4851,7 +4852,7 @@ on container-recovery scope.
 
 Examples:
   codefly run service app/backend
-  codefly run service lastlogin-go/backend lastlogin-python/backend wiki/backend
+  codefly run service greeter-go/backend greeter-python/backend notes/backend
 ```
 
 ```

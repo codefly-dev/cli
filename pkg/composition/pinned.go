@@ -702,7 +702,7 @@ func loadModuleResolutions(ctx context.Context, workspaceDir string, seen map[st
 	// are not composed here -- so there is no legal way to say how an imported
 	// module resolves, and the only mechanism left is a machine-local
 	// codefly.local.yaml, which cannot be committed by a composition that
-	// renders a deployed artifact (obin-ai/platform-obin#104).
+	// renders a deployed artifact.
 	resolutions := map[string]WorkspaceResolution{}
 	for _, imported := range probe.Workspaces {
 		path := strings.TrimSpace(imported.Path)

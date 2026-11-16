@@ -28,8 +28,8 @@ var LibraryCmd = &cobra.Command{
 semantic version constraint, and print its durable install handle.
 
 Examples:
-  codefly install library authkit@^1.0.0 --language go
-  codefly install library authkit@^1.0.0 --language go --destination ./services/api`,
+  codefly install library payments@^1.0.0 --language go
+  codefly install library payments@^1.0.0 --language go --destination ./services/api`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return installLibrary(cmd, args[0])
@@ -44,7 +44,7 @@ func init() {
 func installLibrary(cmd *cobra.Command, spec string) error {
 	name, constraint, ok := strings.Cut(spec, "@")
 	if !ok || name == "" || constraint == "" {
-		return fmt.Errorf("library must be given as <name>@<constraint>, e.g. authkit@^1.0.0")
+		return fmt.Errorf("library must be given as <name>@<constraint>, e.g. payments@^1.0.0")
 	}
 	if installLanguage == "" {
 		return fmt.Errorf("--language is required (go, python, typescript)")

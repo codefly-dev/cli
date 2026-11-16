@@ -544,7 +544,7 @@ func applyContractFields(target, declaration *yaml.Node) {
 }
 
 // contractOwnedOptional names the keys a coordinate contract owns whose ABSENCE is
-// itself a statement (docs/coordinate-contract-conventions.md in infra-base): an absent
+// itself a statement (the coordinate contract's conventions): an absent
 // registry.mirrors means "pull the upstream as the Dockerfile names it", an absent
 // registry.artifacts "publish bundles to registry.url", an absent registry.auth "log
 // in to nothing". Merging alone would keep a value the contract withdrew, and the

@@ -46,7 +46,8 @@ What is read, in files git tracks and nothing else:
                           version
   workspace.codefly.yaml  the top-level agent-overrides block, whose values are
                           versions under an agent identity
-  go.mod                  first-party requires (codefly-dev/*, obin-ai/*),
+  go.mod                  first-party requires (codefly-dev/* and the
+                          organisation of the go.mod's own module),
                           reported but not refused unless --go-modules
 
 testdata/ trees are skipped, because a fixture's job can be to carry a bad pin;

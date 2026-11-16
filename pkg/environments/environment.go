@@ -68,7 +68,7 @@ type EnvironmentCluster struct {
 //	      side-effects based on this value.
 //	Mirrors: where to READ an image from instead of the registry its
 //	      reference names, keyed by that registry's canonical host
-//	      ("docker.io": "us-east1-docker.pkg.dev/<project>/<remote-repo>").
+//	      ("docker.io": "mirror.example.com/<project>/<remote-repo>").
 //	      It is a read-side substitution only: nothing is pushed to a mirror,
 //	      and the reference a recipe is written against never changes. See
 //	      Validate for what a key and a value may be. A mirror of the
@@ -1485,12 +1485,12 @@ type Environment struct {
 	// far along the promotion path it sits — development, staging or
 	// production (modulecontract.EnvironmentClasses). It is the axis a
 	// coordinate already names, the `development` segment of
-	// `hosted/gcp/us-east1/US/development/blue`, stated here because the
+	// `hosted/<cloud>/<region>/<jurisdiction>/development/<cell>`, stated here because the
 	// coordinate contract carries none of it: the producer emits
 	// configuration, not a tier, exactly as it carries no host block.
 	//
 	// It is DECLARED and never derived. An environment's name is not its
-	// class: `blue`, `green` and `dev` are all development cells, and a class
+	// class: two cells named `alpha` and `dev` can both be development cells, and a class
 	// read off a name is the defect IsK3d's legacy reading is — it would make
 	// a production environment development the day someone named one
 	// `prod-2`. Absent is "no class declared", which resolves every contract
