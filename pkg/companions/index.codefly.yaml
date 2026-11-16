@@ -1,0 +1,10 @@
+# The companion images this CLI runs, by companion name. Core compiles no
+# version in (companionindex); this file is the CLI's choice, registered at
+# startup and handed to every agent the CLI spawns. A companion release moves
+# this file and nothing in core.
+codefly: 0.0.11
+execution: 0.0.7
+go: 0.0.20
+node: 0.0.22
+proto: 0.0.30
+python: 0.0.15
