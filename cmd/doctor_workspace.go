@@ -173,6 +173,8 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	checkDevDeployments(ctx, ws, report)
 	materialized := checkModulesMaterialized(ctx, ws, report)
 	checkAgentOverrides(ctx, ws, report)
+	checkVendoredPackages(ctx, ws, opts.module, report)
+	checkContractCatalogs(ctx, ws, opts.module, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -1836,6 +1838,15 @@ checkout's commit and its distance from the source, and the running codefly is
 compared with the newest release. Pins that could not be compared (no network)
 are reported as NOT verified, never as current.
 
+Vendored packages: a package archive a composed module's package.json selects
+(` + "`file:…tgz`" + `), whose *.provenance.json beside it names the repository and
+commit it was built from, fails when that repository is a module the
+workspace composes at another commit (vendored_package_behind_pin), or when
+its bytes are not the digest its provenance records
+(vendored_package_digest_mismatch). Each composed module's published API
+catalog is also held to its descriptors: a method the descriptor serves that
+no listener lists is a warning (contract_catalog_unserved_method).
+
 Stable diagnostic codes: pin_stale, pin_held, pin_hold_invalid,
 pin_currency_unverified, checkout_override_active, cli_stale, workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
@@ -1844,6 +1855,8 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
+vendored_package_behind_pin, vendored_package_digest_mismatch,
+vendored_package_uncomparable, contract_catalog_unserved_method,
 agent_dev_build, runnable_binding_declined,
 runnable_binding_decline_invalid, runnable_operations_unreadable,
 configuration_directory_missing, configuration_missing,

@@ -258,6 +258,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			}
 		}
 
+		var written []composition.APIContractEndpoint
 		for _, endpoint := range carriers {
 			actual, ok := endpoint, true
 			if endpoint.Api != standards.HTTP {
@@ -270,9 +271,15 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			if writeErr != nil {
 				return nil, fmt.Errorf("cannot write contract for %s/%s: %w", serviceName, endpoint.Name, writeErr)
 			}
-			contractEndpoints = append(contractEndpoints, *contractEndpoint)
+			written = append(written, *contractEndpoint)
 			printContractLine(contractEndpoint)
 		}
+		if err = ProtobufCatalogCoverage(written, func(endpoint composition.APIContractEndpoint) ([]byte, error) {
+			return os.ReadFile(filepath.Join(opts.writeDir, endpoint.Service, endpoint.Endpoint, "contract.binpb"))
+		}); err != nil {
+			return nil, fmt.Errorf("module %s: %w; the inventory %s (from %s) lists every method the service serves", module.Name, err, surfacePaths[serviceName], contractSurfacesConfigFile)
+		}
+		contractEndpoints = append(contractEndpoints, written...)
 	}
 
 	return writeContractCatalog(ctx, module, contractEndpoints, opts)

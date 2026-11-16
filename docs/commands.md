@@ -4502,6 +4502,16 @@ catalog for a multi-package contract instead of silently selecting no methods.
 Without an inventory, inference still requires one service-owned package; a
 descriptor alone cannot prove which of several packages a listener serves.
 
+Between them, the listeners of a service that share one descriptor serve every
+method of every service they list, and of every service of the package they
+name: the rule a verified module update holds the catalog to (Core's
+`composition.ProtobufCoverage`). Generation and `--check` refuse an inventory
+that leaves a method its descriptor serves to no listener, naming the method, so
+a method added to a service without its inventory row fails where the inventory
+is written, not when a composition that calls it is rendered.
+`codefly doctor workspace` reads every composed module's committed catalog the
+same way and warns (`contract_catalog_unserved_method`).
+
 This input is a stopgap for the released Core/agent endpoint report. In Core
 v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without
 listener filtering, while Connect is reported as `HttpAPI` with no RPC list.

@@ -2633,8 +2633,60 @@ codefly doctor [flags]
 
 Subcommands:
 
+- [`codefly doctor parity`](#codefly-doctor-parity)
 - [`codefly doctor solution`](#codefly-doctor-solution)
 - [`codefly doctor workspace`](#codefly-doctor-workspace)
+
+## `codefly doctor parity`
+
+Compare two environments of the workspace both ways: configuration, bindings, composition
+
+```
+Compare what two environments of this workspace fill and compose, in both
+directions, so a run of one says something about the other:
+
+  configuration  every workspace configuration key one environment fills (set,
+                 not empty, not off) the other fills too: through its profile
+                 chain, its service-config values or the secrets it delivers;
+  bindings       every module binding one environment's render delivers the
+                 other's delivers too, resolved exactly as a render resolves
+                 them (an optional binding whose slots are empty is omitted),
+                 and the same runnable bindings are selected with the same
+                 scopes (the generated runnable-bindings group is derived from
+                 them, so it is not compared itself);
+  composition    every service one environment composes the other composes,
+                 withdrawn from the same consumers.
+
+A difference that is deliberate is declared, with its reason, in parity.codefly.yaml
+at the workspace root:
+
+  schema: codefly/environment-parity/v1
+  differences:
+    - against: [<environment>, …]    # optional: every environment when absent
+      configuration: <group>/<key>   # or <group>/* ; or binding: <module>/<binding> ; or service: <module>/<service>
+      reason: <why the two must differ>
+
+A declared difference that no longer matches fails too, so the list only
+shrinks. Read-only: it reads committed configuration and never resolves a
+secret value.
+
+Stable diagnostic codes: parity_configuration, parity_binding,
+parity_composition, parity_unresolved, parity_difference_stale,
+parity_difference_invalid.
+```
+
+```
+codefly doctor parity [flags]
+```
+
+Flags:
+
+```
+      --against string     Environment it must match (required)
+      --env string         Environment the run under test uses (default "local")
+      --json               Print a machine-readable report to stdout; log lines go to stderr
+      --timeout duration   Overall bound (default 2m0s)
+```
 
 ## `codefly doctor solution`
 
@@ -2780,6 +2832,15 @@ checkout's commit and its distance from the source, and the running codefly is
 compared with the newest release. Pins that could not be compared (no network)
 are reported as NOT verified, never as current.
 
+Vendored packages: a package archive a composed module's package.json selects
+(`file:…tgz`), whose *.provenance.json beside it names the repository and
+commit it was built from, fails when that repository is a module the
+workspace composes at another commit (vendored_package_behind_pin), or when
+its bytes are not the digest its provenance records
+(vendored_package_digest_mismatch). Each composed module's published API
+catalog is also held to its descriptors: a method the descriptor serves that
+no listener lists is a warning (contract_catalog_unserved_method).
+
 Stable diagnostic codes: pin_stale, pin_held, pin_hold_invalid,
 pin_currency_unverified, checkout_override_active, cli_stale, workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
@@ -2788,6 +2849,8 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
+vendored_package_behind_pin, vendored_package_digest_mismatch,
+vendored_package_uncomparable, contract_catalog_unserved_method,
 agent_dev_build, runnable_binding_declined,
 runnable_binding_decline_invalid, runnable_operations_unreadable,
 configuration_directory_missing, configuration_missing,

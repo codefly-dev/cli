@@ -13,6 +13,7 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
+	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"gopkg.in/yaml.v3"
 )
@@ -120,4 +121,43 @@ func endpointProcedures(set *descriptorpb.FileDescriptorSet, endpoint *compositi
 		return nil, fmt.Errorf("endpoint %s/%s: %w", endpoint.Service, endpoint.Endpoint, err)
 	}
 	return methods, nil
+}
+
+// ProtobufCatalogCoverage holds a catalog's protobuf listeners to their
+// descriptors the way a module update reads them (core's
+// composition.ProtobufCoverage): the listeners of one service that share one
+// descriptor serve, between them, every method of every service they list. An
+// inventory that omits a method the service registers publishes a catalog in
+// which that method is served by no listener, and a composition that calls it
+// is refused only when it is rendered; here it is refused where the inventory
+// is written. read returns an endpoint's descriptor bytes.
+func ProtobufCatalogCoverage(endpoints []composition.APIContractEndpoint, read func(composition.APIContractEndpoint) ([]byte, error)) error {
+	type descriptorKey struct{ service, digest string }
+	var keys []descriptorKey
+	listeners := map[descriptorKey][]composition.APIContractEndpoint{}
+	for _, endpoint := range endpoints {
+		if endpoint.Kind != composition.APIContractKindProtobuf {
+			continue
+		}
+		key := descriptorKey{endpoint.Service, endpoint.Digest}
+		if _, seen := listeners[key]; !seen {
+			keys = append(keys, key)
+		}
+		listeners[key] = append(listeners[key], endpoint)
+	}
+	for _, key := range keys {
+		shared := listeners[key]
+		data, err := read(shared[0])
+		if err != nil {
+			return fmt.Errorf("service %s endpoint %s: read its descriptor: %w", key.service, shared[0].Endpoint, err)
+		}
+		var set descriptorpb.FileDescriptorSet
+		if err = googleproto.Unmarshal(data, &set); err != nil {
+			return fmt.Errorf("service %s endpoint %s: parse its descriptor: %w", key.service, shared[0].Endpoint, err)
+		}
+		if err = composition.ProtobufCoverage(&set, shared); err != nil {
+			return fmt.Errorf("service %s: %w", key.service, err)
+		}
+	}
+	return nil
 }
