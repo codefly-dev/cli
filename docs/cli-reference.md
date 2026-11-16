@@ -3419,7 +3419,10 @@ modules, for example. Declared there, the file and its --check depend on the
 workspace alone. --call-endpoint overrides the declaration for one invocation,
 and an explicitly empty value sends each call to its owner. It must be an HTTP-based
 endpoint of a workspace module, and it is resolved like an owner's (same
-environment, same naming scope). Only the address moves: the owner is still
+environment, same naming scope). A local environment's file carries it as the
+reference ${endpoint:<module>/<service>/<endpoint>}, which the run that delivers
+the group resolves to the address it allocated, so one file serves every naming
+scope. Only the address moves: the owner is still
 loaded and held to its served surface and published contract, and the
 operation, the Connect procedure or REST verb and path, the contract, its
 digest and the policy stay the owner's. The endpoint forwards the call; the

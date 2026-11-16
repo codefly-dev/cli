@@ -2,11 +2,14 @@ package generate
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
@@ -73,8 +76,8 @@ func TestRunnableBindingsResolveInTheRunsNamingScope(t *testing.T) {
 	require.ErrorContains(t, err, "--naming-scope alpha")
 }
 
-// Through a declared call endpoint only the address moves: it is the hop's,
-// resolved in the run's scope, while the operation, its Connect procedure, the
+// Through a declared call endpoint only the address moves: it is a reference
+// to the hop, resolved by the run that delivers it, while the operation, its Connect procedure, the
 // contract, its digest and the policy are exactly the direct binding's.
 func TestRunnableBindingsCallThroughTheDeclaredEndpoint(t *testing.T) {
 	ctx := context.Background()
@@ -102,8 +105,9 @@ func TestRunnableBindingsCallThroughTheDeclaredEndpoint(t *testing.T) {
 	owner := nativeFixtureAddress(t, ctx, root, "documents", "runtime-worker", "connect", "rtpg")
 	require.NotEqual(t, hop, owner)
 	for key, value := range through {
-		viaHop, err := corerunnable.DecodePrepared([]byte(value))
-		require.NoError(t, err)
+		require.Contains(t, value, `"address":"`+fixtureHopReference+`"`, "%s names the hop by reference", key)
+		viaHop, err := corerunnable.DecodePrepared([]byte(strings.ReplaceAll(value, fixtureHopReference, hop)))
+		require.NoError(t, err, "the binding a run delivers, its reference resolved, is a prepared binding")
 		straight, err := corerunnable.DecodePrepared([]byte(direct[key]))
 		require.NoError(t, err)
 		require.Equal(t, hop, viaHop.GetCall().GetAddress(), "%s is sent to the hop", key)
@@ -116,7 +120,7 @@ func TestRunnableBindingsCallThroughTheDeclaredEndpoint(t *testing.T) {
 		require.True(t, googleproto.Equal(straight.GetPolicy(), viaHop.GetPolicy()), "policy")
 	}
 
-	// --check holds the file to the endpoint and scope too.
+	// --check holds the file to the endpoint too.
 	runnableBindingsCheck = true
 	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
 	runnableBindingsCallEndpoint = ""
@@ -218,16 +222,19 @@ func TestAnEnvironmentDeclaresWhereItsRunnableCallsGo(t *testing.T) {
 		require.NotEmpty(t, values)
 		var address string
 		for _, value := range values {
-			prepared, err := corerunnable.DecodePrepared([]byte(value))
-			require.NoError(t, err)
-			address = prepared.GetCall().GetAddress()
+			var prepared struct {
+				Call struct {
+					Address string `json:"address"`
+				} `json:"call"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(value), &prepared))
+			address = prepared.Call.Address
 		}
 		return address
 	}
 
 	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
-	hop := nativeFixtureAddress(t, ctx, root, "authority", "hop", "http", "")
-	require.Equal(t, hop, addressOf(), "the declared endpoint is used with no flag")
+	require.Equal(t, fixtureHopReference, addressOf(), "the declared endpoint is used with no flag")
 	runnableBindingsCheck = true
 	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil), "a plain --check is deterministic against the declaration")
 
@@ -243,6 +250,55 @@ func TestAnEnvironmentDeclaresWhereItsRunnableCallsGo(t *testing.T) {
 	require.ErrorContains(t, err, "out of date")
 	require.ErrorContains(t, err, "runnable-bindings --env local`", "the declared endpoint needs no flag to regenerate")
 }
+
+// A local file names its call endpoint by reference, so it is the same file in
+// every naming scope: generating under one scope and checking under another
+// agrees, and the grants a composition reads from the file still decode.
+func TestALocalCallEndpointIsWrittenAsAReferenceForEveryNamingScope(t *testing.T) {
+	ctx := context.Background()
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint())
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+	resetRunnableBindingsFlags(t)
+	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}))
+	publishFixtureConnectEndpoint(t, moduleDir, "connect", nil)
+	addFixtureHop(t, ctx, root)
+	declareLocalCallEndpoint(t, ctx, root, "authority/hop/http")
+	target := filepath.Join(root, "configurations", "local", RunnableBindingsGroup+".env")
+
+	require.NotEqual(t,
+		nativeFixtureAddress(t, ctx, root, "authority", "hop", "http", "alpha"),
+		nativeFixtureAddress(t, ctx, root, "authority", "hop", "http", "beta"),
+		"the hop's address differs between the two scopes")
+
+	require.NoError(t, RunnableBindingsCmd.Flags().Set("naming-scope", "alpha"))
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+	underAlpha, err := os.ReadFile(target)
+	require.NoError(t, err)
+	values := readPreparedValues(t, target)
+	require.NotEmpty(t, values)
+	for key, value := range values {
+		require.Contains(t, value, `"address":"`+fixtureHopReference+`"`, key)
+		require.NotContains(t, value, "localhost", "%s carries no resolved address", key)
+		prepared, err := runnablespkg.DecodeUnresolvedPrepared(value)
+		require.NoError(t, err, "the file's value reads as a prepared binding")
+		require.NotEmpty(t, prepared.GetPolicy().GetAudience())
+	}
+
+	resetRunnableBindingsFlags(t)
+	require.NoError(t, RunnableBindingsCmd.Flags().Set("naming-scope", "beta"))
+	runnableBindingsCheck = true
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil), "the file generated under alpha is current under beta")
+	runnableBindingsCheck = false
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+	underBeta, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, string(underAlpha), string(underBeta))
+}
+
+// fixtureHopReference is the reference a local file carries for the fixture
+// hop's http endpoint.
+const fixtureHopReference = "${endpoint:authority/hop/http}"
 
 // declareLocalCallEndpoint declares the local environment with a runnable call
 // endpoint, as workspace.codefly.yaml spells it.
