@@ -15,7 +15,7 @@ func conformingSolution(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "module.codefly.yaml"), `kind: module
-name: wiki
+name: quill
 service-entry: backend
 services:
     - name: backend
@@ -47,21 +47,21 @@ lifecycle:
     render: true
 `)
 	write(t, filepath.Join(dir, "module.contract.codefly.yaml"), `schema: codefly/module-contract/v1
-principal: wiki
+principal: quill
 owner_aware: true
 namespaces: []
 queues: []
 scope_ceilings:
-    - resource_kind: wiki.page
+    - resource_kind: quill.page
       actions: [read, write]
 roles:
     - name: admin
       scopes:
-        - resource_kind: wiki.page
+        - resource_kind: quill.page
           actions: [read, write]
     - name: user
       scopes:
-        - resource_kind: wiki.page
+        - resource_kind: quill.page
           actions: [read, write]
 bindings: []
 `)
@@ -79,11 +79,11 @@ bindings: []
 // role grants, and one relayed module route that admits any checked caller, as
 // a solution's relays do.
 const conformingRoutes = `{"swagger":"2.0","basePath":"/",` +
-	`"info":{"title":"wiki solution backend","version":"0.0.1"},"paths":{` +
-	`"/v1/wiki/pages":{` +
-	`"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"wiki.page","actions":["read"]}]}},` +
-	`"post":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"wiki.page","actions":["write"]}]}}},` +
-	`"/v1/wiki/modules/documents/{path=**}":{"post":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
+	`"info":{"title":"quill solution backend","version":"0.0.1"},"paths":{` +
+	`"/v1/quill/pages":{` +
+	`"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"quill.page","actions":["read"]}]}},` +
+	`"post":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"quill.page","actions":["write"]}]}}},` +
+	`"/v1/quill/modules/documents/{path=**}":{"post":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
 
 // writePackagedRoutes writes the published OpenAPI document and the package
 // manifest that names it, with the digest the policy reader checks. A test
@@ -94,7 +94,7 @@ func writePackagedRoutes(t *testing.T, dir, routes string) {
 	sum := sha256.Sum256([]byte(routes))
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
 schema: codefly/module-package/v2
-id: obin/wiki
+id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
 artifact-roots:
@@ -106,7 +106,7 @@ services:
       api-contracts:
         - endpoint: http
           kind: openapi
-          package: wiki solution backend
+          package: quill solution backend
           path: contracts/api/backend/http/openapi.json
           digest: sha256:`+hex.EncodeToString(sum[:])+`
 contracts:
@@ -139,7 +139,7 @@ endpoints:
       exposure: none
       api: http
 `)
-	write(t, filepath.Join(dir, "services", "backend", FrontendFileName), `title: Wiki
+	write(t, filepath.Join(dir, "services", "backend", FrontendFileName), `title: Quill
 order: 60
 exposed_module: ./Page
 host_contract: 1
@@ -182,7 +182,7 @@ func checkFor(t *testing.T, report *Report, code string) Check {
 // The shape the CLI generates must be the shape the CLI accepts. If these ever
 // disagree, one of them is wrong and a scaffolded solution is born failing.
 func TestTheGeneratedShapeConforms(t *testing.T) {
-	report := Inspect("wiki", conformingSolution(t))
+	report := Inspect("quill", conformingSolution(t))
 	if !report.IsSolution {
 		t.Fatal("a module shipping a solution manifest was not read as a solution")
 	}
@@ -214,13 +214,13 @@ func TestAModuleWithNoManifestIsNotASolution(t *testing.T) {
 func TestOwnerAwareMissingFails(t *testing.T) {
 	dir := conformingSolution(t)
 	write(t, filepath.Join(dir, "module.contract.codefly.yaml"), `schema: codefly/module-contract/v1
-principal: wiki
+principal: quill
 namespaces: []
 queues: []
 scope_ceilings: []
 bindings: []
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	check := checkFor(t, report, CodeOwnerAwareMissing)
 	if check.Status != StatusFail {
 		t.Fatalf("owner_aware missing was %s, want fail", check.Status)
@@ -254,7 +254,7 @@ endpoints:
       exposure: none
       api: http
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	check := checkFor(t, report, CodeModuleEdgeDeclared)
 	if check.Status != StatusFail {
 		t.Fatalf("a direct module edge was %s, want fail", check.Status)
@@ -270,13 +270,13 @@ endpoints:
 func TestAWrongServiceEntryFails(t *testing.T) {
 	dir := conformingSolution(t)
 	write(t, filepath.Join(dir, "module.codefly.yaml"), `kind: module
-name: wiki
+name: quill
 service-entry: web
 services:
     - name: backend
     - name: web
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeServiceEntryNotTheEntry).Status != StatusFail {
 		t.Fatal("a service-entry naming the shell was accepted")
 	}
@@ -289,7 +289,7 @@ func TestAMissingPackageFails(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "module.package.codefly.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodePackageMissing).Status != StatusFail {
 		t.Fatal("a solution with no published identity was accepted")
 	}
@@ -301,7 +301,7 @@ func TestPublishingTheShellWarnsRatherThanFails(t *testing.T) {
 	dir := conformingSolution(t)
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
 schema: codefly/module-package/v2
-id: obin/wiki
+id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
 artifact-roots:
@@ -313,7 +313,7 @@ services:
       api-contracts:
         - endpoint: http
           kind: openapi
-          package: wiki solution backend
+          package: quill solution backend
           path: contracts/api/backend/http/openapi.json
           digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     - name: web
@@ -321,7 +321,7 @@ services:
 contracts:
     composition: ">=2.0.0 <3.0.0"
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodePackagePublishesShell).Status != StatusWarn {
 		t.Fatal("publishing the shell should warn, not fail")
 	}
@@ -350,7 +350,7 @@ lifecycle:
     package: true
     render: true
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeConsumedAPIUnnamed).Status != StatusFail {
 		t.Fatal("a consumed API with no route name was accepted")
 	}
@@ -374,7 +374,7 @@ endpoints:
       exposure: none
       api: http
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeModuleIdentityMissing).Status != StatusFail {
 		t.Fatal("a backend that presents no identity was accepted")
 	}
@@ -382,10 +382,10 @@ endpoints:
 
 // A consumed module with no binding is reported, but as a warning: it is
 // correct when the module is reached with the viewer's own credential, which
-// is what wiki does for robin, tracing and annotations. Failing it would fail
+// is what quill does for sidekick, tracing and annotations. Failing it would fail
 // the reference solution.
 func TestAConsumedModuleWithNoBindingWarnsRatherThanFails(t *testing.T) {
-	report := Inspect("wiki", conformingSolution(t))
+	report := Inspect("quill", conformingSolution(t))
 	check := checkFor(t, report, CodeConsumedWithoutBinding)
 	if check.Status != StatusWarn {
 		t.Fatalf("a consumed module with no binding was %s, want warn", check.Status)
@@ -405,7 +405,7 @@ func TestAConsumedModuleWithNoBindingWarnsRatherThanFails(t *testing.T) {
 // no source is invisible to every other reading.
 func TestAPageShellWithNoAppWarns(t *testing.T) {
 	dir := conformingSolution(t)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodePageShellHasNoApp).Status != StatusWarn {
 		t.Fatal("a shell with no app behind it was not reported")
 	}
@@ -415,7 +415,7 @@ func TestAPageShellWithNoAppWarns(t *testing.T) {
 
 	// With an app where the manifest says it is, the finding goes away.
 	write(t, filepath.Join(dir, "services", PageService, "code", "package.json"), `{"name":"web","private":true}`)
-	if checkFor(t, Inspect("wiki", dir), CodePageShellHasNoApp).Status != StatusOK {
+	if checkFor(t, Inspect("quill", dir), CodePageShellHasNoApp).Status != StatusOK {
 		t.Fatal("a shell with a real app was still reported")
 	}
 }
@@ -450,7 +450,7 @@ func TestAPageShellFindsItsAppWhereTheManifestSaysItIs(t *testing.T) {
 				write(t, manifest, string(existing)+"spec:\n    source-dir: "+layout.sourceDir+"\n")
 			}
 			write(t, filepath.Join(shell, layout.appDir, "package.json"), `{"name":"web","private":true}`)
-			if checkFor(t, Inspect("wiki", dir), CodePageShellHasNoApp).Status != StatusOK {
+			if checkFor(t, Inspect("quill", dir), CodePageShellHasNoApp).Status != StatusOK {
 				t.Fatal("the shell's app was not found where the manifest says it is")
 			}
 		})
@@ -464,17 +464,17 @@ func TestAPageShellFindsItsAppWhereTheManifestSaysItIs(t *testing.T) {
 // call". The backend boots, serves its route, declares its policy, and admits
 // nothing; the only sign is a warning in the authority's log during a run.
 //
-// Of the nine solutions in one fleet, the two that are actually run — wiki
+// Of the nine solutions in one fleet, the two that are actually run — quill
 // and proposals — carry it and the other seven do not.
 func TestAPackageCarryingNoBackendContractFails(t *testing.T) {
 	dir := conformingSolution(t)
-	if checkFor(t, Inspect("wiki", dir), CodeBackendContractMissing).Status != StatusOK {
+	if checkFor(t, Inspect("quill", dir), CodeBackendContractMissing).Status != StatusOK {
 		t.Fatal("a package carrying the backend's contract was reported")
 	}
 
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
 schema: codefly/module-package/v2
-id: obin/wiki
+id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
 artifact-roots:
@@ -485,7 +485,7 @@ services:
 contracts:
     composition: ">=2.0.0 <3.0.0"
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeBackendContractMissing).Status != StatusFail {
 		t.Fatal("a package carrying no contract for the backend was not reported")
 	}
@@ -501,7 +501,7 @@ func TestNoPublishedContractIsNotReportedTwice(t *testing.T) {
 	dir := conformingSolution(t)
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
 schema: codefly/module-package/v2
-id: obin/wiki
+id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
 artifact-roots:
@@ -513,7 +513,7 @@ services:
 contracts:
     composition: ">=2.0.0 <3.0.0"
 `)
-	report := Inspect("wiki", dir)
+	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeBackendContractMissing).Status != StatusFail {
 		t.Fatal("a package carrying no contract was accepted")
 	}

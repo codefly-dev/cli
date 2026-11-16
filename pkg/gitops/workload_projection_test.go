@@ -167,7 +167,7 @@ func renderedContainerEnv(t *testing.T, destination, service, container string) 
 	return nil
 }
 
-// TestAnIdentityWorkloadIsToldWhereItsTokenIs is the Blue gateway failure:
+// TestAnIdentityWorkloadIsToldWhereItsTokenIs is the Aurora gateway failure:
 // the render mounted the projection correctly and told the process nothing,
 // so Hop's RunCredential — which reads CODEFLY__WORKLOAD_TOKEN_FILE and
 // refuses when it is absent, inferring no Kubernetes default — acquired no
@@ -515,7 +515,7 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 // verifier mounts the platform's trust ConfigMap,
 // `<host.component>-delivery-trust`, at the host's constant path, as one
 // projected ConfigMap source, no items, read-only — the shape the platform's
-// admission pins (obin-ai/infra-base#1366): the composition's Deployment
+// admission pins (northwind/infra-kit#1366): the composition's Deployment
 // carries the mount, and the render is that Deployment. The other serving
 // workloads of the module, and every other module, mount nothing; a hosted
 // environment that still states host.trust_anchor is refused, not mounted

@@ -11,11 +11,11 @@ import (
 )
 
 // multiRootFlow builds a flow over the multi-root fixture: two solution
-// backends (lastlogin-go, wiki) that both require the saas host services, wiki
+// backends (beacon-go, quill) that both require the saas host services, quill
 // additionally requiring documents, one service (analytics/reports) the
 // workspace declares but no root selects — and whose edge onto a private
 // endpoint is the violation the workspace-wide validator refuses and no
-// solution-seeded run reaches — and two build-only edges (wiki/backend →
+// solution-seeded run reaches — and two build-only edges (quill/backend →
 // contracts/schemas, documents/documents → saas/auth-gateway) that must never
 // constrain a run.
 //
@@ -57,17 +57,17 @@ func uniques(services []architecture.Service) []string {
 // host services they share are resolved once, and every co-root is managed by
 // the same flow rather than needing a second `codefly run`.
 func TestRunClosureUnionsEveryRootOverOneGraph(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
 	got := uniques(required)
 
 	require.ElementsMatch(t,
-		[]string{"saas/frontend", "saas/auth-gateway", "documents/documents", "wiki/backend"},
+		[]string{"saas/frontend", "saas/auth-gateway", "documents/documents", "quill/backend"},
 		got,
 		"the run set is the union of both roots' closures, plus the co-root itself")
-	require.NotContains(t, got, "lastlogin-go/backend", "the origin gets its manager separately")
+	require.NotContains(t, got, "beacon-go/backend", "the origin gets its manager separately")
 	require.NotContains(t, got, "analytics/reports", "a service no root selects is not in the run")
 
 	// The shared host services are started once, not once per solution: two
@@ -76,18 +76,18 @@ func TestRunClosureUnionsEveryRootOverOneGraph(t *testing.T) {
 
 	// Dependencies precede the root that requires them, so managers are created
 	// in the order the run set is meant to come up in.
-	require.Less(t, indexOf(t, got, "saas/frontend"), indexOf(t, got, "wiki/backend"))
-	require.Less(t, indexOf(t, got, "documents/documents"), indexOf(t, got, "wiki/backend"))
+	require.Less(t, indexOf(t, got, "saas/frontend"), indexOf(t, got, "quill/backend"))
+	require.Less(t, indexOf(t, got, "documents/documents"), indexOf(t, got, "quill/backend"))
 }
 
 // With one root the union must reduce to exactly what the run path computed
 // before co-roots existed, so an ordinary `codefly run service` is untouched.
 func TestRunClosureWithOneRootMatchesOrderTo(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "wiki/backend")
+	flow, ctx := multiRootFlow(t, "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
-	order, err := flow.world.Dependencies.OrderTo(ctx, "wiki/backend")
+	order, err := flow.world.Dependencies.OrderTo(ctx, "quill/backend")
 	require.NoError(t, err)
 
 	require.Equal(t, uniques(order), uniques(required))
@@ -98,7 +98,7 @@ func TestRunClosureWithOneRootMatchesOrderTo(t *testing.T) {
 // propagating an endpoint change to a dependent could reach a service the flow
 // has no manager for.
 func TestScopeDependenciesToRunDropsServicesNoRootSelected(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestScopeDependenciesToRunDropsServicesNoRootSelected(t *testing.T) {
 
 	dependents, err := flow.world.Dependencies.DirectDependents(ctx, "saas/frontend")
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"lastlogin-go/backend", "wiki/backend"}, uniques(dependents),
+	require.ElementsMatch(t, []string{"beacon-go/backend", "quill/backend"}, uniques(dependents),
 		"both roots consume the shared host service, and nothing outside the run does")
 
 	_, err = flow.world.Dependencies.ServiceFromUnique("analytics/reports")
@@ -122,7 +122,7 @@ func TestScopeDependenciesToRunDropsServicesNoRootSelected(t *testing.T) {
 // with a runtime edge the other way it makes the run graph cyclic and the run
 // fails outright.
 func TestScopeDependenciesToRunKeepsBuildOnlyEdgesOutOfTheRunGraph(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
@@ -173,11 +173,11 @@ func runSetEdges(t testing.TB, flow *Flow, ctx context.Context, runSet []string)
 // agree on every edge among those services. Any refinement a future rebuild
 // drops changes this relation and fails here, named or not.
 func TestScopedGraphKeepsTheSameRelationAsTheUnscopedPath(t *testing.T) {
-	// documents/documents already sits in wiki/backend's runtime closure, so
+	// documents/documents already sits in quill/backend's runtime closure, so
 	// naming it a co-root leaves the run set identical while forcing the run
 	// through scopeDependenciesToRun.
-	unscoped, ctx := multiRootFlow(t, "wiki/backend")
-	scoped, _ := multiRootFlow(t, "wiki/backend", "documents/documents")
+	unscoped, ctx := multiRootFlow(t, "quill/backend")
+	scoped, _ := multiRootFlow(t, "quill/backend", "documents/documents")
 
 	unscopedRequired, err := unscoped.runClosure(ctx)
 	require.NoError(t, err)
@@ -186,7 +186,7 @@ func TestScopedGraphKeepsTheSameRelationAsTheUnscopedPath(t *testing.T) {
 	require.ElementsMatch(t, uniques(unscopedRequired), uniques(scopedRequired),
 		"the two flows must cover the same services for the comparison to mean anything")
 
-	runSet := append(uniques(scopedRequired), "wiki/backend")
+	runSet := append(uniques(scopedRequired), "quill/backend")
 	require.NoError(t, scoped.scopeDependenciesToRun(ctx, uniques(scopedRequired), nil))
 
 	require.Equal(t,
@@ -198,20 +198,20 @@ func TestScopedGraphKeepsTheSameRelationAsTheUnscopedPath(t *testing.T) {
 // A build-only dependency on a service nothing else needs at runtime must not
 // drag that service into the run at all.
 func TestRunClosureExcludesBuildOnlyDependencies(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
 	require.NotContains(t, uniques(required), "contracts/schemas",
-		"wiki/backend declares contracts/schemas as a build dependency only")
+		"quill/backend declares contracts/schemas as a build dependency only")
 }
 
 func TestRootBeginActionsSeedEveryRoot(t *testing.T) {
-	flow, _ := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, _ := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	require.Equal(t, []Action{
-		{Type: RuntimeBegin, Service: "lastlogin-go/backend"},
-		{Type: RuntimeBegin, Service: "wiki/backend"},
+		{Type: RuntimeBegin, Service: "beacon-go/backend"},
+		{Type: RuntimeBegin, Service: "quill/backend"},
 	}, flow.rootBeginActions())
 }
 
@@ -220,27 +220,27 @@ func TestRootBeginActionsSeedEveryRoot(t *testing.T) {
 // carried that far.
 func TestStopAfterRootsWaitsForEveryRoot(t *testing.T) {
 	ctx := context.Background()
-	stop := stopAfterRoots([]string{"lastlogin-go/backend", "wiki/backend"}, RuntimeLoad)
+	stop := stopAfterRoots([]string{"beacon-go/backend", "quill/backend"}, RuntimeLoad)
 
 	require.False(t, stop(ctx, Action{Type: RuntimeLoad, Service: "saas/frontend"}), "a dependency is not a root")
-	require.False(t, stop(ctx, Action{Type: RuntimeInit, Service: "lastlogin-go/backend"}), "another phase is not the barrier")
-	require.False(t, stop(ctx, Action{Type: RuntimeLoad, Service: "lastlogin-go/backend"}), "one root is not every root")
-	require.True(t, stop(ctx, Action{Type: RuntimeLoad, Service: "wiki/backend"}))
+	require.False(t, stop(ctx, Action{Type: RuntimeInit, Service: "beacon-go/backend"}), "another phase is not the barrier")
+	require.False(t, stop(ctx, Action{Type: RuntimeLoad, Service: "beacon-go/backend"}), "one root is not every root")
+	require.True(t, stop(ctx, Action{Type: RuntimeLoad, Service: "quill/backend"}))
 }
 
 func TestStopAfterRootsWithOneRootStopsAtItsBarrier(t *testing.T) {
 	ctx := context.Background()
-	stop := stopAfterRoots([]string{"wiki/backend"}, RuntimeInit)
+	stop := stopAfterRoots([]string{"quill/backend"}, RuntimeInit)
 
 	require.False(t, stop(ctx, Action{Type: RuntimeInit, Service: "saas/frontend"}))
-	require.True(t, stop(ctx, Action{Type: RuntimeInit, Service: "wiki/backend"}))
+	require.True(t, stop(ctx, Action{Type: RuntimeInit, Service: "quill/backend"}))
 }
 
 // Readiness covers every root, not just the one the run is named after: a run
 // that reports ready while a co-root has not started is the failure mode the
 // hand-wired processes had.
 func TestReadinessRequirementsCoverEveryRoot(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	requirements, err := flow.readinessRequirements(ctx)
 	require.NoError(t, err)
@@ -252,7 +252,7 @@ func TestReadinessRequirementsCoverEveryRoot(t *testing.T) {
 		}
 	}
 	require.ElementsMatch(t, []string{
-		"lastlogin-go/backend", "wiki/backend",
+		"beacon-go/backend", "quill/backend",
 		"saas/frontend", "saas/auth-gateway", "documents/documents",
 	}, lifecycles)
 }
@@ -261,7 +261,7 @@ func TestReadinessRequirementsCoverEveryRoot(t *testing.T) {
 // endpoint its producer does not expose fails the run with the manifest error
 // rather than waiting forever for a mapping that can never appear.
 func TestDependencyEndpointDeclarationsValidateCoRoots(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
@@ -274,7 +274,7 @@ func TestDependencyEndpointDeclarationsValidateCoRoots(t *testing.T) {
 // co-root that shared the origin's name, and rendered the survivors
 // ambiguously.
 func TestManagedServicesNamesEveryRootItTearsDown(t *testing.T) {
-	flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+	flow, ctx := multiRootFlow(t, "beacon-go/backend", "quill/backend")
 
 	required, err := flow.runClosure(ctx)
 	require.NoError(t, err)
@@ -286,11 +286,11 @@ func TestManagedServicesNamesEveryRootItTearsDown(t *testing.T) {
 	flow.services = append(flow.services, flow.originService)
 
 	origin, dependencies := flow.ManagedServices()
-	require.Equal(t, "lastlogin-go/backend", origin)
-	require.Contains(t, dependencies, "wiki/backend",
+	require.Equal(t, "beacon-go/backend", origin)
+	require.Contains(t, dependencies, "quill/backend",
 		"a co-root sharing the origin's bare service name is still torn down, so it must be named")
 	require.ElementsMatch(t,
-		[]string{"saas/frontend", "saas/auth-gateway", "documents/documents", "wiki/backend"},
+		[]string{"saas/frontend", "saas/auth-gateway", "documents/documents", "quill/backend"},
 		dependencies)
 }
 

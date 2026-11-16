@@ -88,24 +88,24 @@ func TestFrontendBuildContextIsTheCommittedRepositoryTree(t *testing.T) {
 	root := gitRepository(t, map[string]string{
 		".gitignore":                   "*.secret.env\nnode_modules/\n",
 		"packages/shared/package.json": "{}",
-		"solutions/wiki/services/fe-remote/package.json": "{}",
+		"solutions/quill/services/fe-remote/package.json": "{}",
 	})
 	for name, contents := range map[string]string{
-		"configurations/staging/identity.secret.env":                "TOKEN=canary",
-		"solutions/wiki/services/fe-remote/node_modules/x/index.js": "x",
-		"solutions/wiki/untracked.txt":                              "x",
+		"configurations/staging/identity.secret.env":                 "TOKEN=canary",
+		"solutions/quill/services/fe-remote/node_modules/x/index.js": "x",
+		"solutions/quill/untracked.txt":                              "x",
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600))
 	}
-	module := &resources.Module{Name: "wiki"}
-	module.WithDir(filepath.Join(root, "solutions", "wiki"))
+	module := &resources.Module{Name: "quill"}
+	module.WithDir(filepath.Join(root, "solutions", "quill"))
 	context, component, err := frontendBuildContext(t.Context(), module, t.TempDir())
 	require.NoError(t, err)
-	require.Equal(t, "solutions/wiki", component)
+	require.Equal(t, "solutions/quill", component)
 	require.FileExists(t, filepath.Join(context, "packages", "shared", "package.json"))
-	require.FileExists(t, filepath.Join(context, "solutions", "wiki", "services", "fe-remote", "package.json"))
-	for _, absent := range []string{"configurations/staging/identity.secret.env", "solutions/wiki/services/fe-remote/node_modules", "solutions/wiki/untracked.txt", ".git"} {
+	require.FileExists(t, filepath.Join(context, "solutions", "quill", "services", "fe-remote", "package.json"))
+	for _, absent := range []string{"configurations/staging/identity.secret.env", "solutions/quill/services/fe-remote/node_modules", "solutions/quill/untracked.txt", ".git"} {
 		require.NoFileExists(t, filepath.Join(context, absent))
 		require.NoDirExists(t, filepath.Join(context, absent))
 	}
@@ -126,9 +126,9 @@ func TestFrontendBuildContextIsTheCommittedRepositoryTree(t *testing.T) {
 // A path a generated Dockerfile would have to quote is refused before any
 // build starts.
 func TestFrontendBuildRefusesAPathItCannotNameSafely(t *testing.T) {
-	root := gitRepository(t, map[string]string{"solutions/my wiki/services/fe-remote/package.json": "{}"})
-	module := &resources.Module{Name: "wiki"}
-	module.WithDir(filepath.Join(root, "solutions", "my wiki"))
+	root := gitRepository(t, map[string]string{"solutions/my quill/services/fe-remote/package.json": "{}"})
+	module := &resources.Module{Name: "quill"}
+	module.WithDir(filepath.Join(root, "solutions", "my quill"))
 	err := BuildFrontendBundle(t.Context(), module, filepath.Join(t.TempDir(), "bundle"))
 	require.ErrorContains(t, err, "a build path may not carry")
 }

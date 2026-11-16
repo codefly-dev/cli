@@ -116,7 +116,7 @@ func TestAddComposedModuleSourceWritesOverlayNotCommittedPath(t *testing.T) {
 func TestAddComposedModuleSourceDerivesIdentityFromGitRemote(t *testing.T) {
 	source := t.TempDir()
 	runAddTestGit(t, source, "init", "--quiet")
-	runAddTestGit(t, source, "remote", "add", "origin", "git@github.com:obin-ai/module-host.git")
+	runAddTestGit(t, source, "remote", "add", "origin", "git@github.com:northwind/module-host.git")
 	writeAddTestFile(t, filepath.Join(source, "module.codefly.yaml"), "kind: module\nname: host\nservices:\n  - name: api\n")
 
 	root := t.TempDir()
@@ -150,8 +150,8 @@ func TestAddComposedModuleSourceDerivesIdentityFromGitRemote(t *testing.T) {
 	if ref.PathOverride != nil {
 		t.Fatalf("committed reference carries a path: %v", *ref.PathOverride)
 	}
-	if ref.Source != "obin-ai/module-host" || ref.Version != "latest" {
-		t.Fatalf("committed identity = source %q version %q, want obin-ai/module-host / latest", ref.Source, ref.Version)
+	if ref.Source != "northwind/module-host" || ref.Version != "latest" {
+		t.Fatalf("committed identity = source %q version %q, want northwind/module-host / latest", ref.Source, ref.Version)
 	}
 }
 
@@ -164,7 +164,7 @@ func TestAddComposedModuleWorktreeWritesIdentityAndOverlay(t *testing.T) {
 	t.Chdir(root)
 
 	previousWorktree, previousVersion := moduleWorktree, moduleVersion
-	moduleWorktree, moduleVersion = "obin-ai/module-document-store@main", "latest"
+	moduleWorktree, moduleVersion = "northwind/module-document-store@main", "latest"
 	defer func() { moduleWorktree, moduleVersion = previousWorktree, previousVersion }()
 
 	if err := addComposedModule("documents"); err != nil {
@@ -176,7 +176,7 @@ func TestAddComposedModuleWorktreeWritesIdentityAndOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	if overlay == nil || overlay.Resolve["documents"] == nil ||
-		overlay.Resolve["documents"].Worktree != "obin-ai/module-document-store@main" {
+		overlay.Resolve["documents"].Worktree != "northwind/module-document-store@main" {
 		t.Fatalf("overlay worktree = %+v, want the worktree spec", overlay)
 	}
 
@@ -190,8 +190,8 @@ func TestAddComposedModuleWorktreeWritesIdentityAndOverlay(t *testing.T) {
 			ref = r
 		}
 	}
-	if ref == nil || ref.Source != "obin-ai/module-document-store" || ref.Version != "latest" {
-		t.Fatalf("committed identity = %+v, want obin-ai/module-document-store / latest", ref)
+	if ref == nil || ref.Source != "northwind/module-document-store" || ref.Version != "latest" {
+		t.Fatalf("committed identity = %+v, want northwind/module-document-store / latest", ref)
 	}
 	if ref.PathOverride != nil {
 		t.Fatalf("committed reference carries a path: %v", *ref.PathOverride)
@@ -204,7 +204,7 @@ func TestAddComposedModuleLeavesCommittedConfigUntouchedWhenAlreadyDeclared(t *t
 		Name:   "solution",
 		Layout: resources.LayoutKindModules,
 		Modules: []*resources.ModuleReference{
-			{Name: "documents", Source: "obin-ai/module-document-store", Version: "latest"},
+			{Name: "documents", Source: "northwind/module-document-store", Version: "latest"},
 		},
 	}
 	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
@@ -218,7 +218,7 @@ func TestAddComposedModuleLeavesCommittedConfigUntouchedWhenAlreadyDeclared(t *t
 	}
 
 	previousWorktree, previousVersion := moduleWorktree, moduleVersion
-	moduleWorktree, moduleVersion = "obin-ai/module-document-store@main", "latest"
+	moduleWorktree, moduleVersion = "northwind/module-document-store@main", "latest"
 	defer func() { moduleWorktree, moduleVersion = previousWorktree, previousVersion }()
 
 	if composeErr := addComposedModule("documents"); composeErr != nil {
@@ -322,11 +322,11 @@ func addTestDigest(contents string) string {
 
 func TestNormalizeRemoteToOwnerRepo(t *testing.T) {
 	cases := map[string]string{
-		"git@github.com:obin-ai/module-host.git":       "obin-ai/module-host",
-		"https://github.com/obin-ai/module-host.git":   "obin-ai/module-host",
-		"https://user@github.com/Obin-AI/Module-Host":  "obin-ai/module-host",
-		"git@gitlab.com:group/proj.git":                "group/proj",
-		"ssh://git@github.com/obin-ai/module-host.git": "obin-ai/module-host",
+		"git@github.com:northwind/module-host.git":         "northwind/module-host",
+		"https://github.com/northwind/module-host.git":     "northwind/module-host",
+		"https://user@github.com/Northwind/Module-Host": "northwind/module-host",
+		"git@gitlab.com:group/proj.git":                    "group/proj",
+		"ssh://git@github.com/northwind/module-host.git":   "northwind/module-host",
 		// A look-alike host must not smuggle its way into the slug: the whole
 		// host is stripped, leaving the real owner/repo.
 		"https://github.com.example/foo/bar": "foo/bar",
@@ -363,7 +363,7 @@ func TestAddComposedModuleAlreadyDeclaredKeepsGitStatusClean(t *testing.T) {
 		Name:   "solution",
 		Layout: resources.LayoutKindModules,
 		Modules: []*resources.ModuleReference{
-			{Name: "documents", Source: "obin-ai/module-document-store", Version: "latest"},
+			{Name: "documents", Source: "northwind/module-document-store", Version: "latest"},
 		},
 	}
 	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
@@ -377,7 +377,7 @@ func TestAddComposedModuleAlreadyDeclaredKeepsGitStatusClean(t *testing.T) {
 	t.Chdir(root)
 
 	previousWorktree, previousVersion := moduleWorktree, moduleVersion
-	moduleWorktree, moduleVersion = "obin-ai/module-document-store@main", "latest"
+	moduleWorktree, moduleVersion = "northwind/module-document-store@main", "latest"
 	defer func() { moduleWorktree, moduleVersion = previousWorktree, previousVersion }()
 
 	if composeErr := addComposedModule("documents"); composeErr != nil {

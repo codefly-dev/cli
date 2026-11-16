@@ -44,7 +44,7 @@ func withSolutionFlags(t *testing.T, packageID string, consumes []string) {
 
 func documentsByName(t *testing.T, name string, consumes []string) map[string][]byte {
 	t.Helper()
-	withSolutionFlags(t, "obin/"+name, consumes)
+	withSolutionFlags(t, "northwind/"+name, consumes)
 	rendered, err := solutionDocuments(context.Background(), name)
 	if err != nil {
 		t.Fatalf("solutionDocuments: %v", err)
@@ -59,7 +59,7 @@ func documentsByName(t *testing.T, name string, consumes []string) map[string][]
 // The scaffold writes the four documents a solution is installed from, and the
 // page declaration sits beside the ENTRY service — core reads it from there.
 func TestSolutionScaffoldWritesTheDocumentsAHostInstallsFrom(t *testing.T) {
-	documents := documentsByName(t, "wiki", nil)
+	documents := documentsByName(t, "quill", nil)
 	for _, want := range []string{
 		manifest.FileName,
 		modulecontract.FileName,
@@ -77,7 +77,7 @@ func TestSolutionScaffoldWritesTheDocumentsAHostInstallsFrom(t *testing.T) {
 // owner would commit a wrong identity, so the scaffold refuses instead.
 func TestSolutionRefusesWithoutAPublishedIdentity(t *testing.T) {
 	withSolutionFlags(t, "", nil)
-	_, err := solutionDocuments(context.Background(), "wiki")
+	_, err := solutionDocuments(context.Background(), "quill")
 	if err == nil || !strings.Contains(err.Error(), "--package-id") {
 		t.Fatalf("error = %v, want a refusal naming --package-id", err)
 	}
@@ -104,7 +104,7 @@ func TestSolutionRefusesToGuessACodeflyFloorFromADevelopmentBuild(t *testing.T) 
 // read by the reader every render, sync and authority derivation uses. This is
 // the whole claim behind shipping it without an agent.
 func TestGeneratedSolutionManifestNamesNoExecutorAndStillLoads(t *testing.T) {
-	documents := documentsByName(t, "wiki", []string{"connect:documents/documents/grpc"})
+	documents := documentsByName(t, "quill", []string{"connect:documents/documents/grpc"})
 	content := documents[manifest.FileName]
 
 	var decoded map[string]any
@@ -127,7 +127,7 @@ func TestGeneratedSolutionManifestNamesNoExecutorAndStillLoads(t *testing.T) {
 // Naming an executor makes the manifest pass core's STRICT loader outright,
 // which is the state the file reaches the day an executor is published.
 func TestGeneratedSolutionManifestWithAnExecutorPassesTheStrictLoader(t *testing.T) {
-	withSolutionFlags(t, "obin/wiki", nil)
+	withSolutionFlags(t, "northwind/quill", nil)
 	executor := &resources.Agent{
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "solution-generic", Version: "0.1.0",
 	}
@@ -157,7 +157,7 @@ func TestSolutionManifestRulesAreCheckedWithoutAnExecutor(t *testing.T) {
 // checking, and refuses it by name otherwise. A scaffold that omitted it would
 // produce a solution that can act for nobody, silently.
 func TestGeneratedContractDeclaresOwnerAwareChecking(t *testing.T) {
-	documents := documentsByName(t, "wiki", nil)
+	documents := documentsByName(t, "quill", nil)
 	var contract modulecontract.Contract
 	if err := yaml.Unmarshal(documents[modulecontract.FileName], &contract); err != nil {
 		t.Fatal(err)
@@ -165,8 +165,8 @@ func TestGeneratedContractDeclaresOwnerAwareChecking(t *testing.T) {
 	if !contract.OwnerAware {
 		t.Fatal("the generated contract does not declare owner-aware checking, so the authority issues it no person capability")
 	}
-	if contract.Principal != "wiki" {
-		t.Fatalf("principal = %q, want wiki", contract.Principal)
+	if contract.Principal != "quill" {
+		t.Fatalf("principal = %q, want quill", contract.Principal)
 	}
 	// Declared empty, never omitted: an absent list and "there are none" must
 	// not look the same.
@@ -186,7 +186,7 @@ func TestGeneratedContractDeclaresOwnerAwareChecking(t *testing.T) {
 // shell is scaffolded and composed, and is NOT published, because a host that
 // federates the page's remote needs no shell of its own.
 func TestThePackagePublishesTheBackendAndNotTheShell(t *testing.T) {
-	documents := documentsByName(t, "wiki", nil)
+	documents := documentsByName(t, "quill", nil)
 	var packaged composition.PackageManifest
 	if err := yaml.Unmarshal(documents[composition.PackageManifestFileName], &packaged); err != nil {
 		t.Fatal(err)
@@ -280,7 +280,7 @@ func TestEntryServiceDeclaresTheAuthorityDoorAndNoModuleEdge(t *testing.T) {
 // does not speak to, and gains exactly what the shape states.
 func TestApplyEntryServiceShapeEditsInPlace(t *testing.T) {
 	root := t.TempDir()
-	module := &resources.Module{Name: "wiki"}
+	module := &resources.Module{Name: "quill"}
 	module.WithDir(root)
 	scaffolded := filepath.Join(root, "services", solutionEntryService, resources.ServiceConfigurationName)
 	writeAddTestFile(t, scaffolded, `kind: service
@@ -298,7 +298,7 @@ endpoints:
     - name: grpc
       visibility: private
 `)
-	withSolutionFlags(t, "obin/wiki", nil)
+	withSolutionFlags(t, "northwind/quill", nil)
 	if err := applyEntryServiceShape(context.Background(), module); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestSolutionCommandIsRegisteredAndHelpStandsAlone(t *testing.T) {
 	if err := SolutionCmd.Args(SolutionCmd, nil); err == nil {
 		t.Error("solution accepted no name")
 	}
-	if err := SolutionCmd.Args(SolutionCmd, []string{"wiki"}); err != nil {
+	if err := SolutionCmd.Args(SolutionCmd, []string{"quill"}); err != nil {
 		t.Errorf("solution rejected a valid name: %v", err)
 	}
 }
@@ -473,7 +473,7 @@ func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
 			t.Fatalf("the shell's next.config.ts must contain %q", required)
 		}
 	}
-	// wiki's `webpack` block is a hard error on the Next this agent
+	// quill's `webpack` block is a hard error on the Next this agent
 	// scaffolds: Next 16 runs Turbopack and refuses a webpack config.
 	if strings.Contains(config, "webpack(") {
 		t.Fatal("a webpack config is refused by the Next this agent scaffolds")
@@ -605,7 +605,7 @@ func TestTheLocalRunRefusesWithoutTheRegistryToken(t *testing.T) {
 
 // TestTheSolutionDirectoryIsTheWorkspace. The local composition sits at the
 // solution's own root, as it does in all nine solutions of the fleet —
-// core-solutions has no root workspace of its own, so each solution IS one.
+// solution-kit has no root workspace of its own, so each solution IS one.
 //
 // It is deliberately NOT a playground/ subdirectory: a playground is a
 // MODULE's, somewhere to exercise a module on its own, and two solutions

@@ -48,7 +48,7 @@ func TestExplainHostResolutionRefusalNamesTheAgentBehindTheBinding(t *testing.T)
 	require.NoError(t, err)
 	instance := &coreservices.Instance{Service: bound, Identity: identity}
 
-	agentErr := errors.New(`cannot bind interface dependencies: resources.ApplyInterfaceBindings: cannot load the workspace that binds the service's interfaces: LoadFromDir: workspace "platform-core" at obin-ai/platform-core@5a8d5ffa requires host resolution`)
+	agentErr := errors.New(`cannot bind interface dependencies: resources.ApplyInterfaceBindings: cannot load the workspace that binds the service's interfaces: LoadFromDir: workspace "platform-base" at northwind/platform-base@5a8d5ffa requires host resolution`)
 	explained := explainHostResolutionRefusal(agentErr, instance)
 	require.ErrorIs(t, explained, agentErr, "the agent's own error stays underneath")
 	require.ErrorContains(t, explained, "agent codefly.dev/go:0.0.67 binds apps/web's interface dependencies against the workspace on disk")
@@ -74,7 +74,7 @@ func TestExplainHostResolutionRefusalLeavesOtherErrorsAlone(t *testing.T) {
 	require.NoError(t, err)
 	instance := &coreservices.Instance{Service: unbound, Identity: identity}
 
-	refusal := errors.New(`workspace "platform-core" at obin-ai/platform-core@5a8d5ffa requires host resolution`)
+	refusal := errors.New(`workspace "platform-base" at northwind/platform-base@5a8d5ffa requires host resolution`)
 	require.Same(t, refusal, explainHostResolutionRefusal(refusal, instance))
 
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)

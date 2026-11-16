@@ -19,8 +19,8 @@ const (
 
 func TestObserveEndsOnAnAdmissionDenialAndPrintsItVerbatim(t *testing.T) {
 	request := observedPublication(t)
-	request.Kubeconfig = "/tmp/blue.kubeconfig"
-	request.KubeContext = "gke_blue"
+	request.Kubeconfig = "/tmp/aurora.kubeconfig"
+	request.KubeContext = "gke_aurora"
 	var out bytes.Buffer
 	request.Output = &out
 	installFakeArgoSequence(t, argoProjectJSON(request.Repository), progressingApplication(request))
@@ -42,7 +42,7 @@ func TestObserveEndsOnAnAdmissionDenialAndPrintsItVerbatim(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	first := strings.SplitN(string(log), "\n", 2)[0]
-	if !strings.HasPrefix(first, "--kubeconfig /tmp/blue.kubeconfig --context gke_blue get events -n payments -o json") {
+	if !strings.HasPrefix(first, "--kubeconfig /tmp/aurora.kubeconfig --context gke_aurora get events -n payments -o json") {
 		t.Fatalf("kubectl was called as %q, want the environment's kubeconfig and context", first)
 	}
 }
@@ -195,7 +195,7 @@ func TestObserveReportsAnUnreadableClusterOnceAndStillAwaitsArgo(t *testing.T) {
 	installFakeArgoSequence(t, argoProjectJSON(request.Repository), progressingApplication(request))
 	bin := t.TempDir()
 	calls := filepath.Join(t.TempDir(), "calls")
-	script := "#!/bin/sh\necho called >> \"$CODEFLY_TEST_KUBECTL_CALLS\"\necho 'error: context \"gke_blue\" does not exist' >&2\nexit 1\n"
+	script := "#!/bin/sh\necho called >> \"$CODEFLY_TEST_KUBECTL_CALLS\"\necho 'error: context \"gke_aurora\" does not exist' >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import (
 // is single-digit microseconds per root against a 150ms budget, so the root
 // count is not what would make this path expensive.
 func BenchmarkReadinessRequirementsOneRoot(b *testing.B) {
-	flow, ctx := multiRootFlow(b, "lastlogin-go/backend")
+	flow, ctx := multiRootFlow(b, "beacon-go/backend")
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := flow.readinessRequirements(ctx); err != nil {
@@ -21,7 +21,7 @@ func BenchmarkReadinessRequirementsOneRoot(b *testing.B) {
 }
 
 func BenchmarkReadinessRequirementsThreeRoots(b *testing.B) {
-	flow, ctx := multiRootFlow(b, "lastlogin-go/backend", "wiki/backend", "analytics/reports")
+	flow, ctx := multiRootFlow(b, "beacon-go/backend", "quill/backend", "analytics/reports")
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := flow.readinessRequirements(ctx); err != nil {

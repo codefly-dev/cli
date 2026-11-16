@@ -22,21 +22,21 @@ func TestLocalRuntimeServicesMatchesActualStartPolicy(t *testing.T) {
 		excludedRoot, remoteRoot, skipped bool
 		want                              []string
 	}{
-		{"run", RunMode, 0, false, false, false, []string{"saas/frontend", "wiki/backend"}},
+		{"run", RunMode, 0, false, false, false, []string{"saas/frontend", "quill/backend"}},
 		{"excluded root", RunMode, 0, true, false, false, []string{"saas/frontend"}},
 		{"remote root", RunMode, 0, false, true, false, []string{"saas/frontend"}},
 		{"test policy unresolved", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_UNSPECIFIED, false, false, false, nil},
 		{"test none", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE, false, false, false, nil},
 		{"test dependencies", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, false, false, false, []string{"saas/frontend"}},
-		{"test stack", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, false, []string{"saas/frontend", "wiki/backend"}},
+		{"test stack", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, false, []string{"saas/frontend", "quill/backend"}},
 		{"skipped test", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, true, nil},
 		{"build", BuildMode, 0, false, false, false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			flow, ctx := multiRootFlow(t, "wiki/backend")
+			flow, ctx := multiRootFlow(t, "quill/backend")
 			flow.world.Mode = tc.mode
 			flow.testDependencyMode, flow.excludeRoot, flow.validationSkipped = tc.testMode, tc.excludedRoot, tc.skipped
-			for _, unique := range []string{"saas/frontend", "saas/auth-gateway", "documents/documents", "wiki/backend"} {
+			for _, unique := range []string{"saas/frontend", "saas/auth-gateway", "documents/documents", "quill/backend"} {
 				ref, err := resources.ParseServiceWithOptionalModule(unique)
 				require.NoError(t, err)
 				service, err := flow.workspace.LoadService(ctx, ref)
@@ -46,7 +46,7 @@ func TestLocalRuntimeServicesMatchesActualStartPolicy(t *testing.T) {
 			flow.services = append(flow.services, nil, flow.originService)
 			flow.remoteServices = []*Remote{{ServiceWithModule: &resources.ServiceWithModule{Module: "saas", Name: "auth-gateway"}}}
 			if tc.remoteRoot {
-				flow.remoteServices = append(flow.remoteServices, &Remote{ServiceWithModule: &resources.ServiceWithModule{Module: "wiki", Name: "backend"}})
+				flow.remoteServices = append(flow.remoteServices, &Remote{ServiceWithModule: &resources.ServiceWithModule{Module: "quill", Name: "backend"}})
 			}
 			flow.excludedDependencyServices = []string{"documents/documents"}
 			flow.publishRuntimeServices()

@@ -64,7 +64,7 @@ func serviceSecretsDeclaration(serviceName string) string {
       services:
         ` + serviceName + `:
           remote-keys:
-            workos-client-secret: workos/prod/client-secret
+            idkit-client-secret: idkit/prod/client-secret
 `
 }
 
@@ -237,7 +237,7 @@ environments:
       services:
         accounts:
           remote-keys:
-            workos-client-secret: workos/prod/client-secret
+            idkit-client-secret: idkit/prod/client-secret
         billing:
           secret-store:
             name: aws-secrets-billing
@@ -245,7 +245,7 @@ environments:
           remote-keys:
             stripe-key: stripe/prod/key
             identity-client-secret:
-              key: workos-app
+              key: idkit-app
               property: client_secret
               secret-store:
                 name: platform-identity
@@ -269,7 +269,7 @@ environments:
 	if secrets.SecretStore.Name != "azure-keyvault-prod" || secrets.SecretStore.Kind != "ClusterSecretStore" {
 		t.Fatalf("service secret store = %+v", secrets.SecretStore)
 	}
-	if got := secrets.Services["accounts"].RemoteKeys["workos-client-secret"]; got.Key != "workos/prod/client-secret" || got.Property != "" {
+	if got := secrets.Services["accounts"].RemoteKeys["idkit-client-secret"]; got.Key != "idkit/prod/client-secret" || got.Property != "" {
 		t.Fatalf("accounts remote key override = %+v", got)
 	}
 	// accounts inherits the environment-wide store.
@@ -287,7 +287,7 @@ environments:
 	// One key of billing is read through a store of its own, the way a cell keeps
 	// its identity provider's secrets apart; the service's other keys are not.
 	identity := secrets.Services["billing"].RemoteKeys["identity-client-secret"]
-	if identity.Key != "workos-app" || identity.Property != "client_secret" || identity.SecretStore == nil ||
+	if identity.Key != "idkit-app" || identity.Property != "client_secret" || identity.SecretStore == nil ||
 		*identity.SecretStore != (environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}) {
 		t.Fatalf("per-key secret store = %+v", identity)
 	}
@@ -301,9 +301,9 @@ environments:
 // Secrets rejects.
 func TestEnvironmentSecretRemoteRefRefusesAnUnresolvableStore(t *testing.T) {
 	for name, declaration := range map[string]string{
-		"no kind":       "key: workos-app\nsecret-store:\n  name: platform-identity\n",
-		"backend kind":  "key: workos-app\nsecret-store:\n  name: platform-identity\n  kind: gcp-secret-manager\n",
-		"unknown field": "key: workos-app\nstore: platform-identity\n",
+		"no kind":       "key: idkit-app\nsecret-store:\n  name: platform-identity\n",
+		"backend kind":  "key: idkit-app\nsecret-store:\n  name: platform-identity\n  kind: gcp-secret-manager\n",
+		"unknown field": "key: idkit-app\nstore: platform-identity\n",
 	} {
 		var ref environments.EnvironmentSecretRemoteRef
 		if err := yaml.Unmarshal([]byte(declaration), &ref); err == nil {
@@ -311,7 +311,7 @@ func TestEnvironmentSecretRemoteRefRefusesAnUnresolvableStore(t *testing.T) {
 		}
 	}
 	var ref environments.EnvironmentSecretRemoteRef
-	if err := yaml.Unmarshal([]byte("key: workos-app\nproperty: client_secret\nsecret-store:\n  name: platform-identity\n  kind: ClusterSecretStore\n"), &ref); err != nil {
+	if err := yaml.Unmarshal([]byte("key: idkit-app\nproperty: client_secret\nsecret-store:\n  name: platform-identity\n  kind: ClusterSecretStore\n"), &ref); err != nil {
 		t.Fatal(err)
 	}
 	// The round trip keeps the store: `environment import` rewrites the workspace.
@@ -367,7 +367,7 @@ environments:
       services:
         accounts:
           remote-keys:
-            workos-client-secret: workos/prod/client-secret
+            idkit-client-secret: idkit/prod/client-secret
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
 		t.Fatal(err)
@@ -397,7 +397,7 @@ environments:
       services:
         accounts:
           remote-keys:
-            workos-client-secret: ""
+            idkit-client-secret: ""
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
 		t.Fatal(err)
@@ -406,7 +406,7 @@ environments:
 	if err == nil {
 		t.Fatal("expected load to fail for empty remote-key path")
 	}
-	if !strings.Contains(err.Error(), "workos-client-secret") {
+	if !strings.Contains(err.Error(), "idkit-client-secret") {
 		t.Fatalf("error = %v, want it to mention the offending key", err)
 	}
 }
@@ -428,9 +428,9 @@ environments:
       services:
         accounts:
           remote-keys:
-            scalar-key: lodestar-accounts
+            scalar-key: meridian-accounts
             mapping-key:
-              key: lodestar-identity
+              key: meridian-identity
               property: client_secret
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
@@ -441,11 +441,11 @@ environments:
 		t.Fatal(err)
 	}
 	keys := loaded.Environments[0].ServiceSecrets.Services["accounts"].RemoteKeys
-	if scalar := keys["scalar-key"]; scalar.Key != "lodestar-accounts" || scalar.Property != "" {
-		t.Fatalf("scalar form = %+v, want {Key: lodestar-accounts}", scalar)
+	if scalar := keys["scalar-key"]; scalar.Key != "meridian-accounts" || scalar.Property != "" {
+		t.Fatalf("scalar form = %+v, want {Key: meridian-accounts}", scalar)
 	}
-	if mapping := keys["mapping-key"]; mapping.Key != "lodestar-identity" || mapping.Property != "client_secret" {
-		t.Fatalf("mapping form = %+v, want {Key: lodestar-identity, Property: client_secret}", mapping)
+	if mapping := keys["mapping-key"]; mapping.Key != "meridian-identity" || mapping.Property != "client_secret" {
+		t.Fatalf("mapping form = %+v, want {Key: meridian-identity, Property: client_secret}", mapping)
 	}
 }
 
@@ -454,18 +454,18 @@ environments:
 // `environment import`, does not expand it), while one with a property serializes
 // as the {key, property} mapping.
 func TestEnvironmentSecretRemoteRefMarshalsScalarAndMapping(t *testing.T) {
-	scalar, err := yaml.Marshal(environments.EnvironmentSecretRemoteRef{Key: "lodestar-accounts"})
+	scalar, err := yaml.Marshal(environments.EnvironmentSecretRemoteRef{Key: "meridian-accounts"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(string(scalar)); got != "lodestar-accounts" {
-		t.Fatalf("scalar marshal = %q, want %q", got, "lodestar-accounts")
+	if got := strings.TrimSpace(string(scalar)); got != "meridian-accounts" {
+		t.Fatalf("scalar marshal = %q, want %q", got, "meridian-accounts")
 	}
-	mapping, err := yaml.Marshal(environments.EnvironmentSecretRemoteRef{Key: "lodestar-identity", Property: "client_secret"})
+	mapping, err := yaml.Marshal(environments.EnvironmentSecretRemoteRef{Key: "meridian-identity", Property: "client_secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(mapping); !strings.Contains(got, "key: lodestar-identity") || !strings.Contains(got, "property: client_secret") {
+	if got := string(mapping); !strings.Contains(got, "key: meridian-identity") || !strings.Contains(got, "property: client_secret") {
 		t.Fatalf("mapping marshal = %q, want key+property", got)
 	}
 }
@@ -487,7 +487,7 @@ environments:
       services:
         accounts:
           defaults:
-            key: lodestar-{service}
+            key: meridian-{service}
             property: "{key}"
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
@@ -501,7 +501,7 @@ environments:
 	if defaults == nil {
 		t.Fatal("defaults did not load")
 	}
-	if defaults.Key != "lodestar-{service}" || defaults.Property != "{key}" {
+	if defaults.Key != "meridian-{service}" || defaults.Property != "{key}" {
 		t.Fatalf("defaults = %+v", defaults)
 	}
 }
@@ -524,7 +524,7 @@ environments:
       services:
         accounts:
           defaults:
-            key: lodestar-{sevice}
+            key: meridian-{sevice}
             property: "{key}"
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
@@ -831,7 +831,7 @@ environments:
         external-name: accounts.prod.svc
         secret-references:
           - name: store-connection
-            remote-key: lodestar-accounts
+            remote-key: meridian-accounts
             property: store_read_write_connection
             secret-store:
               name: azure-keyvault-prod
@@ -848,7 +848,7 @@ environments:
 	if len(refs) != 1 {
 		t.Fatalf("secret references = %d, want 1", len(refs))
 	}
-	if refs[0].RemoteKey != "lodestar-accounts" || refs[0].Property != "store_read_write_connection" {
+	if refs[0].RemoteKey != "meridian-accounts" || refs[0].Property != "store_read_write_connection" {
 		t.Fatalf("managed reference = %+v", refs[0])
 	}
 }
@@ -969,17 +969,17 @@ environments:
 // environment does today.
 func TestAnEnvironmentClassIsDeclaredFromTheOneVocabulary(t *testing.T) {
 	for _, class := range append([]string{""}, modulecontract.EnvironmentClasses()...) {
-		env := &environments.Environment{Name: "blue", Class: class}
+		env := &environments.Environment{Name: "aurora", Class: class}
 		if err := env.Validate(); err != nil {
 			t.Errorf("class %q refused: %v", class, err)
 		}
 	}
-	env := &environments.Environment{Name: "blue", Class: "dev"}
+	env := &environments.Environment{Name: "aurora", Class: "dev"}
 	err := env.Validate()
 	if err == nil {
 		t.Fatal("an environment class outside the vocabulary was accepted")
 	}
-	for _, word := range []string{"blue", `"dev"`, "development, staging, production"} {
+	for _, word := range []string{"aurora", `"dev"`, "development, staging, production"} {
 		if !strings.Contains(err.Error(), word) {
 			t.Errorf("the refusal does not say %s: %v", word, err)
 		}

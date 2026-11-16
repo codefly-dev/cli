@@ -1,4 +1,4 @@
 kind: module
-name: wiki
+name: beacon-go
 services:
     - name: backend

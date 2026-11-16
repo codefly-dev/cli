@@ -5,12 +5,12 @@ modules:
       version: 0.0.85
     - name: runtime
       version: 0.1.5
-    - name: robin
+    - name: sidekick
       # A composed module at a prerelease: the composition would ship a module
       # version nobody released.
       version: 0.1.8-rc.1
 solutions:
-    - name: wiki
+    - name: quill
       version: 0.0.0-20260930123456-abcdef123456
 
 agent-overrides:

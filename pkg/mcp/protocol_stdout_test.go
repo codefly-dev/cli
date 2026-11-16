@@ -100,7 +100,7 @@ func TestProtectStdoutCoversConstructionNotJustServing(t *testing.T) {
 // the loudest writer to the protocol stream.
 func TestProtectStdoutKeepsForwardedAgentLogsOffStdout(t *testing.T) {
 	line, err := json.Marshal(agents.LogMessage{
-		Source: &wool.Identifier{Kind: "service", Unique: "wiki/backend"},
+		Source: &wool.Identifier{Kind: "service", Unique: "quill/backend"},
 		Log:    &wool.Log{Level: wool.INFO, Message: "agent log on the protocol stream"},
 	})
 	if err != nil {

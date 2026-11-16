@@ -295,7 +295,7 @@ func TestLoadAgentCIManifestAllowsModuleOnlyWithoutServiceConformance(t *testing
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "agent.codefly.yaml"), `publisher: codefly.dev
 kind: codefly:module
-name: saas-starter
+name: starterkit
 version: 0.0.20
 `)
 
@@ -306,7 +306,7 @@ version: 0.0.20
 	if err != nil {
 		t.Fatalf("module manifest without service conformance: %v", err)
 	}
-	if manifest.Kind != "codefly:module" || manifest.Name != "saas-starter" {
+	if manifest.Kind != "codefly:module" || manifest.Name != "starterkit" {
 		t.Fatalf("unexpected module manifest: %+v", manifest)
 	}
 }

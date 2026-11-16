@@ -132,7 +132,7 @@ func fixture() gitops.RenderedEnvironment {
 		{Store: store, RemoteKey: "notes-backend", Services: []string{"notes/backend"}, Properties: filed(internalToken)},
 		{Store: store, RemoteKey: "tasks-store", Services: []string{"tasks/store"}, Properties: filed(migration, storePassword)},
 		{Store: store, RemoteKey: "tasks-worker", Services: []string{"tasks/worker"}, Properties: filed(storeConnection)},
-		{Store: store, RemoteKey: "wiki-backend", Services: []string{"wiki/backend"}, Properties: filed(internalToken)},
+		{Store: store, RemoteKey: "quill-backend", Services: []string{"quill/backend"}, Properties: filed(internalToken)},
 	}}
 }
 
@@ -144,7 +144,7 @@ func seeded() map[string]map[string]string {
 			clientSecret:  "external-client-secret",
 			internalToken: "shared-internal-token",
 		},
-		"wiki-backend": {
+		"quill-backend": {
 			internalToken: "shared-internal-token",
 		},
 	}
@@ -193,7 +193,7 @@ func TestPlanSeedsANewModuleConsistentlyWithTheSeededCell(t *testing.T) {
 	}{
 		{"host-accounts", clientSecret, ActionKeep},
 		{"host-accounts", internalToken, ActionKeep},
-		{"wiki-backend", internalToken, ActionKeep},
+		{"quill-backend", internalToken, ActionKeep},
 		{"notes-backend", internalToken, ActionPropagate},
 		{"tasks-store", storePassword, ActionGenerate},
 		{"tasks-store", migration, ActionRequire},
@@ -312,7 +312,7 @@ func TestPlanRefusesToPropagateAConflictingValue(t *testing.T) {
 	ctx := context.Background()
 	rendered := fixture()
 	documents := seeded()
-	documents["wiki-backend"][internalToken] = "a-different-token"
+	documents["quill-backend"][internalToken] = "a-different-token"
 	_, err := Build(ctx, &Inputs{Rendered: rendered, Store: newFakeStore(documents), ReadPayloads: true})
 	if err == nil || !strings.Contains(err.Error(), internalToken) {
 		t.Fatalf("Build = %v, want a refusal naming the key", err)
@@ -338,8 +338,8 @@ func TestPlanOnAnEmptyStoreGeneratesOnceAndAgrees(t *testing.T) {
 	if _, err := plan.Apply(ctx, store, true); err != nil {
 		t.Fatal(err)
 	}
-	wiki, notes, host := store.documents["wiki-backend"], store.documents["notes-backend"], store.documents["host-accounts"]
-	if wiki[internalToken] == "" || wiki[internalToken] != notes[internalToken] || host[internalToken] != wiki[internalToken] {
+	quill, notes, host := store.documents["quill-backend"], store.documents["notes-backend"], store.documents["host-accounts"]
+	if quill[internalToken] == "" || quill[internalToken] != notes[internalToken] || host[internalToken] != quill[internalToken] {
 		t.Error("a generated shared value differs between the keys reading it")
 	}
 	if !slices.Contains(store.writes, "host-accounts") {
@@ -383,10 +383,10 @@ func TestPlanRefusesAConfigurationValueHeldWithTwoValues(t *testing.T) {
 // can act on.
 func TestBuildReportsTheKeyThatFailedNotTheOnesItCancelled(t *testing.T) {
 	rendered := fixture()
-	store := &failingStore{fakeStore: newFakeStore(seeded()), failRead: "wiki-backend"}
+	store := &failingStore{fakeStore: newFakeStore(seeded()), failRead: "quill-backend"}
 	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Generators: generators(),
 		Services: []string{"tasks/store", "tasks/worker"}, Store: store, ReadPayloads: true})
-	if err == nil || !strings.Contains(err.Error(), "wiki-backend") {
+	if err == nil || !strings.Contains(err.Error(), "quill-backend") {
 		t.Fatalf("Build = %v, want the failing key named", err)
 	}
 	if strings.Contains(err.Error(), "context canceled") {
@@ -435,7 +435,7 @@ func mappedFixture() gitops.RenderedEnvironment {
 		{Store: store, RemoteKey: "tasks-worker", Services: []string{"tasks/worker"}, Properties: []gitops.RenderedSecretProperty{
 			mapped("store_read_write_connection", storeConnection),
 		}},
-		{Store: store, RemoteKey: "wiki-backend", Services: []string{"wiki/backend"}, Properties: []gitops.RenderedSecretProperty{
+		{Store: store, RemoteKey: "quill-backend", Services: []string{"quill/backend"}, Properties: []gitops.RenderedSecretProperty{
 			mapped("internal_token", internalToken),
 		}},
 	}}
@@ -448,7 +448,7 @@ func mappedSeeded() map[string]map[string]string {
 			"client_secret": "external-client-secret",
 			"shared_token":  "shared-internal-token",
 		},
-		"wiki-backend": {
+		"quill-backend": {
 			"internal_token": "shared-internal-token",
 		},
 	}
@@ -477,7 +477,7 @@ func TestPlanResolvesByTheSecretKeyNotByTheStorePropertyName(t *testing.T) {
 		// still one value, propagated to the remote key that lacks it.
 		{"notes-backend", "token", ActionPropagate},
 		{"host-accounts", "shared_token", ActionKeep},
-		{"wiki-backend", "internal_token", ActionKeep},
+		{"quill-backend", "internal_token", ActionKeep},
 		// A declared generator is declared over the key, not the property.
 		{"tasks-store", "store_password", ActionGenerate},
 		// Supplied from outside either way, and named.

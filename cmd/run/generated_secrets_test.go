@@ -90,7 +90,7 @@ func TestALocalRunWritesNothingForAStoreAndGuessesNoService(t *testing.T) {
 
 // importingWorkspace is a workspace composing `base` by path, whose own
 // configurations declare the hop group (MODULES, ENDPOINT) the way
-// platform-core does; extension and authored add the importing workspace's own
+// platform-base does; extension and authored add the importing workspace's own
 // declarations.
 func importingWorkspace(t *testing.T, extension, authored bool) *resources.Workspace {
 	t.Helper()
@@ -101,12 +101,12 @@ func importingWorkspace(t *testing.T, extension, authored bool) *resources.Works
 	}
 	files := map[string]string{
 		"base/workspace.codefly.yaml":       "name: base\nlayout: modules\nenvironments:\n    - name: local\n",
-		"base/configurations/local/hop.env": "MODULES=annotations,robin\nENDPOINT=hop:1\n",
+		"base/configurations/local/hop.env": "MODULES=annotations,sidekick\nENDPOINT=hop:1\n",
 		"product/.gitignore":                "**/configurations/local/*.secret.env\n",
 		"product/workspace.codefly.yaml":    declaration,
 	}
 	if authored {
-		files["product/configurations/local/hop.env"] = "MODULES=robin\n"
+		files["product/configurations/local/hop.env"] = "MODULES=sidekick\n"
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)

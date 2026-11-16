@@ -53,11 +53,11 @@ func TestApplyDeliversBothHalvesToAHostItDials(t *testing.T) {
 	signer, err := solutionhost.NewInMemorySigner("dev-0123456789abcdef", ed25519.NewKeyFromSeed(make([]byte, 32)))
 	require.NoError(t, err)
 	manifest := &solutionhost.ModuleManifest{
-		Schema: solutionhost.SchemaModuleManifestV1, Binding: "wiki", Alias: "wiki", Kind: solutionhost.KindModule, Generation: 4,
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "quill", Alias: "quill", Kind: solutionhost.KindModule, Generation: 4,
 		Host:      solutionhost.HostTarget{Coordinate: "local", Domain: "local"},
-		Release:   solutionhost.Release{Publisher: "test", Name: "wiki", Version: "0.1.0"},
+		Release:   solutionhost.Release{Publisher: "test", Name: "quill", Version: "0.1.0"},
 		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}},
-		Authority: &solutionhost.Authority{Principal: "wiki", InstallationRole: "admin"},
+		Authority: &solutionhost.Authority{Principal: "quill", InstallationRole: "admin"},
 	}
 	payload, err := solutionhost.SignedPayload(manifest)
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestApplyDeliversBothHalvesToAHostItDials(t *testing.T) {
 	require.NoError(t, err)
 
 	documents := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(documents, "wiki.json"), document, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(documents, "quill.json"), document, 0o600))
 	token := filepath.Join(t.TempDir(), "delivery-token")
 	require.NoError(t, os.WriteFile(token, []byte("projected-delivery-token\n"), 0o600))
 
@@ -100,7 +100,7 @@ func TestApplyDeliversBothHalvesToAHostItDials(t *testing.T) {
 	require.Equal(t, []string{"admin", "user"},
 		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName()})
 	require.Equal(t, "admin", policy.GetInstallationRole())
-	require.Contains(t, output.String(), "delivered wiki.json")
+	require.Contains(t, output.String(), "delivered quill.json")
 	require.NotContains(t, output.String(), "projected-delivery-token", "a Job's log is a published record")
 }
 

@@ -221,7 +221,7 @@ func TestTheWriterRefusesMalformedRetainedRecords(t *testing.T) {
 // TestAStructuredConfigurationDocumentIsExported is the defect cli#1213's
 // check surfaced, closed: resources.ConfigurationDocumentKey is a prefix plus
 // a LOWERCASE hex SHA-256, and a run that delivers a structured configuration
-// document to the --output-env service — platform-core's merged
+// document to the --output-env service — platform-base's merged
 // fixture-composition, which saas/auth-gateway receives — refused the whole
 // artifact ("its name is not uppercase ASCII…"). The carrier is now written
 // under the name core mints, and a consumer that looks it up the way the SDK

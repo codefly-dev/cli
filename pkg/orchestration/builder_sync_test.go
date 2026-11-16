@@ -14,7 +14,7 @@ import (
 func newSyncBuilder(info *agentv0.AgentInformation) *Builder {
 	return &Builder{
 		instance: &services.Instance{
-			Identity: &resources.ServiceIdentity{Module: "saas-starter", Name: "redis"},
+			Identity: &resources.ServiceIdentity{Module: "starterkit", Name: "redis"},
 			Info:     info,
 		},
 		world: &World{SyncRequest: &builderv0.SyncRequest{DryRun: true}},

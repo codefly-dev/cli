@@ -64,7 +64,7 @@ func TestRenderModuleLeavesAnExcludedServiceOutOfTheTreeAndTheInventory(t *testi
 }
 
 // TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion is the render
-// caller's half of the Blue defect, and it is the one a direct test of
+// caller's half of the Aurora defect, and it is the one a direct test of
 // ValidateWorkspace cannot give: it fails if RenderModule stops passing the
 // environment it was given, however correct the validator underneath is.
 //
@@ -117,9 +117,9 @@ func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion(t *testing.T) 
 		"and the service the OTHER environment excludes is rendered here")
 }
 
-// TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName is the Blue
+// TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName is the Aurora
 // m106 defect, reproduced on released source: `deploy gitops render --all
-// --env blue` failed with
+// --env aurora` failed with
 //
 //	environment "staging" service-config references ambiguous service "object-storage"
 //
@@ -127,11 +127,11 @@ func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsExclusion(t *testing.T) 
 // graph, so it becomes ambiguous the moment a second module composes a
 // service of that name. The declaration that goes stale belongs to whichever
 // environment wrote the bare key first — here `staging` — but every
-// environment was held to it, so a correct render of `blue` was refused over
-// a declaration that is not blue's and that blue cannot repair.
+// environment was held to it, so a correct render of `aurora` was refused over
+// a declaration that is not aurora's and that aurora cannot repair.
 //
 // Here `depot` composes a second service named `store`, which makes staging's
-// bare `store` key ambiguous. Rendering `blue`, whose own declarations are
+// bare `store` key ambiguous. Rendering `aurora`, whose own declarations are
 // clean, must succeed.
 func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName(t *testing.T) {
 	installFakeAgents(t)
@@ -154,13 +154,13 @@ func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName(t *testing.T)
 	require.NoError(t, err)
 	data = []byte(strings.Replace(string(data), "modules:\n  - name: shop\n",
 		"modules:\n  - name: shop\n  - name: depot\n", 1))
-	// staging carries the stale bare key; blue declares nothing of the sort.
+	// staging carries the stale bare key; aurora declares nothing of the sort.
 	data = append(data, []byte(`    service-config:
       services:
         store:
           values:
             DATABASE_HOST: store.database.example
-  - name: blue
+  - name: aurora
     namespace: acme
     registry:
       url: registry.example.com/acme
@@ -181,10 +181,10 @@ func TestRenderModuleIsNotRefusedOverAnotherEnvironmentsScopedName(t *testing.T)
 	require.ErrorContains(t, err, `references ambiguous service "store"`,
 		"the environment that owns the stale declaration must still be refused")
 
-	// blue must not inherit it.
-	blue, err := orchestration.SelectEnvironment(workspace, "blue")
+	// aurora must not inherit it.
+	aurora, err := orchestration.SelectEnvironment(workspace, "aurora")
 	require.NoError(t, err)
-	_, err = RenderModule(ctx, workspace, module, blue, "acme-blue", nil)
+	_, err = RenderModule(ctx, workspace, module, aurora, "acme-aurora", nil)
 	require.NoError(t, err, "a render is held to its own environment's declarations, never another's")
 }
 

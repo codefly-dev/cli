@@ -43,7 +43,7 @@ func TestRuntimePrerequisiteSurvivesClosureRebuildAndRootChanges(t *testing.T) {
 	assertRequired()
 	// Extension rebuilds from root seeds. The host survives without being an
 	// authored service dependency or a user-selected root.
-	_, err = flow.admitRoots(ctx, w, []string{"wiki/backend"})
+	_, err = flow.admitRoots(ctx, w, []string{"quill/backend"})
 	require.NoError(t, err)
 	flow.hub = &Hub{}
 	_, _, err = flow.rebuildExtendedGraph(ctx)
@@ -71,9 +71,9 @@ func TestRuntimePrerequisiteRefusesMissingOrExcludedHost(t *testing.T) {
 			require.ErrorContains(t, err, "runtime prerequisite")
 		})
 	}
-	flow, ctx := multiRootFlow(t, "wiki/backend")
+	flow, ctx := multiRootFlow(t, "quill/backend")
 	flow.runtimePrerequisites = func(context.Context, *resources.Workspace) (map[string][]string, error) {
-		return map[string][]string{"wiki/backend": {"saas/auth-gateway"}}, nil
+		return map[string][]string{"quill/backend": {"saas/auth-gateway"}}, nil
 	}
 	flow.excludedDependencyServices = []string{"saas/auth-gateway"}
 	_, options, err := flow.dependencyGraphOptions(ctx)

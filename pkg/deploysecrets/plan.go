@@ -83,7 +83,7 @@ type PropertyPlan struct {
 	// Keys are the secret keys the render reads out of this property — what the
 	// value is, as against where it is filed. They are reported beside the
 	// property because an operator asked to supply a value needs the key to know
-	// what to put there: "lodestar-store#postgres_user" says where, and only the
+	// what to put there: "meridian-store#postgres_user" says where, and only the
 	// key says it is a database owner name.
 	Keys   []string
 	Action Action
@@ -461,7 +461,7 @@ func configurationKey(key string) bool {
 // configuration value: some configuration key is read out of both.
 //
 // Two remote keys hold one configuration value when the SAME secret key is read
-// from each, whatever each environment filed it under — `lodestar-accounts` may
+// from each, whatever each environment filed it under — `meridian-accounts` may
 // file it as `internal_token` and another entry under the key's own name, and it
 // is still one value. Matching the property names instead both misses that pair
 // and, worse, pairs two unrelated values two remote keys happen to file under

@@ -227,7 +227,7 @@ func TestANativeDeliveryRefusedAsUnavailableIsRetriedUntilAccepted(t *testing.T)
 	require.Equal(t, 3, host.calls)
 }
 
-// The shape of the platform-core run end to end through the real envelope
+// The shape of the platform-base run end to end through the real envelope
 // client: two 503s, then the answer that lets the delivery proceed.
 func TestALegacyHTTPDeliveryRefusedWith503IsRetriedUntilAccepted(t *testing.T) {
 	var reads atomic.Int64

@@ -86,9 +86,9 @@ func TestWaitReadyBacksOffUnchangedFailure(t *testing.T) {
 // driven through it must therefore derive its modules the way `codefly run`
 // does, while build, test and the check modes keep the whole pin set.
 func TestModuleClosureSeedsOnlySeedARun(t *testing.T) {
-	module := &resources.Module{Name: "wiki"}
+	module := &resources.Module{Name: "quill"}
 
-	if got := moduleClosureSeeds(orchestration.RunMode, module); len(got) != 1 || got[0] != "wiki" {
+	if got := moduleClosureSeeds(orchestration.RunMode, module); len(got) != 1 || got[0] != "quill" {
 		t.Fatalf("a run seeds its closure with the target's module, got %v", got)
 	}
 	for _, mode := range []orchestration.Mode{

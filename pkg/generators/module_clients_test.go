@@ -65,7 +65,7 @@ endpoints:
 
 func testCatalog() *composition.APIContractCatalog {
 	return &composition.APIContractCatalog{
-		Schema: composition.APIContractCatalogSchema, Package: "codefly/saas-starter", Version: "0.1.0",
+		Schema: composition.APIContractCatalogSchema, Package: "codefly/starterkit", Version: "0.1.0",
 		Endpoints: []composition.APIContractEndpoint{
 			{Service: "accounts", Endpoint: "connect", API: "connect", Kind: composition.APIContractKindProtobuf,
 				Package: "saas.accounts.v1", Path: "contracts/api/accounts/connect/contract.binpb", Digest: "sha256:aaaa",
@@ -81,12 +81,12 @@ func TestPlanModuleClientsUsesEndpointQualifiedIdentities(t *testing.T) {
 	catalog.Endpoints = append(catalog.Endpoints, composition.APIContractEndpoint{
 		Service: "accounts", Endpoint: "grpc", Kind: composition.APIContractKindProtobuf, Package: "saas.accounts.v1", Digest: "sha256:cccc",
 	})
-	plans, err := PlanModuleClients("saas-starter", catalog, nil, nil)
+	plans, err := PlanModuleClients("starterkit", catalog, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		"saas-starter-accounts-connect-client",
-		"saas-starter-marketing-rest-client",
-		"saas-starter-accounts-grpc-client",
+		"starterkit-accounts-connect-client",
+		"starterkit-marketing-rest-client",
+		"starterkit-accounts-grpc-client",
 	}, []string{plans[0].Name, plans[1].Name, plans[2].Name})
 	for i := range plans {
 		for j := range plans {
@@ -98,7 +98,7 @@ func TestPlanModuleClientsUsesEndpointQualifiedIdentities(t *testing.T) {
 }
 
 func TestPlanModuleClientsDefaultsToEveryLanguageTheKindSupports(t *testing.T) {
-	plans, err := PlanModuleClients("saas-starter", testCatalog(), nil, nil)
+	plans, err := PlanModuleClients("starterkit", testCatalog(), nil, nil)
 	require.NoError(t, err)
 	require.Len(t, plans, 2)
 	require.Equal(t, []languages.Language{languages.GO, languages.TYPESCRIPT, languages.PYTHON}, plans[0].Languages)
@@ -112,7 +112,7 @@ func TestPlanModuleClientsHonoursEndpointPolicy(t *testing.T) {
 		"accounts/connect": {Languages: []string{"typescript", " go "}, Services: []string{"WebhookService", "AuditService", "AuditService"}},
 		"marketing/rest":   {Publish: &no},
 	}
-	plans, err := PlanModuleClients("saas-starter", testCatalog(), config, nil)
+	plans, err := PlanModuleClients("starterkit", testCatalog(), config, nil)
 	require.NoError(t, err)
 	require.Len(t, plans, 1)
 	require.Equal(t, []languages.Language{languages.TYPESCRIPT, languages.GO}, plans[0].Languages)
@@ -120,10 +120,10 @@ func TestPlanModuleClientsHonoursEndpointPolicy(t *testing.T) {
 }
 
 func TestPlanModuleClientsRestrictsToRequestedLanguages(t *testing.T) {
-	plans, err := PlanModuleClients("saas-starter", testCatalog(), nil, []languages.Language{languages.PYTHON})
+	plans, err := PlanModuleClients("starterkit", testCatalog(), nil, []languages.Language{languages.PYTHON})
 	require.NoError(t, err)
 	require.Len(t, plans, 1)
-	require.Equal(t, "saas-starter-accounts-connect-client", plans[0].Name)
+	require.Equal(t, "starterkit-accounts-connect-client", plans[0].Name)
 }
 
 func TestPlanModuleClientsRejectsBadConfiguration(t *testing.T) {
@@ -139,7 +139,7 @@ func TestPlanModuleClientsRejectsBadConfiguration(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := PlanModuleClients("saas-starter", testCatalog(), tc.config, nil)
+			_, err := PlanModuleClients("starterkit", testCatalog(), tc.config, nil)
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -151,7 +151,7 @@ func TestBuildModuleClientEntryUsesCommittedPackageArtifacts(t *testing.T) {
 	contractPath := filepath.Join(dir, "contracts", "api", "accounts", "connect", "contract.binpb")
 	require.NoError(t, os.MkdirAll(filepath.Dir(contractPath), 0o755))
 	require.NoError(t, os.WriteFile(contractPath, contract, 0o644))
-	catalog := &composition.APIContractCatalog{Package: "codefly/saas-starter", Version: "0.1.0"}
+	catalog := &composition.APIContractCatalog{Package: "codefly/starterkit", Version: "0.1.0"}
 	plan := &ModuleClientPlan{
 		Endpoint: composition.APIContractEndpoint{
 			Service: "accounts", Endpoint: "connect", Kind: composition.APIContractKindProtobuf,
@@ -163,7 +163,7 @@ func TestBuildModuleClientEntryUsesCommittedPackageArtifacts(t *testing.T) {
 	// beside the contract; nothing here walks that tree itself.
 	listed := []coreproto.Source{{Path: "accounts/v1/accounts.proto", Content: []byte("syntax = \"proto3\";")}}
 	var listedDir string
-	entry, err := BuildModuleClientEntry(t.Context(), dir, "saas-starter", catalog, plan, func(_ context.Context, protoDir string) ([]coreproto.Source, error) {
+	entry, err := BuildModuleClientEntry(t.Context(), dir, "starterkit", catalog, plan, func(_ context.Context, protoDir string) ([]coreproto.Source, error) {
 		listedDir = protoDir
 		return listed, nil
 	})

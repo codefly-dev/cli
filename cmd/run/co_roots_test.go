@@ -16,12 +16,12 @@ func TestLoadCoRootsResolvesEveryServiceNamedAfterTheFirst(t *testing.T) {
 	require.NoError(t, err)
 
 	uniques, roots, err := loadCoRoots(ctx, workspace,
-		[]string{"lastlogin-go/backend", "wiki/backend", "documents"}, "lastlogin-go/backend")
+		[]string{"beacon-go/backend", "quill/backend", "documents"}, "beacon-go/backend")
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"wiki/backend", "documents/documents"}, uniques)
+	require.Equal(t, []string{"quill/backend", "documents/documents"}, uniques)
 	require.Len(t, roots, 2)
-	require.Equal(t, "wiki", roots[0].module.Name)
+	require.Equal(t, "quill", roots[0].module.Name)
 	require.Equal(t, "backend", roots[0].service.Name)
 }
 
@@ -30,7 +30,7 @@ func TestLoadCoRootsWithOneServiceHasNoCoRoots(t *testing.T) {
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "../../pkg/orchestration/testdata/multi-root")
 	require.NoError(t, err)
 
-	uniques, roots, err := loadCoRoots(ctx, workspace, []string{"wiki/backend"}, "wiki/backend")
+	uniques, roots, err := loadCoRoots(ctx, workspace, []string{"quill/backend"}, "quill/backend")
 	require.NoError(t, err)
 	require.Nil(t, uniques)
 	require.Nil(t, roots)
@@ -47,11 +47,11 @@ func TestLoadCoRootsRejectsAServiceNamedTwice(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "repeated co-root", args: []string{"lastlogin-go/backend", "wiki/backend", "wiki/backend"}},
-		{name: "co-root repeats the origin", args: []string{"lastlogin-go/backend", "lastlogin-go/backend"}},
+		{name: "repeated co-root", args: []string{"beacon-go/backend", "quill/backend", "quill/backend"}},
+		{name: "co-root repeats the origin", args: []string{"beacon-go/backend", "beacon-go/backend"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := loadCoRoots(ctx, workspace, test.args, "lastlogin-go/backend")
+			_, _, err := loadCoRoots(ctx, workspace, test.args, "beacon-go/backend")
 			require.ErrorContains(t, err, "named twice")
 		})
 	}
@@ -63,7 +63,7 @@ func TestLoadCoRootsReportsAnUnknownService(t *testing.T) {
 	require.NoError(t, err)
 
 	_, _, err = loadCoRoots(ctx, workspace,
-		[]string{"wiki/backend", "nope/missing"}, "wiki/backend")
+		[]string{"quill/backend", "nope/missing"}, "quill/backend")
 	require.ErrorContains(t, err, "nope/missing")
 }
 
@@ -71,9 +71,9 @@ func TestLoadCoRootsReportsAnUnknownService(t *testing.T) {
 // co-root named after the first one seeds it too, or running two solutions
 // against one graph would derive the graph of only the first.
 func TestRunModuleSeedsCoverEveryRoot(t *testing.T) {
-	origin := &resources.Module{Name: "lastlogin-go"}
+	origin := &resources.Module{Name: "beacon-go"}
 
-	require.Equal(t, []string{"lastlogin-go"}, runModuleSeeds(origin, nil))
-	require.Equal(t, []string{"lastlogin-go", "wiki", "documents"},
-		runModuleSeeds(origin, []string{"wiki/backend", "documents/documents"}))
+	require.Equal(t, []string{"beacon-go"}, runModuleSeeds(origin, nil))
+	require.Equal(t, []string{"beacon-go", "quill", "documents"},
+		runModuleSeeds(origin, []string{"quill/backend", "documents/documents"}))
 }

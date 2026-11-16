@@ -24,13 +24,13 @@ func injectionContract(t *testing.T) *environments.Environment {
 }
 
 func TestQualifiedConfigurationKeepsSameNamedWorkloadsIsolated(t *testing.T) {
-	env := &environments.Environment{Name: "blue", Namespace: "product", ServiceConfig: &environments.EnvironmentServiceConfig{
+	env := &environments.Environment{Name: "aurora", Namespace: "product", ServiceConfig: &environments.EnvironmentServiceConfig{
 		Services: map[string]environments.EnvironmentServiceConfigMapping{
-			"wiki/backend":      {Values: map[string]string{"PUBLIC_URL": "https://wiki.example"}},
+			"quill/backend":     {Values: map[string]string{"PUBLIC_URL": "https://quill.example"}},
 			"proposals/backend": {Values: map[string]string{"PUBLIC_URL": "https://proposals.example"}},
 		},
 	}}
-	for _, module := range []string{"wiki", "proposals", "other"} {
+	for _, module := range []string{"quill", "proposals", "other"} {
 		t.Run(module, func(t *testing.T) {
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "declared.example")
@@ -48,7 +48,7 @@ func TestQualifiedConfigurationKeepsSameNamedWorkloadsIsolated(t *testing.T) {
 }
 
 func TestQualifiedConfigurationRetainsImportedResourceValues(t *testing.T) {
-	env := &environments.Environment{Name: "blue", Namespace: "product", ServiceConfig: &environments.EnvironmentServiceConfig{
+	env := &environments.Environment{Name: "aurora", Namespace: "product", ServiceConfig: &environments.EnvironmentServiceConfig{
 		Services: map[string]environments.EnvironmentServiceConfigMapping{
 			"accounts":      {Values: map[string]string{"BACKEND": "managed", "PUBLIC_URL": "https://default.example"}},
 			"saas/accounts": {Values: map[string]string{"PUBLIC_URL": "https://app.example"}},
@@ -65,7 +65,7 @@ func TestQualifiedConfigurationRetainsImportedResourceValues(t *testing.T) {
 }
 
 func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "environments", "testdata", "coordinates", "infra-base-lodestar.json"))
+	data, err := os.ReadFile(filepath.Join("..", "environments", "testdata", "coordinates", "infra-kit-meridian.json"))
 	require.NoError(t, err)
 	contract, err := environments.ParseCoordinateContract(data)
 	require.NoError(t, err)

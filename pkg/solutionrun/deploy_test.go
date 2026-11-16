@@ -30,7 +30,7 @@ func TestDerivedDeployInputsProjectsConsumesAsAPublicValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]ServiceInjection{
-		"wiki/backend": {Public: map[string]string{manifest.APIConsumesEnvironmentVariable: solutionManifest.ConsumedAPIsEnvValue()}},
+		"quill/backend": {Public: map[string]string{manifest.APIConsumesEnvironmentVariable: solutionManifest.ConsumedAPIsEnvValue()}},
 	}
 	if !reflect.DeepEqual(derived.Services, want) {
 		t.Fatalf("services = %+v, want the projection on the entry alone: %+v", derived.Services, want)
@@ -43,7 +43,7 @@ func TestDerivedDeployInputsProjectsConsumesAsAPublicValue(t *testing.T) {
 		}
 	}
 	if !slices.ContainsFunc(derived.Notes, func(note Note) bool {
-		return !note.Warning && strings.Contains(note.Message, "wiki/backend") && strings.Contains(note.Message, manifest.APIConsumesEnvironmentVariable)
+		return !note.Warning && strings.Contains(note.Message, "quill/backend") && strings.Contains(note.Message, manifest.APIConsumesEnvironmentVariable)
 	}) {
 		t.Errorf("notes = %+v, want the projection reported against the entry", derived.Notes)
 	}
@@ -54,7 +54,7 @@ func TestDerivedDeployInputsNoOpsWithoutASolution(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
 	workspace.Modules = slices.DeleteFunc(workspace.Modules,
-		func(ref *resources.ModuleReference) bool { return ref.Name == "wiki" })
+		func(ref *resources.ModuleReference) bool { return ref.Name == "quill" })
 
 	derived, err := DerivedDeployInputs(ctx, workspace)
 	if err != nil {
@@ -95,12 +95,12 @@ lifecycle:`, 1)
 	workspace := loadTestWorkspace(t, federationWorkspaceWithManifest(t, duplicated))
 
 	_, err := DerivedDeployInputs(ctx, workspace)
-	if err == nil || !strings.Contains(err.Error(), "solution wiki") || !strings.Contains(err.Error(), "documents") {
+	if err == nil || !strings.Contains(err.Error(), "solution quill") || !strings.Contains(err.Error(), "documents") {
 		t.Fatalf("DerivedDeployInputs = %v, want a refusal naming the solution and the duplicated prefix", err)
 	}
 }
 
-// federationWorkspaceWithManifest copies the federation testdata with the wiki
+// federationWorkspaceWithManifest copies the federation testdata with the quill
 // solution's manifest replaced.
 func federationWorkspaceWithManifest(t *testing.T, solutionManifest string) string {
 	t.Helper()

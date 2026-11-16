@@ -26,11 +26,11 @@ func artifactWorkspace(t *testing.T) *resources.Workspace {
 		"workspace.codefly.yaml": `name: artifact-export
 layout: modules
 modules:
-    - name: wiki
-      path: modules/wiki
+    - name: quill
+      path: modules/quill
 `,
-		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
-		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
+		"modules/quill/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/quill/services/backend/service.codefly.yaml": excludedRootExportService,
 	})
 }
 
@@ -44,10 +44,10 @@ func TestTheResolverAcquiresTheSelectedModulesExactBytes(t *testing.T) {
 	ctx := context.Background()
 	workspace := artifactWorkspace(t)
 	body := "# Install\n\n  indented\ttab\n\nlast line without newline"
-	require.NoError(t, os.MkdirAll(filepath.Join(workspace.Dir(), "modules/wiki/docs"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "modules/wiki/docs/install.md"), []byte(body), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace.Dir(), "modules/quill/docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "modules/quill/docs/install.md"), []byte(body), 0o600))
 
-	content, err := ModuleArtifactResolverFor(workspace)(ctx, artifactReference("wiki", "docs/install.md"))
+	content, err := ModuleArtifactResolverFor(workspace)(ctx, artifactReference("quill", "docs/install.md"))
 	require.NoError(t, err)
 	require.Equal(t, body, string(content))
 }
@@ -59,7 +59,7 @@ func TestTheResolverAcquiresTheSelectedModulesExactBytes(t *testing.T) {
 func TestTheResolverRefusesWhatItCannotConfineOrBound(t *testing.T) {
 	ctx := context.Background()
 	workspace := artifactWorkspace(t)
-	module := filepath.Join(workspace.Dir(), "modules/wiki")
+	module := filepath.Join(workspace.Dir(), "modules/quill")
 	require.NoError(t, os.MkdirAll(filepath.Join(module, "docs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(module, "docs/install.md"), []byte("ok\n"), 0o600))
 
@@ -77,14 +77,14 @@ func TestTheResolverRefusesWhatItCannotConfineOrBound(t *testing.T) {
 		name string
 		ref  *basev0.ConfigurationModuleArtifactReference
 	}{
-		{"an absolute path", artifactReference("wiki", filepath.Join(workspace.Dir(), "outside.txt"))},
-		{"a traversing path", artifactReference("wiki", "../../outside.txt")},
-		{"an absolute symlink out of the module", artifactReference("wiki", "docs/escape.md")},
-		{"a relative symlink out of the module", artifactReference("wiki", "docs/relative-escape.md")},
-		{"a FIFO, which would block the read", artifactReference("wiki", "docs/pipe")},
-		{"a directory", artifactReference("wiki", "docs")},
-		{"a missing file", artifactReference("wiki", "docs/absent.md")},
-		{"an empty path", artifactReference("wiki", "")},
+		{"an absolute path", artifactReference("quill", filepath.Join(workspace.Dir(), "outside.txt"))},
+		{"a traversing path", artifactReference("quill", "../../outside.txt")},
+		{"an absolute symlink out of the module", artifactReference("quill", "docs/escape.md")},
+		{"a relative symlink out of the module", artifactReference("quill", "docs/relative-escape.md")},
+		{"a FIFO, which would block the read", artifactReference("quill", "docs/pipe")},
+		{"a directory", artifactReference("quill", "docs")},
+		{"a missing file", artifactReference("quill", "docs/absent.md")},
+		{"an empty path", artifactReference("quill", "")},
 		{"a module the composition does not name", artifactReference("ghost", "docs/install.md")},
 	} {
 		t.Run(probe.name, func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestTheResolverRefusesWhatItCannotConfineOrBound(t *testing.T) {
 	// One byte over core's inclusive bound is acquired, then refused by core's
 	// own byte admission — the CLI reads the extra byte precisely so the
 	// refusal can be made rather than silently truncating.
-	oversize, err := resolve(ctx, artifactReference("wiki", "docs/oversize.md"))
+	oversize, err := resolve(ctx, artifactReference("quill", "docs/oversize.md"))
 	require.NoError(t, err)
 	require.Len(t, oversize, resources.FileCarrierThreshold+1)
 	require.Error(t, resources.ValidateModuleArtifactBytes(string(oversize)))
@@ -106,7 +106,7 @@ func TestTheResolverRefusesWhatItCannotConfineOrBound(t *testing.T) {
 	// And the inclusive threshold itself is admitted.
 	require.NoError(t, os.WriteFile(filepath.Join(module, "docs/exact.md"),
 		[]byte(strings.Repeat("x", resources.FileCarrierThreshold)), 0o600))
-	exact, err := resolve(ctx, artifactReference("wiki", "docs/exact.md"))
+	exact, err := resolve(ctx, artifactReference("quill", "docs/exact.md"))
 	require.NoError(t, err)
 	require.NoError(t, resources.ValidateModuleArtifactBytes(string(exact)))
 }
@@ -120,12 +120,12 @@ func TestTheResolverRefusesAnUnmaterializedModule(t *testing.T) {
 		"workspace.codefly.yaml": `name: artifact-pinned
 layout: modules
 modules:
-    - name: wiki
+    - name: quill
       source: github.com/codefly-dev/absent
       version: 0.0.1
 `,
 	})
-	content, err := ModuleArtifactResolverFor(workspace)(ctx, artifactReference("wiki", "docs/install.md"))
+	content, err := ModuleArtifactResolverFor(workspace)(ctx, artifactReference("quill", "docs/install.md"))
 	require.Error(t, err)
 	require.Empty(t, content)
 }
@@ -137,7 +137,7 @@ func TestTheDeliveryBaselinePreservesEveryOffer(t *testing.T) {
 	value := func(key, text string) *basev0.ConfigurationValue {
 		return &basev0.ConfigurationValue{Key: key, Value: text}
 	}
-	own := &basev0.Configuration{Origin: "wiki/backend", Infos: []*basev0.ConfigurationInformation{{
+	own := &basev0.Configuration{Origin: "quill/backend", Infos: []*basev0.ConfigurationInformation{{
 		Name: "docs", ConfigurationValues: []*basev0.ConfigurationValue{value("README", "a")},
 	}}}
 	first := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
@@ -161,7 +161,7 @@ func TestTheRetainedDeliveryIsDetached(t *testing.T) {
 	body := "# Install\n"
 	digest := sha256.Sum256([]byte(body))
 	evidence := &basev0.ResolvedConfigurationModuleArtifact{
-		Reference: artifactReference("wiki", "docs/install.md"),
+		Reference: artifactReference("quill", "docs/install.md"),
 		ArtifactIdentity: &basev0.SourceIdentity{
 			Algorithm: basev0.SourceIdentityAlgorithm_SOURCE_IDENTITY_ALGORITHM_SHA256,
 			Digest:    hex.EncodeToString(digest[:]),
@@ -202,30 +202,30 @@ func TestTheSelectionIsComparedWholeNotByPath(t *testing.T) {
 		"workspace.codefly.yaml": `name: artifact-reselect
 layout: modules
 modules:
-    - name: wiki
-      path: modules/wiki
+    - name: quill
+      path: modules/quill
 `,
-		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
-		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
-		"modules/wiki/docs/install.md":                       "A\n",
-		"codefly.local.yaml":                                 "resolve:\n    wiki:\n        path: modules/wiki\n",
+		"modules/quill/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/quill/services/backend/service.codefly.yaml": excludedRootExportService,
+		"modules/quill/docs/install.md":                       "A\n",
+		"codefly.local.yaml":                                  "resolve:\n    quill:\n        path: modules/quill\n",
 	})
 
-	first, err := composition.SelectModule(ctx, workspace, "wiki")
+	first, err := composition.SelectModule(ctx, workspace, "quill")
 	require.NoError(t, err)
 	require.False(t, first.Verified, "an explicit overlay path is local development evidence")
-	require.Equal(t, "modules/wiki", first.DirectivePath)
+	require.Equal(t, "modules/quill", first.DirectivePath)
 
 	// Re-point the module on disk, to a directory that resolves the same way
 	// through the loaded snapshot.
-	require.NoError(t, os.MkdirAll(filepath.Join(workspace.Dir(), "elsewhere/wiki/docs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace.Dir(), "elsewhere/quill/docs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "codefly.local.yaml"),
-		[]byte("resolve:\n    wiki:\n        path: elsewhere/wiki\n"), 0o600))
+		[]byte("resolve:\n    quill:\n        path: elsewhere/quill\n"), 0o600))
 
-	second, err := composition.SelectModule(ctx, workspace, "wiki")
+	second, err := composition.SelectModule(ctx, workspace, "quill")
 	require.NoError(t, err)
 	require.NotEqual(t, *first, *second, "the selection moved, and the descriptor says so")
-	require.Equal(t, "elsewhere/wiki", second.DirectivePath, "which the disk-read directive is what carries")
+	require.Equal(t, "elsewhere/quill", second.DirectivePath, "which the disk-read directive is what carries")
 	require.Equal(t, first.Dir, second.Dir,
 		"while the RESOLVED directory is unchanged — which is exactly why a path-only recheck passed")
 }
@@ -234,7 +234,7 @@ modules:
 // a selection can move while every other field of it holds still.
 //
 // A directive path is relative to the overlay file that declares it. A parent
-// overlay saying `path: modules/wiki` and a nearer workspace overlay saying the
+// overlay saying `path: modules/quill` and a nearer workspace overlay saying the
 // very same thing select DIFFERENT directories, so comparing the raw path text
 // cannot tell them apart — and the resolved directory cannot either, because
 // ResolveModule answers from the snapshot the workspace was loaded with. The
@@ -248,22 +248,22 @@ func TestANearerOverlayChangesTheSelectionWithoutChangingItsPath(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(name), 0o755))
 		require.NoError(t, os.WriteFile(name, []byte(body), 0o600))
 	}
-	const overlay = "resolve:\n  wiki:\n    path: modules/wiki\n"
+	const overlay = "resolve:\n  quill:\n    path: modules/quill\n"
 	write(filepath.Join(parent, "codefly.local.yaml"), overlay)
 	write(filepath.Join(child, "workspace.codefly.yaml"),
-		"name: origin-change\nlayout: modules\nmodules:\n    - name: wiki\n      source: github.com/example/wiki\n      version: 1.0.0\n")
-	write(filepath.Join(parent, "modules/wiki/docs/install.md"), "A\n")
-	write(filepath.Join(child, "modules/wiki/docs/install.md"), "B\n")
+		"name: origin-change\nlayout: modules\nmodules:\n    - name: quill\n      source: github.com/example/quill\n      version: 1.0.0\n")
+	write(filepath.Join(parent, "modules/quill/docs/install.md"), "A\n")
+	write(filepath.Join(child, "modules/quill/docs/install.md"), "B\n")
 
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, child)
 	require.NoError(t, err)
-	before, err := composition.SelectModule(ctx, workspace, "wiki")
+	before, err := composition.SelectModule(ctx, workspace, "quill")
 	require.NoError(t, err)
 	require.Equal(t, parent, before.OverlayDir, "the parent overlay is the nearest one")
 
 	// The same text, declared nearer. Nothing about the directive changes.
 	write(filepath.Join(child, "codefly.local.yaml"), overlay)
-	after, err := composition.SelectModule(ctx, workspace, "wiki")
+	after, err := composition.SelectModule(ctx, workspace, "quill")
 	require.NoError(t, err)
 
 	require.Equal(t, before.DirectivePath, after.DirectivePath, "the path text is identical")

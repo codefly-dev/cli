@@ -1,4 +1,4 @@
-module github.com/codefly-dev/module-saas-starter/module/services/accounts/code
+module github.com/codefly-dev/module-starterkit/module/services/accounts/code
 
 go 1.26
 

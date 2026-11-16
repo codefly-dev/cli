@@ -1,10 +1,10 @@
 # Coordinate fixtures
 
-`infra-base-lodestar.json` is byte-for-byte output of infra-base commit
+`infra-kit-meridian.json` is byte-for-byte output of infra-kit commit
 `fb376be7c7d2c0d85677d164b85399774ecbbeb6`:
 
 ```
-env -u OBIN_REGISTRY -u OBIN_REPO_ROOT bin/obinctl coordinate-contract hosted-us-east1 --namespace lodestar
+env -u NORTHWIND_REGISTRY -u NORTHWIND_REPO_ROOT bin/hostctl coordinate-contract hosted-us-east1 --namespace meridian
 ```
 
 It carries public configuration, Accounts' exact primary workload identity,

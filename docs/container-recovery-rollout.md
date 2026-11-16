@@ -180,7 +180,7 @@ advertised `runnersbase.BackendSupport`, or `—` for a kind that declares none.
 | `codefly.dev/sentry` | codefly:provider | `provider-sentry` | none | — | not-required |
 | `codefly.dev/stripe` | codefly:provider | `provider-stripe` | none | — | not-required |
 | `codefly.dev/unleash` | codefly:provider | `provider-unleash` | none | — | not-required |
-| `codefly.dev/starterkit` | codefly:module | `module-starterkit` | none | — | not-required |
+| `codefly.dev/saas-starter` | codefly:module | `module-saas-starter` | none | — | not-required |
 | `codefly.dev/go` | codefly:runnable | `runnable-go` | none | — | not-required |
 | `codefly.dev/python` | codefly:runnable | `runnable-python` | none | local, docker | not-required |
 

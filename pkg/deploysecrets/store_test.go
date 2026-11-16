@@ -217,12 +217,12 @@ func TestStoreRefusesEmptyNullAndNonObjectDocuments(t *testing.T) {
 // on by name. It is said in fixed words, with nothing of the backend's output.
 func TestExpiredBackendCredentialsAreNamedWithoutTheBackendOutput(t *testing.T) {
 	stderr := "ERROR: (gcloud.config.config-helper) There was a problem refreshing your current auth tokens: " +
-		"Reauthentication failed. cannot prompt during non-interactive execution. Please run: gcloud auth login (project=platform-obin-staging-saas-accounts)"
+		"Reauthentication failed. cannot prompt during non-interactive execution. Please run: gcloud auth login (project=platform-northwind-staging-saas-accounts)"
 	err := &CommandError{Command: "kubectl get clustersecretstore", stderr: stderr}
 	if !strings.Contains(err.Error(), "gcloud auth login") {
 		t.Fatalf("an expired login is not named: %s", err)
 	}
-	if strings.Contains(err.Error(), "platform-obin-staging") || strings.Contains(fmt.Sprintf("%+v", err), "project=") {
+	if strings.Contains(err.Error(), "platform-northwind-staging") || strings.Contains(fmt.Sprintf("%+v", err), "project=") {
 		t.Fatalf("the backend's output leaked: %s", err)
 	}
 	other := &CommandError{Command: "gcloud secrets describe", stderr: "ERROR: NOT_FOUND: Secret [key] not found"}

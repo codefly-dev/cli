@@ -230,7 +230,7 @@ func routePackage(t *testing.T, document string) string {
 	sum := sha256.Sum256([]byte(document))
 	pkg := `schema: codefly/module-package/v2
 kind: module-package
-id: obin/model
+id: northwind/model
 version: 0.1.0
 minimum-codefly-version: ">=0.3.32 <1.0.0"
 artifact-roots:

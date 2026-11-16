@@ -361,7 +361,7 @@ func TestRenderedServiceSecretsReadsAnItemThroughItsOwnStore(t *testing.T) {
 	workspace := t.TempDir()
 	root := workingrender.Module(workspace, "staging", "billing")
 	data := "        - secretKey: A_KEY\n          remoteRef:\n            key: example-billing-api\n            property: A_KEY\n" +
-		"        - secretKey: IDENTITY_CLIENT_SECRET\n          remoteRef:\n            key: workos-app\n            property: client_secret\n" +
+		"        - secretKey: IDENTITY_CLIENT_SECRET\n          remoteRef:\n            key: idkit-app\n            property: client_secret\n" +
 		"          sourceRef:\n            storeRef:\n              name: platform-identity\n              kind: ClusterSecretStore\n"
 	content := []byte(fmt.Sprintf(renderedExternalSecret, "api", "billing", "api", data))
 	relative := "services/api/overlays/staging/external-secret.yaml"
@@ -392,7 +392,7 @@ func TestRenderedServiceSecretsReadsAnItemThroughItsOwnStore(t *testing.T) {
 	for _, secret := range rendered.Secrets {
 		stores[secret.RemoteKey] = secret.Store
 	}
-	if stores["workos-app"] != (environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}) ||
+	if stores["idkit-app"] != (environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}) ||
 		stores["example-billing-api"] != (environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}) {
 		t.Fatalf("stores by remote key = %+v", stores)
 	}

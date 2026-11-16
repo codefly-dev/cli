@@ -23,8 +23,8 @@ func TestRuntimeInstallationsSelectAuthorityEnvelopeAndConfiguration(t *testing.
 		{"one", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]}`, `[]`, true, []string{preparedKey}},
 		{"union", `[{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ITEMS_APPLY"}]},{"contract":"runtime.installation/v1","bindings":[{"prepared":"OWNER__ADMIN"},{"prepared":"OWNER__ITEMS_APPLY"}]}]`, `[]`, true, []string{"OWNER__ADMIN", preparedKey}},
 		{"empty", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, true, nil},
-		{"robin default none despite root installation", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, false, nil},
-		{"robin offered", `{"contract":"runtime.installation/v1","bindings":[]}`, `["OWNER__ITEMS_APPLY"]`, false, []string{preparedKey}},
+		{"sidekick default none despite root installation", `{"contract":"runtime.installation/v1","bindings":[]}`, `[]`, false, nil},
+		{"sidekick offered", `{"contract":"runtime.installation/v1","bindings":[]}`, `["OWNER__ITEMS_APPLY"]`, false, []string{preparedKey}},
 		{"unknown", `{"contract":"runtime.installation/v1","bindings":[]}`, `["UNKNOWN_OPERATION"]`, false, nil},
 		{"runtime plus offered", `{"contract":"runtime.installation/v1","bindings":[{"prepared":"owner__items-apply"}]}`, `["OWNER__ADMIN"]`, true, []string{"OWNER__ADMIN", preparedKey}},
 	} {

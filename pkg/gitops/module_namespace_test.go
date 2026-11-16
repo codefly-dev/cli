@@ -214,7 +214,7 @@ func TestSolutionNamespaceRefusesModuleNamespaces(t *testing.T) {
 	require.ErrorContains(t, err, "host namespace")
 	_, err = solutionNamespace("platform", env, workspace)
 	require.ErrorContains(t, err, "host namespace")
-	namespace, err := solutionNamespace("lastlogin", env, workspace)
+	namespace, err := solutionNamespace("beacon", env, workspace)
 	require.NoError(t, err)
-	require.Equal(t, "lastlogin", namespace)
+	require.Equal(t, "beacon", namespace)
 }

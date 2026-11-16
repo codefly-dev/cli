@@ -1,5 +1,4 @@
 kind: module
-name: wiki
-service-entry: backend
+name: quill
 services:
     - name: backend

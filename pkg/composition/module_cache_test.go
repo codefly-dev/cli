@@ -18,7 +18,7 @@ import (
 // this on every machine.
 func writeSolutionWorkspaceWithResolution(t *testing.T, dir, source, version, resolution string) {
 	t.Helper()
-	manifest := "name: wiki\nlayout: modules\n" + ModuleResolutionKey + ":\n    saas: " + resolution +
+	manifest := "name: quill\nlayout: modules\n" + ModuleResolutionKey + ":\n    saas: " + resolution +
 		"\nmodules:\n    - name: saas\n      source: " + source +
 		"\n      version: " + version + "\n"
 	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(manifest), 0o644); err != nil {
@@ -38,7 +38,7 @@ func TestMaterializePinnedModulesHonorsCommittedGitResolution(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Module: "module", Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -93,7 +93,7 @@ func TestMaterializePinnedModulesDroppingTheDeclarationReturnsToVerified(t *test
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -136,7 +136,7 @@ func TestMaterializePinnedModulesOverlayOverridesTheDeclaration(t *testing.T) {
 		t.Fatal(err)
 	}
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -161,7 +161,7 @@ func TestMaterializePinnedModulesRejectsUnknownResolution(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, "owner/saas", "v0.0.1", "gti")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: "owner/saas", Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -232,7 +232,7 @@ func TestMaterializePinnedModulesUsesTheConfiguredCacheRoot(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Module: "module", Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -278,7 +278,7 @@ func TestMaterializePinnedModulesLeavesAUserCheckoutInsideTheConfiguredRoot(t *t
 		t.Fatal(err)
 	}
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -316,7 +316,7 @@ func TestMaterializePinnedModulesStillOwnsPathsUnderTheDefaultRoot(t *testing.T)
 		t.Fatal(err)
 	}
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -348,7 +348,7 @@ func TestEnsurePinnedModulesRematerializesWhenTheCacheRootMoves(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -388,7 +388,7 @@ func TestEnsurePinnedModulesRematerializesWhenTheCacheIsDeleted(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -426,7 +426,7 @@ func TestMaterializePinnedModulesDeclarationDoesNotChurnAnOverlayClone(t *testin
 	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
 	writeGitFallbackOverlay(t, workspaceDir, "saas")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -474,7 +474,7 @@ func TestCloneStagesUnderTheReservedDirectory(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)

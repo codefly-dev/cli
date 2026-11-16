@@ -22,7 +22,7 @@ const remoteRepository = "us-east1-docker.pkg.dev/cell/ghcr"
 // pullThroughEnv pushes to ghcr.io and pulls through the cell's remote repository.
 func pullThroughEnv() *environments.Environment {
 	return &environments.Environment{Name: "staging", Registry: &environments.EnvironmentRegistry{
-		URL: "ghcr.io/obin-ai", Mirrors: map[string]string{"ghcr.io": remoteRepository},
+		URL: "ghcr.io/northwind", Mirrors: map[string]string{"ghcr.io": remoteRepository},
 	}}
 }
 
@@ -43,21 +43,21 @@ func readFile(t *testing.T, path string) string {
 
 func TestPushReferenceMovesOnlyImagesUnderThePullRepository(t *testing.T) {
 	env := pullThroughEnv()
-	require.Equal(t, "ghcr.io/obin-ai/saas/api:1.2.3", pushReference(env, remoteRepository+"/obin-ai/saas/api:1.2.3"))
+	require.Equal(t, "ghcr.io/northwind/saas/api:1.2.3", pushReference(env, remoteRepository+"/northwind/saas/api:1.2.3"))
 	require.Equal(t, "docker.io/library/postgres:16", pushReference(env, "docker.io/library/postgres:16"), "a foreign image is untouched")
-	require.Equal(t, remoteRepository+"/obin-ai-other/api:1", pushReference(env, remoteRepository+"/obin-ai-other/api:1"), "a prefix is a whole path component")
-	unmirrored := &environments.Environment{Registry: &environments.EnvironmentRegistry{URL: "ghcr.io/obin-ai"}}
-	require.Equal(t, "ghcr.io/obin-ai/saas/api:1", pushReference(unmirrored, "ghcr.io/obin-ai/saas/api:1"))
+	require.Equal(t, remoteRepository+"/northwind-other/api:1", pushReference(env, remoteRepository+"/northwind-other/api:1"), "a prefix is a whole path component")
+	unmirrored := &environments.Environment{Registry: &environments.EnvironmentRegistry{URL: "ghcr.io/northwind"}}
+	require.Equal(t, "ghcr.io/northwind/saas/api:1", pushReference(unmirrored, "ghcr.io/northwind/saas/api:1"))
 	require.Equal(t, "x/api:1", pushReference(nil, "x/api:1"))
 }
 
 func TestRecipeAsBuiltNamesThePushedReferenceAndLeavesThePlanAlone(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{Name: "api", Image: remoteRepository + "/obin-ai/saas/api:1.2.3", Platforms: []string{"linux/amd64"}}
+	recipe := &builderv0.DockerBuildRecipe{Name: "api", Image: remoteRepository + "/northwind/saas/api:1.2.3", Platforms: []string{"linux/amd64"}}
 	builder := &Builder{world: &World{Env: pullThroughEnv()}}
 	built, err := builder.recipeAsBuilt(recipe, true)
 	require.NoError(t, err)
-	require.Equal(t, "ghcr.io/obin-ai/saas/api:1.2.3", built.GetImage())
-	require.Equal(t, remoteRepository+"/obin-ai/saas/api:1.2.3", recipe.GetImage(), "the plan keeps the name the cell pulls")
+	require.Equal(t, "ghcr.io/northwind/saas/api:1.2.3", built.GetImage())
+	require.Equal(t, remoteRepository+"/northwind/saas/api:1.2.3", recipe.GetImage(), "the plan keeps the name the cell pulls")
 	local, err := builder.recipeAsBuilt(recipe, false)
 	require.NoError(t, err)
 	require.Same(t, recipe, local, "a build that does not push is not renamed")
@@ -68,7 +68,7 @@ func TestRecipeAsBuiltNamesThePushedReferenceAndLeavesThePlanAlone(t *testing.T)
 func TestAReleasedVersionIsProbedAndPushedAtTheRegistryItPullsThrough(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
 	harness.env = pullThroughEnv()
-	harness.peer.image = remoteRepository + "/obin-ai/saas/api:1.2.3"
+	harness.peer.image = remoteRepository + "/northwind/saas/api:1.2.3"
 	var probed []string
 	previous := resolveImageManifestDigest
 	t.Cleanup(func() { resolveImageManifestDigest = previous })
@@ -81,8 +81,8 @@ func TestAReleasedVersionIsProbedAndPushedAtTheRegistryItPullsThrough(t *testing
 	}
 	args := harness.docker.recordBuildArgs(t)
 	require.NotEmpty(t, harness.build(t))
-	require.Equal(t, []string{"ghcr.io/obin-ai/saas/api:1.2.3"}, probed)
-	require.Contains(t, args(), "-t ghcr.io/obin-ai/saas/api:1.2.3")
+	require.Equal(t, []string{"ghcr.io/northwind/saas/api:1.2.3"}, probed)
+	require.Contains(t, args(), "-t ghcr.io/northwind/saas/api:1.2.3")
 	require.NotContains(t, args(), remoteRepository)
 }
 
@@ -107,7 +107,7 @@ func TestImageProbeClassifiesOnlyARegistryNotFoundAsAbsent(t *testing.T) {
 		_, err := exec.Command("sh", "-c", "printf '%s' \"$0\" >&2; exit 1", stderr).Output()
 		return classifyImageProbeError(err)
 	}
-	require.True(t, isImageNotFound(probe("ERROR: ghcr.io/obin-ai/api:1.2.3: not found")))
+	require.True(t, isImageNotFound(probe("ERROR: ghcr.io/northwind/api:1.2.3: not found")))
 	require.True(t, isImageNotFound(probe("MANIFEST_UNKNOWN: manifest unknown")))
 	unauthorized := probe("ERROR: failed to authorize: 401 Unauthorized")
 	require.False(t, isImageNotFound(unauthorized))
@@ -120,17 +120,17 @@ func TestImageProbeClassifiesOnlyARegistryNotFoundAsAbsent(t *testing.T) {
 func TestSourceLabelLinksAGHCRImageAndIsNotPartOfTheIdentity(t *testing.T) {
 	previous := workspaceSourceRepository
 	t.Cleanup(func() { workspaceSourceRepository = previous })
-	source := "https://github.com/obin-ai/platform"
+	source := "https://github.com/northwind/platform"
 	workspaceSourceRepository = func(context.Context, string) string { return source }
 
 	harness := newImageCacheHarness(t, true, true)
-	harness.env = &environments.Environment{Registry: &environments.EnvironmentRegistry{URL: "ghcr.io/obin-ai"}}
+	harness.env = &environments.Environment{Registry: &environments.EnvironmentRegistry{URL: "ghcr.io/northwind"}}
 	args := harness.docker.recordBuildArgs(t)
 	first := harness.build(t)
 	require.Contains(t, args(), "--label "+imageSourceLabel+"="+source)
 	key := harness.key(t)
 
-	source = "https://github.com/obin-ai/elsewhere"
+	source = "https://github.com/northwind/elsewhere"
 	require.Equal(t, first, harness.build(t))
 	require.Equal(t, 1, harness.docker.calls(t, "build"), "the source label is not an image input")
 	require.Equal(t, key, harness.key(t))
@@ -141,10 +141,10 @@ func TestSourceLabelLinksAGHCRImageAndIsNotPartOfTheIdentity(t *testing.T) {
 		withSourceLabel(base, harness.env, source, true))
 	require.Equal(t, base, withSourceLabel(base, harness.env, "", true))
 	for remote, want := range map[string]string{
-		"git@github.com:obin-ai/platform.git":         "https://github.com/obin-ai/platform",
-		"https://github.com/obin-ai/platform.git":     "https://github.com/obin-ai/platform",
-		"ssh://git@github.com/obin-ai/platform":       "https://github.com/obin-ai/platform",
-		"https://gitlab.example/obin-ai/platform.git": "",
+		"git@github.com:northwind/platform.git":         "https://github.com/northwind/platform",
+		"https://github.com/northwind/platform.git":     "https://github.com/northwind/platform",
+		"ssh://git@github.com/northwind/platform":       "https://github.com/northwind/platform",
+		"https://gitlab.example/northwind/platform.git": "",
 	} {
 		match := githubRemote.FindStringSubmatch(remote)
 		got := ""
@@ -164,9 +164,9 @@ func TestLegacyPushTagsAndPushesThePushedReference(t *testing.T) {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
 	}
-	pulled := remoteRepository + "/obin-ai/saas/api:1.2.3"
+	pulled := remoteRepository + "/northwind/saas/api:1.2.3"
 	require.NoError(t, pushLegacyImage(t.Context(), pullThroughEnv(), pulled))
-	require.Equal(t, []string{"tag " + pulled + " ghcr.io/obin-ai/saas/api:1.2.3", "push ghcr.io/obin-ai/saas/api:1.2.3"}, calls)
+	require.Equal(t, []string{"tag " + pulled + " ghcr.io/northwind/saas/api:1.2.3", "push ghcr.io/northwind/saas/api:1.2.3"}, calls)
 
 	calls = nil
 	require.NoError(t, pushLegacyImage(t.Context(), nil, "registry.example/team/api:1"))

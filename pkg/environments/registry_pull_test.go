@@ -15,10 +15,10 @@ func TestPullRepositoryReadsTheRegistryThroughItsMirror(t *testing.T) {
 		want     string
 	}{
 		{"nil", nil, ""},
-		{"no mirrors", &EnvironmentRegistry{URL: "ghcr.io/obin-ai"}, "ghcr.io/obin-ai"},
-		{"mirror of another registry", &EnvironmentRegistry{URL: "ghcr.io/obin-ai", Mirrors: map[string]string{"docker.io": "mirror.example/hub"}}, "ghcr.io/obin-ai"},
-		{"mirrored", &EnvironmentRegistry{URL: "ghcr.io/obin-ai", Mirrors: map[string]string{"ghcr.io": remote}}, remote + "/obin-ai"},
-		{"trailing slash", &EnvironmentRegistry{URL: "ghcr.io/obin-ai/", Mirrors: map[string]string{"ghcr.io": remote}}, remote + "/obin-ai"},
+		{"no mirrors", &EnvironmentRegistry{URL: "ghcr.io/northwind"}, "ghcr.io/northwind"},
+		{"mirror of another registry", &EnvironmentRegistry{URL: "ghcr.io/northwind", Mirrors: map[string]string{"docker.io": "mirror.example/hub"}}, "ghcr.io/northwind"},
+		{"mirrored", &EnvironmentRegistry{URL: "ghcr.io/northwind", Mirrors: map[string]string{"ghcr.io": remote}}, remote + "/northwind"},
+		{"trailing slash", &EnvironmentRegistry{URL: "ghcr.io/northwind/", Mirrors: map[string]string{"ghcr.io": remote}}, remote + "/northwind"},
 		{"bare host", &EnvironmentRegistry{URL: "localhost:5001", Mirrors: map[string]string{"localhost:5001": remote}}, remote},
 		// A Hub prefix is a namespace, not a library image.
 		{"hub namespace", &EnvironmentRegistry{URL: "myorg", Mirrors: map[string]string{"docker.io": remote}}, remote + "/myorg"},
@@ -41,11 +41,11 @@ func TestRegistryValidatesArtifactsAndGHCRAuth(t *testing.T) {
 		registry EnvironmentRegistry
 		want     string
 	}{
-		{"artifacts", EnvironmentRegistry{URL: "ghcr.io/obin-ai", Artifacts: "us-east1-docker.pkg.dev/cell/bundles"}, ""},
-		{"ghcr auth", EnvironmentRegistry{URL: "ghcr.io/obin-ai", Auth: "ghcr"}, ""},
-		{"artifacts scheme", EnvironmentRegistry{URL: "ghcr.io/obin-ai", Artifacts: "https://bundles.example"}, "carries a scheme"},
-		{"artifacts tag", EnvironmentRegistry{URL: "ghcr.io/obin-ai", Artifacts: "bundles.example/repo:latest"}, "carries a tag"},
-		{"artifacts whitespace", EnvironmentRegistry{URL: "ghcr.io/obin-ai", Artifacts: " bundles.example"}, "whitespace"},
+		{"artifacts", EnvironmentRegistry{URL: "ghcr.io/northwind", Artifacts: "us-east1-docker.pkg.dev/cell/bundles"}, ""},
+		{"ghcr auth", EnvironmentRegistry{URL: "ghcr.io/northwind", Auth: "ghcr"}, ""},
+		{"artifacts scheme", EnvironmentRegistry{URL: "ghcr.io/northwind", Artifacts: "https://bundles.example"}, "carries a scheme"},
+		{"artifacts tag", EnvironmentRegistry{URL: "ghcr.io/northwind", Artifacts: "bundles.example/repo:latest"}, "carries a tag"},
+		{"artifacts whitespace", EnvironmentRegistry{URL: "ghcr.io/northwind", Artifacts: " bundles.example"}, "whitespace"},
 		{"ghcr auth elsewhere", EnvironmentRegistry{URL: "registry.example/team", Auth: "ghcr"}, "is not on ghcr.io"},
 		{"ghcr auth lookalike", EnvironmentRegistry{URL: "ghcr.io.example/team", Auth: "ghcr"}, "is not on ghcr.io"},
 	} {
@@ -68,7 +68,7 @@ func TestRegistryValidatesArtifactsAndGHCRAuth(t *testing.T) {
 // are all carried by an imported contract.
 func TestCoordinateContractCarriesRegistryAuthMirrorsAndArtifacts(t *testing.T) {
 	contract, err := ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"staging","registry":{` +
-		`"url":"ghcr.io/obin-ai","auth":"ghcr","mirrors":{"ghcr.io":"us-east1-docker.pkg.dev/cell/ghcr"},"artifacts":"us-east1-docker.pkg.dev/cell/bundles"}}}`))
+		`"url":"ghcr.io/northwind","auth":"ghcr","mirrors":{"ghcr.io":"us-east1-docker.pkg.dev/cell/ghcr"},"artifacts":"us-east1-docker.pkg.dev/cell/bundles"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestCoordinateContractCarriesRegistryAuthMirrorsAndArtifacts(t *testing.T) 
 	if registry.Auth != "ghcr" || registry.Artifacts != "us-east1-docker.pkg.dev/cell/bundles" {
 		t.Fatalf("registry = %+v", registry)
 	}
-	if got := registry.PullRepository(); got != "us-east1-docker.pkg.dev/cell/ghcr/obin-ai" {
+	if got := registry.PullRepository(); got != "us-east1-docker.pkg.dev/cell/ghcr/northwind" {
 		t.Fatalf("PullRepository() = %q", got)
 	}
 	_, err = ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"staging","registry":{"url":"registry.example/team","auth":"ghcr"}}}`))

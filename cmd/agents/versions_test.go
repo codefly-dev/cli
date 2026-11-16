@@ -70,7 +70,7 @@ func TestBuildInventoryUnionsSourcesAndFlags(t *testing.T) {
 }
 
 func TestBuildInventoryLatestTagBeatsLatestResolvable(t *testing.T) {
-	// The module-saas-starter#3 failure mode: the newest tag has no
+	// The module-starterkit#3 failure mode: the newest tag has no
 	// downloadable artifact, so latest-resolvable lags latest-tag.
 	releases := []releaseInfo{{version: "0.0.74", platforms: []string{ciPlatform}}}
 	tags := []string{"0.0.90", "0.0.74"}
@@ -174,7 +174,7 @@ func TestVersionsBehindCountsResolvableNewer(t *testing.T) {
 }
 
 func TestVersionsBehindIgnoresUnresolvableNewer(t *testing.T) {
-	// module-saas-starter#3: the newest tag (0.0.90) shipped no artifact, so a
+	// module-starterkit#3: the newest tag (0.0.90) shipped no artifact, so a
 	// pin at the latest *resolvable* version (0.0.15) is not "behind" it —
 	// bumping to 0.0.90 would break, so it must not be counted. A newer version
 	// present only in the local cache is likewise not something to bump to.

@@ -18,26 +18,26 @@ import (
 func workosSecretReferences() []environments.EnvironmentManagedSecretReference {
 	store := environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"}
 	return []environments.EnvironmentManagedSecretReference{
-		{Name: "client-id", RemoteKey: "workos/client-id", SecretStore: store},
-		{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store},
+		{Name: "client-id", RemoteKey: "idkit/client-id", SecretStore: store},
+		{Name: "api-key", RemoteKey: "idkit/api-key", SecretStore: store},
 	}
 }
 
 func TestManagedSecretProjectionRendersExternalSecret(t *testing.T) {
-	projection, err := managedSecretProjection("workos", "payments", workosSecretReferences())
+	projection, err := managedSecretProjection("idkit", "payments", workosSecretReferences())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if projection.APIVersion != externalSecretAPIVersion || projection.Kind != kindExternalSecret {
 		t.Fatalf("projection identity = %v/%v", projection.APIVersion, projection.Kind)
 	}
-	if projection.Metadata.Name != "secret-workos" || projection.Metadata.Namespace != "payments" {
+	if projection.Metadata.Name != "secret-idkit" || projection.Metadata.Namespace != "payments" {
 		t.Fatalf("projection metadata = %+v", projection.Metadata)
 	}
 	if projection.Spec.SecretStoreRef.Name != "azure-keyvault-prod" || projection.Spec.SecretStoreRef.Kind != "ClusterSecretStore" {
 		t.Fatalf("projection store = %+v", projection.Spec.SecretStoreRef)
 	}
-	if projection.Spec.Target.Name != "secret-workos" {
+	if projection.Spec.Target.Name != "secret-idkit" {
 		t.Fatalf("projection target = %+v", projection.Spec.Target)
 	}
 	if projection.Spec.RefreshInterval != secretRefreshInterval {
@@ -46,7 +46,7 @@ func TestManagedSecretProjectionRendersExternalSecret(t *testing.T) {
 	if len(projection.Spec.Data) != 2 {
 		t.Fatalf("projection data length = %d", len(projection.Spec.Data))
 	}
-	if projection.Spec.Data[0].SecretKey != "client-id" || projection.Spec.Data[0].RemoteRef.Key != "workos/client-id" {
+	if projection.Spec.Data[0].SecretKey != "client-id" || projection.Spec.Data[0].RemoteRef.Key != "idkit/client-id" {
 		t.Fatalf("projection first entry = %+v", projection.Spec.Data[0])
 	}
 }
@@ -57,13 +57,13 @@ func TestManagedSecretProjectionRendersExternalSecret(t *testing.T) {
 func TestManagedSecretProjectionCarriesProperty(t *testing.T) {
 	store := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
 	refs := []environments.EnvironmentManagedSecretReference{
-		{Name: "store-connection", RemoteKey: "lodestar-accounts", Property: "store_read_write_connection", SecretStore: store},
+		{Name: "store-connection", RemoteKey: "meridian-accounts", Property: "store_read_write_connection", SecretStore: store},
 	}
-	projection, err := managedSecretProjection("store", "lodestar", refs)
+	projection, err := managedSecretProjection("store", "meridian", refs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "lodestar-accounts" || got.RemoteRef.Property != "store_read_write_connection" {
+	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "meridian-accounts" || got.RemoteRef.Property != "store_read_write_connection" {
 		t.Fatalf("managed entry = %+v", got)
 	}
 	encoded, err := yaml.Marshal(projection)
@@ -76,7 +76,7 @@ func TestManagedSecretProjectionCarriesProperty(t *testing.T) {
 }
 
 func TestManagedSecretProjectionPassesPromotableValidation(t *testing.T) {
-	projection, err := managedSecretProjection("workos", "payments", workosSecretReferences())
+	projection, err := managedSecretProjection("idkit", "payments", workosSecretReferences())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestManagedSecretProjectionPassesPromotableValidation(t *testing.T) {
 }
 
 func TestManagedSecretProjectionEmptyReferencesRenderNothing(t *testing.T) {
-	projection, err := managedSecretProjection("workos", "payments", nil)
+	projection, err := managedSecretProjection("idkit", "payments", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestManagedSecretProjectionRejectsInvalidDeclarations(t *testing.T) {
 		{
 			name:      "missing namespace",
 			namespace: "",
-			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "idkit/api-key", SecretStore: store}},
 		},
 		{
 			name:      "missing remote key",
@@ -126,25 +126,25 @@ func TestManagedSecretProjectionRejectsInvalidDeclarations(t *testing.T) {
 		{
 			name:      "incomplete store",
 			namespace: "payments",
-			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod"}}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "idkit/api-key", SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod"}}},
 		},
 		{
 			name:      "backend type mistaken for store kind",
 			namespace: "payments",
-			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"}}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "idkit/api-key", SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"}}},
 		},
 		{
 			name:      "diverging stores",
 			namespace: "payments",
 			refs: []environments.EnvironmentManagedSecretReference{
-				{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store},
-				{Name: "client-id", RemoteKey: "workos/client-id", SecretStore: environments.EnvironmentSecretStoreReference{Name: "other", Kind: "SecretStore"}},
+				{Name: "api-key", RemoteKey: "idkit/api-key", SecretStore: store},
+				{Name: "client-id", RemoteKey: "idkit/client-id", SecretStore: environments.EnvironmentSecretStoreReference{Name: "other", Kind: "SecretStore"}},
 			},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := managedSecretProjection("workos", test.namespace, test.refs); err == nil {
+			if _, err := managedSecretProjection("idkit", test.namespace, test.refs); err == nil {
 				t.Fatalf("expected error for %s", test.name)
 			}
 		})
@@ -152,11 +152,11 @@ func TestManagedSecretProjectionRejectsInvalidDeclarations(t *testing.T) {
 }
 
 func TestRetainManagedBundleProjectsSecretsWithoutBootstrapJobs(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "workos")
+	root := filepath.Join(t.TempDir(), "idkit")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	retained, err := retainManagedBundle(root, "workos", "production", "payments", workosSecretReferences())
+	retained, err := retainManagedBundle(root, "idkit", "production", "payments", workosSecretReferences())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func azureServiceSecrets() *environments.EnvironmentServiceSecrets {
 	return &environments.EnvironmentServiceSecrets{
 		SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"},
 		Services: map[string]environments.EnvironmentServiceSecretMapping{
-			"accounts": {RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{"workos-client-secret": {Key: "workos/prod/client-secret"}}},
+			"accounts": {RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{"idkit-client-secret": {Key: "idkit/prod/client-secret"}}},
 		},
 	}
 }
@@ -225,7 +225,7 @@ func azureServiceSecrets() *environments.EnvironmentServiceSecrets {
 func TestServiceSecretProjectionDefaultsAndOverridesRemoteKeys(t *testing.T) {
 	projection, err := serviceSecretProjection(
 		unitScope{Namespace: "payments"}, "accounts", azureServiceSecrets(),
-		[]string{"workos-api-key", "workos-client-secret"},
+		[]string{"idkit-api-key", "idkit-client-secret"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -240,10 +240,10 @@ func TestServiceSecretProjectionDefaultsAndOverridesRemoteKeys(t *testing.T) {
 		t.Fatalf("projection data length = %d", len(projection.Spec.Data))
 	}
 	// Keys arrive sorted; the un-overridden key falls back to "<service>/<key>".
-	if projection.Spec.Data[0].SecretKey != "workos-api-key" || projection.Spec.Data[0].RemoteRef.Key != "accounts/workos-api-key" {
+	if projection.Spec.Data[0].SecretKey != "idkit-api-key" || projection.Spec.Data[0].RemoteRef.Key != "accounts/idkit-api-key" {
 		t.Fatalf("defaulted entry = %+v", projection.Spec.Data[0])
 	}
-	if projection.Spec.Data[1].SecretKey != "workos-client-secret" || projection.Spec.Data[1].RemoteRef.Key != "workos/prod/client-secret" {
+	if projection.Spec.Data[1].SecretKey != "idkit-client-secret" || projection.Spec.Data[1].RemoteRef.Key != "idkit/prod/client-secret" {
 		t.Fatalf("overridden entry = %+v", projection.Spec.Data[1])
 	}
 }
@@ -304,26 +304,26 @@ func cellServiceSecrets(mapping environments.EnvironmentServiceSecretMapping) *e
 
 // A mapping that names a property renders remoteRef.key AND remoteRef.property,
 // which is how a store of structured documents (a Key Vault JSON secret) is
-// addressed — the shape infra-base maintains by hand today.
+// addressed — the shape infra-kit maintains by hand today.
 func TestServiceSecretProjectionUsesProperty(t *testing.T) {
 	const key = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET"
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
 		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
-			key: {Key: "lodestar-identity", Property: "client_secret"},
+			key: {Key: "meridian-identity", Property: "client_secret"},
 		},
 	})
-	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{key})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "meridian"}, "accounts", secrets, []string{key})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := projection.Spec.Data[0]; got.SecretKey != key || got.RemoteRef.Key != "lodestar-identity" || got.RemoteRef.Property != "client_secret" {
+	if got := projection.Spec.Data[0]; got.SecretKey != key || got.RemoteRef.Key != "meridian-identity" || got.RemoteRef.Property != "client_secret" {
 		t.Fatalf("entry = %+v", got)
 	}
 	encoded, err := yaml.Marshal(projection)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encoded), "key: lodestar-identity") || !strings.Contains(string(encoded), "property: client_secret") {
+	if !strings.Contains(string(encoded), "key: meridian-identity") || !strings.Contains(string(encoded), "property: client_secret") {
 		t.Fatalf("rendered YAML missing key/property:\n%s", encoded)
 	}
 }
@@ -334,7 +334,7 @@ func TestServiceSecretProjectionScalarFormStillWorks(t *testing.T) {
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
 		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{"K": {Key: "some-key"}},
 	})
-	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{"K"})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "meridian"}, "accounts", secrets, []string{"K"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,13 +354,13 @@ func TestServiceSecretProjectionScalarFormStillWorks(t *testing.T) {
 // "{service}" and "{key}" substituted in both key and property.
 func TestServiceSecretProjectionDefaultsTemplate(t *testing.T) {
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
-		Defaults: &environments.EnvironmentSecretRemoteRef{Key: "lodestar-{service}", Property: "{key}"},
+		Defaults: &environments.EnvironmentSecretRemoteRef{Key: "meridian-{service}", Property: "{key}"},
 	})
-	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{"K"})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "meridian"}, "accounts", secrets, []string{"K"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "lodestar-accounts" || got.RemoteRef.Property != "K" {
+	if got := projection.Spec.Data[0]; got.RemoteRef.Key != "meridian-accounts" || got.RemoteRef.Property != "K" {
 		t.Fatalf("defaulted entry = %+v", got)
 	}
 }
@@ -376,11 +376,11 @@ func TestRenderAcceptsExternalSecretWithProperty(t *testing.T) {
 	)
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
 		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
-			clientSecret: {Key: "lodestar-identity", Property: "client_secret"},
-			gatewayToken: {Key: "lodestar-internal-auth", Property: "gateway_token"},
+			clientSecret: {Key: "meridian-identity", Property: "client_secret"},
+			gatewayToken: {Key: "meridian-internal-auth", Property: "gateway_token"},
 		},
 	})
-	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{clientSecret, gatewayToken})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "meridian"}, "accounts", secrets, []string{clientSecret, gatewayToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,17 +461,17 @@ func writeServiceTreeReferencingKeys(t *testing.T, root, environment, namespace,
 	}
 }
 
-// codefly reproduces infra-base's hand-authored secret-accounts ExternalSecret
+// codefly reproduces infra-kit's hand-authored secret-accounts ExternalSecret
 // data block end to end: a service tree references the 20 keys, the production
 // projectServiceSecrets discovers them from that tree and renders the
-// ExternalSecret from a lodestar-side declaration, and the written manifest's
-// spec.data set-equals the infra-base golden. The keys are discovered from the
+// ExternalSecret from a meridian-side declaration, and the written manifest's
+// spec.data set-equals the infra-kit golden. The keys are discovered from the
 // tree, not read from the golden, so the projection — not a map echo — is under
 // test.
 func TestServiceSecretProjectionReproducesInfraBaseAccounts(t *testing.T) {
-	golden := loadGoldenExternalSecretData(t, filepath.Join("testdata", "lodestar-accounts-externalsecret.yaml"))
+	golden := loadGoldenExternalSecretData(t, filepath.Join("testdata", "meridian-accounts-externalsecret.yaml"))
 
-	// The only hand-authored input: the lodestar-side declaration mapping each
+	// The only hand-authored input: the meridian-side declaration mapping each
 	// rendered secret key to its remote {key, property}.
 	remoteKeys := make(map[string]environments.EnvironmentSecretRemoteRef, len(golden))
 	keys := make([]string, 0, len(golden))
@@ -482,9 +482,9 @@ func TestServiceSecretProjectionReproducesInfraBaseAccounts(t *testing.T) {
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{RemoteKeys: remoteKeys})
 
 	root := filepath.Join(t.TempDir(), "accounts")
-	writeServiceTreeReferencingKeys(t, root, "prod", "lodestar", "accounts", keys)
+	writeServiceTreeReferencingKeys(t, root, "prod", "meridian", "accounts", keys)
 
-	projected, err := projectServiceSecrets(root, unitScope{Namespace: "lodestar"}, "accounts", "prod", secrets)
+	projected, err := projectServiceSecrets(root, unitScope{Namespace: "meridian"}, "accounts", "prod", secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,16 +537,16 @@ spec:
           env:
             - name: CODEFLY__SERVICE
               value: accounts
-            - name: WORKOS_CLIENT_SECRET
+            - name: IDKIT_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: secret-accounts
-                  key: workos-client-secret
-            - name: WORKOS_API_KEY
+                  key: idkit-client-secret
+            - name: IDKIT_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: secret-accounts
-                  key: workos-api-key
+                  key: idkit-api-key
 `
 	if err := os.WriteFile(filepath.Join(base, "deployment.yaml"), []byte(deployment), 0o644); err != nil {
 		t.Fatal(err)
@@ -566,7 +566,7 @@ func TestServiceSecretKeysDiscoversReferencedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) != 2 || keys[0] != "workos-api-key" || keys[1] != "workos-client-secret" {
+	if len(keys) != 2 || keys[0] != "idkit-api-key" || keys[1] != "idkit-client-secret" {
 		t.Fatalf("discovered keys = %v", keys)
 	}
 }
@@ -799,7 +799,7 @@ func TestServiceSecretProjectionReadsAKeyThroughItsOwnStore(t *testing.T) {
 	identity := environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
 		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
-			"IDENTITY_CLIENT_SECRET": {Key: "workos-app", Property: "client_secret", SecretStore: &identity},
+			"IDENTITY_CLIENT_SECRET": {Key: "idkit-app", Property: "client_secret", SecretStore: &identity},
 			"CACHE_PASSWORD":         {Key: "cell-accounts", Property: "CACHE_PASSWORD"},
 		},
 	})
@@ -818,7 +818,7 @@ func TestServiceSecretProjectionReadsAKeyThroughItsOwnStore(t *testing.T) {
 	if own.SourceRef == nil || own.SourceRef.StoreRef != (externalSecretStoreRef{Name: "platform-identity", Kind: "ClusterSecretStore"}) {
 		t.Fatalf("the key declared with its own store reads through it: %+v", own)
 	}
-	if own.RemoteRef != (externalSecretRemote{Key: "workos-app", Property: "client_secret"}) {
+	if own.RemoteRef != (externalSecretRemote{Key: "idkit-app", Property: "client_secret"}) {
 		t.Fatalf("remote ref lost: %+v", own.RemoteRef)
 	}
 	if byKey["CACHE_PASSWORD"].SourceRef != nil {

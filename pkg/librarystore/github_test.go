@@ -52,10 +52,10 @@ func TestGitHubStorePublishResolveGoLibrary(t *testing.T) {
 	store := storeTo(remote)
 	modulePath := goModulePath(remote)
 
-	first, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n\nconst V = 1\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	first, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n\nconst V = 1\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err)
-	require.Equal(t, "authkit", first.Name)
+	require.Equal(t, "signkit", first.Name)
 	require.Equal(t, modulePath, first.ImportPath)
 	require.Contains(t, first.InstallHint, "@v1.0.0")
 	require.True(t, strings.HasPrefix(first.Digest, "sha256:"))
@@ -63,18 +63,18 @@ func TestGitHubStorePublishResolveGoLibrary(t *testing.T) {
 
 	// A second version publishes and lists newest-first; a "v"-prefixed input
 	// version is normalized to canonical form.
-	second, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n\nconst V = 2\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "v1.2.0"})
+	second, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n\nconst V = 2\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "v1.2.0"})
 	require.NoError(t, err)
 	require.Equal(t, "1.2.0", second.Version)
 
-	versions, err := store.List(ctx, LanguageGo, "authkit")
+	versions, err := store.List(ctx, LanguageGo, "signkit")
 	require.NoError(t, err)
 	require.Equal(t, []string{"1.2.0", "1.0.0"}, versions)
 
 	// A constraint resolves to the highest satisfying published version, with the
 	// commit pinned and the digest matching what Publish recorded.
-	resolved, err := store.Resolve(ctx, LanguageGo, "authkit", "^1.0.0")
+	resolved, err := store.Resolve(ctx, LanguageGo, "signkit", "^1.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "1.2.0", resolved.Version)
 	require.Equal(t, second.Ref, resolved.Ref)
@@ -98,14 +98,14 @@ func TestGitHubStorePublishCreatesMissingRepositoryBeforeCloning(t *testing.T) {
 			exec.Command("git", "init", "--quiet", "--bare", remote).Run()
 	}
 
-	published, err := store.Publish(ctx, goModule(t, goModulePath(remote), "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	published, err := store.Publish(ctx, goModule(t, goModulePath(remote), "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err)
 	require.True(t, created, "ensureRepository must run before the clone")
 	require.Equal(t, "1.0.0", published.Version)
 
 	// The git path is unchanged: the release is resolvable from the created repo.
-	versions, err := store.List(ctx, LanguageGo, "authkit")
+	versions, err := store.List(ctx, LanguageGo, "signkit")
 	require.NoError(t, err)
 	require.Equal(t, []string{"1.0.0"}, versions)
 }
@@ -114,13 +114,13 @@ func TestGitHubStorePublishAbortsWhenRepositoryCreationFails(t *testing.T) {
 	ctx := context.Background()
 	// An unreachable remote proves the creation failure aborts before any git
 	// operation: a clone attempt would surface a network error, not this one.
-	store := storeTo("https://192.0.2.1/unreachable/authkit-go.git")
+	store := storeTo("https://192.0.2.1/unreachable/signkit-go.git")
 	store.ensureRepository = func(context.Context, Language, string) (repositoryState, error) {
 		return repositoryState{}, errNoRepoScope
 	}
 
-	_, err := store.Publish(ctx, goModule(t, goModulePath("https://192.0.2.1/unreachable/authkit-go.git"), "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	_, err := store.Publish(ctx, goModule(t, goModulePath("https://192.0.2.1/unreachable/signkit-go.git"), "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.ErrorIs(t, err, errNoRepoScope)
 }
 
@@ -149,9 +149,9 @@ func TestEnsureRepositoryExists(t *testing.T) {
 				created = true
 			}
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
+			_, _ = w.Write([]byte(`{"name":"signkit-go"}`))
 		})
-		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", visibilityPrivate)
+		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "signkit-go", visibilityPrivate)
 		require.NoError(t, err)
 		require.False(t, created, "an existing repository must not be re-created")
 	})
@@ -166,16 +166,16 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			switch {
 			case r.URL.Path == "/api/v3/users/codefly-dev":
 				_, _ = w.Write([]byte(`{"type":"Organization"}`))
-			case r.URL.Path == "/api/v3/repos/codefly-dev/authkit-go":
+			case r.URL.Path == "/api/v3/repos/codefly-dev/signkit-go":
 				w.WriteHeader(http.StatusNotFound)
 			case r.Method == http.MethodPost:
 				createPath = r.URL.Path
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
+				_, _ = w.Write([]byte(`{"name":"signkit-go"}`))
 			}
 		})
-		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", visibilityPrivate)
+		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "signkit-go", visibilityPrivate)
 		require.NoError(t, err)
 		require.Equal(t, "/api/v3/orgs/codefly-dev/repos", createPath, "an organization owner uses the org endpoint")
 		require.NotNil(t, body.Private)
@@ -183,7 +183,7 @@ func TestEnsureRepositoryExists(t *testing.T) {
 
 		// Public is available, but only because the caller asked: a client's
 		// bindings carry every message in the contract, so this is a disclosure.
-		_, err = ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", visibilityPublic)
+		_, err = ensureRepositoryExists(ctx, client, "codefly-dev", "signkit-go", visibilityPublic)
 		require.NoError(t, err)
 		require.NotNil(t, body.Private)
 		require.False(t, *body.Private, "an explicit public request must be honoured")
@@ -197,15 +197,15 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			switch {
 			case r.URL.Path == "/api/v3/users/alice":
 				_, _ = w.Write([]byte(`{"type":"User"}`))
-			case r.URL.Path == "/api/v3/repos/alice/authkit-go":
+			case r.URL.Path == "/api/v3/repos/alice/signkit-go":
 				w.WriteHeader(http.StatusNotFound)
 			case r.Method == http.MethodPost:
 				createPath = r.URL.Path
 				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(`{"name":"authkit-go"}`))
+				_, _ = w.Write([]byte(`{"name":"signkit-go"}`))
 			}
 		})
-		_, err := ensureRepositoryExists(ctx, client, "alice", "authkit-go", visibilityPrivate)
+		_, err := ensureRepositoryExists(ctx, client, "alice", "signkit-go", visibilityPrivate)
 		require.NoError(t, err)
 		require.Equal(t, "/api/v3/user/repos", createPath, "a user owner uses the authenticated-user endpoint")
 	})
@@ -215,14 +215,14 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			switch {
 			case r.URL.Path == "/api/v3/users/codefly-dev":
 				_, _ = w.Write([]byte(`{"type":"Organization"}`))
-			case r.URL.Path == "/api/v3/repos/codefly-dev/authkit-go":
+			case r.URL.Path == "/api/v3/repos/codefly-dev/signkit-go":
 				w.WriteHeader(http.StatusNotFound)
 			case r.Method == http.MethodPost:
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_, _ = w.Write([]byte(`{"message":"Repository creation failed.","errors":[{"resource":"Repository","code":"custom","message":"name already exists on this account"}]}`))
 			}
 		})
-		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", visibilityPrivate)
+		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "signkit-go", visibilityPrivate)
 		require.NoError(t, err, "a repository that appeared between the lookup and the create is not an error")
 	})
 
@@ -234,7 +234,7 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusInternalServerError)
 		})
-		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", visibilityPrivate)
+		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "signkit-go", visibilityPrivate)
 		require.ErrorContains(t, err, "check repository")
 		require.False(t, created, "a lookup failure must not trigger a blind create")
 	})
@@ -244,13 +244,13 @@ func TestEnsureRepositoryExists(t *testing.T) {
 			switch {
 			case r.URL.Path == "/api/v3/users/codefly-dev":
 				_, _ = w.Write([]byte(`{"type":"Organization"}`))
-			case r.URL.Path == "/api/v3/repos/codefly-dev/authkit-go":
+			case r.URL.Path == "/api/v3/repos/codefly-dev/signkit-go":
 				w.WriteHeader(http.StatusNotFound)
 			case r.Method == http.MethodPost:
 				w.WriteHeader(http.StatusForbidden)
 			}
 		})
-		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "authkit-go", visibilityPrivate)
+		_, err := ensureRepositoryExists(ctx, client, "codefly-dev", "signkit-go", visibilityPrivate)
 		require.ErrorContains(t, err, "repository-creation scope")
 	})
 }
@@ -284,8 +284,8 @@ func TestGitHubStorePublishWithoutTokenFallsBackToCloneError(t *testing.T) {
 	store.remoteFor = func(Language, string) string { return remote }
 	store.tokenSource = func() string { return "" }
 
-	_, err := store.Publish(ctx, goModule(t, goModulePath(remote), "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	_, err := store.Publish(ctx, goModule(t, goModulePath(remote), "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "create the library repository first")
 }
 
@@ -294,27 +294,27 @@ func TestGitHubStorePublishedVersionsAreImmutableButIdenticalContentReleases(t *
 	remote := bareRepo(t)
 	store := storeTo(remote)
 	modulePath := goModulePath(remote)
-	coords := Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"}
+	coords := Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"}
 
-	first, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"), coords)
+	first, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n"), coords)
 	require.NoError(t, err)
 
 	// An interrupted caller can safely adopt an immutable version it already
 	// published when the bytes agree.
-	retried, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"), coords)
+	retried, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n"), coords)
 	require.NoError(t, err)
 	require.Equal(t, first.Ref, retried.Ref)
 	require.Equal(t, first.Digest, retried.Digest)
 
 	// The same version can never be replaced with different content.
-	_, err = store.Publish(ctx, goModule(t, modulePath, "package authkit // changed\n"), coords)
+	_, err = store.Publish(ctx, goModule(t, modulePath, "package signkit // changed\n"), coords)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "different bytes")
 
 	// A new version whose content is byte-identical to the previous release is a
 	// valid release, not an empty-commit failure.
-	identical, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.1"})
+	identical, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.1"})
 	require.NoError(t, err)
 	require.Equal(t, "1.0.1", identical.Version)
 }
@@ -325,19 +325,19 @@ func TestGitHubStoreResolveExcludesPrereleases(t *testing.T) {
 	store := storeTo(remote)
 	modulePath := goModulePath(remote)
 
-	_, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	_, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err)
-	_, err = store.Publish(ctx, goModule(t, modulePath, "package authkit // rc\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.1.0-rc1"})
+	_, err = store.Publish(ctx, goModule(t, modulePath, "package signkit // rc\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.1.0-rc1"})
 	require.NoError(t, err)
 
-	versions, err := store.List(ctx, LanguageGo, "authkit")
+	versions, err := store.List(ctx, LanguageGo, "signkit")
 	require.NoError(t, err)
 	require.Equal(t, []string{"1.1.0-rc1", "1.0.0"}, versions)
 
 	// A plain caret constraint never selects a prerelease.
-	resolved, err := store.Resolve(ctx, LanguageGo, "authkit", "^1.0.0")
+	resolved, err := store.Resolve(ctx, LanguageGo, "signkit", "^1.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "1.0.0", resolved.Version)
 }
@@ -346,17 +346,17 @@ func TestGitHubStoreRejectsModulePathMismatchBeforeTouchingTheRemote(t *testing.
 	ctx := context.Background()
 	// An unreachable remote proves validation fires before any git operation: a
 	// clone attempt would fail with a network error, not a module-path error.
-	store := storeTo("https://192.0.2.1/unreachable/authkit-go.git")
+	store := storeTo("https://192.0.2.1/unreachable/signkit-go.git")
 
-	_, err := store.Publish(ctx, goModule(t, "example.com/wrong", "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	_, err := store.Publish(ctx, goModule(t, "example.com/wrong", "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "declares module")
 	require.Contains(t, err.Error(), "example.com/wrong")
 
 	// A missing go.mod is rejected the same way.
 	_, err = store.Publish(ctx, t.TempDir(),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "go.mod")
 }
@@ -378,8 +378,8 @@ func TestGitHubStorePublishIgnoresAmbientSigningAndHookConfig(t *testing.T) {
 	store := storeTo(remote)
 	modulePath := goModulePath(remote)
 
-	_, err := store.Publish(ctx, goModule(t, modulePath, "package authkit\n"),
-		Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0"})
+	_, err := store.Publish(ctx, goModule(t, modulePath, "package signkit\n"),
+		Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err)
 }
 
@@ -387,15 +387,15 @@ func TestGitHubStoreRejectsNonSemverAndUnsupportedLanguages(t *testing.T) {
 	ctx := context.Background()
 	store := storeTo(bareRepo(t))
 
-	_, err := store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "authkit", Version: "latest"})
+	_, err := store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "signkit", Version: "latest"})
 	require.Error(t, err)
 
 	// Build metadata is valid semver but not a valid Go module version: the go
 	// command discards it, so the tag could never be fetched once pushed.
-	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "authkit", Version: "1.0.0+build.1"})
+	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageGo, Name: "signkit", Version: "1.0.0+build.1"})
 	require.ErrorContains(t, err, "build metadata")
 
-	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	_, err = store.Publish(ctx, t.TempDir(), Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "not implemented")
 }
 
@@ -417,7 +417,7 @@ func TestGitHubStoreRejectsUnsafeCoordinates(t *testing.T) {
 	require.ErrorContains(t, err, "invalid library name")
 
 	store.Owner = "codefly-dev/../evil"
-	_, err = store.List(ctx, LanguageGo, "authkit")
+	_, err = store.List(ctx, LanguageGo, "signkit")
 	require.ErrorContains(t, err, "invalid owner")
 }
 
@@ -489,7 +489,7 @@ func TestOutputSurfacesGitStderr(t *testing.T) {
 
 	// A failing ls-remote must carry git's own diagnosis, not an opaque
 	// "exit status 128" that hides an auth failure from a typo'd remote.
-	_, err := store.List(ctx, LanguageGo, "authkit")
+	_, err := store.List(ctx, LanguageGo, "signkit")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "repository")
 }
@@ -532,19 +532,19 @@ func TestIsCommitHash(t *testing.T) {
 }
 
 func TestGoModulePathAndRepositoryName(t *testing.T) {
-	require.Equal(t, "authkit-go", repositoryName(LanguageGo, "authkit"))
-	require.Equal(t, "github.com/codefly-dev/authkit-go", goModulePath("https://github.com/codefly-dev/authkit-go.git"))
-	require.Equal(t, "github.com/codefly-dev/authkit-go", goModulePath("git@github.com:codefly-dev/authkit-go.git"))
+	require.Equal(t, "signkit-go", repositoryName(LanguageGo, "signkit"))
+	require.Equal(t, "github.com/codefly-dev/signkit-go", goModulePath("https://github.com/codefly-dev/signkit-go.git"))
+	require.Equal(t, "github.com/codefly-dev/signkit-go", goModulePath("git@github.com:codefly-dev/signkit-go.git"))
 }
 
 func TestDefaultRemoteFor(t *testing.T) {
 	store := NewGitHubStore("codefly-dev")
-	require.Equal(t, "https://github.com/codefly-dev/authkit-go.git", store.remoteFor(LanguageGo, "authkit"))
+	require.Equal(t, "https://github.com/codefly-dev/signkit-go.git", store.remoteFor(LanguageGo, "signkit"))
 
 	// Owner is read live, so reassigning it after construction retargets the
 	// store instead of silently publishing to the original owner.
 	store.Owner = "acme"
-	require.Equal(t, "https://github.com/acme/authkit-go.git", store.remoteFor(LanguageGo, "authkit"))
+	require.Equal(t, "https://github.com/acme/signkit-go.git", store.remoteFor(LanguageGo, "signkit"))
 }
 
 func TestParseGoModulePath(t *testing.T) {
@@ -666,9 +666,9 @@ func TestRepositoryCreationWithoutACredentialIsAnError(t *testing.T) {
 	store.tokenSource = func() string { return "" }
 	store.EnableRepositoryCreation(RepositoryPolicy{CreateMissing: true})
 
-	_, err := store.ensureRepository(context.Background(), LanguageGo, "authkit")
+	_, err := store.ensureRepository(context.Background(), LanguageGo, "signkit")
 	require.ErrorContains(t, err, "requires a GitHub credential")
-	require.ErrorContains(t, err, "codefly-dev/authkit-go", "the error names the repository it could not create")
+	require.ErrorContains(t, err, "codefly-dev/signkit-go", "the error names the repository it could not create")
 	require.ErrorContains(t, err, "--create-missing-repository", "and how to opt back out")
 }
 
@@ -676,7 +676,7 @@ func TestRepositoryCreationWithoutACredentialIsAnError(t *testing.T) {
 // public module proxy cannot see it. Publishing one and then printing the
 // public command hands the operator something that does not work.
 func TestInstallHintReflectsRepositoryVisibility(t *testing.T) {
-	const path = "github.com/codefly-dev/authkit-go"
+	const path = "github.com/codefly-dev/signkit-go"
 
 	require.Equal(t, "go get "+path+"@v1.0.0", goInstallHint(path, "1.0.0", visibilityPublic))
 	require.Equal(t, "go get "+path+"@v1.0.0", goInstallHint(path, "1.0.0", visibilityUnknown),
@@ -687,8 +687,8 @@ func TestInstallHintReflectsRepositoryVisibility(t *testing.T) {
 	// pip delegates to git, which authenticates a private repository the same
 	// way as a public one, so the command is correct either way.
 	require.Equal(t,
-		pythonInstallHint("github.com/codefly-dev/authkit-python", "1.0.0", visibilityPublic),
-		pythonInstallHint("github.com/codefly-dev/authkit-python", "1.0.0", visibilityPrivate))
+		pythonInstallHint("github.com/codefly-dev/signkit-python", "1.0.0", visibilityPublic),
+		pythonInstallHint("github.com/codefly-dev/signkit-python", "1.0.0", visibilityPrivate))
 }
 
 // A repository that is already public when a private one was asked for is the
@@ -704,7 +704,7 @@ func TestExistingPublicRepositoryIsReportedWhenPrivateWasRequested(t *testing.T)
 				t.Error("an existing repository must not be re-created")
 			}
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"name":"authkit-go","private":%t}`, private)))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"name":"signkit-go","private":%t}`, private)))
 		}))
 		t.Cleanup(server.Close)
 		client, err := github.NewClient(github.WithEnterpriseURLs(server.URL, server.URL))
@@ -712,20 +712,20 @@ func TestExistingPublicRepositoryIsReportedWhenPrivateWasRequested(t *testing.T)
 		return client
 	}
 
-	state, err := ensureRepositoryExists(ctx, newClient(t, false), "codefly-dev", "authkit-go", visibilityPrivate)
+	state, err := ensureRepositoryExists(ctx, newClient(t, false), "codefly-dev", "signkit-go", visibilityPrivate)
 	require.NoError(t, err, "an existing repository still publishes")
 	require.Equal(t, visibilityPublic, state.visibility, "the hint must describe the repository that exists")
 	require.Len(t, state.warnings, 1)
 	require.Contains(t, state.warnings[0], "already exists and is public")
 
 	// Matching visibility is not a warning.
-	state, err = ensureRepositoryExists(ctx, newClient(t, true), "codefly-dev", "authkit-go", visibilityPrivate)
+	state, err = ensureRepositoryExists(ctx, newClient(t, true), "codefly-dev", "signkit-go", visibilityPrivate)
 	require.NoError(t, err)
 	require.Equal(t, visibilityPrivate, state.visibility)
 	require.Empty(t, state.warnings)
 
 	// Asking for public and finding public is not a warning either.
-	state, err = ensureRepositoryExists(ctx, newClient(t, false), "codefly-dev", "authkit-go", visibilityPublic)
+	state, err = ensureRepositoryExists(ctx, newClient(t, false), "codefly-dev", "signkit-go", visibilityPublic)
 	require.NoError(t, err)
 	require.Equal(t, visibilityPublic, state.visibility)
 	require.Empty(t, state.warnings)

@@ -30,8 +30,8 @@ func scanFixture(t *testing.T, fixture string, options Options) *Result {
 }
 
 // TestTaggedModulesWithDevAgentPinsAreRefused is the regression the gate exists
-// for. The fixture is codefly-dev/module-saas-starter v0.0.85 and
-// obin-ai/module-runtime v0.1.5 as those tags actually shipped: five service
+// for. The fixture is codefly-dev/module-starterkit v0.0.85 and
+// northwind/module-runtime v0.1.5 as those tags actually shipped: five service
 // agent pins at dev prereleases, each with the DEV PIN comment that was supposed
 // to be enough. A comment is not a gate, which is why both tags were cut anyway.
 func TestTaggedModulesWithDevAgentPinsAreRefused(t *testing.T) {
@@ -126,7 +126,7 @@ func TestThirdPartyPseudoVersionsAreNotOurBusiness(t *testing.T) {
 }
 
 // TestLabelledAgentOverrideIsPermittedOnMainAndRefusedForARelease is the design
-// decision, stated as behaviour: platform-obin's documented dev loop keeps
+// decision, stated as behaviour: platform-northwind's documented dev loop keeps
 // working on the default branch, and the release scope is what guarantees the
 // property that actually broke — a released tag free of prereleases.
 func TestLabelledAgentOverrideIsPermittedOnMainAndRefusedForARelease(t *testing.T) {

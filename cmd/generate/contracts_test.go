@@ -402,7 +402,7 @@ func TestGenerateContractsPublishesAnHTTPEndpointsOpenAPIDocument(t *testing.T) 
 	)
 	document := `{"swagger":"2.0","info":{"title":"billing backend","version":"0.0.1"},"paths":{
 		"/v1/billing/upload-access":{"get":{"x-codefly-authority-policy":{"requires":[{"resource_kind":"billing.page","actions":["read"]}]}}},
-		"/v1/billing/modules/robin/{path=**}":{"post":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
+		"/v1/billing/modules/sidekick/{path=**}":{"post":{"x-codefly-authority-policy":{"any_checked_caller":true}}}}}`
 	serviceDir := filepath.Join(moduleDir, "services", "api")
 	if err := os.MkdirAll(filepath.Join(serviceDir, filepath.Dir(standards.OpenAPIPath)), 0o755); err != nil {
 		t.Fatal(err)
@@ -456,8 +456,8 @@ services:
 		got[m.GetMethod()] = fmt.Sprintf("any=%v requires=%v", m.GetAnyCheckedCaller(), m.GetRequires())
 	}
 	want := map[string]string{
-		"GET /v1/billing/upload-access":            `any=false requires=[resource_kind:"billing.page" actions:"read"]`,
-		"POST /v1/billing/modules/robin/{path=**}": `any=true requires=[]`,
+		"GET /v1/billing/upload-access":               `any=false requires=[resource_kind:"billing.page" actions:"read"]`,
+		"POST /v1/billing/modules/sidekick/{path=**}": `any=true requires=[]`,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("route rows = %v, want %v", got, want)
@@ -848,11 +848,11 @@ func TestServiceContractPackage(t *testing.T) {
 
 // A route's path is the full path; the group's path is never prepended to it.
 func TestContractRoutesAreNotDoubledByTheirGroupPath(t *testing.T) {
-	routes := contractRoutes([]*basev0.RestRouteGroup{{Path: "/v1/robin/chat/bounded", Routes: []*basev0.RestRoute{
-		{Path: "/v1/robin/chat/bounded/cancel", Method: basev0.HTTPMethod_POST},
-		{Path: "/v1/robin/chat/bounded/facets", Method: basev0.HTTPMethod_GET},
+	routes := contractRoutes([]*basev0.RestRouteGroup{{Path: "/v1/sidekick/chat/bounded", Routes: []*basev0.RestRoute{
+		{Path: "/v1/sidekick/chat/bounded/cancel", Method: basev0.HTTPMethod_POST},
+		{Path: "/v1/sidekick/chat/bounded/facets", Method: basev0.HTTPMethod_GET},
 	}}})
-	if len(routes) != 2 || routes[0].Path != "/v1/robin/chat/bounded/cancel" || routes[0].Method != "POST" || routes[1].Path != "/v1/robin/chat/bounded/facets" {
+	if len(routes) != 2 || routes[0].Path != "/v1/sidekick/chat/bounded/cancel" || routes[0].Method != "POST" || routes[1].Path != "/v1/sidekick/chat/bounded/facets" {
 		t.Fatalf("routes: %+v", routes)
 	}
 }

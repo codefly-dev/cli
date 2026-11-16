@@ -68,13 +68,13 @@ func reportFor(module string) *Report {
 // each one on its own stdout and nothing else says so.
 func TestACeilingThatOmitsADeclaredBindingFails(t *testing.T) {
 	root := t.TempDir()
-	rendered(t, root, "evaluation", "blue", manifestDocument("evaluation", 5, "score", "tracing-read"))
-	rendered(t, root, "wiki", "blue", manifestDocument("wiki", 3, "documents"))
-	write(t, filepath.Join(root, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
-		envelopeDocument(`{"principals":{"evaluation":{"resources":["evaluation.runs"]},"wiki":{"operation_audiences":{"documents":{}}}}}`))
+	rendered(t, root, "evaluation", "aurora", manifestDocument("evaluation", 5, "score", "tracing-read"))
+	rendered(t, root, "quill", "aurora", manifestDocument("quill", 3, "documents"))
+	write(t, filepath.Join(root, "quill", "module-manifests", "overlays", "aurora", "module-envelope.yaml"),
+		envelopeDocument(`{"principals":{"evaluation":{"resources":["evaluation.runs"]},"quill":{"operation_audiences":{"documents":{}}}}}`))
 
-	report := reportFor("wiki")
-	report.InspectDelivered([]string{root}, "blue")
+	report := reportFor("quill")
+	report.InspectDelivered([]string{root}, "aurora")
 
 	check := checkFor(t, report, CodeEnvelopeOmitsBinding)
 	if check.Status != StatusFail {
@@ -85,7 +85,7 @@ func TestACeilingThatOmitsADeclaredBindingFails(t *testing.T) {
 			t.Errorf("the message must name %q so the fix is obvious; got %q", named, check.Message)
 		}
 	}
-	if contains(check.Message, "wiki/documents") {
+	if contains(check.Message, "quill/documents") {
 		t.Errorf("a binding the ceiling admits must not be reported: %q", check.Message)
 	}
 	if report.Conforms() {
@@ -95,12 +95,12 @@ func TestACeilingThatOmitsADeclaredBindingFails(t *testing.T) {
 
 func TestACeilingThatAdmitsEveryBindingPasses(t *testing.T) {
 	root := t.TempDir()
-	rendered(t, root, "wiki", "blue", manifestDocument("wiki", 3, "documents", "runtime"))
-	write(t, filepath.Join(root, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
-		envelopeDocument(`{"principals":{"wiki":{"operation_audiences":{"documents":{},"runtime":{}}}}}`))
+	rendered(t, root, "quill", "aurora", manifestDocument("quill", 3, "documents", "runtime"))
+	write(t, filepath.Join(root, "quill", "module-manifests", "overlays", "aurora", "module-envelope.yaml"),
+		envelopeDocument(`{"principals":{"quill":{"operation_audiences":{"documents":{},"runtime":{}}}}}`))
 
-	report := reportFor("wiki")
-	report.InspectDelivered([]string{root}, "blue")
+	report := reportFor("quill")
+	report.InspectDelivered([]string{root}, "aurora")
 
 	if checkFor(t, report, CodeEnvelopeAdmitsEveryBinding).Status != StatusOK {
 		t.Error("every declared binding is admitted, so the check must pass")
@@ -113,8 +113,8 @@ func TestACeilingThatAdmitsEveryBindingPasses(t *testing.T) {
 // An environment nobody rendered must not read as an environment with nothing
 // wrong: that is the vacuous pass this command refuses elsewhere too.
 func TestAnUnrenderedEnvironmentFails(t *testing.T) {
-	report := reportFor("wiki")
-	report.InspectDelivered([]string{t.TempDir()}, "blue")
+	report := reportFor("quill")
+	report.InspectDelivered([]string{t.TempDir()}, "aurora")
 	if checkFor(t, report, CodeNotRenderedForEnvironment).Status != StatusFail {
 		t.Error("an environment with no rendered manifest must fail, not pass silently")
 	}
@@ -124,9 +124,9 @@ func TestAnUnrenderedEnvironmentFails(t *testing.T) {
 // than a narrow ceiling and must be said differently.
 func TestManifestsWithNoEnvelopeFails(t *testing.T) {
 	root := t.TempDir()
-	rendered(t, root, "wiki", "blue", manifestDocument("wiki", 3, "documents"))
-	report := reportFor("wiki")
-	report.InspectDelivered([]string{root}, "blue")
+	rendered(t, root, "quill", "aurora", manifestDocument("quill", 3, "documents"))
+	report := reportFor("quill")
+	report.InspectDelivered([]string{root}, "aurora")
 	if checkFor(t, report, CodeEnvelopeNotRendered).Status != StatusFail {
 		t.Error("no envelope means no binding is admitted; that must fail by its own name")
 	}
@@ -137,14 +137,14 @@ func TestManifestsWithNoEnvelopeFails(t *testing.T) {
 // are read, so another environment's tree, never among them, cannot speak.
 func TestTheLaterTreeWinsAndNoOtherIsRead(t *testing.T) {
 	working, delivered, foreign := t.TempDir(), t.TempDir(), t.TempDir()
-	rendered(t, working, "wiki", "blue", manifestDocument("wiki", 3, "documents"))
-	write(t, filepath.Join(working, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"), envelopeDocument(`{"principals":{}}`))
-	write(t, filepath.Join(delivered, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"),
-		envelopeDocument(`{"principals":{"wiki":{"operation_audiences":{"documents":{}}}}}`))
-	write(t, filepath.Join(foreign, "wiki", "module-manifests", "overlays", "blue", "module-envelope.yaml"), envelopeDocument(`{"principals":{}}`))
+	rendered(t, working, "quill", "aurora", manifestDocument("quill", 3, "documents"))
+	write(t, filepath.Join(working, "quill", "module-manifests", "overlays", "aurora", "module-envelope.yaml"), envelopeDocument(`{"principals":{}}`))
+	write(t, filepath.Join(delivered, "quill", "module-manifests", "overlays", "aurora", "module-envelope.yaml"),
+		envelopeDocument(`{"principals":{"quill":{"operation_audiences":{"documents":{}}}}}`))
+	write(t, filepath.Join(foreign, "quill", "module-manifests", "overlays", "aurora", "module-envelope.yaml"), envelopeDocument(`{"principals":{}}`))
 
-	report := reportFor("wiki")
-	report.InspectDelivered([]string{working, delivered}, "blue")
+	report := reportFor("quill")
+	report.InspectDelivered([]string{working, delivered}, "aurora")
 	if checkFor(t, report, CodeEnvelopeAdmitsEveryBinding).Status != StatusOK {
 		t.Error("the delivered envelope admits the binding and is read last, so it must win")
 	}

@@ -1439,9 +1439,9 @@ func TestDoctorWorkspaceFlagsARelativeOverlayPathAheadOfItsTag(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n" +
 			"      source: owner/saas\n      version: \"0.0.62\"\n",
-		"codefly.local.yaml": "resolve:\n    saas:\n        path: lodestar/modules/saas\n",
+		"codefly.local.yaml": "resolve:\n    saas:\n        path: meridian/modules/saas\n",
 	})
-	checkout := filepath.Join(dir, "lodestar")
+	checkout := filepath.Join(dir, "meridian")
 	if err := os.MkdirAll(filepath.Join(checkout, "modules", "saas"), 0o755); err != nil {
 		t.Fatal(err)
 	}

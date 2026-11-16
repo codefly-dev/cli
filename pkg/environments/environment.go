@@ -327,8 +327,8 @@ func (ref EnvironmentSecretRemoteRef) Equal(other EnvironmentSecretRemoteRef) bo
 	return *ref.SecretStore == *other.SecretStore
 }
 
-// UnmarshalYAML accepts either a scalar remote key ("lodestar-accounts", which
-// means {key: "lodestar-accounts"}) or an explicit {key, property} mapping, so a
+// UnmarshalYAML accepts either a scalar remote key ("meridian-accounts", which
+// means {key: "meridian-accounts"}) or an explicit {key, property} mapping, so a
 // store that holds bare scalars stays terse while a store of JSON documents can
 // name the property.
 func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {

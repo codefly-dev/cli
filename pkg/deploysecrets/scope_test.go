@@ -38,7 +38,7 @@ func TestScopedPlanCoversOnlyTheModulesKeys(t *testing.T) {
 	}
 	reads := slices.Clone(store.reads)
 	sort.Strings(reads)
-	if !slices.Equal(reads, []string{"host-accounts", "wiki-backend"}) {
+	if !slices.Equal(reads, []string{"host-accounts", "quill-backend"}) {
 		t.Errorf("read %v, want every existing key read even outside the scope", reads)
 	}
 	if _, err := plan.Apply(ctx, store, true); err != nil {
@@ -61,7 +61,7 @@ func TestScopedPlanPropagatesFromAnUnscopedHolder(t *testing.T) {
 	ctx := context.Background()
 	rendered := fixture()
 	store := newFakeStore(seeded())
-	storedWiki := maps.Clone(store.documents["wiki-backend"])
+	storedWiki := maps.Clone(store.documents["quill-backend"])
 	storedHost := maps.Clone(store.documents["host-accounts"])
 
 	plan, err := Build(ctx, &Inputs{Rendered: rendered, Generators: generators(),
@@ -84,7 +84,7 @@ func TestScopedPlanPropagatesFromAnUnscopedHolder(t *testing.T) {
 	if store.documents["notes-backend"][internalToken] != "shared-internal-token" {
 		t.Error("the scoped key did not receive the value the store already holds")
 	}
-	if !maps.Equal(store.documents["wiki-backend"], storedWiki) || !maps.Equal(store.documents["host-accounts"], storedHost) {
+	if !maps.Equal(store.documents["quill-backend"], storedWiki) || !maps.Equal(store.documents["host-accounts"], storedHost) {
 		t.Error("a key outside the scope changed")
 	}
 }

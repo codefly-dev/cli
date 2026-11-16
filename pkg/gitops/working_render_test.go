@@ -12,15 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The 2026-11-12 finding (obin-ai/platform-obin#719): every module render
+// The 2026-11-12 finding (northwind/platform-northwind#719): every module render
 // wrote deployments/modules/<module> whatever --env it was for, and in a
-// workspace whose staging delivers from deployments/modules on main, each Blue
-// render overwrote staging's delivered tree in the checkout. Publishing Blue
-// then required that tree to hold Blue's render, so it sat committed on a
-// delivery branch, one merge from handing staging a Blue tree.
+// workspace whose staging delivers from deployments/modules on main, each Aurora
+// render overwrote staging's delivered tree in the checkout. Publishing Aurora
+// then required that tree to hold Aurora's render, so it sat committed on a
+// delivery branch, one merge from handing staging a Aurora tree.
 //
 // A render is now scoped to its environment's working render: staging and
-// blue sit side by side, neither touches the other's path, and no render
+// aurora sit side by side, neither touches the other's path, and no render
 // writes a delivered tree, whatever environment that tree belongs to.
 func TestRendersOfTwoEnvironmentsSitSideBySideAndNeverTouchADeliveredTree(t *testing.T) {
 	installFakeAgents(t)
@@ -30,8 +30,8 @@ func TestRendersOfTwoEnvironmentsSitSideBySideAndNeverTouchADeliveredTree(t *tes
 	config := filepath.Join(root, resources.WorkspaceConfigurationName)
 	data, err := os.ReadFile(config)
 	require.NoError(t, err)
-	blue := "  - name: blue\n    namespace: acme\n    registry:\n      url: registry.example.com/acme\n    gitops:\n      path: deployments/environments/blue\n"
-	require.NoError(t, os.WriteFile(config, append(data, []byte(blue)...), 0o644))
+	aurora := "  - name: aurora\n    namespace: acme\n    registry:\n      url: registry.example.com/acme\n    gitops:\n      path: deployments/environments/aurora\n"
+	require.NoError(t, os.WriteFile(config, append(data, []byte(aurora)...), 0o644))
 
 	// Staging delivers from deployments/modules: its committed tree.
 	delivered := filepath.Join(root, "deployments", "modules", "shop")
@@ -56,11 +56,11 @@ func TestRendersOfTwoEnvironmentsSitSideBySideAndNeverTouchADeliveredTree(t *tes
 
 	render("staging")
 	staging := snapshotTree(t, workingrender.Module(root, "staging", "shop"))
-	render("blue")
-	require.Equal(t, staging, snapshotTree(t, workingrender.Module(root, "staging", "shop")), "blue's render touched staging's")
+	render("aurora")
+	require.Equal(t, staging, snapshotTree(t, workingrender.Module(root, "staging", "shop")), "aurora's render touched staging's")
 	require.Equal(t, committed, snapshotTree(t, filepath.Join(root, "deployments")), "a render wrote a delivered tree")
 
-	owned := map[string]string{"staging": "deployments/modules/shop", "blue": "deployments/environments/blue/modules/shop"}
+	owned := map[string]string{"staging": "deployments/modules/shop", "aurora": "deployments/environments/aurora/modules/shop"}
 	for environment, ownedPath := range owned {
 		inventory, err := LoadInventory(workingrender.Module(root, environment, "shop"))
 		require.NoError(t, err)

@@ -78,11 +78,11 @@ func TestDiscoverCanonicalPluginRepos(t *testing.T) {
 	}{
 		{name: "service-postgres-docker-retry", origin: "git@github.com:codefly-dev/service-postgres.git"},
 		{name: "toolbox-docker", origin: "git@github.com:codefly-dev/toolbox-docker.git"},
-		{name: "module-saas-starter-onboarding-library-v2", origin: "https://github.com/codefly-dev/module-saas-starter.git"},
+		{name: "module-starterkit-onboarding-library-v2", origin: "https://github.com/codefly-dev/module-starterkit.git"},
 		{name: "application-flux", origin: "https://github.com/codefly-dev/application-flux.git"},
 		{name: "service-postgres", origin: "https://github.com/codefly-dev/service-postgres.git"},
-		{name: "module-saas-starter-onboarding-library", origin: "git@github.com:codefly-dev/module-saas-starter.git"},
-		{name: "module-saas-starter", origin: "git@github.com:codefly-dev/module-saas-starter.git"},
+		{name: "module-starterkit-onboarding-library", origin: "git@github.com:codefly-dev/module-starterkit.git"},
+		{name: "module-starterkit", origin: "git@github.com:codefly-dev/module-starterkit.git"},
 	} {
 		initRepoWithRemote(t, root, repo.name, repo.origin)
 		markPlugin(t, root, repo.name)
@@ -107,7 +107,7 @@ func TestDiscoverCanonicalPluginRepos(t *testing.T) {
 	}
 	wantNames := []string{
 		"application-flux",
-		"module-saas-starter",
+		"module-starterkit",
 		"service-postgres",
 		"toolbox-docker",
 	}
@@ -116,8 +116,8 @@ func TestDiscoverCanonicalPluginRepos(t *testing.T) {
 	}
 
 	wantSkipped := []skippedPluginCheckout{
-		{name: "module-saas-starter-onboarding-library", originRepository: "module-saas-starter"},
-		{name: "module-saas-starter-onboarding-library-v2", originRepository: "module-saas-starter"},
+		{name: "module-starterkit-onboarding-library", originRepository: "module-starterkit"},
+		{name: "module-starterkit-onboarding-library-v2", originRepository: "module-starterkit"},
 		{name: "service-postgres-docker-retry", originRepository: "service-postgres"},
 	}
 	if !reflect.DeepEqual(skipped, wantSkipped) {

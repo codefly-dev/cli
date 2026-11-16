@@ -47,7 +47,7 @@ func composition(t *testing.T, files map[string]string) *resources.Workspace {
   - organization: acme
     name: viewer
     scopes:
-      - {kind: robin.conversations, actions: [read]}
+      - {kind: sidekick.conversations, actions: [read]}
 `,
 		"modules/playground/configurations/local/" + fixturefragments.Group + ".yaml": head + `roles:
   - organization: acme
@@ -114,7 +114,7 @@ func TestTheRunMergesEveryComposedModulesFragment(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, []string{"robin.conversations", "documents.collection", "documents"}, viewer)
+	require.Equal(t, []string{"sidekick.conversations", "documents.collection", "documents"}, viewer)
 
 	changed, err = fixturefragments.Write(prepared)
 	require.NoError(t, err)

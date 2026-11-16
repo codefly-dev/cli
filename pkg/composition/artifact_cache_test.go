@@ -19,7 +19,7 @@ func TestRetainCanonicalArchiveIsContentAddressedAndReadBack(t *testing.T) {
 	workspace := t.TempDir()
 	bundle := filepath.Join(t.TempDir(), "dist")
 	require.NoError(t, os.MkdirAll(filepath.Join(bundle, "static", "js"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(bundle, "mf-manifest.json"), []byte(`{"name":"wiki"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "mf-manifest.json"), []byte(`{"name":"quill"}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(bundle, "static", "js", "remoteEntry.js"), []byte("export const page = 1;"), 0o600))
 
 	digest, path, err := RetainCanonicalArchive(t.Context(), workspace, bundle)
@@ -57,7 +57,7 @@ func TestRetainCanonicalArchiveIsContentAddressedAndReadBack(t *testing.T) {
 	require.NoError(t, corecomposition.ExtractArchive(t.Context(), stored, extracted))
 	manifest, err := os.ReadFile(filepath.Join(extracted, "mf-manifest.json"))
 	require.NoError(t, err)
-	require.Equal(t, `{"name":"wiki"}`, string(manifest))
+	require.Equal(t, `{"name":"quill"}`, string(manifest))
 	entry, err := os.ReadFile(filepath.Join(extracted, "static", "js", "remoteEntry.js"))
 	require.NoError(t, err)
 	require.Equal(t, "export const page = 1;", string(entry))

@@ -31,17 +31,17 @@ func TestEngineRenderBindsOneLoadedCompositionToEveryBuilder(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	}
-	write("platform/workspace.codefly.yaml", "name: platform-core\nlayout: modules\nmodules:\n  - name: saas\n    source: github.com/codefly-dev/module-saas-starter\n    version: v0.0.93\n    module: module\n")
-	write("product/workspace.codefly.yaml", "name: platform-obin\nlayout: modules\nworkspaces:\n  - name: platform-core\n    path: ../platform\nsolutions:\n  - name: lastlogin-go\n    path: solutions/lastlogin-go\n")
-	write("product/solutions/lastlogin-go/module.codefly.yaml", "kind: module\nname: lastlogin-go\nservices: []\n")
+	write("platform/workspace.codefly.yaml", "name: platform-base\nlayout: modules\nmodules:\n  - name: saas\n    source: github.com/codefly-dev/module-starterkit\n    version: v0.0.93\n    module: module\n")
+	write("product/workspace.codefly.yaml", "name: platform-northwind\nlayout: modules\nworkspaces:\n  - name: platform-base\n    path: ../platform\nsolutions:\n  - name: beacon-go\n    path: solutions/beacon-go\n")
+	write("product/solutions/beacon-go/module.codefly.yaml", "kind: module\nname: beacon-go\nservices: []\n")
 	session := &SelectionSession{trustPath: filepath.Join(root, "product/workspace.codefly.yaml")}
 	first, second := &builderv0.DeploymentRequest{}, &builderv0.DeploymentRequest{}
 	require.NoError(t, session.bindRenderProvenance(t.Context(), []renderInput{
 		{request: first}, {request: &solutionv0.RenderRequest{}}, {request: second},
 	}))
 	require.Equal(t, []*builderv0.CompositionMember{
-		{Name: "saas", Role: builderv0.CompositionMember_ROLE_MODULE, Workspace: "platform-core"},
-		{Name: "lastlogin-go", Role: builderv0.CompositionMember_ROLE_SOLUTION, Workspace: "platform-obin"},
+		{Name: "saas", Role: builderv0.CompositionMember_ROLE_MODULE, Workspace: "platform-base"},
+		{Name: "beacon-go", Role: builderv0.CompositionMember_ROLE_SOLUTION, Workspace: "platform-northwind"},
 	}, first.GetCompositionProvenance().GetMembers())
 	require.Equal(t, first.GetCompositionProvenance(), second.GetCompositionProvenance())
 	first.CompositionProvenance.Members[0].Name = "mutated"

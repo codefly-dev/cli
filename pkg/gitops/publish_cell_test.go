@@ -358,7 +358,7 @@ func TestAnUnfetchedCheckoutOfTheDeliveryRepositoryStillNeedsTheFlag(t *testing.
 // workspace branch is the delivery branch — so the base revision's own
 // composition already lacks the module while the base's cell file, rendered
 // from an earlier composition, still names it. On 2026-11-13 a solution left
-// Blue this way: the publish withdrew it from the cell file and left its
+// Aurora this way: the publish withdrew it from the cell file and left its
 // delivered tree, whose ApplicationSet kept generating OutOfSync/Missing
 // applications until the tree was deleted by hand. The composition the base's
 // file was rendered from (its source revision) declared the module and this
@@ -711,7 +711,7 @@ func TestOnlyAPromotionThatDerivedTheCellFileCarriesIt(t *testing.T) {
 	}
 }
 
-// TestPublishRefusesATreeTheCellDoesNotApprove is the Blue incident of
+// TestPublishRefusesATreeTheCellDoesNotApprove is the Aurora incident of
 // 2026-11-12: a single-module render had left the cell file approving the
 // module's old digests, the promotion carried the module tree at the new ones
 // and the cell file unchanged, admission refused every new pod, and the old

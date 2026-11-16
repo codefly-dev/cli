@@ -13,7 +13,7 @@ import (
 
 const (
 	apiConsumesKey  = "CODEFLY__API_CONSUMES"
-	selfEndpointKey = "CODEFLY__SELF_ENDPOINT__WIKI__BACKEND__HTTP__HTTP"
+	selfEndpointKey = "CODEFLY__SELF_ENDPOINT__QUILL__BACKEND__HTTP__HTTP"
 	// storedSecretKey stands for a secret carrier an injection references: the
 	// key the environment's store holds the value under, never the value.
 	storedSecretKey = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN"
@@ -24,7 +24,7 @@ const (
 func storeEnvironment() *environments.Environment {
 	return &environments.Environment{
 		Name:      "staging",
-		Namespace: "example-wiki",
+		Namespace: "example-quill",
 		ServiceSecrets: &environments.EnvironmentServiceSecrets{
 			SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
 			Defaults:    &environments.EnvironmentSecretRemoteRef{Key: "{workspace}-{module}-{service}", Property: "{key}"},
@@ -48,7 +48,7 @@ func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T
 	injection := serviceInjection{
 		Public: map[string]string{
 			apiConsumesKey:  `[{"id":"documents","as":"documents"}]`,
-			selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080",
+			selfEndpointKey: "http://backend.example-quill.svc.cluster.local:8080",
 		},
 		Secrets: map[string]string{storedSecretKey: storedSecretKey},
 	}
@@ -58,7 +58,7 @@ func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T
 	rendered := buildOverlay(t, root, env.Name)
 	data := configMapData(t, rendered)
 	require.Equal(t, `[{"id":"documents","as":"documents"}]`, data[apiConsumesKey])
-	require.Equal(t, "http://backend.example-wiki.svc.cluster.local:8080", data[selfEndpointKey])
+	require.Equal(t, "http://backend.example-quill.svc.cluster.local:8080", data[selfEndpointKey])
 	require.Equal(t, "backend", data[resources.ServicePrefix], "the builder's own ConfigMap values are kept")
 
 	values := containerEnvironment(t, rendered)
@@ -191,11 +191,11 @@ func TestDerivedInjectionLeavesUntouchedFilesByteForByte(t *testing.T) {
 // injections are exactly the self-endpoint carriers of the services it deployed.
 func TestRenderInjectionsJoinSelfEndpoints(t *testing.T) {
 	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), map[string]map[string]string{
-		"wiki/backend": {selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080"},
+		"quill/backend": {selfEndpointKey: "http://backend.example-quill.svc.cluster.local:8080"},
 	}, nil, nil, nil)
 	require.NoError(t, err)
-	require.Equal(t, "http://backend.example-wiki.svc.cluster.local:8080", injections.forService("wiki", "backend").Public[selfEndpointKey])
-	require.Empty(t, injections.forService("wiki", "other").Public)
+	require.Equal(t, "http://backend.example-quill.svc.cluster.local:8080", injections.forService("quill", "backend").Public[selfEndpointKey])
+	require.Empty(t, injections.forService("quill", "other").Public)
 }
 
 // A render delivers the environment's telemetry carriers to every rendered
@@ -203,20 +203,20 @@ func TestRenderInjectionsJoinSelfEndpoints(t *testing.T) {
 // intake however it is started; an environment declaring none delivers none.
 func TestRenderInjectsTheEnvironmentsTelemetryCarriers(t *testing.T) {
 	env := &environments.Environment{Name: "staging", Telemetry: &environments.EnvironmentTelemetry{OTLPEndpoint: "otel.internal.ops.example:443"}}
-	carriers := telemetryCarriersForRender(env, []string{"wiki/backend", "wiki/worker", "not-a-unique"})
+	carriers := telemetryCarriersForRender(env, []string{"quill/backend", "quill/worker", "not-a-unique"})
 	require.Len(t, carriers, 2)
 	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), nil, nil, carriers, nil)
 	require.NoError(t, err)
-	backend := injections.forService("wiki", "backend").Public
+	backend := injections.forService("quill", "backend").Public
 	require.Equal(t, "https://otel.internal.ops.example:443", backend["OTEL_EXPORTER_OTLP_ENDPOINT"])
-	require.Equal(t, "wiki/backend", backend["OTEL_SERVICE_NAME"])
+	require.Equal(t, "quill/backend", backend["OTEL_SERVICE_NAME"])
 	// Within the tracing attribute contract: deployment.environment.name only;
 	// service.namespace is not a key a producer may set, and a producer that
 	// enforces the contract refuses its whole export when it is injected.
 	require.Equal(t, "deployment.environment.name=staging", backend["OTEL_RESOURCE_ATTRIBUTES"])
 	require.NotContains(t, backend["OTEL_RESOURCE_ATTRIBUTES"], "service.namespace")
-	require.NoError(t, validateInjectionClassification("backend", injections.forService("wiki", "backend")))
-	require.Nil(t, telemetryCarriersForRender(&environments.Environment{Name: "local"}, []string{"wiki/backend"}))
+	require.NoError(t, validateInjectionClassification("backend", injections.forService("quill", "backend")))
+	require.Nil(t, telemetryCarriersForRender(&environments.Environment{Name: "local"}, []string{"quill/backend"}))
 }
 
 // A vendor image (redis) declares no CODEFLY__SERVICE, so no container claims

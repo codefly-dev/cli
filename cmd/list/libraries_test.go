@@ -21,14 +21,14 @@ func writeWorkspaceWithTwoLibraries(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"), []byte("name: test-ws\nlayout: flat\n"), 0o644))
 
 	for name, yaml := range map[string]string{
-		"authkit": `kind: library
-name: authkit
+		"signkit": `kind: library
+name: signkit
 version: 1.0.0
 languages:
   - name: go
     path: go/
     exports:
-      - github.com/codefly-dev/authkit-go
+      - github.com/codefly-dev/signkit-go
 `,
 		"models": `kind: library
 name: models
@@ -71,7 +71,7 @@ func TestListLibrariesTableHasARowPerLibrary(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	require.Len(t, lines, 3, "header + two library rows, got:\n%s", buf.String())
 	require.Contains(t, lines[0], "NAME")
-	require.Contains(t, buf.String(), "authkit")
+	require.Contains(t, buf.String(), "signkit")
 	require.Contains(t, buf.String(), "models")
 }
 
@@ -87,7 +87,7 @@ func TestListLibrariesJSONParses(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &entries))
 	require.Len(t, entries, 2)
 	names := []string{entries[0].Name, entries[1].Name}
-	require.ElementsMatch(t, []string{"authkit", "models"}, names)
+	require.ElementsMatch(t, []string{"signkit", "models"}, names)
 }
 
 func TestListLibrariesMissingWorkspaceReturnsError(t *testing.T) {
@@ -108,7 +108,7 @@ func TestListLibrariesRemoteWithoutStoreConfigStillListsLibraries(t *testing.T) 
 
 	cmd, buf := newListTestCmd()
 	require.NoError(t, listLibraries(cmd), "a workspace with no libraries.publish config must still list its local libraries")
-	require.Contains(t, buf.String(), "authkit")
+	require.Contains(t, buf.String(), "signkit")
 	require.Contains(t, buf.String(), "models")
 }
 

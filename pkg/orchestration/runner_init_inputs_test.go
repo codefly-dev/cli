@@ -81,7 +81,7 @@ func TestInitCarriesTheFixtureAndOverridesToAServiceThatIsNeverStarted(t *testin
 	ctx := context.Background()
 	runner, world := gatewayRunner(t, startRealAgent(t, realAgentInputs))
 	runner.WithFixture("dev-admin")
-	runner.WithOverrides(map[string]string{"CODEFLY__API_CONSUMES": "documents:wiki/documents/api"})
+	runner.WithOverrides(map[string]string{"CODEFLY__API_CONSUMES": "documents:quill/documents/api"})
 
 	_, err := runner.Init(ctx)
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestInitCarriesTheFixtureAndOverridesToAServiceThatIsNeverStarted(t *testin
 	observed := exposedValues(ctx, t, world)
 	require.Equal(t, "dev-admin", observed["fixture"],
 		"the agent's Init never saw the fixture the invocation selected")
-	require.Equal(t, "documents:wiki/documents/api", observed["CODEFLY__API_CONSUMES"],
+	require.Equal(t, "documents:quill/documents/api", observed["CODEFLY__API_CONSUMES"],
 		"the agent's Init never saw the process overrides a solution entry federates with")
 }
 

@@ -21,7 +21,7 @@ libraries:
     typescript: {registry: "http://127.0.0.1:1", scope: "@codefly-dev"}
     python: {owner: codefly-dev}
 `), 0o644))
-	libDir := filepath.Join(dir, "libraries", "authkit")
+	libDir := filepath.Join(dir, "libraries", "signkit")
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, "library.codefly.yaml"), []byte(libraryYAML), 0o644))
 	for rel, content := range files {
@@ -64,20 +64,20 @@ func TestLibraryCommandReturnsErrorsThroughCobra(t *testing.T) {
 func TestPublishLibraryVersionMismatchNamesTheFile(t *testing.T) {
 	t.Cleanup(resetPublishLibraryFlags)
 	dir := writeWorkspaceWithLibrary(t, `kind: library
-name: authkit
+name: signkit
 version: 1.0.0
 languages:
   - name: typescript
     path: typescript/
     exports:
-      - "@codefly-dev/authkit"
+      - "@codefly-dev/signkit"
 `, map[string]string{
-		"typescript/package.json": `{"name":"@codefly-dev/authkit","version":"0.9.0"}`,
+		"typescript/package.json": `{"name":"@codefly-dev/signkit","version":"0.9.0"}`,
 	})
 	t.Chdir(dir)
 
 	cmd, _ := newTestCmd()
-	err := publishLibrary(cmd, "authkit")
+	err := publishLibrary(cmd, "signkit")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "package.json")
 	require.Contains(t, err.Error(), "bump")
@@ -92,30 +92,30 @@ languages:
 func TestPublishLibraryDryRunPrintsInstallHintAndTouchesNoNetwork(t *testing.T) {
 	t.Cleanup(resetPublishLibraryFlags)
 	dir := writeWorkspaceWithLibrary(t, `kind: library
-name: authkit
+name: signkit
 version: 1.0.0
 languages:
   - name: go
     path: go/
     exports:
-      - github.com/codefly-dev/authkit-go
+      - github.com/codefly-dev/signkit-go
   - name: typescript
     path: typescript/
     exports:
-      - "@codefly-dev/authkit"
+      - "@codefly-dev/signkit"
 `, map[string]string{
 		"go/.keep":                "",
-		"typescript/package.json": `{"name":"@codefly-dev/authkit","version":"1.0.0"}`,
+		"typescript/package.json": `{"name":"@codefly-dev/signkit","version":"1.0.0"}`,
 	})
 	t.Chdir(dir)
 	t.Setenv("GITHUB_TOKEN", "not-a-real-token")
 
 	publishLibraryDryRun = true
 	cmd, buf := newTestCmd()
-	err := publishLibrary(cmd, "authkit")
+	err := publishLibrary(cmd, "signkit")
 	require.NoError(t, err)
-	require.Contains(t, buf.String(), "go get github.com/codefly-dev/authkit-go@v1.0.0")
-	require.Contains(t, buf.String(), "npm install @codefly-dev/authkit@1.0.0")
+	require.Contains(t, buf.String(), "go get github.com/codefly-dev/signkit-go@v1.0.0")
+	require.Contains(t, buf.String(), "npm install @codefly-dev/signkit@1.0.0")
 }
 
 // TestReadPyprojectVersionIgnoresTrailingComments guards against a version
@@ -129,7 +129,7 @@ func TestReadPyprojectVersionIgnoresTrailingComments(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(path, []byte(
 		"[project]  # PEP 621 metadata\n"+
-			"name = \"authkit\"\n"+
+			"name = \"signkit\"\n"+
 			"version = \"1.0.0\"  # keep in sync with lib.Version\n"), 0o644))
 	version, err := readPyprojectVersion(path)
 	require.NoError(t, err)
@@ -150,19 +150,19 @@ func TestReadPyprojectVersionIgnoresTrailingComments(t *testing.T) {
 func TestPublishLibraryDryRunAcceptsPyprojectVersionWithTrailingComment(t *testing.T) {
 	t.Cleanup(resetPublishLibraryFlags)
 	dir := writeWorkspaceWithLibrary(t, `kind: library
-name: authkit
+name: signkit
 version: 1.0.0
 languages:
   - name: python
     path: python/
 `, map[string]string{
-		"python/pyproject.toml": "[project]\nname = \"authkit\"\nversion = \"1.0.0\"  # keep in sync with lib.Version\n",
+		"python/pyproject.toml": "[project]\nname = \"signkit\"\nversion = \"1.0.0\"  # keep in sync with lib.Version\n",
 	})
 	t.Chdir(dir)
 
 	publishLibraryDryRun = true
 	cmd, buf := newTestCmd()
-	err := publishLibrary(cmd, "authkit")
+	err := publishLibrary(cmd, "signkit")
 	require.NoError(t, err)
 	require.Contains(t, buf.String(), "pip install")
 }
@@ -170,27 +170,27 @@ languages:
 func TestPublishLibraryRejectsExportIdentityMismatch(t *testing.T) {
 	t.Cleanup(resetPublishLibraryFlags)
 	dir := writeWorkspaceWithLibrary(t, `kind: library
-name: authkit
+name: signkit
 version: 1.0.0
 languages:
   - name: go
     path: go/
     exports:
-      - github.com/wrong-owner/authkit-go
+      - github.com/wrong-owner/signkit-go
 `, map[string]string{"go/.keep": ""})
 	t.Chdir(dir)
 
 	cmd, _ := newTestCmd()
-	err := publishLibrary(cmd, "authkit")
-	require.ErrorContains(t, err, "github.com/wrong-owner/authkit-go")
-	require.ErrorContains(t, err, "github.com/codefly-dev/authkit-go")
+	err := publishLibrary(cmd, "signkit")
+	require.ErrorContains(t, err, "github.com/wrong-owner/signkit-go")
+	require.ErrorContains(t, err, "github.com/codefly-dev/signkit-go")
 }
 
 func TestPublishLibraryMissingWorkspaceReturnsError(t *testing.T) {
 	t.Cleanup(resetPublishLibraryFlags)
 	t.Chdir(t.TempDir())
 	cmd, _ := newTestCmd()
-	require.Error(t, publishLibrary(cmd, "authkit"))
+	require.Error(t, publishLibrary(cmd, "signkit"))
 }
 
 func TestPublishLibraryUnknownNameReturnsError(t *testing.T) {

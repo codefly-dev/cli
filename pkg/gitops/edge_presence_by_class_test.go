@@ -10,13 +10,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// perClassDeclaration is ONE contract: robin required wherever shop is
+// perClassDeclaration is ONE contract: sidekick required wherever shop is
 // delivered, annotations optional on a development cell and required in
 // production. It is written once and delivered twice below; nothing about it
 // changes between the two environments.
 const perClassDeclaration = `installation_role: admin
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
   - module: annotations
     presence_by_class: {development: optional, production: required}
@@ -48,7 +48,7 @@ func TestOneContractDeliversOptionalToDevelopmentAndRequiredToProduction(t *test
 
 			// The Core manifest's half.
 			require.Equal(t, []modulecontract.EdgeDependency{
-				{Module: "robin", Presence: modulecontract.PresenceRequired},
+				{Module: "sidekick", Presence: modulecontract.PresenceRequired},
 				{Module: "annotations", Presence: want},
 			}, manifest.Authority.EdgeDependencies)
 
@@ -112,7 +112,7 @@ func TestAClassTheContractDoesNotNameIsRefused(t *testing.T) {
 func TestAPlainPresenceIsUnaffectedByTheEnvironmentClass(t *testing.T) {
 	plain := `installation_role: admin
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
   - module: annotations
     presence: optional
@@ -121,7 +121,7 @@ edge_dependencies:
 		t.Run("class "+class, func(t *testing.T) {
 			manifest, sidecar := producedCarriers(t, plain, class)
 			require.Equal(t, []modulecontract.EdgeDependency{
-				{Module: "robin", Presence: modulecontract.PresenceRequired},
+				{Module: "sidekick", Presence: modulecontract.PresenceRequired},
 				{Module: "annotations", Presence: modulecontract.PresenceOptional},
 			}, manifest.Authority.EdgeDependencies)
 			agree(t, manifest, sidecar)

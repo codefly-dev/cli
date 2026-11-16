@@ -16,7 +16,7 @@ import (
 const fixtureFragmentHead = "schema: codefly.dev/authority/fixture-composition/v1\n"
 
 // twoFragmentWorkspace composes two modules from OUTSIDE the workspace tree —
-// as a pinned module materializes, which is what platform-core does — each
+// as a pinned module materializes, which is what platform-base does — each
 // shipping a fixture-composition fragment, which is what every module composed
 // since cli#1197 does, plus a service that declares the group as the local
 // authority does. An in-repo module's configurations belong to the consuming

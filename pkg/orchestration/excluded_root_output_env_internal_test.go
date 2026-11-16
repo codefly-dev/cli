@@ -13,11 +13,11 @@ import (
 const excludedRootExportWorkspace = `name: excluded-export
 layout: modules
 modules:
-    - name: wiki
+    - name: quill
 `
 
 const excludedRootExportModule = `kind: module
-name: wiki
+name: quill
 service-entry: backend
 services:
     - name: backend
@@ -26,7 +26,7 @@ services:
 const excludedRootExportService = `kind: service
 name: backend
 version: 0.0.0
-module: wiki
+module: quill
 agent:
     kind: runtime::service
     name: go-grpc
@@ -46,12 +46,12 @@ agent:
 func TestExcludedRootExportCarriesDerivedOverrides(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
-		"workspace.codefly.yaml":                             excludedRootExportWorkspace,
-		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
-		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
+		"workspace.codefly.yaml":                              excludedRootExportWorkspace,
+		"modules/quill/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/quill/services/backend/service.codefly.yaml": excludedRootExportService,
 	})
 
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
@@ -86,12 +86,12 @@ func TestExcludedRootExportCarriesDerivedOverrides(t *testing.T) {
 func TestExcludedRootExportCarriesOnlyItsOwnOverrides(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
-		"workspace.codefly.yaml":                             excludedRootExportWorkspace,
-		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
-		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
+		"workspace.codefly.yaml":                              excludedRootExportWorkspace,
+		"modules/quill/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/quill/services/backend/service.codefly.yaml": excludedRootExportService,
 	})
 
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
@@ -119,11 +119,11 @@ func TestExcludedRootExportCarriesOnlyItsOwnOverrides(t *testing.T) {
 func TestExcludedIdentityRootIsDeclaredWithoutStartingOrReadyEndpoints(t *testing.T) {
 	ctx := t.Context()
 	workspace := writeTempWorkspace(t, map[string]string{
-		"workspace.codefly.yaml":                             excludedRootExportWorkspace,
-		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
-		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService,
+		"workspace.codefly.yaml":                              excludedRootExportWorkspace,
+		"modules/quill/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/quill/services/backend/service.codefly.yaml": excludedRootExportService,
 	})
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestExcludedIdentityRootIsDeclaredWithoutStartingOrReadyEndpoints(t *testin
 	flow.WithExcludeRoot(true)
 	flow.publishRuntimeServices()
 	require.Empty(t, flow.LocalRuntimeServices())
-	require.Equal(t, []string{"wiki/backend"}, flow.LocalAuthorityServices())
+	require.Equal(t, []string{"quill/backend"}, flow.LocalAuthorityServices())
 	require.ErrorContains(t, flow.prepareExcludedOrigin(ctx), "no workload authority")
 	calls := 0
 	flow.world.PrepareExternalWorkload = func(_ context.Context, selected *resources.Service) (func(), error) {

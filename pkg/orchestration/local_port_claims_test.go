@@ -33,7 +33,7 @@ func claimsTestWorld(t *testing.T, scope string, ledger *portclaims.Ledger) *Wor
 	manager, err := network.NewRuntimeManager(context.Background(), nil)
 	require.NoError(t, err)
 	world := &World{
-		Workspace:           &resources.Workspace{Name: "platform-core"},
+		Workspace:           &resources.Workspace{Name: "platform-base"},
 		Env:                 &environments.Environment{Name: "local", NamingScope: scope},
 		LocalNetworkManager: manager,
 	}
@@ -128,7 +128,7 @@ func TestADerivedPortHeldByTheServicesOwnKeptContainerIsClaimed(t *testing.T) {
 	defer forwarder.Close()
 
 	identity := &resources.ServiceIdentity{Module: "saas", Name: "store"}
-	kept := keptContainer(dockerrun.ContainerName(identity.UniqueWithWorkspaceAndScope("platform-core", "gate")), derived)
+	kept := keptContainer(dockerrun.ContainerName(identity.UniqueWithWorkspaceAndScope("platform-base", "gate")), derived)
 	kept.Labels[dockerrun.LabelCodeflyService] = "saas/store"
 	previous := listOwnedContainers
 	t.Cleanup(func() { listOwnedContainers = previous })

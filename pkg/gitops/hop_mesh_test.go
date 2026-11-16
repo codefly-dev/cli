@@ -564,7 +564,7 @@ func TestTheCompositionsHopIsRefusedWhenItsHalvesDisagree(t *testing.T) {
 	}
 }
 
-// A service the environment WITHDRAWS stands nothing. blue withdraws
+// A service the environment WITHDRAWS stands nothing. aurora withdraws
 // authority/hop — on a cell saas is the host and its gateway plays the hop
 // role — and counting the withdrawn service made the cell refuse its own
 // render with "authority/hop and saas/auth-gateway both declare hop-routes",

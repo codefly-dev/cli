@@ -388,7 +388,7 @@ func TestRetireRefusesToAcquireAnUnmaterializedReference(t *testing.T) {
 layout: modules
 workspaces:
     - name: upstream
-      source: obin-ai/not-materialized
+      source: northwind/not-materialized
       version: 0.1.0
 modules:
     - name: documents

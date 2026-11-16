@@ -565,14 +565,14 @@ func TestAdmissionCarriesAPageTheHostBundles(t *testing.T) {
 title: Installed models
 order: 60
 bundled:
-  package: "@obin-ai/model-ui"
+  package: "@northwind/model-ui"
   export: modelFrontendPlugin
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "services", "api", solutionrun.FrontendFileName), []byte(declaration), 0o600))
 	workspace, err := resources.LoadWorkspaceFromDir(t.Context(), cluster.composed().Dir())
 	require.NoError(t, err)
 	cluster.workspace = workspace
-	bundled := &solutionhost.FrontendBundled{Package: "@obin-ai/model-ui", Export: "modelFrontendPlugin"}
+	bundled := &solutionhost.FrontendBundled{Package: "@northwind/model-ui", Export: "modelFrontendPlugin"}
 	pageOf := func(m *solutionhost.ModuleManifest) *solutionhost.Frontend {
 		require.NotNil(t, m.Frontend, "module %s generation %d is delivered without its page", m.Alias, m.Generation)
 		return m.Frontend

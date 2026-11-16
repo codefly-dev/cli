@@ -1,4 +1,4 @@
 kind: module
-name: lastlogin-go
+name: quill
 services:
     - name: backend

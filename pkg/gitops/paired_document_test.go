@@ -47,7 +47,7 @@ func preparedPairManifest(binding string, generation uint64) *solutionhost.Modul
 // manifest, generation or module.
 func TestAPreparedDocumentBindsTheAuthorityHalfToTheCoreBytes(t *testing.T) {
 	signer := nativeSigner(t)
-	manifest := preparedPairManifest("wiki", 7)
+	manifest := preparedPairManifest("quill", 7)
 	carrier := signedCarrierOf(t, manifest, signer)
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{
 		InstallationRole: "admin",
@@ -66,7 +66,7 @@ func TestAPreparedDocumentBindsTheAuthorityHalfToTheCoreBytes(t *testing.T) {
 
 	var policy compositionv1.AuthorityManifestV1
 	require.NoError(t, proto.Unmarshal(request.GetAuthority().GetDocument(), &policy))
-	require.Equal(t, "wiki", policy.GetModule())
+	require.Equal(t, "quill", policy.GetModule())
 	require.Equal(t, uint64(7), policy.GetGeneration())
 	require.Equal(t, delivery.Digest(request.GetCarrier().GetDocument()), policy.GetCoreManifestDigest(),
 		"bound to the exact Core bytes beside it")
@@ -81,7 +81,7 @@ func TestAPreparedDocumentBindsTheAuthorityHalfToTheCoreBytes(t *testing.T) {
 // host compares one rule against two implementations of it.
 func TestBothProducersOfTheAuthorityHalfAgreeByteForByte(t *testing.T) {
 	signer := nativeSigner(t)
-	manifest := preparedPairManifest("wiki", 3)
+	manifest := preparedPairManifest("quill", 3)
 	carrier := signedCarrierOf(t, manifest, signer)
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{
 		InstallationRole: "admin",
@@ -112,7 +112,7 @@ func TestBothProducersOfTheAuthorityHalfAgreeByteForByte(t *testing.T) {
 // carries no authority half, and the sender still delivers it.
 func TestAWithdrawalCarriesNoAuthorityHalfAndIsStillDelivered(t *testing.T) {
 	signer := nativeSigner(t)
-	manifest := preparedPairManifest("wiki", 9)
+	manifest := preparedPairManifest("quill", 9)
 	manifest.Removed = true
 	manifest.Workloads = nil
 	manifest.Authority = nil
@@ -139,7 +139,7 @@ func TestAWithdrawalCarriesNoAuthorityHalfAndIsStillDelivered(t *testing.T) {
 // across processes, since protojson's whitespace seed is per-binary.
 func TestAnUnchangedPairEncodesIdentically(t *testing.T) {
 	signer := nativeSigner(t)
-	carrier := signedCarrierOf(t, preparedPairManifest("wiki", 2), signer)
+	carrier := signedCarrierOf(t, preparedPairManifest("quill", 2), signer)
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{InstallationRole: "none"})
 	require.NoError(t, err)
 	first, err := PreparedPairedDocument(carrier, declaration, signer)
@@ -156,7 +156,7 @@ func TestAnUnchangedPairEncodesIdentically(t *testing.T) {
 // says so rather than preparing a Core-only document that would reach the host
 // with no roles and look like a success.
 func TestAPairedDocumentIsNotPreparedWithoutTheReleaseKey(t *testing.T) {
-	carrier := signedCarrierOf(t, preparedPairManifest("wiki", 2), nativeSigner(t))
+	carrier := signedCarrierOf(t, preparedPairManifest("quill", 2), nativeSigner(t))
 	declaration, err := proto.Marshal(&compositionv1.AuthorityManifestV1{InstallationRole: "admin"})
 	require.NoError(t, err)
 	_, err = PreparedPairedDocument(carrier, declaration, nil)
@@ -180,19 +180,19 @@ func writeOverlayCarrier(t *testing.T, overlay string, manifest *solutionhost.Mo
 func TestPrepareWritesAPairedDocumentPerSettledCarrier(t *testing.T) {
 	signer := nativeSigner(t)
 	overlay := t.TempDir()
-	for _, binding := range []string{"wiki", "accounts"} {
+	for _, binding := range []string{"quill", "accounts"} {
 		manifest := preparedPairManifest(binding, 2)
 		writeOverlayCarrier(t, overlay, manifest, signedCarrierOf(t, manifest, signer))
 	}
 	sources := AuthoritySources{
 		Roles: func(_ context.Context, module string) ([]*compositionv1.RoleV1, error) {
-			if module != "wiki" {
+			if module != "quill" {
 				return nil, nil
 			}
 			return []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}}, nil
 		},
 		Installation: func(_ context.Context, module string) (string, []*compositionv1.EdgeDependencyV1, error) {
-			if module != "wiki" {
+			if module != "quill" {
 				return "", nil, nil
 			}
 			return "admin", nil, nil
@@ -201,12 +201,12 @@ func TestPrepareWritesAPairedDocumentPerSettledCarrier(t *testing.T) {
 	out := t.TempDir()
 	written, err := PreparePairedDocuments(context.Background(), overlay, out, sources, signer)
 	require.NoError(t, err)
-	require.Equal(t, []string{"accounts.json", "wiki.json"}, written, "binding order, so the document set's digest is stable")
+	require.Equal(t, []string{"accounts.json", "quill.json"}, written, "binding order, so the document set's digest is stable")
 
-	wiki := readPrepared(t, out, "wiki.json")
-	require.NotNil(t, wiki.GetAuthority())
+	quill := readPrepared(t, out, "quill.json")
+	require.NotNil(t, quill.GetAuthority())
 	var policy compositionv1.AuthorityManifestV1
-	require.NoError(t, proto.Unmarshal(wiki.GetAuthority().GetDocument(), &policy))
+	require.NoError(t, proto.Unmarshal(quill.GetAuthority().GetDocument(), &policy))
 	require.Equal(t, []string{"admin", "user"},
 		[]string{policy.GetRoles()[0].GetName(), policy.GetRoles()[1].GetName()})
 	require.Equal(t, "admin", policy.GetInstallationRole())
@@ -222,14 +222,14 @@ func TestPrepareWritesAPairedDocumentPerSettledCarrier(t *testing.T) {
 // exists to end.
 func TestPrepareRefusesAnUnsignedCarrierRatherThanDropTheAuthorityHalf(t *testing.T) {
 	overlay := t.TempDir()
-	manifest := preparedPairManifest("wiki", 2)
+	manifest := preparedPairManifest("quill", 2)
 	writeOverlayCarrier(t, overlay, manifest, nil)
 	_, err := PreparePairedDocuments(context.Background(), overlay, t.TempDir(),
 		AuthoritySources{Roles: func(context.Context, string) ([]*compositionv1.RoleV1, error) {
 			return []*compositionv1.RoleV1{{Name: "admin"}, {Name: "user"}}, nil
 		}}, nativeSigner(t))
 	require.ErrorContains(t, err, "carries no signature")
-	require.ErrorContains(t, err, "wiki")
+	require.ErrorContains(t, err, "quill")
 }
 
 // An overlay with no manifest is not an empty success.
@@ -243,7 +243,7 @@ func TestPrepareRefusesAnOverlayWithNoManifest(t *testing.T) {
 func TestWhatPrepareWritesIsWhatApplySends(t *testing.T) {
 	signer := nativeSigner(t)
 	overlay := t.TempDir()
-	manifest := preparedPairManifest("wiki", 5)
+	manifest := preparedPairManifest("quill", 5)
 	writeOverlayCarrier(t, overlay, manifest, signedCarrierOf(t, manifest, signer))
 	out := t.TempDir()
 	_, err := PreparePairedDocuments(context.Background(), overlay, out, AuthoritySources{

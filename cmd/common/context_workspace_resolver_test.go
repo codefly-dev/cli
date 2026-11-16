@@ -22,7 +22,7 @@ import (
 // cmd.Context() and resolved a released import; `codefly deploy gitops render`
 // does not, and died with
 //
-//	workspace "platform-core" at obin-ai/platform-core@0.0.2 requires host resolution
+//	workspace "platform-base" at northwind/platform-base@0.0.2 requires host resolution
 //
 // on a workspace the same binary had just loaded successfully.
 //
@@ -34,14 +34,14 @@ func TestNewContextCarriesTheWorkspaceResolver(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv(composition.ModuleCacheEnv, cache)
 
-	imported := filepath.Join(cache, "team", "platform-core", "v1.0.0")
+	imported := filepath.Join(cache, "team", "platform-base", "v1.0.0")
 	require.NoError(t, os.MkdirAll(imported, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(imported, "workspace.codefly.yaml"),
-		[]byte("name: platform-core\nlayout: modules\n"), 0o600))
+		[]byte("name: platform-base\nlayout: modules\n"), 0o600))
 
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"),
-		[]byte("name: product\nlayout: modules\nworkspaces:\n  - name: platform-core\n    source: team/platform-core\n    version: 1.0.0\n"), 0o600))
+		[]byte("name: product\nlayout: modules\nworkspaces:\n  - name: platform-base\n    source: team/platform-base\n    version: 1.0.0\n"), 0o600))
 
 	ctx, done := common.NewContext()
 	defer done()

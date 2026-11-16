@@ -217,7 +217,7 @@ func TestAnUnreadableHostNeverDropsThePolicyRequirement(t *testing.T) {
 // composeSaasHost composes saas as the host, the way platform compositions
 // name it: saas's own accounts service is host.delivery, implementing
 // codefly.dev/composition, and host.component is whatever the environment
-// calls the host's instance (saas locally, platform-obin on a cell). saas
+// calls the host's instance (saas locally, platform-northwind on a cell). saas
 // publishes that many unmarked methods of its own (the shape of its 447),
 // which are the host's, not methods behind the hop.
 func composeSaasHost(t *testing.T, workspace *resources.Workspace, component string, methods int) *resources.Workspace {
@@ -284,11 +284,11 @@ contracts:
 // codefly.dev/composition, so its own unmarked methods are the host's and
 // pass, while every module the hop fronts is still held to a policy on every
 // method and refused by name. host.component is the host's instance name, not
-// a module: saas locally, platform-obin on a cell, and naming the fronted
+// a module: saas locally, platform-northwind on a cell, and naming the fronted
 // module there sets nothing aside.
 func TestTheHostsOwnModuleIsNotHeldToPoliciesItReceives(t *testing.T) {
 	const saasMethods = 447
-	for _, component := range []string{"saas", "platform-obin", "shop"} {
+	for _, component := range []string{"saas", "platform-northwind", "shop"} {
 		t.Run("component "+component, func(t *testing.T) {
 			workspace, module := unmarkedPolicyWorkspace(t)
 			workspace = composeSaasHost(t, workspace, component, saasMethods)

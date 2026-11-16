@@ -1,7 +1,7 @@
 kind: service
 name: backend
 version: 0.0.0
-module: wiki
+module: quill
 agent:
     kind: runtime::service
     name: go

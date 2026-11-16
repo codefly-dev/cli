@@ -98,17 +98,17 @@ func TestResolveSecretStoreRequiresAClusterContext(t *testing.T) {
 // the printer must not be the place that leaks one.
 func TestPrintSecretsPlanPrintsNoValue(t *testing.T) {
 	var out bytes.Buffer
-	printSecretsPlan(&out, "staging", gitops.RenderedEnvironment{Modules: []string{"wiki"}}, &deploysecrets.Plan{
+	printSecretsPlan(&out, "staging", gitops.RenderedEnvironment{Modules: []string{"quill"}}, &deploysecrets.Plan{
 		Store: "fake",
 		Secrets: []deploysecrets.SecretPlan{{
-			RemoteKey: "wiki-backend", Services: []string{"wiki/backend"}, Exists: true, HasVersion: true, Read: true,
+			RemoteKey: "quill-backend", Services: []string{"quill/backend"}, Exists: true, HasVersion: true, Read: true,
 			Properties: []deploysecrets.PropertyPlan{{Property: "TOKEN", Action: deploysecrets.ActionKeep, Source: "stored"}},
 		}},
 	})
 	if strings.Contains(out.String(), "s3cr3t") {
 		t.Fatal("the printer rendered a value")
 	}
-	if !strings.Contains(out.String(), "wiki-backend") || !strings.Contains(out.String(), "TOKEN") {
+	if !strings.Contains(out.String(), "quill-backend") || !strings.Contains(out.String(), "TOKEN") {
 		t.Errorf("the plan does not name the key and property:\n%s", out.String())
 	}
 }

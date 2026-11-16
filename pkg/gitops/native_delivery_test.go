@@ -136,8 +136,8 @@ func TestANativeManifestNamesTheBundleTheRunBuilt(t *testing.T) {
 	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: page, Services: services, Started: nativeStarted("crm", "api")})
 	require.ErrorContains(t, err, "built no bundle")
 
-	headless, services := nativeModule(t, "wiki", false)
-	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: headless, Services: services, Started: nativeStarted("wiki", "api"), FrontendBundle: bundle})
+	headless, services := nativeModule(t, "quill", false)
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: headless, Services: services, Started: nativeStarted("quill", "api"), FrontendBundle: bundle})
 	require.ErrorContains(t, err, "declares no frontend")
 }
 

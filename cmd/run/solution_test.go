@@ -29,8 +29,8 @@ func TestSolutionCommandExposesSharedRunFlags(t *testing.T) {
 // the modules the solution consumes come up with it instead of the entry
 // starting beside nothing it names.
 func TestSolutionRunSeedsTheCompositionAsCoRoots(t *testing.T) {
-	args := solutionRunArgs("wiki/backend", []string{"saas/frontend", "wiki/backend", "robin/chat", "documents/documents", "robin/chat"})
-	want := []string{"wiki/backend", "saas/frontend", "robin/chat", "documents/documents"}
+	args := solutionRunArgs("quill/backend", []string{"saas/frontend", "quill/backend", "sidekick/chat", "documents/documents", "sidekick/chat"})
+	want := []string{"quill/backend", "saas/frontend", "sidekick/chat", "documents/documents"}
 	if len(args) != len(want) {
 		t.Fatalf("args = %v, want %v", args, want)
 	}

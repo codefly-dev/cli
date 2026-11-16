@@ -78,7 +78,7 @@ func selfAudienceWorkspace(t *testing.T, assistant string) (*resources.Workspace
 // delivered manifest carries the same. The optional self binding whose key
 // nobody set is omitted, and the owner list is delivered once per owner.
 func TestASelfBindingIsAddressedToTheModulesPrincipal(t *testing.T) {
-	workspace, module := selfAudienceWorkspace(t, "OWNER_AUDIENCES=robin\nOWNER_RESOURCE_KINDS=robin=robin.answers\n")
+	workspace, module := selfAudienceWorkspace(t, "OWNER_AUDIENCES=sidekick\nOWNER_RESOURCE_KINDS=sidekick=sidekick.answers\n")
 	env := selectedEnvironment(t, workspace, "staging")
 	recorder := &infoRecorder{}
 	ctx := wool.New(context.Background(), &wool.Resource{Kind: "test", Unique: "test"}).WithLogger(recorder).Inject(context.Background())
@@ -90,7 +90,7 @@ func TestASelfBindingIsAddressedToTheModulesPrincipal(t *testing.T) {
 	want := []solutionhost.AuthorityBinding{
 		modelOnly,
 		shopOccurrences,
-		{ID: "owner-review:robin", Audience: "robin", Operations: map[string][]string{"invoke": {"robin.answers:read", "robin.answers:review"}}},
+		{ID: "owner-review:sidekick", Audience: "sidekick", Operations: map[string][]string{"invoke": {"sidekick.answers:read", "sidekick.answers:review"}}},
 	}
 	require.Equal(t, want, authority.Bindings)
 	require.Equal(t, authority.Principal, authority.Bindings[1].Audience, "the self binding is addressed to the manifest's own principal")
@@ -121,8 +121,8 @@ func TestAnOptionalSelfBindingFilledIsDeliveredToTheModule(t *testing.T) {
 // addressed to that other module.
 func TestASelfBindingFollowsTheComposedNameNotAConfiguredOne(t *testing.T) {
 	workspace, module := selfAudienceWorkspace(t, "")
-	writeShopSlots(t, workspace.Dir(), module.Dir(), strings.Replace(selfAudienceContract, "principal: shop", "principal: robin", 1), "")
+	writeShopSlots(t, workspace.Dir(), module.Dir(), strings.Replace(selfAudienceContract, "principal: shop", "principal: sidekick", 1), "")
 	env := selectedEnvironment(t, workspace, "staging")
 	_, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
-	require.ErrorContains(t, err, `module shop publishes a contract whose principal is "robin"`)
+	require.ErrorContains(t, err, `module shop publishes a contract whose principal is "sidekick"`)
 }

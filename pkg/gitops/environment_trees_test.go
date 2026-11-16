@@ -21,23 +21,23 @@ import (
 // branch. This one declares one.
 func TestAnEnvironmentsCheckoutTreeIsReadOnlyOnItsDeliveryBranch(t *testing.T) {
 	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "environments:\n",
-		"environments:\n  - name: blue\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/example.git\n      path: deployments/environments/blue\n      branch: blue-delivery\n"})
+		"environments:\n  - name: aurora\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/example.git\n      path: deployments/environments/aurora\n      branch: aurora-delivery\n"})
 	root := workspace.Dir()
 	runGit(t, root, "init", "-q", "--initial-branch=main")
-	blue := selectedEnvironment(t, workspace, "blue")
+	aurora := selectedEnvironment(t, workspace, "aurora")
 
-	trees, err := EnvironmentModuleTrees(context.Background(), workspace, blue)
+	trees, err := EnvironmentModuleTrees(context.Background(), workspace, aurora)
 	require.NoError(t, err)
-	require.Equal(t, []string{workingrender.Modules(root, "blue")}, trees,
-		"a checkout on main holds no Blue delivery, so nothing under Blue's gitops path speaks for Blue")
+	require.Equal(t, []string{workingrender.Modules(root, "aurora")}, trees,
+		"a checkout on main holds no Aurora delivery, so nothing under Aurora's gitops path speaks for Aurora")
 
-	// On Blue's own delivery branch the same tree is Blue's delivered tree,
+	// On Aurora's own delivery branch the same tree is Aurora's delivered tree,
 	// and is read.
-	runGit(t, root, "checkout", "-q", "-b", "blue-delivery")
-	trees, err = EnvironmentModuleTrees(context.Background(), workspace, blue)
+	runGit(t, root, "checkout", "-q", "-b", "aurora-delivery")
+	trees, err = EnvironmentModuleTrees(context.Background(), workspace, aurora)
 	require.NoError(t, err)
-	require.Equal(t, []string{workingrender.Modules(root, "blue"),
-		filepath.Join(root, "deployments", "environments", "blue", "modules")}, trees)
+	require.Equal(t, []string{workingrender.Modules(root, "aurora"),
+		filepath.Join(root, "deployments", "environments", "aurora", "modules")}, trees)
 
 	// An environment naming no delivery repository, in a workspace declaring
 	// no default, delivers nowhere else: its tree on disk is read as before,
@@ -52,9 +52,9 @@ func TestAnEnvironmentsCheckoutTreeIsReadOnlyOnItsDeliveryBranch(t *testing.T) {
 // another branch's, or hide the only tree there is.
 func TestADeliveryBranchThatCannotBeReadIsRefusedNotGuessed(t *testing.T) {
 	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "environments:\n",
-		"environments:\n  - name: blue\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/example.git\n      path: deployments/environments/blue\n      branch: blue-delivery\n"})
-	_, err := EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "blue"))
-	require.ErrorContains(t, err, `environment "blue" delivers to https://github.com/acme/example.git on branch "blue-delivery"`)
+		"environments:\n  - name: aurora\n    namespace: acme\n    gitops:\n      repo-url: https://github.com/acme/example.git\n      path: deployments/environments/aurora\n      branch: aurora-delivery\n"})
+	_, err := EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "aurora"))
+	require.ErrorContains(t, err, `environment "aurora" delivers to https://github.com/acme/example.git on branch "aurora-delivery"`)
 	require.ErrorContains(t, err, "this checkout's own branch could not be read")
 
 	// A detached HEAD is the same refusal: git names it "HEAD", which is no
@@ -63,6 +63,6 @@ func TestADeliveryBranchThatCannotBeReadIsRefusedNotGuessed(t *testing.T) {
 	runGit(t, workspace.Dir(), "add", "-A")
 	runGit(t, workspace.Dir(), "commit", "-q", "-m", "the workspace")
 	runGit(t, workspace.Dir(), "checkout", "-q", "--detach", "HEAD")
-	_, err = EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "blue"))
+	_, err = EnvironmentModuleTrees(context.Background(), workspace, selectedEnvironment(t, workspace, "aurora"))
 	require.ErrorContains(t, err, "this checkout's own branch could not be read")
 }

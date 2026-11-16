@@ -65,7 +65,7 @@ func TestExtensionRefreshesGroupsWithoutAddingRoots(t *testing.T) {
 // starts itself.
 func TestFreshRootsAreTheOnesComposedAfterTheRunStarted(t *testing.T) {
 	known := map[string]bool{"saas/host": true, "crm/api": true}
-	require.Equal(t, []string{"wiki/backend", "docs/documents"}, freshRoots(known, []string{"saas/host", "wiki/backend", "crm/api", "docs/documents"}))
+	require.Equal(t, []string{"quill/backend", "docs/documents"}, freshRoots(known, []string{"saas/host", "quill/backend", "crm/api", "docs/documents"}))
 	require.Nil(t, freshRoots(known, []string{"crm/api", "saas/host"}), "nothing composed after the start admits nothing")
 	require.Nil(t, freshRoots(known, nil))
 }
@@ -75,9 +75,9 @@ func TestFreshRootsAreTheOnesComposedAfterTheRunStarted(t *testing.T) {
 // solution run's command-line roots are never withdrawn, a workspace run pins
 // none.
 func TestGoneRootsAreTheDroppedOnesTheRunDidNotPin(t *testing.T) {
-	running := []string{"crm/api", "wiki/backend", "docs/documents"}
-	require.Equal(t, []string{"wiki/backend", "docs/documents"}, goneRoots(map[string]bool{}, running, []string{"crm/api"}))
-	require.Equal(t, []string{"wiki/backend"}, goneRoots(map[string]bool{"docs/documents": true}, running, []string{"crm/api"}), "a pinned root stays")
+	running := []string{"crm/api", "quill/backend", "docs/documents"}
+	require.Equal(t, []string{"quill/backend", "docs/documents"}, goneRoots(map[string]bool{}, running, []string{"crm/api"}))
+	require.Equal(t, []string{"quill/backend"}, goneRoots(map[string]bool{"docs/documents": true}, running, []string{"crm/api"}), "a pinned root stays")
 	require.Nil(t, goneRoots(map[string]bool{}, running, running), "nothing dropped withdraws nothing")
 }
 

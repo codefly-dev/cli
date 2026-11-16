@@ -385,7 +385,7 @@ func TestAnchorReconciliationFollowsOnlyThePolicyConfigMap(t *testing.T) {
 func TestANativeHostPolicyAdmitsTheRunsOwnSignerWithoutDevelopers(t *testing.T) {
 	signer := installLocalKey(t)
 	fingerprint := strings.Repeat("cd", 32)
-	host := &environments.EnvironmentHost{Domain: "obin"}
+	host := &environments.EnvironmentHost{Domain: "northwind"}
 	raw, err := NativeVerificationPolicy(fingerprint, signer, host)
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +397,7 @@ func TestANativeHostPolicyAdmitsTheRunsOwnSignerWithoutDevelopers(t *testing.T) 
 		t.Fatal(err)
 	}
 	public, _ := signing.PublicKeyPEM(signer)
-	if policy.Local.NativeAnchorSha256 != fingerprint || policy.Local.ClusterCertificateAuthoritySha256 != "" || len(policy.Signers) != 1 || policy.Signers[0].KeyID != signer.KeyID() || policy.Signers[0].PublicKey != public || policy.Signers[0].Kind != "person" || len(policy.Signers[0].Domains) != 1 || policy.Signers[0].Domains[0] != "obin" {
+	if policy.Local.NativeAnchorSha256 != fingerprint || policy.Local.ClusterCertificateAuthoritySha256 != "" || len(policy.Signers) != 1 || policy.Signers[0].KeyID != signer.KeyID() || policy.Signers[0].PublicKey != public || policy.Signers[0].Kind != "person" || len(policy.Signers[0].Domains) != 1 || policy.Signers[0].Domains[0] != "northwind" {
 		t.Fatalf("wrong native policy: %s", raw)
 	}
 	if _, err = NativeVerificationPolicy(fingerprint, nil, host); err == nil {

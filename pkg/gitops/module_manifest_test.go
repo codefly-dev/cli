@@ -258,10 +258,10 @@ func TestBindingIDIsStablePerInstanceAndDistinctPerSecondInstance(t *testing.T) 
 func TestBindingIDRefusesAPartThatCannotNameAKubernetesObject(t *testing.T) {
 	for name, part := range map[string]struct{ workspace, environment, instance string }{
 		"uppercase workspace":   {"My_Workspace", "prod", "crm"},
-		"underscore":            {"obin_prod", "prod", "crm"},
-		"uppercase instance":    {"obin", "prod", "CRM"},
-		"leading dash":          {"obin", "prod", "-crm"},
-		"uppercase environment": {"obin", "Prod", "crm"},
+		"underscore":            {"northwind_prod", "prod", "crm"},
+		"uppercase instance":    {"northwind", "prod", "CRM"},
+		"leading dash":          {"northwind", "prod", "-crm"},
+		"uppercase environment": {"northwind", "Prod", "crm"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if id, err := bindingID(part.workspace, part.environment, part.instance); err == nil || !strings.Contains(err.Error(), "Kubernetes object") {

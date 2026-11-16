@@ -82,7 +82,7 @@ func TestTheModuleManifestWireIsFrozenAtTheFloor(t *testing.T) {
 // endpoints, and an authority block with every list and every operation.
 func wireManifest() *solutionhost.ModuleManifest {
 	return &solutionhost.ModuleManifest{
-		Schema: solutionhost.SchemaModuleManifestV1, Binding: "ws.blue.shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 3,
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "ws.aurora.shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 3,
 		Host:      solutionhost.HostTarget{Coordinate: "local", Domain: "local"},
 		Release:   solutionhost.Release{Publisher: "acme", Name: "shop", Version: "1.2.3"},
 		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}, {Service: "worker", Container: "run"}},
@@ -92,7 +92,7 @@ func wireManifest() *solutionhost.ModuleManifest {
 		Endpoints: []solutionhost.Endpoint{{Name: "grpc", Service: "api", API: "grpc", Address: "http://api.shop.svc.cluster.local:9090"}},
 		Authority: &solutionhost.Authority{
 			Principal: "shop", InstallationRole: "admin",
-			EdgeDependencies: []modulecontract.EdgeDependency{{Module: "robin", Presence: modulecontract.PresenceRequired}, {Module: "notes", Presence: modulecontract.PresenceOptional}},
+			EdgeDependencies: []modulecontract.EdgeDependency{{Module: "sidekick", Presence: modulecontract.PresenceRequired}, {Module: "notes", Presence: modulecontract.PresenceOptional}},
 			SourceGovernance: []string{"shop.item:write"},
 			Bindings: []solutionhost.AuthorityBinding{
 				{ID: "store", Audience: "store", Operations: map[string][]string{

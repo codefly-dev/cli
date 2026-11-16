@@ -17,11 +17,11 @@ import (
 func testManifest(t *testing.T) *solutionhost.ModuleManifest {
 	t.Helper()
 	manifest := &solutionhost.ModuleManifest{
-		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.wiki", Alias: "wiki", Kind: solutionhost.KindModule,
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.quill", Alias: "quill", Kind: solutionhost.KindModule,
 		Generation: 1, Host: solutionhost.HostTarget{Coordinate: "acme/local", Domain: "acme"},
-		Release:   solutionhost.Release{Publisher: "acme", Name: "wiki", Version: "0.1.0"},
+		Release:   solutionhost.Release{Publisher: "acme", Name: "quill", Version: "0.1.0"},
 		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend"}},
-		Authority: &solutionhost.Authority{Principal: "wiki"},
+		Authority: &solutionhost.Authority{Principal: "quill"},
 	}
 	if err := manifest.Validate(); err != nil {
 		t.Fatal(err)

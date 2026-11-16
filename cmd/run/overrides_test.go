@@ -82,17 +82,17 @@ func TestParseSetOverrides(t *testing.T) {
 // earlier one — reorder that loop and the operator would silently lose.
 func TestMergeOverridesLetsSetWinOverDerived(t *testing.T) {
 	derived := map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "derived", "CODEFLY__KEPT": "yes"},
+		"quill/backend": {"CODEFLY__API_CONSUMES": "derived", "CODEFLY__KEPT": "yes"},
 	}
 	set := map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand"},
-		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
+		"quill/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand"},
+		"warden":        {"CODEFLY__FIXTURE": "dogfood"},
 	}
 
 	got := mergeOverrides(derived, set)
 	want := map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand", "CODEFLY__KEPT": "yes"},
-		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
+		"quill/backend": {"CODEFLY__API_CONSUMES": "pinned-by-hand", "CODEFLY__KEPT": "yes"},
+		"warden":        {"CODEFLY__FIXTURE": "dogfood"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("mergeOverrides() = %v, want %v", got, want)
@@ -112,9 +112,9 @@ func TestMergeOverridesEmptyIsNil(t *testing.T) {
 // package var reassigned per run, and a merge that aliased it would let one
 // run's --set leak into the next.
 func TestMergeOverridesDoesNotMutateInputs(t *testing.T) {
-	derived := map[string]map[string]string{"wiki/backend": {"K": "derived"}}
-	mergeOverrides(derived, map[string]map[string]string{"wiki/backend": {"K": "set"}})
-	if derived["wiki/backend"]["K"] != "derived" {
+	derived := map[string]map[string]string{"quill/backend": {"K": "derived"}}
+	mergeOverrides(derived, map[string]map[string]string{"quill/backend": {"K": "set"}})
+	if derived["quill/backend"]["K"] != "derived" {
 		t.Fatalf("mergeOverrides mutated its input: %v", derived)
 	}
 }

@@ -14,7 +14,7 @@ import (
 
 // meshWorkspace composes a host (edge/gateway: a public rest endpoint and
 // the internal workload endpoint every module mints on), a module app whose
-// api endpoint its own worker consumes, and a solution wiki whose backend the
+// api endpoint its own worker consumes, and a solution quill whose backend the
 // host fronts and which consumes app's api through the host.
 func meshWorkspace(t *testing.T) (*resources.Workspace, *environments.Environment) {
 	t.Helper()
@@ -31,7 +31,7 @@ modules:
   - name: edge
   - name: app
   - name: exec
-  - name: wiki
+  - name: quill
 environments:
   - name: prod
     namespace: example
@@ -64,16 +64,16 @@ environments:
 			"workspace-configuration-dependencies:\n  - runnable-bindings\n"),
 		"modules/app/services/worker/" + resources.ServiceConfigurationName: service("worker",
 			"service-dependencies:\n  - name: api\n    endpoints:\n      - name: grpc\n"),
-		"modules/wiki/" + resources.ModuleConfigurationName: "kind: module\nname: wiki\nservice-entry: backend\nservices:\n  - name: backend\n",
-		"modules/wiki/services/backend/" + resources.ServiceConfigurationName: service("backend",
+		"modules/quill/" + resources.ModuleConfigurationName: "kind: module\nname: quill\nservice-entry: backend\nservices:\n  - name: backend\n",
+		"modules/quill/services/backend/" + resources.ServiceConfigurationName: service("backend",
 			"endpoints:\n  - name: http\n    api: http\n    visibility: internal\n"),
-		"modules/wiki/services/backend/" + solutionrun.FrontendFileName: "title: Wiki\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n",
-		"modules/wiki/solution.codefly.yaml": `schema_version: codefly.solution-manifest/v0
+		"modules/quill/services/backend/" + solutionrun.FrontendFileName: "title: Quill\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n",
+		"modules/quill/solution.codefly.yaml": `schema_version: codefly.solution-manifest/v0
 protocol_version: codefly.solution/v0
 agent:
   kind: codefly:solution
   publisher: codefly.dev
-  name: wiki
+  name: quill
   version: 0.1.0
 api:
   exposes:
@@ -120,11 +120,11 @@ func moduleServices(t *testing.T, workspace *resources.Workspace, name string) (
 func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 	workspace, env := meshWorkspace(t)
 	const domain = "spiffe://local.example/ns/example-"
-	gateway, api, worker, backend, runner := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"wiki/sa/backend", domain+"exec/sa/runner"
+	gateway, api, worker, backend, runner := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"quill/sa/backend", domain+"exec/sa/runner"
 	ports := map[string]map[string]uint32{
-		"edge/gateway": {"rest": 8080, "workload": 8081},
-		"app/api":      {"grpc": 9090, "connect": 8081, "admin": 8082},
-		"wiki/backend": {"http": 8080},
+		"edge/gateway":  {"rest": 8080, "workload": 8081},
+		"app/api":       {"grpc": 9090, "connect": 8081, "admin": 8082},
+		"quill/backend": {"http": 8080},
 	}
 
 	t.Run("a module endpoint admits its consumers and the gateway", func(t *testing.T) {
@@ -149,11 +149,11 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 		}}, edges.Edges)
 	})
 	t.Run("a solution's backend admits the gateway", func(t *testing.T) {
-		module, services := moduleServices(t, workspace, "wiki")
+		module, services := moduleServices(t, workspace, "quill")
 		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports, nil)
 		require.NoError(t, err)
 		require.Equal(t, []MeshEdge{{
-			Module: "wiki", Service: "backend", Namespace: "example-wiki", Account: "backend", Principal: backend,
+			Module: "quill", Service: "backend", Namespace: "example-quill", Account: "backend", Principal: backend,
 			Endpoint: "http", Port: 8080, TargetPort: 8080, Principals: []string{gateway},
 		}}, edges.Edges)
 	})
@@ -187,7 +187,7 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 		require.Nil(t, edges)
 	})
 	t.Run("an endpoint with no in-cluster port is not in the cell", func(t *testing.T) {
-		module, services := moduleServices(t, workspace, "wiki")
+		module, services := moduleServices(t, workspace, "quill")
 		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, map[string]map[string]uint32{}, nil, nil)
 		require.NoError(t, err)
 		require.Empty(t, edges.Edges)
@@ -229,20 +229,20 @@ func TestIngressEdgesAreTheEnvironmentsRoutes(t *testing.T) {
 func TestAServiceRenderingANonServingWorkloadReachesItself(t *testing.T) {
 	workspace, env := meshWorkspace(t)
 	const domain = "spiffe://local.example/ns/example-"
-	gateway, api, worker, backend := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"wiki/sa/backend"
+	gateway, api, worker, backend := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"quill/sa/backend"
 	ports := map[string]map[string]uint32{
-		"edge/gateway": {"rest": 8080, "workload": 8081},
-		"app/api":      {"grpc": 9090, "admin": 8082},
-		"wiki/backend": {"http": 8080},
+		"edge/gateway":  {"rest": 8080, "workload": 8081},
+		"app/api":       {"grpc": 9090, "admin": 8082},
+		"quill/backend": {"http": 8080},
 	}
 
 	t.Run("its own principal joins the endpoint's", func(t *testing.T) {
-		module, services := moduleServices(t, workspace, "wiki")
+		module, services := moduleServices(t, workspace, "quill")
 		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports,
-			map[string]bool{"wiki/backend": true})
+			map[string]bool{"quill/backend": true})
 		require.NoError(t, err)
 		require.Equal(t, []MeshEdge{{
-			Module: "wiki", Service: "backend", Namespace: "example-wiki", Account: "backend", Principal: backend,
+			Module: "quill", Service: "backend", Namespace: "example-quill", Account: "backend", Principal: backend,
 			Endpoint: "http", Port: 8080, TargetPort: 8080, Principals: []string{gateway, backend},
 		}}, edges.Edges)
 	})
@@ -267,9 +267,9 @@ func TestAServiceRenderingANonServingWorkloadReachesItself(t *testing.T) {
 		}, edges.Edges)
 	})
 	t.Run("a service whose render serves everything is unchanged", func(t *testing.T) {
-		module, services := moduleServices(t, workspace, "wiki")
+		module, services := moduleServices(t, workspace, "quill")
 		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports,
-			map[string]bool{"wiki/backend": false})
+			map[string]bool{"quill/backend": false})
 		require.NoError(t, err)
 		require.Equal(t, []string{gateway}, edges.Edges[0].Principals)
 	})

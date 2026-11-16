@@ -22,15 +22,15 @@ import (
 // declares no dependency, so an --exclude-root run starts nothing and needs no
 // agent — the environment the root would have received is composed all the same.
 const (
-	solutionInputsWorkspaceYAML = `name: wiki
+	solutionInputsWorkspaceYAML = `name: quill
 layout: modules
 modules:
-    - name: wiki
+    - name: quill
       path: .
     - name: documents
 `
 	solutionInputsRootModuleYAML = `kind: module
-name: wiki
+name: quill
 service-entry: backend
 services:
     - name: backend
@@ -38,7 +38,7 @@ services:
 	solutionInputsBackendYAML = `kind: service
 name: backend
 version: 0.0.0
-module: wiki
+module: quill
 agent:
     kind: runtime::service
     name: go-grpc
@@ -65,7 +65,7 @@ protocol_version: codefly.solution/v0
 agent:
   kind: codefly:solution
   publisher: codefly.dev
-  name: wiki
+  name: quill
   version: 0.1.0
 api:
   exposes:
@@ -129,7 +129,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 	t.Cleanup(cancel)
 
 	if _, runErr := plane.Run(ctx, &RunRequest{
-		Service:        "wiki/backend",
+		Service:        "quill/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
 		Wait:           true,
@@ -265,7 +265,7 @@ func TestStopJoinsTheRunGoroutine(t *testing.T) {
 	t.Cleanup(cancel)
 
 	if _, runErr := plane.Run(ctx, &RunRequest{
-		Service:        "wiki/backend",
+		Service:        "quill/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
 		Wait:           true,
@@ -338,7 +338,7 @@ func TestStopWithoutAFlowIDJoinsRunsTheRegistryHasForgotten(t *testing.T) {
 
 	// Nothing is registered — exactly what Stop sees once a flow has exited by
 	// itself — while the run it started is still unwinding.
-	run := trackFakeRun(impl, "wiki/backend")
+	run := trackFakeRun(impl, "quill/backend")
 	if id, _ := impl.host.Flows().Active(); id != "" {
 		t.Fatalf("no flow should be registered, got active id %q", id)
 	}
@@ -365,8 +365,8 @@ func TestStopWithoutAFlowIDJoinsRunsTheRegistryHasForgotten(t *testing.T) {
 func TestCloseJoinsEveryRunSharingAFlowID(t *testing.T) {
 	impl := &planeImpl{}
 
-	first := trackFakeRun(impl, "wiki/backend")
-	second := trackFakeRun(impl, "wiki/backend")
+	first := trackFakeRun(impl, "quill/backend")
+	second := trackFakeRun(impl, "quill/backend")
 	if live := activeRunCount(impl); live != 2 {
 		t.Fatalf("both runs under one flow id must stay tracked, got %d", live)
 	}
@@ -502,7 +502,7 @@ lifecycle:`, 1)
 	defer cancel()
 
 	_, err = plane.Run(ctx, &RunRequest{
-		Service:        "wiki/backend",
+		Service:        "quill/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
 		OutputEnv:      filepath.Join(t.TempDir(), "runtime.env"),

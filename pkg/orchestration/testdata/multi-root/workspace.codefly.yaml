@@ -4,6 +4,6 @@ modules:
     - name: analytics
     - name: contracts
     - name: documents
-    - name: lastlogin-go
+    - name: beacon-go
     - name: saas
-    - name: wiki
+    - name: quill

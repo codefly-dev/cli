@@ -19,19 +19,19 @@ func grants(pairs ...string) map[string]json.RawMessage {
 // envelope policy without restating the base's grants, and decides a principal
 // it states — the precedence configuration groups already have.
 func TestCompositionGrantsAreTheBasesPlusTheSolutionsWhichDecide(t *testing.T) {
-	base := GrantSource{Workspace: "platform-core", Principals: grants("documents", `{"tenant":"t"}`, "robin", `{"tenant":"t","x":1}`)}
-	solution := GrantSource{Workspace: "wiki", Principals: grants("wiki", `{"tenant":"t"}`, "robin", `{"tenant":"t","x":2}`)}
+	base := GrantSource{Workspace: "platform-base", Principals: grants("documents", `{"tenant":"t"}`, "sidekick", `{"tenant":"t","x":1}`)}
+	solution := GrantSource{Workspace: "quill", Principals: grants("quill", `{"tenant":"t"}`, "sidekick", `{"tenant":"t","x":2}`)}
 	merged, err := MergeGrants(solution, []GrantSource{base})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(merged) != 3 {
-		t.Fatalf("merged = %v, want documents, robin and wiki", merged)
+		t.Fatalf("merged = %v, want documents, sidekick and quill", merged)
 	}
-	if string(merged["robin"]) != `{"tenant":"t","x":2}` {
-		t.Fatalf("robin = %s, want the solution's grant", merged["robin"])
+	if string(merged["sidekick"]) != `{"tenant":"t","x":2}` {
+		t.Fatalf("sidekick = %s, want the solution's grant", merged["sidekick"])
 	}
-	if string(merged["documents"]) != `{"tenant":"t"}` || string(merged["wiki"]) != `{"tenant":"t"}` {
+	if string(merged["documents"]) != `{"tenant":"t"}` || string(merged["quill"]) != `{"tenant":"t"}` {
 		t.Fatalf("merged = %v", merged)
 	}
 }
@@ -42,20 +42,20 @@ func TestCompositionGrantsAreTheBasesPlusTheSolutionsWhichDecide(t *testing.T) {
 func TestCompositionGrantsRefuseASiblingDisagreementTheSolutionDoesNotDecide(t *testing.T) {
 	a := GrantSource{Workspace: "a", Principals: grants("model", `{"tenant":"t","k":[1,2]}`)}
 	b := GrantSource{Workspace: "b", Principals: grants("model", `{ "k": [1, 2], "tenant": "t" }`)}
-	if _, err := MergeGrants(GrantSource{Workspace: "wiki"}, []GrantSource{a, b}); err != nil {
+	if _, err := MergeGrants(GrantSource{Workspace: "quill"}, []GrantSource{a, b}); err != nil {
 		t.Fatalf("the same grant in another spelling is not a disagreement: %v", err)
 	}
 	c := GrantSource{Workspace: "c", Principals: grants("model", `{"tenant":"other"}`)}
-	_, err := MergeGrants(GrantSource{Workspace: "wiki"}, []GrantSource{a, c})
+	_, err := MergeGrants(GrantSource{Workspace: "quill"}, []GrantSource{a, c})
 	if err == nil {
 		t.Fatal("a disagreement nobody decides must be refused")
 	}
-	for _, want := range []string{`"model"`, `"a"`, `"c"`, `"wiki"`} {
+	for _, want := range []string{`"model"`, `"a"`, `"c"`, `"quill"`} {
 		if !contains(err.Error(), want) {
 			t.Fatalf("refusal %q does not name %s", err, want)
 		}
 	}
-	if _, err := MergeGrants(GrantSource{Workspace: "wiki", Principals: grants("model", `{"tenant":"t"}`)}, []GrantSource{a, c}); err != nil {
+	if _, err := MergeGrants(GrantSource{Workspace: "quill", Principals: grants("model", `{"tenant":"t"}`)}, []GrantSource{a, c}); err != nil {
 		t.Fatalf("the consuming workspace decides: %v", err)
 	}
 }
@@ -184,23 +184,23 @@ func TestEnvelopeFollowsTheProfileDerivation(t *testing.T) {
 	}
 	write("hosted", "module-envelope.json", `{"principals":{"records":{"grant":{}}},"minimum_revision":3}`)
 	write("hosted-development", "profile.codefly.yaml", "derives-from: hosted\n")
-	write("blue", "profile.codefly.yaml", "derives-from: hosted-development\n")
-	write("local", "module-envelope.json", `{"principals":{"wiki":{"grant":{"tenant":"t"}}}}`)
+	write("aurora", "profile.codefly.yaml", "derives-from: hosted-development\n")
+	write("local", "module-envelope.json", `{"principals":{"quill":{"grant":{"tenant":"t"}}}}`)
 
-	principals, err := ReadGrants(dir, "blue")
+	principals, err := ReadGrants(dir, "aurora")
 	if err != nil || len(principals) != 1 || principals["records"] == nil {
-		t.Fatalf("blue's grants = %v, %v, want hosted's", principals, err)
+		t.Fatalf("aurora's grants = %v, %v, want hosted's", principals, err)
 	}
-	if floor, err := ReadMinimumRevision(dir, "blue"); err != nil || floor != 3 {
-		t.Fatalf("blue's floor = %d, %v, want hosted's 3", floor, err)
+	if floor, err := ReadMinimumRevision(dir, "aurora"); err != nil || floor != 3 {
+		t.Fatalf("aurora's floor = %d, %v, want hosted's 3", floor, err)
 	}
-	if stated, err := statesPrincipalsIn(dir, "blue"); err != nil || !stated {
-		t.Fatalf("blue states principals = %v, %v", stated, err)
+	if stated, err := statesPrincipalsIn(dir, "aurora"); err != nil || !stated {
+		t.Fatalf("aurora states principals = %v, %v", stated, err)
 	}
 
-	write("blue", "module-envelope.json", `{"principals":{"compute":{"grant":{}}}}`)
-	if principals, err = ReadGrants(dir, "blue"); err != nil || principals["compute"] == nil || principals["records"] != nil {
-		t.Fatalf("blue's own envelope = %v, %v, want it to replace hosted's", principals, err)
+	write("aurora", "module-envelope.json", `{"principals":{"compute":{"grant":{}}}}`)
+	if principals, err = ReadGrants(dir, "aurora"); err != nil || principals["compute"] == nil || principals["records"] != nil {
+		t.Fatalf("aurora's own envelope = %v, %v, want it to replace hosted's", principals, err)
 	}
 
 	if principals, err = ReadGrants(dir, "green"); err != nil || len(principals) != 0 {
