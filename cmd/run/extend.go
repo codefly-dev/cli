@@ -17,8 +17,7 @@ import (
 
 // Every run — a service, a solution or the whole workspace — admits the
 // components composed after it started when it receives SIGUSR1, the one
-// signal the run leaves free (SIGHUP is ignored so the stack survives a
-// closed shell; SIGINT and SIGTERM stop it). The composition is read again
+// signal the run leaves free (SIGINT, SIGTERM and SIGHUP stop it). The composition is read again
 // from disk, its roots compared with the ones the run starts and the ones it
 // composed when the run began, and each root neither knew is admitted into
 // the native cluster, if one answers, and started by the flow. Nothing

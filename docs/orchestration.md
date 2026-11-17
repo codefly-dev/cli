@@ -1171,6 +1171,27 @@ HTTP readiness deliberately stops at TCP reachability. Probing `/` would invent 
 health contract and can itself keep a development server unready.
 ## Teardown
 
+A run stops in order — its services stopped, its agents closed, what they left
+reclaimed — on each of these, and they are one path (`cmd/common.SignalContext`
+and `cmd/run/owner.go` cancel the same context):
+
+- **SIGINT, SIGTERM and SIGHUP.** A hangup (a closed terminal, a parent shell
+  that was stopped) stops the run like the other two; it is never the second
+  signal that forces the exit. A run that must outlive its terminal is started
+  detached from it.
+- **The process the run was started for is gone.** The SDK declares itself the
+  owner of a dependency stack it starts (`CODEFLY_RUN_OWNER`, core's
+  `runstate.OwnedBy`); `run service` watches that birth and stops when it
+  ends, however it ended, because a test binary that timed out or was killed
+  calls nothing. The owner is never signalled, and the declaration is removed
+  from the environment the run's own agents and services inherit. A stack kept
+  running (`sdk.WithKeepRunning`) has no owner.
+
+`kill -9` of the CLI itself runs nothing here. Its agents notice that their
+launcher is gone and stop what they run (core's `agents.Serve`, see core's
+`docs/agent-contract.md`, "Native run state"); an agent built on a Core older
+than that keeps running until `codefly clear` or the next run's sweep.
+
 `codefly stop` discovers supported process-group registrations through Core,
 which authenticates their recorded identities and owns signaling and removal.
 The command does not kill CLI/agent processes by executable name or path.

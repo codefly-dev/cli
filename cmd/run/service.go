@@ -7,11 +7,9 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"os/signal"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -79,20 +77,30 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	ctx, done := common.NewContext()
 	defer done()
 
-	// Ignore SIGHUP so the dev stack survives when the invoking shell,
-	// terminal, or parent agent (Claude Code's Bash tool, a closed
-	// Ghostty tab, etc.) hangs up. Without this, a parent-session
-	// teardown cascades SIGHUP through the pgroup and kills every
-	// agent + user binary mid-startup.
-	signal.Ignore(syscall.SIGHUP)
-	defer signal.Reset(syscall.SIGHUP)
-
-	// Catch SIGINT (Ctrl-C) AND SIGTERM (kill, container shutdown).
+	// Catch SIGINT (Ctrl-C), SIGTERM (kill, container shutdown) and SIGHUP (a
+	// closed terminal, a stopped parent shell): each stops the run in order.
 	// os.Kill / SIGKILL cannot be caught, so listing it was a noop bug —
 	// it gave the false impression the parent would clean up on `kill <pid>`,
 	// but `kill` sends SIGTERM, which fell through and orphaned every plugin.
+	// SIGHUP used to be ignored here, which left the whole stack running with
+	// nothing above it once the shell that started it was gone.
 	ctx, stop := common.SignalContext(ctx)
 	defer stop()
+	// The stop has to run to its end even when nothing reads this command's
+	// output any more: the reader that went away is what the run stops for.
+	defer common.OutliveOutput()()
+	// A run started for a process (the SDK's dependency stack for a test) is
+	// that process's: once it is gone the run stops the same way, because a
+	// test binary that timed out or was killed asks for nothing.
+	owner, owned, err := takeOwner()
+	if err != nil {
+		return err
+	}
+	if owned {
+		var release func()
+		ctx, release = stopWithOwner(ctx, owner)
+		defer release()
+	}
 	// signalled tells a run stopped on purpose apart from one that failed.
 	signalled := ctx
 	started := time.Now()
@@ -164,7 +172,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return err
 	}
 
-	var err error
 	if servicePath != "" {
 		workspace, module, service, err = common.LoadWithServicePathOverrideE(ctx, servicePath)
 	} else {
