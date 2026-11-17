@@ -464,6 +464,18 @@ func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
 		}
 	}
 
+	// The page reaches modules through this solution's installation's edge,
+	// never the session's own: on the person's own session an owner-aware
+	// module (the record store) refuses an organisation role ("reach it
+	// through a role on the installation that owns it").
+	if !strings.Contains(app, "moduleApiBase={pageModuleApiBase(session)}") || strings.Contains(app, "session.moduleApiBase") {
+		t.Fatal("the shell must give the page its installation's module edge, not the session's own")
+	}
+	session := shellSession("notes")
+	if !strings.Contains(session, `installation.target === "notes")?.moduleApiBase`) || strings.Contains(session, "%!") {
+		t.Fatalf("the session must read the module edge of the solution's own installation:\n%s", session)
+	}
+
 	// Turbopack refuses to follow the remote's symlink out of the app's own
 	// root, so the build root is the solution's. Without it the shell answers
 	// 500 while the link, the exports map and the file are all correct.

@@ -93,7 +93,14 @@ func shellSession(solution string) string {
 import { useEffect, useState } from "react";
 
 /** One target the person holds a Work Context at, and the installation it is sealed to. */
-export type Installation = { id: string; target: string; namespace?: string };
+export type Installation = {
+  id: string;
+  target: string;
+  namespace?: string;
+  /** The module edge that issues a call through THIS installation's bindings,
+   * the person present: what the page reaches a module through. */
+  moduleApiBase?: string;
+};
 
 /** The edge's /auth/session: who is here, and what they hold where. */
 export type Session = {
@@ -121,6 +128,18 @@ export function signInLocation(pathname: string, search: string): string {
 /** Whether the person may use this solution: the edge's session names an installation of it. */
 export function installed(session: Pick<Session, "installations">): boolean {
   return session.installations.some((installation) => installation.target === %q);
+}
+
+/**
+ * The module edge the page calls modules through: this solution's
+ * installation's, which issues each call through the solution's bindings with
+ * the person's role on it. Never the session's own moduleApiBase: that is the
+ * person on their own session, where an owner-aware module refuses an
+ * organisation role ("reach it through a role on the installation that owns
+ * it"). Undefined when the installation names none, which the page reports.
+ */
+export function pageModuleApiBase(session: Pick<Session, "installations">): string | undefined {
+  return session.installations.find((installation) => installation.target === %q)?.moduleApiBase;
 }
 
 /** Why the edge's session names no installation, in the authority's own words. */
@@ -159,7 +178,7 @@ export async function signOut(): Promise<void> {
   await fetch("/auth/sign-out", { method: "POST", credentials: "include" });
   window.location.assign("/");
 }
-`, solution, solution)
+`, solution, solution, solution)
 }
 
 // shellApp mounts the remote's ./Page — the SAME module a host federates,
@@ -172,7 +191,7 @@ func shellApp(solution, remotePackage string) string {
 	return fmt.Sprintf(`"use client";
 
 import dynamic from "next/dynamic";
-import { installed, refusal, signOut, useSession } from "./session";
+import { installed, pageModuleApiBase, refusal, signOut, useSession } from "./session";
 
 // The page renders in the browser only, as a host mounts it.
 const SolutionPage = dynamic(() => import(%q), { ssr: false });
@@ -238,7 +257,7 @@ export default function SolutionApp() {
         authedFetch={sameOrigin}
         organizationId={session.organizationId}
         viewerId={session.personId}
-        moduleApiBase={session.moduleApiBase}
+        moduleApiBase={pageModuleApiBase(session)}
       />
     </main>
   );
