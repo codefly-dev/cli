@@ -5683,6 +5683,7 @@ removal does not request deletion of volumes.
 
 `codefly generate permissions [module]` reads the same digest-checked published
 protobuf/OpenAPI method policies as authority delivery and emits
+`permissions_gen.py` into each Python service's source tree (below), and
 `permissions_gen.go` and `permissions_gen.ts` into each Go service's own Go
 module: `<service>/<source-dir>/pkg/gen/permissions`, where `source-dir` is the
 Go agent's setting (`code` unless the service declares another; its first
@@ -5702,18 +5703,25 @@ table and needs no policy; it is named in a note. Authority delivery reads the
 same served set, so such a method is never delivered as the module's. A served
 method with no policy fails by name. The TypeScript file
 sits beside the Go file: no generator places TypeScript per service (`generate
-client` writes a library). A Python service (a `python-*` agent) gets no table:
-nothing in it reads one, because the authority's hop in front of it decides
-every call, so it is skipped with a note and the module's Go services still get
-theirs. Any other service that publishes a contract but has no `go.mod` at its
-Go source root fails by name. `--output` writes the whole
-module's table to one directory instead. Go constants have type
+client` writes a library). A Python service (a `python-*` agent) gets its own
+table, of the same methods, as one Python file in its own source tree:
+`<service>/<source-dir>/src/gen/permissions_gen.py`, where `source-dir` is
+`code` unless the service declares another and is where `pyproject.toml` lives
+(import it as `src.gen.permissions_gen`). It is what the service hands the
+verifier as its declarations instead of typing them or re-reading its
+descriptor. A Go service that publishes a contract but has no `go.mod` at its
+Go source root, and a Python one with no `pyproject.toml` at its source root,
+fail by name. `--output` writes the whole module's table, in Go and
+TypeScript, to one directory instead. Go constants have type
 `Permission`, with `Kind()` and `Action()` accessors; TypeScript constants carry
-literal types. Both include the method requirement table and any-checked-caller
-marker. A permission a call may carry beyond what it requires (the hop policy's
+literal types; Python constants are `Permission(kind, action)` named tuples.
+All include the method requirement table and any-checked-caller
+marker (`Methods()` in Go, `Methods` in TypeScript, `METHODS` in Python, whose
+rows are `MethodPolicy(any_checked_caller, requires, carries)`). A permission a
+call may carry beyond what it requires (the hop policy's
 `carries`) is a constant like any other, and its method's row names it apart
-from what the call requires (`Carries` in Go, `carries` in TypeScript), so the
-service performing that effect checks it by name. A table generated before
+from what the call requires (`Carries` in Go, `carries` in TypeScript and
+Python), so the service performing that effect checks it by name. A table generated before
 this holds no `Carries`: regenerate it. Identifier collisions and invalid
 policies fail by name.
 

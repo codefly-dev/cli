@@ -3302,14 +3302,15 @@ Flags:
 
 ## `codefly generate permissions`
 
-Generate typed Go and TypeScript permissions from published contracts
+Generate typed Go, TypeScript and Python permissions from published contracts
 
 ```
 Read the same digest-checked published method policies used by authority delivery.
 Generate typed permission constants and a method requirement table in Go and
-TypeScript. A permission a call may carry beyond what it requires is a constant
-too, and its method's row names it apart from what the call requires. Run
-codefly generate contracts first after editing an API.
+TypeScript, and in Python for a Python service. A permission a call may carry
+beyond what it requires is a constant too, and its method's row names it apart
+from what the call requires. Run codefly generate contracts first after editing
+an API.
 
 By default each Go service gets its own table in its own Go module:
 <service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
@@ -3321,11 +3322,15 @@ What an endpoint serves is what the contract catalog records
 for it (the declared surface, or every service of its package); a method a
 published descriptor declares that no endpoint serves, such as a protocol other
 modules serve, is left out with a note and needs no policy. The TypeScript file
-sits beside the Go file. A Python service
-gets no table: nothing in it reads one, since the authority's hop in front of it
-decides every call, so it is skipped with a note. Any other service that
-publishes a contract but has no go.mod at its Go source root fails by name.
---output writes the whole module's table to one directory instead.
+sits beside the Go file. A Python service (a python-* agent) gets its own
+table as one Python file in its own source tree,
+<service>/<source-dir>/src/gen/permissions_gen.py (source-dir is "code" unless
+the service declares another, and is where pyproject.toml lives): the same
+constants and rows, for the verifier it hands its declarations to. A Go
+service that publishes a contract but has no go.mod at its Go source root, and
+a Python one with no pyproject.toml at its source root, fail by name.
+--output writes the whole module's table, in Go and TypeScript, to one
+directory instead.
 --check compares every generated file without writing. A served method with no
 policy, contradictory policies and colliding identifiers fail by name. This validates vocabulary,
 not a person's resource access, installation or consent.
@@ -3339,7 +3344,7 @@ Flags:
 
 ```
       --check           fail on missing or stale output without writing
-      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions)
+      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions and each Python service's <source-dir>/src/gen)
 ```
 
 ## `codefly generate proto`
