@@ -44,7 +44,7 @@ func syncLibraryDependencies() error {
 	ctx, done := common.NewContext()
 	defer done()
 
-	workspace, err := common.LoadWorkspace(ctx)
+	workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 	if err != nil {
 		return fmt.Errorf("cannot load workspace: %w", err)
 	}
