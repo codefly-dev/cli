@@ -2579,14 +2579,17 @@ func (flow *Flow) WithTemporaryPorts(enabled bool) {
 // deliberately not implied by temporary ports, which `codefly ci run` uses to
 // isolate a port space inside an already-isolated CODEFLY_HOME.
 //
+// The environment is also declared disposable (IsolateEnvironment), which is
+// what lets agents remove the run's native state directories when it ends.
+//
 // Returns the identity it generated, or empty when the caller already named a
-// scope of its own — that label wins, and nothing is generated over it.
+// scope of its own — that label wins, nothing is generated over it, and its
+// state is never disposable.
 func (flow *Flow) WithIsolatedInvocation() string {
 	if flow.world == nil || flow.world.Env == nil || flow.world.Env.NamingScope != "" {
 		return ""
 	}
-	flow.world.Env.NamingScope = NewInvocationID()
-	return flow.world.Env.NamingScope
+	return IsolateEnvironment(flow.world.Env)
 }
 
 func (flow *Flow) TemporaryPortsEnabled() bool {

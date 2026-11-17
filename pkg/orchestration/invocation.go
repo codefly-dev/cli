@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"strings"
+
+	"github.com/codefly-dev/cli/pkg/environments"
 )
 
 // invocationIDAlphabet is unpadded, lowercase base32: the identity is folded
@@ -22,4 +24,20 @@ func NewInvocationID() string {
 	// cannot return a short read.
 	_, _ = rand.Read(raw[:])
 	return "inv" + strings.ToLower(invocationIDAlphabet.EncodeToString(raw[:]))
+}
+
+// IsolateEnvironment gives env a fresh invocation identity as its naming scope
+// and declares the state created under it disposable. The two go together: a
+// generated scope is never run again, so nothing can come back for what it
+// leaves behind, and its generator is the only party that knows that. Agents
+// read the declaration as their authorization to remove the native state
+// directories of the run (core's runners/runstate); without it a run's
+// database directories stay on the machine for good.
+//
+// It replaces a scope the environment already names. A caller that must keep a
+// declared scope does not call it.
+func IsolateEnvironment(env *environments.Environment) string {
+	env.NamingScope = NewInvocationID()
+	env.Disposable = true
+	return env.NamingScope
 }

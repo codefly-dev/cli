@@ -68,6 +68,16 @@ the caller's own label and wins; passing it empty asks for no scope at all.
 This is applied by the run command, not by `Flow.WithTemporaryPorts`.
 `codefly ci run --temporary-ports` alone remains a port strategy.
 
+A generated scope is never run again, so the invocation also declares the state
+created under it **disposable** (`orchestration.IsolateEnvironment`, carried to
+agents as `Environment.disposable`). That is what lets the native state
+directories of its stores (a Postgres cluster under the user cache directory,
+say) be removed instead of accumulating one per run: the run removes its own
+when it ends (`Flow.RemoveNativeStateOfThisRun`), an agent removes its
+directory when it is destroyed, and `codefly clear` removes what a killed run
+left. A plain run, or a scope the caller named, is never disposable and its
+data is never removed. The record and the rule are core's `runners/runstate`.
+
 Agent conformance additionally passes **`--disposable`**, also available on
 `codefly ci test`. Each lint, compile or test flow receives a fresh naming scope and ephemeral
 ports, even if the copied fixture declares a stable scope. Teardown calls both

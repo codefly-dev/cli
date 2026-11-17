@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/agents/manager"
+	"github.com/codefly-dev/core/runners/runstate"
 	"github.com/codefly-dev/core/wool"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -70,7 +71,8 @@ func workspaceScope(all bool) processgroup.Scope {
 	return processgroup.InWorkspace(workspace)
 }
 
-// ClearCmd removes codefly state (running processes + docker containers).
+// ClearCmd removes codefly state (running processes, docker containers, and
+// the native state directories of disposable runs that are no longer alive).
 // Without arguments: removes EVERYTHING codefly-owned.
 // With positional args (e.g. `codefly clear neo4j`): removes only
 // containers whose name contains any of the substrings — useful when
@@ -85,6 +87,11 @@ docker containers. Pass one or more substring filters to scope the
 container removal — only containers whose name contains at least one
 filter are removed. The process kill is always wholesale because
 codefly processes aren't per-service.
+
+It also removes the native state directories (a database run as a host
+process keeps its data under the user cache directory) of disposable runs
+that are no longer alive: runs with --temporary-ports and test-owned
+dependency stacks. A developer's persistent database is never removed.
 
 Examples:
   codefly clear                     # full reset
@@ -140,6 +147,13 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	if len(managedFailures) == 0 {
 		failures = append(failures, reapOrphanedDevServers(ctx, w, options)...)
 		failures = append(failures, reapOrphanedNativeServices(ctx, w, options)...)
+	}
+	// After the reaps: a directory is in use for as long as a server started in
+	// it runs, and the reaps are what stop a killed run's servers.
+	if root, err := runstate.Root(); err != nil {
+		w.Warn("cannot locate native run state", wool.ErrField(err))
+	} else {
+		failures = append(failures, sweepNativeRunState(w, root, options)...)
 	}
 
 	if options.keepContainers {
@@ -236,6 +250,37 @@ func sweepStaleState(ctx context.Context, w *wool.Wool, options clearOptions) []
 	return failures
 }
 
+// sweepNativeRunState removes the native state directories under root that a
+// disposable run left behind and nothing uses any more, or counts them on a
+// dry run. An orderly run removes its own when it ends; this is for the runs
+// that were killed. Which directory is disposable, and whether it is still in
+// use, is recorded on it by the agent that owns it (core's runners/runstate):
+// a developer's persistent database and a directory no agent recorded are
+// never removed.
+func sweepNativeRunState(w *wool.Wool, root string, options clearOptions) []error {
+	swept, err := runstate.Sweep(root, runstate.SweepOptions{
+		Include: func(run runstate.Run) bool { return options.scope.Includes(run.Workspace) },
+		DryRun:  options.dryRun,
+	})
+	directories := make([]string, 0, len(swept))
+	for _, state := range swept {
+		directories = append(directories, state.Dir)
+	}
+	switch {
+	case len(swept) > 0 && options.dryRun:
+		w.Info("would remove native state of ended disposable runs", wool.Field("count", len(swept)), wool.Field("directories", directories))
+	case len(swept) > 0:
+		w.Info("removed native state of ended disposable runs", wool.Field("count", len(swept)), wool.Field("directories", directories))
+	case err == nil:
+		w.Info("no native state of ended disposable runs")
+	}
+	if err != nil {
+		w.Warn("cannot remove native run state", wool.ErrField(err))
+		return []error{fmt.Errorf("remove native run state: %w", err)}
+	}
+	return nil
+}
+
 // containerMatchesFilter: with no filter everything codefly-owned matches;
 // with one, the name must contain at least one of its words.
 func containerMatchesFilter(name string, args []string) bool {
@@ -287,12 +332,13 @@ func removeCodeflyContainers(ctx context.Context, w *wool.Wool, dockerCLI *clien
 }
 
 // clearNixDataNote explains the one thing `clear` deliberately does NOT touch:
-// nix-run service DATA (Postgres/Neo4j data dirs). `clear` removes processes +
-// docker containers, but nix services keep their data under ~/.codefly/data, so a
-// wedged DB (e.g. a dirty golang-migrate state) survives `clear`. This note makes
-// that explicit + gives the reset command.
+// PERSISTENT nix-run service data (Postgres/Neo4j data dirs). `clear` removes
+// processes, docker containers and the native state of ended disposable runs
+// (sweepNativeRunState), but a developer's own database is kept, so a wedged DB
+// (e.g. a dirty golang-migrate state) survives `clear`. This note makes that
+// explicit + gives the reset command.
 func clearNixDataNote(w *wool.Wool) {
-	w.Info("nix-run service DATA is NOT removed by clear (only processes + docker containers).\n" +
+	w.Info("persistent nix-run service DATA is NOT removed by clear (only processes, docker containers and the state of ended disposable runs).\n" +
 		"      to reset a service's data — e.g. a dirty/wedged DB migration — stop codefly and run:\n" +
 		"        rm -rf ~/.codefly/data/<workspace>    (e.g. ~/.codefly/data/mind-server)\n" +
 		"      then `codefly run service <svc>` re-applies migrations from scratch.")

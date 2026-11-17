@@ -30,6 +30,8 @@ import (
 // RunReclaim is what ReclaimAfterRun took back.
 type RunReclaim struct {
 	ProcessGroups []int
+	// NativeState is the native state directories a disposable run left.
+	NativeState []string
 	RunRemovals
 }
 
@@ -39,11 +41,15 @@ type RunReclaim struct {
 // the networks those leave empty, and on every exit the networks its
 // containers were attached to at teardown and no longer are. The groups go
 // first: a group still registered in the workspace reads as another live run,
-// and while one is live no container or network is removed.
+// and while one is live no container or network is removed. A disposable run
+// also takes back the native state directories of its stores, after the groups
+// because a directory is in use for as long as a server started in it runs.
 func (flow *Flow) ReclaimAfterRun(ctx context.Context, started time.Time, removeContainers bool) (RunReclaim, error) {
 	var reclaim RunReclaim
 	recovered, groupsErr := flow.RecoverProcessGroupsOfThisRun(ctx)
 	reclaim.ProcessGroups = recovered
+	nativeState, nativeStateErr := flow.RemoveNativeStateOfThisRun()
+	reclaim.NativeState = nativeState
 	var containersErr error
 	if removeContainers {
 		reclaim.RunRemovals, containersErr = flow.RemoveContainersCreatedByThisRun(ctx, started)
@@ -53,7 +59,7 @@ func (flow *Flow) ReclaimAfterRun(ctx context.Context, started time.Time, remove
 	}
 	networks, networksErr := flow.RemoveNetworksThisRunLeftEmpty(ctx)
 	reclaim.Networks = append(reclaim.Networks, networks...)
-	return reclaim, errors.Join(groupsErr, containersErr, networksErr)
+	return reclaim, errors.Join(groupsErr, nativeStateErr, containersErr, networksErr)
 }
 
 // listRegisteredProcessGroups lists the pgids of every live registered group.

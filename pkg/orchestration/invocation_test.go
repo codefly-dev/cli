@@ -83,3 +83,36 @@ func TestStableRunKeepsItsIdentity(t *testing.T) {
 func newFlowForEnvironment(env *environments.Environment) *Flow {
 	return &Flow{world: &World{Env: env, OutputSink: noopOutputSink{}}}
 }
+
+// A generated scope can never be run again, so the invocation that generated
+// it is the one party that may tell agents its runtime state is throwaway.
+// Without that statement no agent may delete anything, and every disposable
+// run left its native database directories on the machine for good.
+func TestIsolatedInvocationDeclaresItsStateDisposable(t *testing.T) {
+	flow := newFlowForEnvironment(&environments.Environment{Name: "local"})
+	id := flow.WithIsolatedInvocation()
+
+	environment, err := flow.world.Env.Proto()
+	require.NoError(t, err)
+	require.Equal(t, id, environment.GetNamingScope())
+	require.True(t, environment.GetDisposable())
+}
+
+// A scope the caller named is a database the caller can come back to.
+func TestANamedScopeIsNeverDisposable(t *testing.T) {
+	flow := newFlowForEnvironment(&environments.Environment{Name: "local", NamingScope: "pinned"})
+	require.Empty(t, flow.WithIsolatedInvocation())
+
+	environment, err := flow.world.Env.Proto()
+	require.NoError(t, err)
+	require.False(t, environment.GetDisposable())
+}
+
+func TestIsolateEnvironmentReplacesADeclaredScope(t *testing.T) {
+	env := &environments.Environment{Name: "local", NamingScope: "declared"}
+	id := IsolateEnvironment(env)
+
+	require.Regexp(t, invocationIDShape, id)
+	require.Equal(t, id, env.NamingScope)
+	require.True(t, env.Disposable)
+}

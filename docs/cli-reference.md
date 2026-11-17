@@ -1202,6 +1202,11 @@ container removal — only containers whose name contains at least one
 filter are removed. The process kill is always wholesale because
 codefly processes aren't per-service.
 
+It also removes the native state directories (a database run as a host
+process keeps its data under the user cache directory) of disposable runs
+that are no longer alive: runs with --temporary-ports and test-owned
+dependency stacks. A developer's persistent database is never removed.
+
 Examples:
   codefly clear                     # full reset
   codefly clear neo4j               # only neo4j container (keeps postgres)

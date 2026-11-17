@@ -31,8 +31,9 @@ func removesContainers(failed bool, runtimeContexts []string) bool {
 
 // reclaimRun takes back what the run's agents started and left behind once
 // they have exited: whichever way the run ended, their orphaned process
-// groups and the networks its containers left empty, and, for a failed run,
-// the containers they created.
+// groups, the native state directories of a disposable run and the networks
+// its containers left empty, and, for a failed run, the containers they
+// created.
 func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time, failed bool) error {
 	if flow == nil {
 		return nil
@@ -42,6 +43,9 @@ func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time
 	reclaimed, err := flow.ReclaimAfterRun(reclaimCtx, started, removesContainers(failed, flow.SelectableRuntimeContexts()))
 	if len(reclaimed.ProcessGroups) > 0 {
 		cli.Info("stopped %d process groups this run's agents left running: %v", len(reclaimed.ProcessGroups), reclaimed.ProcessGroups)
+	}
+	if len(reclaimed.NativeState) > 0 {
+		cli.Info("removed %d native state directories of this disposable run: %v", len(reclaimed.NativeState), reclaimed.NativeState)
 	}
 	if len(reclaimed.Containers) > 0 {
 		cli.Info("removed %d containers the failed run started: %v", len(reclaimed.Containers), reclaimed.Containers)

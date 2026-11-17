@@ -1480,6 +1480,11 @@ type Environment struct {
 	Description string `yaml:"description,omitempty"`
 	NamingScope string `yaml:"naming-scope,omitempty"`
 	Fixture     string `yaml:"fixture,omitempty"`
+	// Disposable tells agents that the runtime state created under NamingScope
+	// is throwaway and may be removed when the run ends. Only an invocation
+	// that generated the scope sets it (orchestration.IsolateEnvironment), so
+	// it is never declared in a workspace.
+	Disposable bool `yaml:"-"`
 
 	// Class is this environment's ENVIRONMENT CLASS: its release stage, how
 	// far along the promotion path it sits — development, staging or
@@ -1672,7 +1677,8 @@ func (env *Environment) Runtime() *resources.Environment {
 	}
 	return &resources.Environment{
 		Name: env.Name, Description: env.Description, NamingScope: env.NamingScope,
-		Fixture: env.Fixture, ConfigurationProfile: env.ConfigurationProfile,
+		Disposable: env.Disposable,
+		Fixture:    env.Fixture, ConfigurationProfile: env.ConfigurationProfile,
 		ConfigurationProfiles: env.ConfigurationProfiles, Secrets: env.Secrets,
 	}
 }
