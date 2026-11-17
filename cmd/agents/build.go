@@ -482,6 +482,22 @@ func buildAgent(ctx context.Context, dir string, opts buildOptions) error {
 	return nil
 }
 
+// moduleGraphLine is the one line an agent build says about the module graph
+// it builds: the go.work that governs the checkout, or the pins of go.mod. A
+// pinned build under a go.work that does not `use` the agent names that file,
+// since it is the build a developer who linked a local core did not ask for.
+func moduleGraphLine(prepared *sourceworkspace.Prepared, dir string, standalone bool) string {
+	switch {
+	case standalone && prepared.GoWorkSource != "":
+		return fmt.Sprintf("module graph: pinned (go.mod) — standalone build, %s is not applied", prepared.GoWorkSource)
+	case prepared.GoWorkSource != "":
+		return "module graph: go.work " + prepared.GoWorkSource
+	case prepared.GoWorkUnused != "" && !standalone:
+		return fmt.Sprintf("module graph: pinned (go.mod) — %s is NOT applied: it does not `use` %s; `codefly agent deps --link` adds it", prepared.GoWorkUnused, dir)
+	}
+	return "module graph: pinned (go.mod)"
+}
+
 // compileAgent asks the selected source plugin to package native and Linux
 // artifacts. It never selects a language command and never runs audit; callers
 // apply release policy to the separate Builder.Audit response. The returned
@@ -577,6 +593,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	if standaloneModuleGraph {
 		goWorkFile = "off"
 	}
+	log.Info("  %s", moduleGraphLine(source.prepared, dir, standaloneModuleGraph))
 	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, append([]string{childCIEnv, childNoColorEnv}, source.childAgentSource()...)...)
 	response := &builderv0.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {

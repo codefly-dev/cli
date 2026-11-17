@@ -27,7 +27,14 @@ type Prepared struct {
 	// it explicitly because the Go tool does not discover workspaces through a
 	// symlinked working directory.
 	GoWorkFile string
-	cleanup    func() error
+	// GoWorkSource is the developer's go.work GoWorkFile was normalized from:
+	// the workspace that governs the source. Empty when the build is pinned.
+	GoWorkSource string
+	// GoWorkUnused is the nearest go.work above the source when it does NOT
+	// `use` it: Go does not apply it, so the source builds pinned although a
+	// workspace sits above it.
+	GoWorkUnused string
+	cleanup      func() error
 }
 
 // Close removes the ephemeral resource declaration without touching source.
@@ -101,13 +108,15 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 		return nil, fmt.Errorf("write source workspace: %w", err)
 	}
 	spec := map[string]any{"source-dir": "code"}
-	goWorkFile := ""
+	goWorkFile, goWorkSource, goWorkUnused := "", "", ""
 	if _, statErr := os.Stat(filepath.Join(absoluteSource, "go.mod")); statErr == nil {
-		if sourceGoWorkFile := goWorkspaceFile(absoluteSource); sourceGoWorkFile != "" {
+		if goWorkSource = goWorkspaceFile(absoluteSource); goWorkSource != "" {
 			goWorkFile = filepath.Join(workspaceDir, "go.work")
-			if err = writeNormalizedGoWorkspace(sourceGoWorkFile, goWorkFile); err != nil {
+			if err = writeNormalizedGoWorkspace(goWorkSource, goWorkFile); err != nil {
 				return nil, fmt.Errorf("prepare Go workspace: %w", err)
 			}
+		} else {
+			goWorkUnused = goWorkspaceUnused(absoluteSource)
 		}
 		spec["with-workspace"] = goWorkFile != ""
 	}
@@ -140,17 +149,36 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 
 	failed = false
 	return &Prepared{
-		Workspace:  loaded,
-		Module:     module,
-		Service:    loadedService,
-		Dir:        workspaceDir,
-		GoWorkFile: goWorkFile,
-		cleanup:    func() error { return os.RemoveAll(temporary) },
+		Workspace:    loaded,
+		Module:       module,
+		Service:      loadedService,
+		Dir:          workspaceDir,
+		GoWorkFile:   goWorkFile,
+		GoWorkSource: goWorkSource,
+		GoWorkUnused: goWorkUnused,
+		cleanup:      func() error { return os.RemoveAll(temporary) },
 	}, nil
 }
 
 func goWorkspaceIncludes(sourceDir string) bool {
 	return goWorkspaceFile(sourceDir) != ""
+}
+
+// goWorkspaceUnused is the nearest go.work above sourceDir when it does not
+// govern it (it does not `use` the module, or cannot be read as a workspace):
+// the file a developer would expect to apply, and Go does not.
+func goWorkspaceUnused(sourceDir string) string {
+	if goWorkspaceFile(sourceDir) != "" {
+		return ""
+	}
+	workFile := nearestFile(sourceDir, "go.work")
+	if workFile == "" {
+		return ""
+	}
+	if physical, err := filepath.EvalSymlinks(workFile); err == nil {
+		return physical
+	}
+	return filepath.Clean(workFile)
 }
 
 func goWorkspaceFile(sourceDir string) string {

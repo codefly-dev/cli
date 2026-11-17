@@ -86,6 +86,33 @@ func TestGoWorkspaceIncludesOnlyListedModule(t *testing.T) {
 	}
 }
 
+// The nearest go.work that does not `use` a module is not applied to it, and
+// is reported as such so a build can say it is pinned despite that file.
+func TestGoWorkspaceReportsTheNearestWorkspaceThatDoesNotUseTheModule(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"included", "unlisted"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte("go 1.24\n\nuse ./included\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workFile, err := filepath.EvalSymlinks(filepath.Join(root, "go.work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := goWorkspaceUnused(filepath.Join(root, "unlisted")); got != workFile {
+		t.Fatalf("unused workspace of the unlisted module = %q, want %q", got, workFile)
+	}
+	if got := goWorkspaceUnused(filepath.Join(root, "included")); got != "" {
+		t.Fatalf("a governing workspace was reported as unused: %q", got)
+	}
+	if got := goWorkspaceUnused(t.TempDir()); got != "" {
+		t.Fatalf("no workspace above, yet one is reported unused: %q", got)
+	}
+}
+
 func TestPrepareCarriesExactGoWorkspaceAcrossEphemeralSymlink(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "agent")
