@@ -239,6 +239,9 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		if surfaceErr != nil {
 			return nil, fmt.Errorf("module %s: %w", module.Name, surfaceErr)
 		}
+		if interfaceErr := checkInterfaceRows(ctx, module, surfaces); interfaceErr != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, interfaceErr)
+		}
 
 		// The agent reports each endpoint's API details at Load. An http
 		// endpoint has none to report (its document is the service's file), so

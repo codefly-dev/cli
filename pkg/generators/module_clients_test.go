@@ -126,6 +126,16 @@ func TestPlanModuleClientsRestrictsToRequestedLanguages(t *testing.T) {
 	require.Equal(t, "starterkit-accounts-connect-client", plans[0].Name)
 }
 
+// A catalog row declared as an interface other modules implement is not a
+// service the endpoint serves: an allowlist cannot name it.
+func TestPlanModuleClientsRefusesAnAllowlistNamingAnInterfaceRow(t *testing.T) {
+	catalog := testCatalog()
+	catalog.Endpoints[0].Services = append(catalog.Endpoints[0].Services,
+		composition.APIContractService{Name: "OwnerService", FullName: "saas.accounts.v1.OwnerService", Interface: "example.dev/owner@0.1.0"})
+	_, err := PlanModuleClients("starterkit", catalog, map[string]EndpointClientsConfig{"accounts/connect": {Services: []string{"OwnerService"}}}, nil)
+	require.ErrorContains(t, err, `services names "OwnerService", which the exported contract (package saas.accounts.v1) does not declare`)
+}
+
 func TestPlanModuleClientsRejectsBadConfiguration(t *testing.T) {
 	cases := map[string]struct {
 		config map[string]EndpointClientsConfig

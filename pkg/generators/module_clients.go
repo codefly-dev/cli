@@ -145,7 +145,7 @@ func PlanModuleClients(moduleName string, catalog *composition.APIContractCatalo
 				return nil, fmt.Errorf("endpoint %s/%s: services only applies to protobuf contracts", endpoint.Service, endpoint.Endpoint)
 			}
 			declared := map[string]bool{}
-			for _, svc := range endpoint.Services {
+			for _, svc := range ServedServices(endpoint.Services) {
 				declared[svc.Name] = true
 			}
 			seen := map[string]bool{}

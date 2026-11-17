@@ -2,12 +2,15 @@ package generate
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -157,6 +160,86 @@ func ProtobufCatalogCoverage(endpoints []composition.APIContractEndpoint, read f
 		}
 		if err = composition.ProtobufCoverage(&set, shared); err != nil {
 			return fmt.Errorf("service %s: %w", key.service, err)
+		}
+	}
+	return nil
+}
+
+// publishedInterfacesDir is where a module keeps the definitions of the
+// interfaces it publishes: <module>/interfaces/<name>/interface.codefly.yaml.
+const publishedInterfacesDir = "interfaces"
+
+// modulePublishedInterfaces resolves an interface identity among the
+// definitions the module publishes. Core never fetches a definition; the CLI
+// is the host that does, and for an inventory row the definition is the
+// module's own, since the row says the module defines the protocol.
+func modulePublishedInterfaces(module *resources.Module) resources.InterfaceResolver {
+	return func(ctx context.Context, identity *resources.InterfaceIdentity) (*resources.Interface, error) {
+		entries, err := os.ReadDir(filepath.Join(module.Dir(), publishedInterfacesDir))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		var published []string
+		for _, entry := range entries {
+			dir := filepath.Join(module.Dir(), publishedInterfacesDir, entry.Name())
+			if _, statErr := os.Stat(filepath.Join(dir, resources.InterfaceConfigurationName)); statErr != nil {
+				continue
+			}
+			definition, loadErr := resources.LoadInterfaceFromDir(ctx, dir)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			if definition.Identity().String() == identity.String() {
+				return definition, nil
+			}
+			published = append(published, definition.Identity().String())
+		}
+		if len(published) == 0 {
+			return nil, fmt.Errorf("module %s publishes no definition of it under %s/", module.Name, publishedInterfacesDir)
+		}
+		slices.Sort(published)
+		return nil, fmt.Errorf("module %s publishes no definition of it under %s/ (it publishes %s)", module.Name, publishedInterfacesDir, strings.Join(published, ", "))
+	}
+}
+
+// checkInterfaceRows holds every inventory row that declares its service the
+// protocol of an interface other modules implement (APIContractService.Interface)
+// to the definition it names. Core exempts such a service from being served by
+// a listener of the module on the row's word alone, because it reads no
+// definition; here the definition is resolved and must list that very service,
+// so the exemption cannot be claimed for a service no published interface is
+// the protocol of.
+func checkInterfaceRows(ctx context.Context, module *resources.Module, surfaces contractSurfaces) error {
+	ctx = resources.WithInterfaceResolver(ctx, modulePublishedInterfaces(module))
+	endpoints := make([]string, 0, len(surfaces))
+	for endpoint := range surfaces {
+		endpoints = append(endpoints, endpoint)
+	}
+	slices.Sort(endpoints)
+	for _, endpoint := range endpoints {
+		for _, service := range surfaces[endpoint] {
+			if service.Interface == "" {
+				continue
+			}
+			declared := fmt.Sprintf("service %s on endpoint %s is declared as interface %s", service.FullName, endpoint, service.Interface)
+			identity, err := resources.ParseInterfaceIdentity(service.Interface)
+			if err != nil {
+				return fmt.Errorf("service %s on endpoint %s: %w", service.FullName, endpoint, err)
+			}
+			definition, err := resources.ResolveInterface(ctx, identity)
+			if err != nil {
+				return fmt.Errorf("service %s on endpoint %s: %w", service.FullName, endpoint, err)
+			}
+			if definition.Protobuf == nil {
+				return fmt.Errorf("%s, which is a %s interface and lists no protobuf service", declared, definition.Type)
+			}
+			var listed []string
+			for _, protocol := range definition.Protobuf.Services {
+				listed = append(listed, definition.Protobuf.Package+"."+protocol.Name)
+			}
+			if !slices.Contains(listed, service.FullName) {
+				return fmt.Errorf("%s, whose definition lists %s and not it", declared, strings.Join(listed, ", "))
+			}
 		}
 	}
 	return nil
