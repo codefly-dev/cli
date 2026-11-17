@@ -192,12 +192,15 @@ func goWorkspaceFile(sourceDir string) string {
 }
 
 // writeNormalizedGoWorkspace copies the governing workspace into the
-// ephemeral source resource while resolving available filesystem members and
-// local replacements to physical paths. Unavailable sibling checkouts are
-// omitted so an immutable single-repository snapshot can still use its local
-// modules and fall back to versioned dependencies. This prevents host aliases
-// such as /tmp→/private/tmp and the attachment symlink from changing Go's
-// module identity. The developer's workspace remains untouched.
+// ephemeral source resource while resolving its filesystem members and local
+// replacements to physical paths. This prevents host aliases such as
+// /tmp→/private/tmp and the attachment symlink from changing Go's module
+// identity. The developer's workspace remains untouched.
+//
+// A member or local replacement that is not on disk is refused, naming the
+// workspace and the member, as Go itself refuses that workspace. Omitting it
+// would build against the pinned version of the module the developer linked
+// locally, and report success.
 func writeNormalizedGoWorkspace(source, destination string) error {
 	payload, err := os.ReadFile(source)
 	if err != nil {
@@ -213,7 +216,7 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	for _, use := range workspace.Use {
 		physical, err := physicalWorkspacePath(sourceDirectory, use.Path)
 		if errors.Is(err, os.ErrNotExist) {
-			continue
+			return fmt.Errorf("%s: use %s does not exist; restore that checkout, or remove the member (`go work edit -dropuse %s`): Go refuses this workspace, and building without it would silently use the pinned version instead", source, use.Path, use.Path)
 		}
 		if err != nil {
 			return fmt.Errorf("resolve use %s: %w", use.Path, err)
@@ -253,8 +256,7 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 		}
 		physical, err := physicalWorkspacePath(sourceDirectory, replacement.New.Path)
 		if errors.Is(err, os.ErrNotExist) {
-			replacements = append(replacements, candidate)
-			continue
+			return fmt.Errorf("%s: replace %s => %s does not exist; restore that checkout, or remove the replacement: building without it would silently use the pinned version instead", source, replacement.Old.Path, replacement.New.Path)
 		}
 		if err != nil {
 			return fmt.Errorf("resolve replacement %s: %w", replacement.New.Path, err)
@@ -265,9 +267,6 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	for _, replacement := range replacements {
 		if err := workspace.DropReplace(replacement.oldPath, replacement.oldVersion); err != nil {
 			return err
-		}
-		if replacement.newPath == "" {
-			continue
 		}
 		if err := workspace.AddReplace(replacement.oldPath, replacement.oldVersion, replacement.newPath, ""); err != nil {
 			return err

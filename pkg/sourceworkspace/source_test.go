@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -175,44 +176,33 @@ func TestWriteNormalizedGoWorkspaceDoesNotDuplicateAbsolutePhysicalUse(t *testin
 	}
 }
 
-func TestWriteNormalizedGoWorkspaceDropsUnavailableExternalPaths(t *testing.T) {
-	root := t.TempDir()
-	module := filepath.Join(root, "module")
-	if err := os.MkdirAll(module, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	workFile := filepath.Join(root, "go.work")
-	if err := os.WriteFile(workFile, []byte(`go 1.25
-
-use (
-	./module
-	./missing-module
-)
-
-replace example.com/dependency => ./missing-replacement
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(root, "normalized.work")
-	if err := writeNormalizedGoWorkspace(workFile, destination); err != nil {
-		t.Fatal(err)
-	}
-	payload, err := os.ReadFile(destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := modfile.ParseWork(destination, payload, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	physicalModule, err := filepath.EvalSymlinks(module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(parsed.Use) != 1 || parsed.Use[0].Path != filepath.ToSlash(physicalModule) {
-		t.Fatalf("normalized uses = %+v, want available module %q\n%s", parsed.Use, physicalModule, payload)
-	}
-	if len(parsed.Replace) != 0 {
-		t.Fatalf("normalized replacements = %+v, want unavailable replacement omitted\n%s", parsed.Replace, payload)
+// A go.work member, or a local replacement, that is not on disk is refused
+// naming the go.work and the member. It was dropped without a word, so the
+// agent built against the PUBLISHED dependency while `go build` in the same
+// checkout fails ("cannot load module ... listed in go.work"): a build that
+// succeeds on a module graph nobody asked for.
+func TestWriteNormalizedGoWorkspaceRefusesAMemberThatIsNotOnDisk(t *testing.T) {
+	for name, tc := range map[string]struct{ body, missing string }{
+		"use":         {"use (\n\t./module\n\t./missing-module\n)\n", "use ./missing-module"},
+		"replacement": {"use ./module\n\nreplace example.com/dependency => ./missing-replacement\n", "replace example.com/dependency => ./missing-replacement"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "module"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			workFile := filepath.Join(root, "go.work")
+			if err := os.WriteFile(workFile, []byte("go 1.25\n\n"+tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			destination := filepath.Join(root, "normalized.work")
+			err := writeNormalizedGoWorkspace(workFile, destination)
+			if err == nil || !strings.Contains(err.Error(), workFile) || !strings.Contains(err.Error(), tc.missing) || !strings.Contains(err.Error(), "does not exist") {
+				t.Fatalf("err = %v, want it to name %s and %q as missing", err, workFile, tc.missing)
+			}
+			if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
+				t.Fatalf("a workspace was written despite the refusal: %v", statErr)
+			}
+		})
 	}
 }
