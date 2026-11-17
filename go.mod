@@ -17,7 +17,7 @@ require (
 	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261117165723-a1ceafa574fc
 	github.com/codefly-dev/authority/libraries/hop/go v0.2.1-0.20261117165723-a1ceafa574fc
 	github.com/codefly-dev/authority/libraries/solutionhost/go v0.0.0-20261117165723-a1ceafa574fc
-	github.com/codefly-dev/core v0.19.34-0.20261116201543-b919b702e8cf
+	github.com/codefly-dev/core v0.19.34-0.20261117163107-4b09840e116c
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
@@ -96,7 +96,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.5 // indirect
-	github.com/codefly-dev/authority/libraries/resources/go v0.0.0-20261117165723-a1ceafa574fc // indirect
 	github.com/codefly-dev/gortk v0.2.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect
