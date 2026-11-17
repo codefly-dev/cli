@@ -28,8 +28,8 @@ import (
 // endpoint reference.
 //
 // The catalog does not say which service a page calls and which only another
-// module does (robin's execution and sandbox services are published like its
-// chat service), so the group holds every one of them and the hop decides
+// module does (a module's internal services are published like the one its
+// page speaks to), so the group holds every one of them and the hop decides
 // admission, as it does for any caller. Two things are left out because the
 // catalog and the module contract do say so:
 //
