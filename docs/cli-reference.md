@@ -3322,7 +3322,11 @@ What an endpoint serves is what the contract catalog records
 for it (the declared surface, or every service of its package); a method a
 published descriptor declares that no endpoint serves, such as a protocol other
 modules serve, is left out with a note and needs no policy. The TypeScript file
-sits beside the Go file. A Python service (a python-* agent) gets its own
+sits beside the Go file. A Go service whose go.mod requires the authority's hop
+library also gets declarations_gen.go: Declarations(), the same table as the
+module-side verifier reads it (hop.Declarations), which is how a method of a
+protocol the module does not own (a module contract's foreign_methods) is
+admitted on what it declares. A Python service (a python-* agent) gets its own
 table as one Python file in its own source tree,
 <service>/<source-dir>/src/gen/permissions_gen.py (source-dir is "code" unless
 the service declares another, and is where pyproject.toml lives): the same

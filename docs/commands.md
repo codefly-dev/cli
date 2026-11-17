@@ -5721,7 +5721,20 @@ rows are `MethodPolicy(any_checked_caller, requires, carries)`). A permission a
 call may carry beyond what it requires (the hop policy's
 `carries`) is a constant like any other, and its method's row names it apart
 from what the call requires (`Carries` in Go, `carries` in TypeScript and
-Python), so the service performing that effect checks it by name. A table generated before
+Python), so the service performing that effect checks it by name. A
+`foreign_methods` entry says what its call carries with `carries:`, and its row
+holds it like any other.
+
+A Go service whose `go.mod` requires the authority's hop library
+(`github.com/codefly-dev/authority/libraries/hop/go`) also gets
+`declarations_gen.go` beside its table: `Declarations()`, the same rows as the
+module-side verifier reads them. Pass it to the verifier
+(`hop.NewVerifier(..., hop.Declarations(permissions.Declarations()))`). The
+verifier otherwise learns what a method declares from the policy option on the
+descriptors the binary registers, and a method of a protocol the module does
+not own has none: without this its declaration never reaches the verifier, and
+a call to it selects nothing. A Python service passes its `METHODS` rows to its
+verifier's `declarations` the same way. A table generated before
 this holds no `Carries`: regenerate it. Identifier collisions and invalid
 policies fail by name.
 

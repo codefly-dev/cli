@@ -146,7 +146,9 @@ func permissionsModule(t *testing.T) *resources.Module {
 	write("services/engine/code/pyproject.toml", "[project]\nname = \"engine\"\nversion = \"0.0.0\"\n")
 	write("services/engine/code/src/main.py", "")
 	write("services/api/code/go.mod", "module example.com/ledger/api\n\ngo 1.26.0\n")
-	write("services/admin/go/go.mod", "module example.com/ledger/admin\n\ngo 1.26.0\n")
+	// The admin service is behind the authority's hop: its module requires the
+	// hop library, whose verifier reads what each method declares.
+	write("services/admin/go/go.mod", "module example.com/ledger/admin\n\ngo 1.26.0\n\nrequire github.com/codefly-dev/authority/libraries/hop/go v0.0.0\n")
 	write("module.contract.codefly.yaml", `schema: codefly/module-contract/v1
 principal: ledger
 namespaces: []
@@ -161,6 +163,9 @@ foreign_methods:
     requires:
       - resource_kind: ledger.entry
         actions: [write]
+    carries:
+      - resource_kind: ledger.entry
+        actions: [approve]
 `)
 	contract := func(service, method, action string) string {
 		m := &descriptorpb.MethodDescriptorProto{Name: proto.String(method), InputType: proto.String(".ledger.Empty"), OutputType: proto.String(".ledger.Empty"), Options: &descriptorpb.MethodOptions{}}
@@ -260,7 +265,8 @@ func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	table, err := os.ReadFile(filepath.Join(engine, "permissions_gen.py"))
 	require.NoError(t, err)
 	require.Contains(t, string(table), `"/ledger.EngineService/Recompute": MethodPolicy(any_checked_caller=False, requires=(LEDGER_ENTRY_WRITE,), carries=()),`)
-	require.Contains(t, string(table), `"/otlp.TraceService/Export"`)
+	// A foreign method's row says what the call carries, as any other row does.
+	require.Contains(t, string(table), `"/otlp.TraceService/Export": MethodPolicy(any_checked_caller=False, requires=(LEDGER_ENTRY_WRITE,), carries=(LEDGER_ENTRY_APPROVE,)),`)
 	require.NotContains(t, string(table), "ApiService")
 
 	api := filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions")
@@ -277,10 +283,21 @@ func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	require.Contains(t, read(admin, "permissions_gen.go"), `"/ledger.AdminService/Approve"`)
 	require.NotContains(t, read(admin, "permissions_gen.go"), "ApiService")
 	for _, dir := range []string{api, admin} {
-		require.Contains(t, read(dir, "permissions_gen.go"), `"/otlp.TraceService/Export"`)
-		require.Contains(t, read(dir, "permissions_gen.ts"), `"/otlp.TraceService/Export"`)
+		require.Regexp(t, `"/otlp.TraceService/Export": +{AnyCheckedCaller: false, Requires: \[\]Permission{LedgerEntryWrite}, Carries: \[\]Permission{LedgerEntryApprove}},`, read(dir, "permissions_gen.go"))
+		require.Contains(t, read(dir, "permissions_gen.ts"), `"/otlp.TraceService/Export": { anyCheckedCaller: false, requires: [Permission.LedgerEntryWrite], carries: [Permission.LedgerEntryApprove] },`)
 		require.NotContains(t, read(dir, "permissions_gen.go"), "EngineService")
 	}
+
+	// A service whose module requires the hop library also gets its table as
+	// the declarations the module-side verifier reads (hop.Declarations): a
+	// method of a protocol the module does not own carries no policy option on
+	// any descriptor the binary registers, so the verifier learns what it
+	// declares from this alone. A service that does not require the library
+	// gets no file importing it.
+	declarations := read(admin, "declarations_gen.go")
+	require.Contains(t, declarations, `"github.com/codefly-dev/authority/libraries/hop/go/policy"`)
+	require.Contains(t, declarations, "func Declarations() map[string]policy.Method {")
+	require.NoFileExists(t, filepath.Join(api, "declarations_gen.go"))
 
 	// The api service imports its table as a package of its own go.mod.
 	code := filepath.Join(module.Dir(), "services", "api", "code")
@@ -365,7 +382,7 @@ func TestPermissionsGiveAPythonServiceItsOwnTable(t *testing.T) {
 	}
 	want := map[string][]string{
 		filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions"): {"permissions_gen.go", "permissions_gen.ts"},
-		filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions"): {"permissions_gen.go", "permissions_gen.ts"},
+		filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions"): {"permissions_gen.go", "permissions_gen.ts", "declarations_gen.go"},
 		engine: {"permissions_gen.py"},
 	}
 	require.Equal(t, want, placed())

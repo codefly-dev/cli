@@ -321,7 +321,8 @@ func publishesProtobuf(manifest *composition.PackageManifest, service string) bo
 }
 
 // foreignMethods reads the methods the module at dir serves from a protocol
-// it does not own, from its module contract, each with what a call requires.
+// it does not own, from its module contract, each with what a call requires
+// and what it may carry beyond that.
 // A module that publishes no contract declares none.
 func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, map[string]string, error) {
 	contract, err := modulecontract.Load(dir)
@@ -340,6 +341,9 @@ func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, map[string]str
 		}
 		for _, required := range method.Requires {
 			m.Requires = append(m.Requires, &authorityv1.WorkScopeV1{ResourceKind: required.ResourceKind, Actions: required.Actions})
+		}
+		for _, carried := range method.Carries {
+			m.Carries = append(m.Carries, &authorityv1.WorkScopeV1{ResourceKind: carried.ResourceKind, Actions: carried.Actions})
 		}
 		out = append(out, m)
 	}
