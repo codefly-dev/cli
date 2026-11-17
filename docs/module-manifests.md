@@ -2052,4 +2052,6 @@ when that root opts into `module-identity`. The dependency client drives that
 process outside the launcher. Admission still uses the signed manifest and must
 complete before the SDK environment is ready; it does not mark the root started
 or publish any of its endpoints. Credential projection and refresh belong to the
-run, including normal teardown. See [orchestration](orchestration.md#identity-for-dependency-clients).
+run, including normal teardown. An environment with no host declares no
+authority, so its dependency run admits nothing and hands the root no
+credential. See [orchestration](orchestration.md#identity-for-dependency-clients).

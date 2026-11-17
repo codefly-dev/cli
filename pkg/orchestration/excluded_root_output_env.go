@@ -122,7 +122,7 @@ func (flow *Flow) prepareExcludedOrigin(ctx context.Context) error {
 	}()
 	if flow.externalIdentityOrigin() {
 		if flow.world.PrepareExternalWorkload == nil {
-			return fmt.Errorf("excluded root declares module-identity but this run supplies no workload authority")
+			return fmt.Errorf("excluded root declares module-identity and the environment declares a host, but this run supplies no workload authority")
 		}
 		var err error
 		abandon, err = flow.world.PrepareExternalWorkload(ctx, flow.originService)

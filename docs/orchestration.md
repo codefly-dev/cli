@@ -140,6 +140,14 @@ The `World` holds shared state that all managers can access:
 SDK dependency sessions receive these groups through the CLI configuration RPC,
 including excluded-root consumers. The RPC uses the same resolver as a running
 service, preserving endpoint resolution and credential withholding.
+It refuses what a run refuses: a group the excluded root declares and the
+workspace does not provide fails the session (`no configuration found for
+<group>`), as it fails that root's own start. A module's own workspace does not
+provide the groups its composition supplies, nor the ones the module ships for
+its consumers (an in-repo module's `configurations/` is read only where the
+module is composed from elsewhere), so a suite booting there leaves them out by
+name: `--exclude-workspace-configuration`, which the dependency SDK passes for
+`WithExcludedWorkspaceConfigurations`.
 The current dependency RPC resolves references for the service's selected runtime
 context; the SDK process must use that same context. An excluded SDK consumer's
 saved container preference does not negotiate a native test process's context.
@@ -1440,5 +1448,14 @@ The dependency SDK receives the prepared workload projection through
 `GetConfiguration.ProcessVariables`, alongside the active environment and
 service-scoped overrides. The same carriers reach `--output-env`. Reading
 configuration never creates or restores a credential, and no dependency's token
-is substituted for the root's. A root requesting identity in a run with no
-workload authority fails before its dependency environment is reported ready.
+is substituted for the root's. Where the environment declares a host, a root
+requesting identity in a run with no workload authority fails before its
+dependency environment is reported ready.
+
+`module-identity` is a request the environment's host answers. An environment
+that declares no host has no authority to admit the root, as when a module's
+own workspace boots that module's dependencies for its integration suites. The
+excluded root there is not declared to anything and nothing waits on an
+admission: it receives the environment a started root receives in that
+composition, every other carrier and no workload credential. An identity is
+only ever handed out by a run that vouched for it.
