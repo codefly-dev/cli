@@ -1319,6 +1319,23 @@ boundary, not live route reconfiguration. Existing hop versions that do not
 declare `hop-routes` keep their existing configuration mode; a new hop requires
 both the CLI projection and the generated group.
 
+**The edge routes what a module declares.** A service declaring the
+`edge-routes` workspace group (a composition's browser edge) receives one
+generated document, `ROUTES` (schema `codefly.dev/edge-routes/v1`): for every
+module the edge mounts (`edge/MODULES`) that is published through the hop
+(`hop/MODULES`), the procedures its own published catalog declares on a Connect
+listener. It comes from the same catalogs, read by the same reader, as the
+hop's routes, so a composition no longer types a `<MODULE>_RPC` list and cannot
+forget a service its module publishes. The group carries no address: where a
+module's face is stays the composition's `<MODULE>_CONNECT` endpoint reference.
+It holds every Connect procedure a mounted module publishes, whichever caller it
+is meant for, since the hop decides admission; it leaves out a foreign method
+(another module's protocol, which several mounted modules may serve) and a
+mounted module that is not behind the hop. Like `hop-routes` it is supplied to
+the declaring service only, is never authored, and lasts for one run. Declaring
+it makes a service a reader of the document and nothing else: declaring
+`hop-routes` is still what makes a service the hop.
+
 A local run's port for an endpoint starts from the one derived from the
 workspace, the service, the endpoint and the naming scope, and is claimed on
 this machine before the first mapping names it (`pkg/portclaims`, a locked

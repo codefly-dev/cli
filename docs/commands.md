@@ -4490,6 +4490,18 @@ supply the inventory, since copying a full descriptor to each cannot prove which
 listener serves a method. A single endpoint keeps the full-descriptor default;
 restricted single listeners must also supply their inventory.
 
+A row may instead declare its service the protocol of an interface the module
+publishes for OTHER modules to implement: `"interface":
+"<publisher>/<name>@<version>"` with no procedures. Core then does not require a
+listener of the module to serve it. The row must name a definition the module
+publishes, `<module>/interfaces/<name>/interface.codefly.yaml`, at exactly that
+version, and that definition must list the row's service
+(`protobuf.package` + `.` + a `services[].name`); a row naming an unpublished
+definition, another version, or a definition of another service is refused by
+name. Such a row is not a service the endpoint serves: `--services`,
+`clients.codefly.yaml` `services` and a solution's `consumes[].services` cannot
+name it.
+
 A declared inventory may serve several protobuf packages on one listener,
 including implemented interfaces such as `host.authority.v1` alongside the
 service's own API. Every service and procedure is validated against the complete
