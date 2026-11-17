@@ -25,6 +25,13 @@ var nativeStateRoot = runstate.Root
 // Which directory belongs to which run, and whether anything still uses it, is
 // recorded on the directory by the agent that owns it (core's
 // runners/runstate): a directory still in use is left for `codefly clear`.
+//
+// A server left running in one of this run's directories by agents whose own
+// launcher is gone is stopped first, as core's runstate.StopAbandoned decides
+// it: only the processes those agents recorded there, each checked against its
+// recorded birth. What this run's own agents started is not that: this run
+// still lives, and it stops them through their process groups
+// (RecoverProcessGroupsOfThisRun).
 func (flow *Flow) RemoveNativeStateOfThisRun() ([]string, error) {
 	if flow == nil || flow.world == nil || flow.world.Env == nil || flow.world.Workspace == nil {
 		return nil, nil
@@ -42,6 +49,7 @@ func (flow *Flow) RemoveNativeStateOfThisRun() ([]string, error) {
 		Include: func(run runstate.Run) bool {
 			return run.Workspace == workspace && run.NamingScope == scope
 		},
+		StopAbandoned: &runstate.StopOptions{},
 	})
 	directories := make([]string, 0, len(swept))
 	for _, state := range swept {

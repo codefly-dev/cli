@@ -1209,7 +1209,11 @@ the scope because codefly processes aren't per-service.
 It also removes the native state directories (a database run as a host
 process keeps its data under the user cache directory) of disposable runs
 that are no longer alive: runs with --temporary-ports and test-owned
-dependency stacks. A developer's persistent database is never removed.
+dependency stacks. A run that was killed leaves its database servers
+running, and they keep its directory in use: unless --keep-processes, those
+servers are stopped first (only the processes the run's agent recorded in
+that directory, and only when no live run claims it). A developer's
+persistent database is never removed, and its server never stopped.
 
 Examples:
   codefly clear                     # full reset of this workspace

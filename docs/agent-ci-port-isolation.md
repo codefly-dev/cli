@@ -75,8 +75,14 @@ directories of its stores (a Postgres cluster under the user cache directory,
 say) be removed instead of accumulating one per run: the run removes its own
 when it ends (`Flow.RemoveNativeStateOfThisRun`), an agent removes its
 directory when it is destroyed, and `codefly clear` removes what a killed run
-left. A plain run, or a scope the caller named, is never disposable and its
-data is never removed. The record and the rule are core's `runners/runstate`.
+left. A killed run leaves its servers running as well, and a directory is in
+use for as long as one runs, so both sweeps first stop the servers a killed
+disposable run left (`runstate.SweepOptions.StopAbandoned`: only the processes
+the run's agent recorded in the directory, only when no live run claims it,
+each checked against its recorded birth); `codefly clear --keep-processes`
+stops none, and `--dry-run` names what it would stop. A plain run, or a scope
+the caller named, is never disposable: its data is never removed and its
+server never stopped. The record and the rule are core's `runners/runstate`.
 
 Agent conformance additionally passes **`--disposable`**, also available on
 `codefly ci test`. Each lint, compile or test flow receives a fresh naming scope and ephemeral

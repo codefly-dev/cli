@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/internal/killedrun"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/runners/runstate"
 	"github.com/stretchr/testify/require"
@@ -88,4 +89,38 @@ func TestAPersistentRunsExitRemovesNoNativeState(t *testing.T) {
 			require.DirExists(t, recorded)
 		})
 	}
+}
+
+func TestKilledRunHelper(_ *testing.T) { killedrun.Helper() }
+
+// A server still running in a directory recorded for this run's own scope,
+// whose agent and that agent's launcher are both gone, is nobody's but this
+// run's to stop: the scope was generated for it and nothing runs it again.
+// The exit stops it and removes the directory; the same left under another
+// run's scope is that run's, or `codefly clear`'s.
+func TestADisposableRunsExitStopsTheServersLeftInItsNativeState(t *testing.T) {
+	started := time.Unix(1_800_000_000, 0)
+	run := newExitedRun(t, started)
+	workspace := t.TempDir()
+	run.flow.world.Workspace.WithDir(workspace)
+	run.flow.world.Env = &environments.Environment{Name: "local"}
+	scope := run.flow.WithIsolatedInvocation()
+	require.NotEmpty(t, scope)
+
+	root := t.TempDir()
+	nativeStateUnder(t, root)
+	mine := filepath.Join(root, "clickhouse", "1111")
+	mineServer := killedrun.Leave(t, mine, runstate.Run{Workspace: workspace, NamingScope: scope, Disposable: true})
+	otherRun := filepath.Join(root, "clickhouse", "2222")
+	otherServer := killedrun.Leave(t, otherRun, runstate.Run{Workspace: workspace, NamingScope: "invotherrun", Disposable: true})
+
+	require.NoError(t, run.flow.Stop())
+	reclaim, err := run.flow.ReclaimAfterRun(context.Background(), started, false)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{mine}, reclaim.NativeState)
+	mineServer.RequireStopped(t)
+	require.NoDirExists(t, mine)
+	require.True(t, otherServer.Running(), "another run's server is that run's, or `codefly clear`'s")
+	require.DirExists(t, otherRun)
 }

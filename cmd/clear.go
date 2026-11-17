@@ -97,7 +97,11 @@ the scope because codefly processes aren't per-service.
 It also removes the native state directories (a database run as a host
 process keeps its data under the user cache directory) of disposable runs
 that are no longer alive: runs with --temporary-ports and test-owned
-dependency stacks. A developer's persistent database is never removed.
+dependency stacks. A run that was killed leaves its database servers
+running, and they keep its directory in use: unless --keep-processes, those
+servers are stopped first (only the processes the run's agent recorded in
+that directory, and only when no live run claims it). A developer's
+persistent database is never removed, and its server never stopped.
 
 Examples:
   codefly clear                     # full reset of this workspace
@@ -281,14 +285,32 @@ func sweepStaleState(ctx context.Context, w *wool.Wool, options clearOptions) []
 // use, is recorded on it by the agent that owns it (core's runners/runstate):
 // a developer's persistent database and a directory no agent recorded are
 // never removed.
+//
+// A killed run leaves its servers running as well, and they keep its directory
+// in use for good. Unless --keep-processes, the sweep stops them first: the
+// processes an agent recorded in a disposable directory no live run claims any
+// more, each checked against its recorded birth before it is signalled (core's
+// runstate.StopAbandoned).
 func sweepNativeRunState(w *wool.Wool, root string, options clearOptions) []error {
-	swept, err := runstate.Sweep(root, runstate.SweepOptions{
+	sweep := runstate.SweepOptions{
 		Include: func(run runstate.Run) bool { return options.scope.Includes(run.Workspace) },
 		DryRun:  options.dryRun,
-	})
+	}
+	if !options.keepProcesses {
+		sweep.StopAbandoned = &runstate.StopOptions{}
+	}
+	swept, err := runstate.Sweep(root, sweep)
 	directories := make([]string, 0, len(swept))
+	var servers []int
 	for _, state := range swept {
 		directories = append(directories, state.Dir)
+		servers = append(servers, state.Stopped...)
+	}
+	switch {
+	case len(servers) > 0 && options.dryRun:
+		w.Info("would stop servers a killed disposable run left running", wool.Field("count", len(servers)), wool.Field("pids", servers))
+	case len(servers) > 0:
+		w.Info("stopped servers a killed disposable run left running", wool.Field("count", len(servers)), wool.Field("pids", servers))
 	}
 	switch {
 	case len(swept) > 0 && options.dryRun:

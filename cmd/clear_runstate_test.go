@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/internal/killedrun"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/runners/runstate"
 	"github.com/codefly-dev/core/wool"
@@ -51,4 +52,47 @@ func TestClearRemovesNativeStateOfEndedDisposableRuns(t *testing.T) {
 	require.Empty(t, sweepNativeRunState(w, root, clearOptions{verb: "clear", scope: processgroup.AllWorkspaces()}))
 	require.NoDirExists(t, theirs)
 	require.DirExists(t, persistent, "a developer's database is never removed")
+}
+
+func TestKilledRunHelper(_ *testing.T) { killedrun.Helper() }
+
+// A killed run leaves its servers running too, and a directory is in use for
+// as long as one runs: `codefly clear` kept the directory, and the server,
+// for good. It stops the servers a killed disposable run left in its scope and
+// then removes the directory; a preview names them and stops nothing; and
+// --keep-processes, another workspace's run and a developer's database keep
+// theirs.
+func TestClearStopsTheServersAKilledDisposableRunLeft(t *testing.T) {
+	root := t.TempDir()
+	here, elsewhere := t.TempDir(), t.TempDir()
+	w := wool.Get(context.Background()).In("clear")
+
+	mine := filepath.Join(root, "clickhouse", "1111")
+	mineServer := killedrun.Leave(t, mine, runstate.Run{Workspace: here, NamingScope: "invaaaaaaaa", Disposable: true})
+	theirs := filepath.Join(root, "clickhouse", "2222")
+	theirServer := killedrun.Leave(t, theirs, runstate.Run{Workspace: elsewhere, NamingScope: "invbbbbbbbb", Disposable: true})
+	persistent := filepath.Join(root, "postgres", "run", "3333")
+	persistentServer := killedrun.Leave(t, persistent, runstate.Run{Workspace: here})
+
+	scoped := clearOptions{verb: "clear", scope: processgroup.InWorkspace(here)}
+
+	preview := scoped
+	preview.dryRun = true
+	require.Empty(t, sweepNativeRunState(w, root, preview))
+	require.True(t, mineServer.Running(), "a dry run stops nothing")
+	require.DirExists(t, mine)
+
+	keeping := scoped
+	keeping.keepProcesses = true
+	require.Empty(t, sweepNativeRunState(w, root, keeping))
+	require.True(t, mineServer.Running(), "--keep-processes stops nothing")
+	require.DirExists(t, mine)
+
+	require.Empty(t, sweepNativeRunState(w, root, scoped))
+	mineServer.RequireStopped(t)
+	require.NoDirExists(t, mine)
+	require.True(t, theirServer.Running(), "another workspace's run is out of scope")
+	require.DirExists(t, theirs)
+	require.True(t, persistentServer.Running(), "a developer's database server is theirs to stop")
+	require.DirExists(t, persistent)
 }
