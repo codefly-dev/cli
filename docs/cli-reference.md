@@ -3303,7 +3303,9 @@ Generate typed Go and TypeScript permissions from published contracts
 ```
 Read the same digest-checked published method policies used by authority delivery.
 Generate typed permission constants and a method requirement table in Go and
-TypeScript. Run codefly generate contracts first after editing an API.
+TypeScript. A permission a call may carry beyond what it requires is a constant
+too, and its method's row names it apart from what the call requires. Run
+codefly generate contracts first after editing an API.
 
 By default each Go service gets its own table in its own Go module:
 <service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout

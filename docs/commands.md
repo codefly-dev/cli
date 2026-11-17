@@ -5710,7 +5710,12 @@ Go source root fails by name. `--output` writes the whole
 module's table to one directory instead. Go constants have type
 `Permission`, with `Kind()` and `Action()` accessors; TypeScript constants carry
 literal types. Both include the method requirement table and any-checked-caller
-marker. Identifier collisions and invalid policies fail by name.
+marker. A permission a call may carry beyond what it requires (the hop policy's
+`carries`) is a constant like any other, and its method's row names it apart
+from what the call requires (`Carries` in Go, `carries` in TypeScript), so the
+service performing that effect checks it by name. A table generated before
+this holds no `Carries`: regenerate it. Identifier collisions and invalid
+policies fail by name.
 
 After editing an RPC, run `codefly generate contracts --permissions` to update
 both contracts and permissions. CI runs the same command with `--check`; it

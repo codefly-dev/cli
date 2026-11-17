@@ -7,11 +7,13 @@ import (
 	"go/format"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -30,7 +32,9 @@ var PermissionsCmd = &cobra.Command{
 	Short: "Generate typed Go and TypeScript permissions from published contracts",
 	Long: `Read the same digest-checked published method policies used by authority delivery.
 Generate typed permission constants and a method requirement table in Go and
-TypeScript. Run codefly generate contracts first after editing an API.
+TypeScript. A permission a call may carry beyond what it requires is a constant
+too, and its method's row names it apart from what the call requires. Run
+codefly generate contracts first after editing an API.
 
 By default each Go service gets its own table in its own Go module:
 <service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
@@ -231,7 +235,9 @@ func permissionFiles(methods []*compositionv1.MethodPolicyV1) (map[string][]byte
 	names := map[string]string{}
 	values := map[string]string{}
 	for _, m := range methods {
-		for _, sc := range m.GetRequires() {
+		// What a call may carry beyond what it requires is a permission the
+		// service performing that effect checks by name, so it is named too.
+		for _, sc := range slices.Concat(m.GetRequires(), m.GetCarries()) {
 			for _, action := range sc.GetActions() {
 				value := sc.GetResourceKind() + ":" + action
 				name := permissionIdentifier(value)
@@ -259,28 +265,40 @@ func permissionFiles(methods []*compositionv1.MethodPolicyV1) (map[string][]byte
 		fmt.Fprintf(&goCode, "%s Permission = %q\n", name, names[name])
 		fmt.Fprintf(&ts, "  %s: %q,\n", name, names[name])
 	}
-	goCode.WriteString(")\ntype MethodPolicy struct { AnyCheckedCaller bool; Requires []Permission }\nfunc Methods() map[string]MethodPolicy { return map[string]MethodPolicy{\n")
+	goCode.WriteString(")\ntype MethodPolicy struct { AnyCheckedCaller bool; Requires []Permission; Carries []Permission }\nfunc Methods() map[string]MethodPolicy { return map[string]MethodPolicy{\n")
 	ts.WriteString("} as const;\nexport type Permission = typeof Permission[keyof typeof Permission];\nexport const Methods = {\n")
 	sorted := append([]*compositionv1.MethodPolicyV1(nil), methods...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].GetMethod() < sorted[j].GetMethod() })
-	for _, m := range sorted {
-		required := map[string]bool{}
-		for _, sc := range m.GetRequires() {
+	// identifiers are the constants naming a list of scopes, each once, sorted.
+	identifiers := func(scopes []*authorityv1.WorkScopeV1) []string {
+		var refs []string
+		for _, sc := range scopes {
 			for _, action := range sc.GetActions() {
-				required[values[sc.GetResourceKind()+":"+action]] = true
+				if name := values[sc.GetResourceKind()+":"+action]; !slices.Contains(refs, name) {
+					refs = append(refs, name)
+				}
 			}
 		}
-		refs := make([]string, 0, len(required))
-		for name := range required {
-			refs = append(refs, name)
-		}
 		sort.Strings(refs)
-		fmt.Fprintf(&goCode, "%s: {AnyCheckedCaller:%t, Requires: []Permission{%s}},\n", strconv.Quote(m.GetMethod()), m.GetAnyCheckedCaller(), strings.Join(refs, ","))
-		tsRefs := make([]string, 0, len(refs))
+		return refs
+	}
+	tsList := func(refs []string) string {
+		qualified := make([]string, 0, len(refs))
 		for _, name := range refs {
-			tsRefs = append(tsRefs, "Permission."+name)
+			qualified = append(qualified, "Permission."+name)
 		}
-		fmt.Fprintf(&ts, "%s: { anyCheckedCaller: %t, requires: [%s] },\n", strconv.Quote(m.GetMethod()), m.GetAnyCheckedCaller(), strings.Join(tsRefs, ","))
+		return strings.Join(qualified, ",")
+	}
+	for _, m := range sorted {
+		requires, carries := identifiers(m.GetRequires()), identifiers(m.GetCarries())
+		// A Go row names what the call carries only when it carries something,
+		// so a table with no such call differs from an older one by its type.
+		carried := ""
+		if len(carries) > 0 {
+			carried = fmt.Sprintf(", Carries: []Permission{%s}", strings.Join(carries, ","))
+		}
+		fmt.Fprintf(&goCode, "%s: {AnyCheckedCaller:%t, Requires: []Permission{%s}%s},\n", strconv.Quote(m.GetMethod()), m.GetAnyCheckedCaller(), strings.Join(requires, ","), carried)
+		fmt.Fprintf(&ts, "%s: { anyCheckedCaller: %t, requires: [%s], carries: [%s] },\n", strconv.Quote(m.GetMethod()), m.GetAnyCheckedCaller(), tsList(requires), tsList(carries))
 	}
 	goCode.WriteString("} }\n")
 	ts.WriteString("} as const;\n")

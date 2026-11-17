@@ -77,6 +77,51 @@ func TestPermissionGenerationRefusesCollisionsAndMissingPolicies(t *testing.T) {
 	require.ErrorContains(t, err, "no permission policy")
 }
 
+// A call may carry a permission beyond what it requires (a first write creating
+// the collection it writes to). The service performing that effect checks it by
+// name, so it is a constant and the method's row holds it, apart from what the
+// call requires.
+func TestGeneratedPermissionsHoldWhatACallCarries(t *testing.T) {
+	files, err := permissionFiles([]*compositionv1.MethodPolicyV1{
+		{Method: "/api/Create",
+			Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"write"}}},
+			Carries:  []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"create"}}}},
+		{Method: "/api/Version", AnyCheckedCaller: true},
+	})
+	require.NoError(t, err)
+	dir := t.TempDir()
+	for name, data := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module permissions_test\n\ngo 1.26.0\n"), 0644))
+	test := `package permissions
+import "testing"
+func TestConsumer(t *testing.T) {
+ create := Methods()["/api/Create"]
+ if len(create.Requires)!=1 || create.Requires[0]!=DocumentsWrite {t.Fatal("what the call requires changed")}
+ if len(create.Carries)!=1 || create.Carries[0]!=DocumentsCollectionCreate {t.Fatal("what the call carries is lost")}
+ if DocumentsCollectionCreate.Kind()!="documents.collection" || DocumentsCollectionCreate.Action()!="create" {t.Fatal("wrong permission")}
+ if len(Methods()["/api/Version"].Carries)!=0 {t.Fatal("a call that carries nothing carries something")}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer_test.go"), []byte(test), 0644))
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	ts := string(files["permissions_gen.ts"])
+	require.Contains(t, ts, `DocumentsCollectionCreate: "documents.collection:create"`)
+	require.Contains(t, ts, `"/api/Create": { anyCheckedCaller: false, requires: [Permission.DocumentsWrite], carries: [Permission.DocumentsCollectionCreate] }`)
+	require.Contains(t, ts, `"/api/Version": { anyCheckedCaller: true, requires: [], carries: [] }`)
+
+	// A carried permission is a name like any other: it may not collide.
+	_, err = permissionFiles([]*compositionv1.MethodPolicyV1{{Method: "/api/Create",
+		Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"write"}}},
+		Carries:  []*authorityv1.WorkScopeV1{{ResourceKind: "documents_collection", Actions: []string{"write"}}}}})
+	require.ErrorContains(t, err, "collide")
+}
+
 // permissionsModule writes a module "ledger" with two Go services, api
 // (source-dir defaulted) and admin (source-dir go/cmd/admin, so its go.mod is
 // at go/), each publishing one protobuf contract with its own marked methods,
