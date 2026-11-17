@@ -222,3 +222,25 @@ func TestAPortHeldByAnEarlierRunsOrphanNamesItsRecovery(t *testing.T) {
 	require.ErrorContains(t, err, "already in use")
 	require.NotContains(t, err.Error(), "codefly recover")
 }
+
+// A run answers for a registered group one of its agents started, whether the
+// agent still runs (the group is its child) or is gone (Core's recovery names
+// it as the owner), and for no other.
+func TestARunOwnsTheProcessGroupsItsAgentsStarted(t *testing.T) {
+	run := newExitedRun(t, time.Now())
+	previousParent := parentOfProcess
+	t.Cleanup(func() { parentOfProcess = previousParent })
+	// 900 is a live group no recovery previews: its parent decides.
+	parents := map[int]int{900: 4200, 950: 5100}
+	parentOfProcess = func(_ context.Context, pid int) (int, bool) {
+		parent, ok := parents[pid]
+		return parent, ok
+	}
+	ctx := context.Background()
+	require.True(t, run.flow.OwnsProcessGroup(ctx, 700), "the orphan agent 4100 of this run left")
+	require.True(t, run.flow.OwnsProcessGroup(ctx, 900), "the group live agent 4200 of this run started")
+	require.False(t, run.flow.OwnsProcessGroup(ctx, 800), "another run's orphan")
+	require.False(t, run.flow.OwnsProcessGroup(ctx, 950), "a group another run's live agent started")
+	require.False(t, run.flow.OwnsProcessGroup(ctx, 960), "a group nothing attributes")
+	require.False(t, (*Flow)(nil).OwnsProcessGroup(ctx, 700), "a run that never had a flow owns nothing")
+}

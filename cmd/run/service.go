@@ -110,16 +110,11 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		if cleanupRun != nil {
 			returnErr = errors.Join(returnErr, reclaimRun(context.WithoutCancel(ctx), cleanupRun.flow, started, runFailed(signalled, returnErr)))
 		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		// Machine-wide on purpose: this recovers records whose owner has exited,
-		// which is garbage collection and never signals a live workspace's run.
-		evidence, err := processgroup.ReapStaleProcessGroupsWithEvidence(cleanupCtx, processgroup.AllWorkspaces())
-		cleanupCancel()
-		if err != nil {
-			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))
-		} else if recovered := evidence.RecoveredPGIDs(); len(recovered) > 0 {
-			cli.Info("reaped %d managed process groups after run: %v", len(recovered), recovered)
+		var flow *orchestration.Flow
+		if cleanupRun != nil {
+			flow = cleanupRun.flow
 		}
+		returnErr = errors.Join(returnErr, reapAfterRun(context.WithoutCancel(ctx), flow))
 	}()
 
 	namingScopeExplicit = cmd.Flags().Changed("naming-scope")

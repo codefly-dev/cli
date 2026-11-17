@@ -1192,6 +1192,16 @@ and update its agent before restarting. A successful stop must not hide a
 process it could not authenticate. If registry cleanup fails, stop also skips
 the signature-based orphan fallback so it cannot bypass that refusal.
 
+A run that exits makes the same machine-wide stale sweep, and a group it
+cannot decide about is kept there too. It fails the run only when the group is
+the run's own: one of the agents this run spawned started it (the group's
+leader is that agent's child, or Core's recovery names the agent as its
+recorded owner). Any other undecided group is reported as a warning, with the
+same `codefly recover process-group PGID --preview`, and the run's exit status
+says how the run ended: an agent built on an older Core registers such a group
+for as long as it runs, anywhere on the machine, and that is not a failure of
+every other run.
+
 An operator can separately select a retained orphan generation using
 `codefly recover process-group PGID --preview`, review its Core-produced receipt,
 then supply it with `--expect FILE`. This adds no admission to scoped stop or

@@ -2,11 +2,13 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/processgroup"
 )
 
 // reclaimBudget bounds what a run's exit spends taking back what its agents
@@ -54,4 +56,33 @@ func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time
 		cli.Info("removed %d networks this run's containers left empty: %v", len(reclaimed.Networks), reclaimed.Networks)
 	}
 	return err
+}
+
+// reapBudget bounds the sweep a run makes as it exits.
+const reapBudget = 30 * time.Second
+
+// reapAfterRun recovers the process groups whose owner has exited, on the whole
+// machine: garbage collection, which never signals a live workspace's run.
+//
+// A group the sweep cannot decide about is kept either way. It is this run's
+// error only when one of this run's agents started it; any other is reported
+// and left to whoever runs it, because an agent built on an older Core
+// registers such a group for as long as it runs, anywhere on the machine, and
+// that says nothing about how this run ended.
+func reapAfterRun(ctx context.Context, flow *orchestration.Flow) error {
+	reapCtx, cancel := context.WithTimeout(ctx, reapBudget)
+	defer cancel()
+	evidence, kept, err := processgroup.ReapStaleProcessGroupsAfterRun(reapCtx, func(pgid int) bool {
+		return flow.OwnsProcessGroup(reapCtx, pgid)
+	})
+	for _, group := range kept {
+		cli.Warning("a process group that is not this run's was kept after run: %v", group)
+	}
+	if err != nil {
+		return fmt.Errorf("reap managed processes after run: %w", err)
+	}
+	if recovered := evidence.RecoveredPGIDs(); len(recovered) > 0 {
+		cli.Info("reaped %d managed process groups after run: %v", len(recovered), recovered)
+	}
+	return nil
 }

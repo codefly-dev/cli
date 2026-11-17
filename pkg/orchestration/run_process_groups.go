@@ -7,6 +7,7 @@ import (
 	"time"
 
 	runners "github.com/codefly-dev/core/runners/base"
+	"github.com/shirou/gopsutil/v3/process"
 
 	"github.com/codefly-dev/cli/pkg/processgroup"
 )
@@ -117,6 +118,36 @@ func (flow *Flow) RecoverProcessGroupsOfThisRun(ctx context.Context) ([]int, err
 		recovered = append(recovered, pgid)
 	}
 	return recovered, errors.Join(failures...)
+}
+
+// parentOfProcess is the pid of the process that pid is a child of. A variable
+// so a test can stand in for the process table.
+var parentOfProcess = func(ctx context.Context, pid int) (int, bool) {
+	proc, err := process.NewProcessWithContext(ctx, int32(pid)) //nolint:gosec // a pid fits
+	if err != nil {
+		return 0, false
+	}
+	parent, err := proc.PpidWithContext(ctx)
+	if err != nil || parent <= 1 {
+		return 0, false
+	}
+	return int(parent), true
+}
+
+// OwnsProcessGroup reports whether a registered process group is this run's
+// own: one of the agents this run spawned started it. While that agent lives,
+// the group's leader is its child; once the agent is gone, Core's recovery
+// names it as the group's recorded owner. It decides what a run answers for,
+// never what may be signaled.
+func (flow *Flow) OwnsProcessGroup(ctx context.Context, pgid int) bool {
+	if flow == nil || flow.world == nil {
+		return false
+	}
+	if parent, ok := parentOfProcess(ctx, pgid); ok && flow.world.agents.has(parent) {
+		return true
+	}
+	expected, err := previewProcessGroupRecovery(ctx, pgid)
+	return err == nil && expected != nil && expected.PGID == pgid && flow.world.agents.has(expected.Owner.PID)
 }
 
 // orphanedProcessGroupOf names the registered process group pid belongs to
