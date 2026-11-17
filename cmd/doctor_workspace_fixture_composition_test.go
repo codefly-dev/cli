@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const fixtureFragmentHead = "schema: codefly.dev/authority/fixture-composition/v1\n"
+const fixtureFragmentHead = "schema: codefly.dev/authority/fixture-composition/v2\n"
 
 // twoFragmentWorkspace composes two modules from OUTSIDE the workspace tree —
 // as a pinned module materializes, which is what platform-base does — each
@@ -38,11 +38,8 @@ func twoFragmentWorkspace(t *testing.T, extra map[string]string) string {
 	for rel, content := range map[string]string{
 		"module.codefly.yaml":                     "kind: module\nname: documents\nservices:\n    - name: documents\n",
 		"services/documents/service.codefly.yaml": testServiceYAML("documents"),
-		"configurations/local/" + fragmentFile: fixtureFragmentHead + `roles:
-  - organization: acme
-    name: viewer
-    scopes:
-      - {kind: documents, actions: [read]}
+		"configurations/local/" + fragmentFile: fixtureFragmentHead + `installations:
+  - {organization: acme, target: documents, owner: alice, members: {user: [carol]}}
 `,
 	} {
 		writeFileUnder(t, documents, rel, content)

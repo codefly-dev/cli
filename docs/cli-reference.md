@@ -3262,11 +3262,13 @@ Merge the fixture-composition fragment every module of the workspace ships
 into the workspace's configurations/<profile>/fixture-composition.yaml, the document
 the local authority reads.
 
-Each module states, once, what the local authority's standard fixture roles may
-do at its kinds; the composition's own module states only what is its own (a
-collection its seed writes). Every grant of a role on one kind, every
+Each module states, once, what is its own: a module the run stands in for; the
+composition's own module states the installation of its solution and who is
+seated on its roles. No fragment grants an organisation role anything: a person
+reaches a module through a role (admin, user) on an installation. Every
 installation and every stand-in module has exactly one source: two fragments
-stating the same one are refused, naming both. The rules are the authority's
+stating the same one are refused, naming both, and so is a fragment still
+stating schema v1 or a roles section. The rules are the authority's
 (codefly-dev/authority libraries/fixture-composition).
 
 `codefly run` writes the same document before the local authority boots, so a

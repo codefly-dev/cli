@@ -1386,8 +1386,12 @@ When a service declares `fixture-composition`, the shared workspace configuratio
 reader supplies one document merged from every composed module's fragment using
 Authority's fixture-composition library. This includes modules inside the workspace
 and foreign modules. Doctor, CI and run planning use that reader; a single module's
-resolved default does not substitute for the full merge. Duplicate grants or
-installations fail the merge even when their source documents are identical.
+resolved default does not substitute for the full merge. The document is schema
+v2: it states installations (and who is seated on their roles) and stand-in
+modules, and grants no organisation role anything. A fragment still stating
+schema v1 or a `roles` section is refused by the library's own sentence, naming
+the fragment. Duplicate installations or stand-in modules fail the merge even
+when their source documents are identical.
 Other workspace groups retain Core's ordinary provider ambiguity rules.
 
 An explicit workspace document retains precedence, including a document written
