@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	fixturecomposition "github.com/codefly-dev/authority/libraries/fixture-composition/go"
 	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
@@ -522,23 +524,27 @@ func TestTheLocalRunNamesTheEdge(t *testing.T) {
 // itself names who exists; which solutions are installed is each composed
 // module's fragment to say.
 //
-// TEAMS ARE WHAT ADMIT ANYONE BUT THE OWNER, and dropping them is the
-// mistake this guards: with `role` and `owner` alone every other person of
-// the fixture signs in and is refused by name, "<person> holds no role on
-// <solution>". Verified against the running authority — maya, rémi, alex and
-// dev all reach the solution's route; no-roles, in no team, gets 403.
+// MEMBERS ARE WHO IS ADMITTED, and dropping them is the mistake this guards:
+// the fragment seats the fixture's one cast on the installation's own roles
+// (alice installs and owns, dana is admin, carol is user; bob is seated
+// nowhere and refused by name, "<person> holds no role on <solution>"). It is
+// schema v2, which the authority's parser reads back, and it grants no
+// organisation role anything: schema v1 and a roles section are refused.
 func TestTheInstallationAdmitsTheFixturesPeople(t *testing.T) {
 	fragment := fixtureComposition("notes")
-	for _, required := range []string{
-		"schema: codefly.dev/authority/fixture-composition/v1",
-		"organization: acme",
-		"target: notes",
-		"owner: alex",
-		"teams: [finance, engineering]",
-	} {
-		if !strings.Contains(fragment, required) {
-			t.Fatalf("the fixture composition must contain %q, got:\n%s", required, fragment)
-		}
+	doc, err := fixturecomposition.Decode([]byte(fragment))
+	if err != nil {
+		t.Fatalf("the authority's parser refuses the scaffolded fragment: %v\n%s", err, fragment)
+	}
+	want := []fixturecomposition.Installation{{
+		Organization: "acme", Target: "notes", Role: "user", Owner: "alice",
+		Members: map[string][]string{"admin": {"dana"}, "user": {"carol"}},
+	}}
+	if !reflect.DeepEqual(doc.Installations, want) {
+		t.Fatalf("the fragment must seat the one cast on the installation, got %+v", doc.Installations)
+	}
+	if strings.Contains(fragment, "\nroles:") || strings.Contains(fragment, "teams:") {
+		t.Fatalf("the fragment grants through installation members only, got:\n%s", fragment)
 	}
 }
 
