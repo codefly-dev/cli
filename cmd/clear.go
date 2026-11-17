@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/agents/manager"
+	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/runstate"
 	"github.com/codefly-dev/core/wool"
 	"github.com/moby/moby/api/types/container"
@@ -73,7 +75,7 @@ func workspaceScope(all bool) processgroup.Scope {
 
 // ClearCmd removes codefly state (running processes, docker containers, and
 // the native state directories of disposable runs that are no longer alive).
-// Without arguments: removes EVERYTHING codefly-owned.
+// Without arguments: removes everything codefly-owned in the workspace's scope.
 // With positional args (e.g. `codefly clear neo4j`): removes only
 // containers whose name contains any of the substrings — useful when
 // you want to recycle one piece of infra without nuking the rest.
@@ -82,11 +84,15 @@ var ClearCmd = &cobra.Command{
 	Short: "Remove Codefly processes, containers, and stale local runtime state",
 	Long: `Clear codefly state.
 
-Without arguments, removes ALL codefly processes and ALL codefly-owned
-docker containers. Pass one or more substring filters to scope the
-container removal — only containers whose name contains at least one
-filter are removed. The process kill is always wholesale because
-codefly processes aren't per-service.
+Without arguments, removes the codefly processes and the codefly-owned
+docker containers of the workspace it is run in: a container is the
+workspace's when a run of that workspace created it. Other workspaces'
+containers, and codefly containers no workspace can be told for, are left
+and named; --all (or a clear run outside any workspace) acts on every
+workspace on this machine. Pass one or more substring filters to narrow
+the container removal further — only containers whose name contains at
+least one filter are removed. The process kill is always wholesale within
+the scope because codefly processes aren't per-service.
 
 It also removes the native state directories (a database run as a host
 process keeps its data under the user cache directory) of disposable runs
@@ -94,7 +100,8 @@ that are no longer alive: runs with --temporary-ports and test-owned
 dependency stacks. A developer's persistent database is never removed.
 
 Examples:
-  codefly clear                     # full reset
+  codefly clear                     # full reset of this workspace
+  codefly clear --all               # full reset of every workspace on this machine
   codefly clear neo4j               # only neo4j container (keeps postgres)
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
@@ -181,8 +188,25 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		return errors.Join(failures...)
 	}
 
-	removed, removeFailures := removeCodeflyContainers(ctx, w, dockerCLI, listed.Items, args, options.dryRun)
+	namespace, err := clearContainerNamespace(options)
+	if err != nil {
+		w.Warn("cannot tell this workspace's containers from another's; none is removed", wool.ErrField(err), wool.Field("hint", "--all removes every codefly container on this machine"))
+		failures = append(failures, fmt.Errorf("scope container removal to the workspace: %w", err))
+		clearNixDataNote(w)
+		return errors.Join(failures...)
+	}
+	selected, left := clearableContainers(listed.Items, args, namespace)
+	removed, removeFailures := removeCodeflyContainers(ctx, w, dockerCLI, selected, options.dryRun)
 	failures = append(failures, removeFailures...)
+	// Say what was deliberately kept, as for process groups: silence reads as
+	// "nothing else was up".
+	if len(left) > 0 {
+		names := make([]string, 0, len(left))
+		for index := range left {
+			names = append(names, strings.TrimPrefix(left[index].Names[0], "/"))
+		}
+		w.Info("left containers that are not this workspace's", wool.Field("count", len(left)), wool.Field("containers", names), wool.Field("hint", "--all to include them"))
+	}
 	switch {
 	case removed == 0 && len(args) > 0:
 		w.Info("no containers matched filter", wool.Field("filter", args))
@@ -295,13 +319,37 @@ func containerMatchesFilter(name string, args []string) bool {
 	return false
 }
 
-// removeCodeflyContainers removes every codefly-owned container the filter
-// matches, or counts them on a dry run.
-func removeCodeflyContainers(ctx context.Context, w *wool.Wool, dockerCLI *client.Client, containers []container.Summary, args []string, dryRun bool) (int, []error) {
-	removed := 0
-	var failures []error
+// clearContainerNamespace is the recovery namespace a clear removes containers
+// of: its workspace's own, or none for the machine-wide scope (--all, or a
+// clear run outside any workspace).
+//
+// A scoped clear on a host with no durable identity has no namespace to match
+// and cannot attribute any container: it is refused, naming --all, rather than
+// read as machine-wide.
+func clearContainerNamespace(options clearOptions) (string, error) {
+	if options.scope.All() {
+		return "", nil
+	}
+	namespace, err := orchestration.ContainerRecoveryNamespaceOf(options.scope.Workspace)
+	if err != nil {
+		return "", err
+	}
+	if namespace == "" {
+		return "", errors.New("this host has no durable identity, so no container is labelled with a workspace")
+	}
+	return namespace, nil
+}
+
+// clearableContainers splits the codefly-owned containers the filter matches
+// into those this clear may remove and those it leaves because they belong to
+// another workspace. A container is a workspace's when it carries that
+// workspace's recovery namespace (the label core stamps on every container a
+// run creates). namespace is empty for a machine-wide clear, which takes them
+// all; a scoped clear leaves a container it cannot attribute, as a scoped stop
+// leaves a process group it cannot attribute.
+func clearableContainers(containers []container.Summary, args []string, namespace string) (selected, left []container.Summary) {
 	for index := range containers {
-		c := &containers[index]
+		c := containers[index]
 		if len(c.Names) == 0 {
 			continue
 		}
@@ -309,6 +357,23 @@ func removeCodeflyContainers(ctx context.Context, w *wool.Wool, dockerCLI *clien
 		if !strings.HasPrefix(name, "/codefly") || !containerMatchesFilter(name, args) {
 			continue
 		}
+		if namespace != "" && c.Labels[dockerrun.LabelCodeflyRecoveryNamespace] != namespace {
+			left = append(left, c)
+			continue
+		}
+		selected = append(selected, c)
+	}
+	return selected, left
+}
+
+// removeCodeflyContainers removes the containers given, or counts them on a
+// dry run.
+func removeCodeflyContainers(ctx context.Context, w *wool.Wool, dockerCLI *client.Client, containers []container.Summary, dryRun bool) (int, []error) {
+	removed := 0
+	var failures []error
+	for index := range containers {
+		c := &containers[index]
+		name := c.Names[0]
 		if dryRun {
 			w.Info("would remove container", wool.Field("container", strings.TrimPrefix(name, "/")), wool.Field("state", c.State))
 			removed++

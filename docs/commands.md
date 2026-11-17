@@ -5224,6 +5224,13 @@ registration and owner-death evidence; a name or environment marker alone never
 permits signaling. Missing or ambiguous proof leaves the process running and
 returns an error. Registry failures prevent fallback cleanup from bypassing refusal.
 
+Container removal has the same scope as the process reap. Run in a workspace,
+`clear` removes the codefly-owned containers a run of THAT workspace created
+(those labelled with its recovery namespace) and leaves, and names, the rest:
+another workspace's containers and any it cannot attribute to a workspace.
+`--all`, or a clear run outside any workspace, removes every codefly container
+on the machine. A name filter narrows the removal within the scope.
+
 ### `codefly recover process`
 
 Preview or force one independently selected process to exit. This operation

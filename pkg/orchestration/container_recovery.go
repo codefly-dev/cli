@@ -96,6 +96,43 @@ func ContainerRecoveryScopeFor(workspace *resources.Workspace, env *environments
 	return scope, nil
 }
 
+// ContainerRecoveryNamespaceOf is the durable namespace every container of the
+// workspace rooted at dir is labelled with (dockerrun.LabelCodeflyRecoveryNamespace),
+// whatever naming scope the run that created it chose: what tells one
+// workspace's containers from another's on a shared Docker daemon. It is empty
+// on a host with no durable identity, where no container carries one.
+//
+// The scope is resolved by ContainerRecoveryScopeFor, the one recipe. Core
+// exposes the namespace of a scope only through the marker it projects, so it
+// is read back from a projection made and undone under the projection lock; an
+// accessor on dockerrun.ContainerRecoveryScope would replace the round trip.
+func ContainerRecoveryNamespaceOf(dir string) (string, error) {
+	workspace := &resources.Workspace{}
+	workspace.WithDir(dir)
+	scope, err := ContainerRecoveryScopeFor(workspace, &environments.Environment{})
+	if err != nil {
+		return "", err
+	}
+	containerRecoveryProjection.Lock()
+	defer containerRecoveryProjection.Unlock()
+	previous, projected := os.LookupEnv(recoveryscope.EnvironmentVariable)
+	defer func() {
+		if projected {
+			_ = os.Setenv(recoveryscope.EnvironmentVariable, previous)
+		} else {
+			_ = os.Unsetenv(recoveryscope.EnvironmentVariable)
+		}
+	}()
+	if err := dockerrun.SetContainerRecoveryScope(scope); err != nil {
+		return "", err
+	}
+	_, namespace, err := recoveryscope.Inherited()
+	if err != nil {
+		return "", fmt.Errorf("read the projected container recovery identity: %w", err)
+	}
+	return namespace, nil
+}
+
 // A CLI dependency bump says nothing about the separately compiled agent.
 // Require its acknowledgement before Init can create any Docker resources.
 func (runner *Runner) validateContainerRecovery() error {

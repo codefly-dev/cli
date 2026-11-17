@@ -1196,11 +1196,15 @@ Remove Codefly processes, containers, and stale local runtime state
 ```
 Clear codefly state.
 
-Without arguments, removes ALL codefly processes and ALL codefly-owned
-docker containers. Pass one or more substring filters to scope the
-container removal — only containers whose name contains at least one
-filter are removed. The process kill is always wholesale because
-codefly processes aren't per-service.
+Without arguments, removes the codefly processes and the codefly-owned
+docker containers of the workspace it is run in: a container is the
+workspace's when a run of that workspace created it. Other workspaces'
+containers, and codefly containers no workspace can be told for, are left
+and named; --all (or a clear run outside any workspace) acts on every
+workspace on this machine. Pass one or more substring filters to narrow
+the container removal further — only containers whose name contains at
+least one filter are removed. The process kill is always wholesale within
+the scope because codefly processes aren't per-service.
 
 It also removes the native state directories (a database run as a host
 process keeps its data under the user cache directory) of disposable runs
@@ -1208,7 +1212,8 @@ that are no longer alive: runs with --temporary-ports and test-owned
 dependency stacks. A developer's persistent database is never removed.
 
 Examples:
-  codefly clear                     # full reset
+  codefly clear                     # full reset of this workspace
+  codefly clear --all               # full reset of every workspace on this machine
   codefly clear neo4j               # only neo4j container (keeps postgres)
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
@@ -4852,7 +4857,7 @@ Flags:
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 5m0s)
       --remote strings                            Remote services
-      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "free")
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "native")
       --service-path string                       Path to the service
       --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                            Silence services in CLI output
@@ -4907,7 +4912,7 @@ Flags:
       --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the first composition root)
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 10m0s)
-      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "native")
       --set strings                               Per-service runtime env override (repeatable)
       --silent strings                            Silence services in CLI output
       --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
