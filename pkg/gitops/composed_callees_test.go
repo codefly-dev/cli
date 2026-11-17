@@ -3,6 +3,7 @@ package gitops
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -109,4 +110,46 @@ bundles:
 		t.Fatalf("an uncomposed module: %v", err)
 	}
 	var _ modulecontract.Bundles = callees
+}
+
+// A bundle may include another module's bundle, reached through the module
+// including it. Such an include is read from the contract that other module
+// publishes, so a bundle is answered over every composed module's contract
+// and never from the including module's alone.
+func TestComposedCalleesFollowABundleIntoAnotherModulesContract(t *testing.T) {
+	published := map[string]string{
+		"agent": `
+  - name: talk
+    includes: [{module: model, bundle: infer, through: agent}]
+    scopes: [{resource_kind: agent.turns, actions: [run]}]
+`,
+		"model": `
+  - {name: infer, scopes: [{resource_kind: model.profiles, actions: [invoke]}]}
+`,
+	}
+	callees := newComposedCallees(func(string) ([]*compositionv1.MethodPolicyV1, bool, error) { return nil, false, nil })
+	callees.contract = func(module string) (*modulecontract.Contract, error) {
+		bundles, composed := published[module]
+		if !composed {
+			return nil, fmt.Errorf("%s is not composed", module)
+		}
+		return modulecontract.Parse([]byte("schema: codefly/module-contract/v1\nprincipal: " + module +
+			"\nnamespaces: []\nqueues: []\nscope_ceilings: []\nbindings: []\ndestinations: []\nbundles:" + bundles))
+	}
+	got, err := callees.Bundle("agent", "talk")
+	if err != nil {
+		t.Fatalf("a bundle including another module's: %v", err)
+	}
+	want := []modulecontract.CeilingScope{
+		{ResourceKind: "agent.turns", Actions: []string{"run"}},
+		{ResourceKind: "model.profiles", Actions: []string{"invoke"}, Through: "agent"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("talk expands to %+v, want %+v", got, want)
+	}
+	// The module the include names is not composed: refused naming the chain.
+	delete(published, "model")
+	if _, err := callees.Bundle("agent", "talk"); err == nil || !strings.Contains(err.Error(), "model/infer") || !strings.Contains(err.Error(), "model is not composed") {
+		t.Fatalf("an include of an uncomposed module's bundle: %v", err)
+	}
 }

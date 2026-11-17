@@ -340,18 +340,15 @@ type composedCallees struct {
 }
 
 // Bundle implements modulecontract.Bundles: a bundle a composed module
-// publishes is read from that module's own contract, its includes expanded
-// there (modulecontract.Contract.Bundle), so a role including it names none of
-// the module's kinds.
+// publishes is read from that module's own contract, and a bundle it includes
+// from another composed module from that module's (modulecontract.Publishers,
+// core's one resolver over published contracts), so a role including it names
+// none of either module's kinds.
 func (c *composedCallees) Bundle(module, name string) ([]modulecontract.CeilingScope, error) {
 	if c.contract == nil {
 		return nil, fmt.Errorf("no composed module contracts are read here")
 	}
-	contract, err := c.contract(module)
-	if err != nil {
-		return nil, err
-	}
-	return contract.Bundle(name)
+	return modulecontract.Publishers(c.contract).Bundle(module, name)
 }
 
 func newComposedCallees(read func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)) *composedCallees {
