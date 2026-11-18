@@ -69,6 +69,29 @@ func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time
 	return err
 }
 
+// takeBackOnForcedQuit is what a forced quit still does before the process
+// exits: for a disposable run, its agents are asked to stop and what it left
+// is taken back (Flow.TakeBackOnForcedQuit); for any other run, nothing. ctx
+// is the forced quit's own short budget.
+func takeBackOnForcedQuit(ctx context.Context, flow *orchestration.Flow, started time.Time) {
+	if flow == nil {
+		return
+	}
+	reclaimed, err := flow.TakeBackOnForcedQuit(ctx, started)
+	if len(reclaimed.ProcessGroups) > 0 {
+		cli.Info("stopped %d process groups this disposable run's agents left running: %v", len(reclaimed.ProcessGroups), reclaimed.ProcessGroups)
+	}
+	if len(reclaimed.NativeState) > 0 {
+		cli.Info("removed %d native state directories of this disposable run: %v", len(reclaimed.NativeState), reclaimed.NativeState)
+	}
+	if len(reclaimed.DisposableContainers) > 0 {
+		cli.Info("removed %d containers of this disposable run, with their volumes: %v", len(reclaimed.DisposableContainers), reclaimed.DisposableContainers)
+	}
+	if err != nil {
+		cli.Warning("the forced quit left part of this disposable run behind; `codefly clear` removes it: %v", err)
+	}
+}
+
 // reapBudget bounds the sweep a run makes as it exits.
 const reapBudget = 30 * time.Second
 

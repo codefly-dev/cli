@@ -12,7 +12,8 @@ import (
 func TestContextFromSignalsCancelsFirstAndForcesSecond(t *testing.T) {
 	signals := make(chan os.Signal, 2)
 	exits := make(chan int, 1)
-	ctx, stop := contextFromSignals(context.Background(), signals, func(code int) { exits <- code })
+	const interval = 400 * time.Millisecond
+	ctx, stop := contextFromSignals(context.Background(), signals, interval, func(code int) { exits <- code })
 	defer stop()
 
 	signals <- os.Interrupt
@@ -21,12 +22,16 @@ func TestContextFromSignalsCancelsFirstAndForcesSecond(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first signal did not cancel context")
 	}
+	// The same request delivered again, inside the interval, is no force.
+	signals <- syscall.SIGTERM
+	signals <- os.Interrupt
 	select {
 	case code := <-exits:
-		t.Fatalf("first signal forced exit %d", code)
+		t.Fatalf("a signal repeated at once forced exit %d", code)
 	case <-time.After(100 * time.Millisecond):
 	}
 
+	time.Sleep(interval)
 	signals <- syscall.SIGTERM
 	select {
 	case code := <-exits:
@@ -34,12 +39,33 @@ func TestContextFromSignalsCancelsFirstAndForcesSecond(t *testing.T) {
 			t.Fatalf("force exit code = %d, want 130", code)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("second signal did not force exit")
+		t.Fatal("a signal repeated after the interval did not force exit")
+	}
+}
+
+// What a forced quit must still do is done before the exit, in the order it
+// was registered, and a withdrawn hook is not run.
+func TestAForcedQuitRunsWhatWasRegisteredForIt(t *testing.T) {
+	var ran []string
+	first := OnForcedQuit(func(context.Context) { ran = append(ran, "first") })
+	withdrawn := OnForcedQuit(func(context.Context) { ran = append(ran, "withdrawn") })
+	last := OnForcedQuit(func(ctx context.Context) {
+		if _, bounded := ctx.Deadline(); bounded {
+			ran = append(ran, "last")
+		}
+	})
+	defer first()
+	defer last()
+	withdrawn()
+
+	runForcedQuitHooks()
+	if len(ran) != 2 || ran[0] != "first" || ran[1] != "last" {
+		t.Fatalf("a forced quit ran %q, want first then last, each bounded", ran)
 	}
 }
 
 func TestContextFromSignalsStopIsIdempotent(t *testing.T) {
-	ctx, stop := contextFromSignals(context.Background(), make(chan os.Signal), func(int) {
+	ctx, stop := contextFromSignals(context.Background(), make(chan os.Signal), time.Second, func(int) {
 		t.Fatal("unexpected force exit")
 	})
 	stop()
@@ -95,7 +121,7 @@ func TestSignalContextStopsOnEverySignalThatEndsAProcess(t *testing.T) {
 func TestAHangupNeverForcesTheExit(t *testing.T) {
 	signals := make(chan os.Signal, 2)
 	exits := make(chan int, 1)
-	ctx, stop := contextFromSignals(context.Background(), signals, func(code int) { exits <- code })
+	ctx, stop := contextFromSignals(context.Background(), signals, 100*time.Millisecond, func(code int) { exits <- code })
 	defer stop()
 
 	signals <- syscall.SIGTERM

@@ -1187,6 +1187,26 @@ and `cmd/run/owner.go` cancel the same context):
   from the environment the run's own agents and services inherit. A stack kept
   running (`sdk.WithKeepRunning`) has no owner.
 
+**A repeated signal forces the exit only after an interval.** A SIGINT or
+SIGTERM that arrives at least two seconds after the first
+(`common.ForceQuitInterval`) is a person insisting on a stop that does not end,
+and exits at once with status 130. One that arrives sooner is the same request
+delivered again and is dropped, with a line saying when to insist: whatever
+stops a process group signals every member, and a parent in the group (`make`,
+a shell) forwards the signal to its child a second time, milliseconds later.
+That second delivery used to force the exit 0.2 s into the stop and left every
+agent, server and store of the run behind. Two seconds is longer than any
+machine takes to deliver one request twice and short enough for a person
+watching a stop that hangs.
+
+A forced quit abandons the stop that was running. For a **disposable** run it
+still takes the run back in the ten seconds it allows itself
+(`common.OnForcedQuit`, `Flow.TakeBackOnForcedQuit`): the run's own agents are
+sent SIGTERM, which is what stops what they run, and then what the run left is
+reclaimed as at its ordinary end — process groups, native state, containers.
+Nothing runs that scope again, so nothing else would. A developer's run is left
+as it stands, as before.
+
 `kill -9` of the CLI itself runs nothing here. Its agents notice that their
 launcher is gone and stop what they run (core's `agents.Serve`, see core's
 `docs/agent-contract.md`, "Native run state"); an agent built on a Core older

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -67,6 +68,10 @@ func resolveRunPins(ctx context.Context) error {
 	return common.ResolvePinnedModules(ctx)
 }
 
+// forcedQuitFlow is the flow of the run this process is running, for the
+// forced quit, which reads it from the signal handler's goroutine.
+var forcedQuitFlow atomic.Pointer[orchestration.Flow]
+
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
 		return err
@@ -107,6 +112,14 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	started := time.Now()
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+
+	// A forced quit (a signal repeated after common.ForceQuitInterval) abandons
+	// the stop below. A disposable run is still stopped and taken back then,
+	// in the short time a forced quit has: nothing else ever would.
+	defer forcedQuitFlow.Store(nil)
+	defer common.OnForcedQuit(func(quit context.Context) {
+		takeBackOnForcedQuit(quit, forcedQuitFlow.Load(), started)
+	})()
 
 	// cleanupRun is the run once it exists, for the deferred cleanup below,
 	// which is registered before it.
@@ -342,6 +355,7 @@ func (run *serviceRun) headless(ctx context.Context) error {
 	phase(tui.StateLoading)
 	var err error
 	run.flow, err = initRunService(ctx, run.workspace, run.module, run.service)
+	forcedQuitFlow.Store(run.flow)
 	run.registerFlow()
 	if err != nil {
 		return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
@@ -531,6 +545,7 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 		var err error
 		t.SendState(serviceName, tui.StateLoading)
 		run.flow, err = initRunService(runCtx, run.workspace, run.module, run.service)
+		forcedQuitFlow.Store(run.flow)
 		run.registerFlow()
 		if err != nil {
 			// Keep the full error: initRunService returns w.NewError
