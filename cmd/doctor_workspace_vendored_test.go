@@ -3,6 +3,8 @@ package cmd
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,9 +49,10 @@ modules:
 		"modules/backend/services/page/package.json": `{"name":"page","dependencies":{
   "@acme/assistant-chat":"file:vendor/` + chatArchive + `",
   "react":"^19.0.0"}}`,
-		"modules/backend/services/page/vendor/" + chatArchive:       archive,
-		"modules/backend/services/page/vendor/acme-old-build.tgz":   "older bytes",
-		"modules/backend/services/page/node_modules/x/package.json": `{"dependencies":{"y":"file:../../nowhere.tgz"}}`,
+		"modules/backend/playground/.codefly/run/source/package.json": "unreadable generated copy",
+		"modules/backend/services/page/vendor/" + chatArchive:         archive,
+		"modules/backend/services/page/vendor/acme-old-build.tgz":     "older bytes",
+		"modules/backend/services/page/node_modules/x/package.json":   `{"dependencies":{"y":"file:../../nowhere.tgz"}}`,
 		"modules/backend/services/page/vendor/assistant-chat.provenance.json": `{"packages":[
   {"repository":"https://github.com/acme/module-assistant","commit":"` + commit + `","package_directory":"modules/assistant/frontend",
    "package":"@acme/assistant-chat@0.3.0","artifact":"` + chatArchive + `","sha256":"` + recordedDigest + `"},
@@ -107,4 +110,21 @@ func TestRepositoryKeyJoinsAProvenanceURLAndAModuleSource(t *testing.T) {
 			t.Fatalf("repositoryKey(%q) = %q", spelling, got)
 		}
 	}
+}
+
+func TestDoctorWorkspaceComparesArchiveWithCheckoutSelectedByOverlay(t *testing.T) {
+	source, commits := currencySource(t)
+	checkout := strings.TrimPrefix(source, "file://")
+	root := vendoringWorkspace(t, moduleBuildPin, commits[3], "")
+	for path, content := range map[string]string{
+		filepath.Join(checkout, "module.codefly.yaml"): "kind: module\nname: assistant\n",
+		filepath.Join(root, "codefly.local.yaml"):      "resolve:\n  assistant:\n    path: " + checkout + "\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := runReadiness(t, workspaceReadinessOptions{dir: root, module: "backend"})
+	requireNoCode(t, report, codeVendoredPackageBehindPin)
+	requireNoCode(t, report, codeVendoredPackageUncomparable)
 }

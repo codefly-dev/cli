@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -70,13 +71,27 @@ var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // module vendors are judged.
 func checkVendoredPackages(ctx context.Context, ws *resources.Workspace, scope string, report *workspaceReadinessReport) {
 	var archives []vendoredArchive
+	sources := make([]*resources.ModuleReference, 0, len(ws.Modules))
+	overlay, err := resources.LoadLocalOverlay(ctx, ws.Dir())
+	if err != nil {
+		report.add(codeVendoredPackageUncomparable, "vendored package sources", "warn", err.Error(), "")
+		return
+	}
 	for _, ref := range ws.Modules {
-		if scope != "" && ref.Name != scope {
-			continue
-		}
+		source := *ref
+		sources = append(sources, &source)
 		resolution, err := ws.ResolveModule(ctx, ref)
 		if err != nil || resolution.Dir == "" {
 			// Materialization and resolution are reported by their own checks.
+			continue
+		}
+		if overlay != nil && overlay.Resolve[ref.Name] != nil && (resolution.Kind == resources.ResolutionLocalPath || resolution.Kind == resources.ResolutionWorktree) && ref.Source != "" {
+			// An explicit checkout overrides the committed pin. Without local
+			// revision evidence the archive can only be reported as uncomparable.
+			revision, _ := exec.CommandContext(ctx, "git", "-C", resolution.Dir, "rev-parse", "--verify", "HEAD").Output()
+			source.Version = strings.TrimSpace(string(revision))
+		}
+		if scope != "" && ref.Name != scope {
 			continue
 		}
 		found, err := vendoredArchives(ref.Name, resolution.Dir)
@@ -87,7 +102,7 @@ func checkVendoredPackages(ctx context.Context, ws *resources.Workspace, scope s
 		}
 		archives = append(archives, found...)
 	}
-	for _, finding := range judgeVendoredArchives(ws.Modules, archives) {
+	for _, finding := range judgeVendoredArchives(sources, archives) {
 		report.add(finding.Code, finding.Name, finding.Status, finding.Message, finding.Remediation)
 	}
 }
@@ -102,7 +117,7 @@ func vendoredArchives(module, dir string) ([]vendoredArchive, error) {
 			return err
 		}
 		if entry.IsDir() {
-			if name := entry.Name(); name == "node_modules" || name == ".git" {
+			if name := entry.Name(); name == "node_modules" || name == ".git" || name == ".codefly" {
 				return filepath.SkipDir
 			}
 			return nil
