@@ -10,7 +10,7 @@ import (
 // `gitops.path`: it names the directory, under the delivery repository's
 // root, that holds `modules/`. No path means `deployments`, the layout a
 // render leaves in the workspace, so `path: deployments` and no path are the
-// same tree — and a path is never prefixed twice (obin-ai/platform-obin#128
+// same tree — and a path is never prefixed twice (northwind/platform-northwind#128
 // delivered `deployments/deployments/modules/tracing`).
 func TestDeliveryModulePathIsTheGitopsPathOverModules(t *testing.T) {
 	for gitopsPath, want := range map[string]string{

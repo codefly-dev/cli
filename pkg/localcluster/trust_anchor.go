@@ -11,14 +11,14 @@ import (
 	"os"
 	"strings"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
-// The local host's trust anchor (module-saas-starter#1066, SOLUTION_REGISTRATION
-// §8 "The local profile's trust anchor"): a verification policy that admits
+// The local host's trust anchor (the host's registration contract, "The local
+// profile's trust anchor"): a verification policy that admits
 // the locally held developer key the environment lists as a
 // person signers, bound to ONE cluster by the SHA-256 of the certificate
 // authority its API server serves under. The host proves the binding at boot —

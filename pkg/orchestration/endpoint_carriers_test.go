@@ -15,13 +15,13 @@ func TestEndpointCarriersAreTheComponentsOwnRoutes(t *testing.T) {
 	ctx := context.Background()
 	world, _ := hostRoutesWorld(t, SnapshotMode, nil)
 	flow := &Flow{world: world}
-	wiki := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "wiki", Service: "backend", Name: "http", API: "http"})
+	quill := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "quill", Service: "backend", Name: "http", API: "http"})
 	docs := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
 
-	carriers, err := flow.EndpointCarriers(ctx, "wiki", resources.NewContainerNetworkAccess())
+	carriers, err := flow.EndpointCarriers(ctx, "quill", resources.NewContainerNetworkAccess())
 	require.NoError(t, err)
-	require.Equal(t, []string{wiki}, keysOf(carriers), "the solution's backend, and nothing routed for another component")
-	require.Contains(t, carriers[wiki], "wiki", "its own in-cluster address: %s", carriers[wiki])
+	require.Equal(t, []string{quill}, keysOf(carriers), "the solution's backend, and nothing routed for another component")
+	require.Contains(t, carriers[quill], "quill", "its own in-cluster address: %s", carriers[quill])
 
 	carriers, err = flow.EndpointCarriers(ctx, "docs", resources.NewContainerNetworkAccess())
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestReadyEndpointCarriersFilterBeforeAddressResolution(t *testing.T) {
 	carriers, err := flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), nil)
 	require.NoError(t, err)
 	require.Empty(t, carriers)
-	carriers, err = flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), []string{"wiki/backend"})
+	carriers, err = flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), []string{"quill/backend"})
 	require.NoError(t, err)
 	require.Empty(t, carriers)
 	carriers, err = flow.ReadyEndpointCarriers(t.Context(), "docs", resources.NewContainerNetworkAccess(), []string{"docs/documents"})
@@ -69,5 +69,5 @@ func TestARouteWithNoAnswerLeavesARunsModuleDelivery(t *testing.T) {
 
 	world, _ = hostRoutesWorld(t, SnapshotMode, func(dir string) { writeWikiConsumes(t, dir, consumes) })
 	_, err = (&Flow{world: world}).EndpointCarriers(ctx, "docs", resources.NewContainerNetworkAccess())
-	require.ErrorContains(t, err, "wiki consumes docs/documents/connect through the host")
+	require.ErrorContains(t, err, "quill consumes docs/documents/connect through the host")
 }

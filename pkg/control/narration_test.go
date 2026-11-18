@@ -47,9 +47,9 @@ func TestWithNarrationRoutesFlowLogsToTheEmbedder(t *testing.T) {
 	routed := &planeImpl{}
 	WithNarration(recorder)(routed)
 
-	wool.Get(routed.narrationContext(context.Background())).In("plane").Error("service wiki/backend failed")
+	wool.Get(routed.narrationContext(context.Background())).In("plane").Error("service quill/backend failed")
 
-	if !strings.Contains(recorder.joined(), "service wiki/backend failed") {
+	if !strings.Contains(recorder.joined(), "service quill/backend failed") {
 		t.Errorf("narration did not reach the processor the embedder named; it had %q", recorder.joined())
 	}
 }
@@ -87,7 +87,7 @@ func TestDeployNarrationReachesTheEmbedder(t *testing.T) {
 	// the resolution it narrates, which is the part under test.
 	escaped.reset()
 	if _, deployErr := plane.Deploy(context.Background(), &DeployRequest{
-		Service: "wiki/backend",
+		Service: "quill/backend",
 		DryRun:  true,
 	}); deployErr == nil {
 		t.Fatal("the fixture's deploy is expected to fail; it narrates on the way there")

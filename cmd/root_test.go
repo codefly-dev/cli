@@ -185,7 +185,7 @@ func TestSimpleRootCommandsReturnErrorsThroughCobra(t *testing.T) {
 func TestDaemonCommandsReturnErrorsThroughCobra(t *testing.T) {
 	commands := []*cobra.Command{
 		daemonStartCmd, daemonStopCmd, daemonStatusCmd, daemonLogsCmd,
-		daemonGatewayCmd, daemonRestartCmd, daemonMonitorCmd,
+		daemonRestartCmd, daemonMonitorCmd,
 	}
 	for _, command := range commands {
 		if command.RunE == nil || command.Run != nil {

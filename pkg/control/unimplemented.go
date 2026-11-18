@@ -6,8 +6,8 @@ import (
 )
 
 // errNotImplemented marks a Plane capability that has been declared on the
-// interface but not yet lifted from a legacy surface (pkg/web, pkg/mcp,
-// pkg/gateway) into this single implementation. Each Phase-1 lift replaces one
+// interface but not yet lifted from a legacy surface (pkg/web, pkg/mcp)
+// into this single implementation. Each Phase-1 lift replaces one
 // of these with a real method in a dedicated file (impl.go and siblings).
 var errNotImplemented = errors.New("control: capability not yet lifted into the control plane")
 

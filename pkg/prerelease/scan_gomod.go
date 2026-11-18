@@ -20,9 +20,15 @@ func scanGoMod(file string, content []byte, options Options) ([]Finding, error) 
 	if err != nil {
 		return nil, nil
 	}
+	firstParty := options.firstParty()
+	if parsed.Module != nil {
+		if own := ownerPrefix(parsed.Module.Mod.Path); own != "" {
+			firstParty = append(append([]string(nil), firstParty...), own)
+		}
+	}
 	var findings []Finding
 	for _, require := range parsed.Require {
-		if !isFirstParty(require.Mod.Path, options.firstParty()) {
+		if !isFirstParty(require.Mod.Path, firstParty) {
 			continue
 		}
 		kind, prerelease := Classify(require.Mod.Version)
@@ -64,4 +70,15 @@ func isFirstParty(modulePath string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// ownerPrefix is the organisation a module path belongs to, as a prefix:
+// "github.com/acme/tools/go" → "github.com/acme/". A path whose first element is
+// not a host ("tools/go") has no organisation and yields "".
+func ownerPrefix(modulePath string) string {
+	parts := strings.Split(modulePath, "/")
+	if len(parts) < 3 || !strings.Contains(parts[0], ".") {
+		return ""
+	}
+	return parts[0] + "/" + parts[1] + "/"
 }

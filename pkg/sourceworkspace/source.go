@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/core/discovery"
 	"github.com/codefly-dev/core/resources"
 	"golang.org/x/mod/modfile"
 )
@@ -26,7 +27,14 @@ type Prepared struct {
 	// it explicitly because the Go tool does not discover workspaces through a
 	// symlinked working directory.
 	GoWorkFile string
-	cleanup    func() error
+	// GoWorkSource is the developer's go.work GoWorkFile was normalized from:
+	// the workspace that governs the source. Empty when the build is pinned.
+	GoWorkSource string
+	// GoWorkUnused is the nearest go.work above the source when it does NOT
+	// `use` it: Go does not apply it, so the source builds pinned although a
+	// workspace sits above it.
+	GoWorkUnused string
+	cleanup      func() error
 }
 
 // Close removes the ephemeral resource declaration without touching source.
@@ -100,13 +108,15 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 		return nil, fmt.Errorf("write source workspace: %w", err)
 	}
 	spec := map[string]any{"source-dir": "code"}
-	goWorkFile := ""
+	goWorkFile, goWorkSource, goWorkUnused := "", "", ""
 	if _, statErr := os.Stat(filepath.Join(absoluteSource, "go.mod")); statErr == nil {
-		if sourceGoWorkFile := goWorkspaceFile(absoluteSource); sourceGoWorkFile != "" {
+		if goWorkSource = goWorkspaceFile(absoluteSource); goWorkSource != "" {
 			goWorkFile = filepath.Join(workspaceDir, "go.work")
-			if err = writeNormalizedGoWorkspace(sourceGoWorkFile, goWorkFile); err != nil {
+			if err = writeNormalizedGoWorkspace(goWorkSource, goWorkFile); err != nil {
 				return nil, fmt.Errorf("prepare Go workspace: %w", err)
 			}
+		} else {
+			goWorkUnused = goWorkspaceUnused(absoluteSource)
 		}
 		spec["with-workspace"] = goWorkFile != ""
 	}
@@ -139,17 +149,36 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 
 	failed = false
 	return &Prepared{
-		Workspace:  loaded,
-		Module:     module,
-		Service:    loadedService,
-		Dir:        workspaceDir,
-		GoWorkFile: goWorkFile,
-		cleanup:    func() error { return os.RemoveAll(temporary) },
+		Workspace:    loaded,
+		Module:       module,
+		Service:      loadedService,
+		Dir:          workspaceDir,
+		GoWorkFile:   goWorkFile,
+		GoWorkSource: goWorkSource,
+		GoWorkUnused: goWorkUnused,
+		cleanup:      func() error { return os.RemoveAll(temporary) },
 	}, nil
 }
 
 func goWorkspaceIncludes(sourceDir string) bool {
 	return goWorkspaceFile(sourceDir) != ""
+}
+
+// goWorkspaceUnused is the nearest go.work above sourceDir when it does not
+// govern it (it does not `use` the module, or cannot be read as a workspace):
+// the file a developer would expect to apply, and Go does not.
+func goWorkspaceUnused(sourceDir string) string {
+	if goWorkspaceFile(sourceDir) != "" {
+		return ""
+	}
+	workFile := nearestFile(sourceDir, "go.work")
+	if workFile == "" {
+		return ""
+	}
+	if physical, err := filepath.EvalSymlinks(workFile); err == nil {
+		return physical
+	}
+	return filepath.Clean(workFile)
 }
 
 func goWorkspaceFile(sourceDir string) string {
@@ -191,12 +220,15 @@ func goWorkspaceFile(sourceDir string) string {
 }
 
 // writeNormalizedGoWorkspace copies the governing workspace into the
-// ephemeral source resource while resolving available filesystem members and
-// local replacements to physical paths. Unavailable sibling checkouts are
-// omitted so an immutable single-repository snapshot can still use its local
-// modules and fall back to versioned dependencies. This prevents host aliases
-// such as /tmp→/private/tmp and the attachment symlink from changing Go's
-// module identity. The developer's workspace remains untouched.
+// ephemeral source resource while resolving its filesystem members and local
+// replacements to physical paths. This prevents host aliases such as
+// /tmp→/private/tmp and the attachment symlink from changing Go's module
+// identity. The developer's workspace remains untouched.
+//
+// A member or local replacement that is not on disk is refused, naming the
+// workspace and the member, as Go itself refuses that workspace. Omitting it
+// would build against the pinned version of the module the developer linked
+// locally, and report success.
 func writeNormalizedGoWorkspace(source, destination string) error {
 	payload, err := os.ReadFile(source)
 	if err != nil {
@@ -212,7 +244,7 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	for _, use := range workspace.Use {
 		physical, err := physicalWorkspacePath(sourceDirectory, use.Path)
 		if errors.Is(err, os.ErrNotExist) {
-			continue
+			return fmt.Errorf("%s: use %s does not exist; restore that checkout, or remove the member (`go work edit -dropuse %s`): Go refuses this workspace, and building without it would silently use the pinned version instead", source, use.Path, use.Path)
 		}
 		if err != nil {
 			return fmt.Errorf("resolve use %s: %w", use.Path, err)
@@ -252,8 +284,7 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 		}
 		physical, err := physicalWorkspacePath(sourceDirectory, replacement.New.Path)
 		if errors.Is(err, os.ErrNotExist) {
-			replacements = append(replacements, candidate)
-			continue
+			return fmt.Errorf("%s: replace %s => %s does not exist; restore that checkout, or remove the replacement: building without it would silently use the pinned version instead", source, replacement.Old.Path, replacement.New.Path)
 		}
 		if err != nil {
 			return fmt.Errorf("resolve replacement %s: %w", replacement.New.Path, err)
@@ -264,9 +295,6 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	for _, replacement := range replacements {
 		if err := workspace.DropReplace(replacement.oldPath, replacement.oldVersion); err != nil {
 			return err
-		}
-		if replacement.newPath == "" {
-			continue
 		}
 		if err := workspace.AddReplace(replacement.oldPath, replacement.oldVersion, replacement.newPath, ""); err != nil {
 			return err
@@ -296,16 +324,11 @@ func physicalWorkspacePath(base, value string) (string, error) {
 }
 
 func nearestFile(start, name string) string {
-	current := filepath.Clean(start)
-	for {
+	for _, current := range discovery.Ancestors(start, discovery.Ceilings) {
 		candidate := filepath.Join(current, name)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		current = parent
 	}
+	return ""
 }

@@ -2,17 +2,17 @@ package run
 
 import (
 	"context"
-	"github.com/codefly-dev/core/workloadidentity"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity/native"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
 
@@ -182,13 +182,13 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	cluster := &launcher{workspace: workspace, env: env, identities: identities, hostIdentityAnchor: "/run/host/identity-anchor.json"}
 	before := cluster.hostIdentityAnchor
 
-	reloaded := composeModule(t, workspace, "wiki")
+	reloaded := composeModule(t, workspace, "quill")
 	added, err := cluster.admit(ctx, reloaded)
 	require.NoError(t, err)
-	require.Equal(t, []string{"wiki/api"}, added)
-	identity, ok := cluster.identity("wiki/api")
+	require.Equal(t, []string{"quill/api"}, added)
+	identity, ok := cluster.identity("quill/api")
 	require.True(t, ok)
-	require.Equal(t, gitops.NativeIdentity{Module: "wiki", Service: "api"}, identity)
+	require.Equal(t, gitops.NativeIdentity{Module: "quill", Service: "api"}, identity)
 	require.Same(t, reloaded, cluster.composed(), "the run composes the reloaded workspace from now on")
 	_, stillKnown := cluster.identity("model/model")
 	require.True(t, stillKnown)
@@ -206,7 +206,7 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 		_, err := changed.admit(ctx, reloaded)
 		require.ErrorContains(t, err, "model/model runs as elsewhere/model")
 		require.ErrorContains(t, err, "never replaced")
-		_, admitted := changed.identity("wiki/api")
+		_, admitted := changed.identity("quill/api")
 		require.False(t, admitted, "a refused admission leaves the run as it was")
 		require.Same(t, workspace, changed.composed())
 	})

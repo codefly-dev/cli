@@ -7,17 +7,17 @@ import (
 
 func sample() *File {
 	return &File{
-		Schema: Schema, Coordinate: "obin-staging", Component: "platform-obin", Environment: "staging",
-		Source: &Source{Repo: "git@github.com:obin-ai/platform-obin.git", Revision: strings.Repeat("a", 40), Branch: "staging-obin"},
-		Domain: "obin", TrustDomain: "cluster.local",
+		Schema: Schema, Coordinate: "northwind-staging", Component: "platform-northwind", Environment: "staging",
+		Source: &Source{Repo: "git@github.com:northwind/platform-northwind.git", Revision: strings.Repeat("a", 40), Branch: "staging-northwind"},
+		Domain: "northwind", TrustDomain: "cluster.local",
 		Namespaces: []Namespace{{
-			Name: "platform-obin-saas", Module: "saas",
+			Name: "platform-northwind-saas", Module: "saas",
 			Workloads: []Workload{{
 				Name: "accounts", Kind: "Deployment", Selector: map[string]string{"app": "accounts"},
 				Service: "saas/accounts", ServiceAccount: "default",
-				SPIFFEID: "spiffe://cluster.local/ns/platform-obin-saas/sa/default", Authenticating: "accounts",
+				SPIFFEID: "spiffe://cluster.local/ns/platform-northwind-saas/sa/default", Authenticating: "accounts",
 				Containers: []Container{{Name: "accounts", Image: Image{Repository: "r/saas/accounts", Digest: "sha256:" + strings.Repeat("b", 64)}}},
-				Endpoints:  []Endpoint{{Name: "rest", API: "rest", Port: 8080, ServicePort: 8080, Consumers: []string{"wiki/backend"}}},
+				Endpoints:  []Endpoint{{Name: "rest", API: "rest", Port: 8080, ServicePort: 8080, Consumers: []string{"quill/backend"}}},
 				Verifier:   true, Bindings: []string{"audit", "identity", "vault"},
 			}},
 		}},
@@ -31,7 +31,7 @@ func TestTheCellFileRoundTripsThroughItsOwnReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"schema: codefly/cell/v1", "trust_domain: cluster.local", "spiffe_id: spiffe://", "service_port: 8080", "- wiki/backend", "verifier: true", "revision: " + strings.Repeat("a", 40)} {
+	for _, want := range []string{"schema: codefly/cell/v1", "trust_domain: cluster.local", "spiffe_id: spiffe://", "service_port: 8080", "- quill/backend", "verifier: true", "revision: " + strings.Repeat("a", 40)} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("encoded file lacks %q:\n%s", want, data)
 		}
@@ -40,7 +40,7 @@ func TestTheCellFileRoundTripsThroughItsOwnReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Namespaces[0].Workloads[0].Endpoints[0].Consumers[0] != "wiki/backend" {
+	if parsed.Namespaces[0].Workloads[0].Endpoints[0].Consumers[0] != "quill/backend" {
 		t.Fatalf("parsed = %+v", parsed)
 	}
 }

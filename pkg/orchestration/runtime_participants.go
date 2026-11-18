@@ -82,9 +82,20 @@ func (flow *Flow) LocalAuthorityServices() []string {
 	return nil
 }
 
+// externalIdentityOrigin reports whether the excluded root asks an authority
+// of this composition for its identity. module-identity is a request the
+// environment's host answers: where the environment declares no host there is
+// no authority to admit the root, nothing to wait on and no identity to hand
+// out, and the root gets the environment a started root gets there. Where a
+// host is declared, a run that cannot vouch for the root refuses
+// (prepareExcludedOrigin); the root never receives an identity nothing
+// vouched for.
 func (flow *Flow) externalIdentityOrigin() bool {
 	if flow == nil || flow.world == nil || flow.world.Mode != RunMode || flow.validationSkipped ||
 		!flow.excludeRoot || flow.originService == nil || !flow.originService.ModuleIdentity {
+		return false
+	}
+	if flow.world.Env == nil || flow.world.Env.Host == nil {
 		return false
 	}
 	unique := resources.WithUnique(flow.originService).Unique()

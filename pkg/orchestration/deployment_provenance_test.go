@@ -49,20 +49,20 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 			// package's physical cache contains its unrelated development workspace.
 			coordinate := "    path: ../cache/module\n"
 			if pinned {
-				coordinate = "    source: github.com/codefly-dev/module-saas-starter\n    version: v0.0.93\n    module: module\n"
+				coordinate = "    source: github.com/codefly-dev/module-starterkit\n    version: v0.0.93\n    module: module\n"
 			}
-			write("platform/workspace.codefly.yaml", "name: platform-core\nlayout: modules\nmodules:\n  - name: saas\n"+coordinate)
-			write("product/workspace.codefly.yaml", "name: platform-obin\nlayout: modules\nworkspaces:\n  - name: platform-core\n    path: ../platform\nsolutions:\n  - name: lastlogin-go\n    path: solutions/lastlogin-go\n")
-			write("product/solutions/lastlogin-go/module.codefly.yaml", "kind: module\nname: lastlogin-go\nservices: []\n")
-			write("cache/workspace.codefly.yaml", "name: saas-starter-dev\nlayout: modules\nmodules:\n  - name: saas-starter\n    path: module\n")
-			write("cache/module/module.codefly.yaml", "kind: module\nname: saas-starter\nservices: []\n")
+			write("platform/workspace.codefly.yaml", "name: platform-base\nlayout: modules\nmodules:\n  - name: saas\n"+coordinate)
+			write("product/workspace.codefly.yaml", "name: platform-northwind\nlayout: modules\nworkspaces:\n  - name: platform-base\n    path: ../platform\nsolutions:\n  - name: beacon-go\n    path: solutions/beacon-go\n")
+			write("product/solutions/beacon-go/module.codefly.yaml", "kind: module\nname: beacon-go\nservices: []\n")
+			write("cache/workspace.codefly.yaml", "name: starterkit-dev\nlayout: modules\nmodules:\n  - name: starterkit\n    path: module\n")
+			write("cache/module/module.codefly.yaml", "kind: module\nname: starterkit\nservices: []\n")
 			location := filepath.Join(root, "cache/module/services/accounts")
 			require.NoError(t, os.MkdirAll(location, 0o755))
 			workspace, err := resources.LoadWorkspaceFromDir(ctx, filepath.Join(root, "product"))
 			require.NoError(t, err)
 			repoWorkspace, err := resources.FindWorkspaceUpFrom(ctx, location)
 			require.NoError(t, err)
-			_, found := repoWorkspace.Member("saas-starter")
+			_, found := repoWorkspace.Member("starterkit")
 			require.True(t, found)
 			_, found = repoWorkspace.Member("saas")
 			require.False(t, found)
@@ -104,8 +104,8 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 			require.Contains(t, agentDependencyJudgment(t, location, "saas", dependency, withoutProvenance), resources.ErrUnjudgedProvenance.Error())
 
 			require.Equal(t, []*builderv0.CompositionMember{
-				{Name: "saas", Role: builderv0.CompositionMember_ROLE_MODULE, Workspace: "platform-core"},
-				{Name: "lastlogin-go", Role: builderv0.CompositionMember_ROLE_SOLUTION, Workspace: "platform-obin"},
+				{Name: "saas", Role: builderv0.CompositionMember_ROLE_MODULE, Workspace: "platform-base"},
+				{Name: "beacon-go", Role: builderv0.CompositionMember_ROLE_SOLUTION, Workspace: "platform-northwind"},
 			}, received.GetCompositionProvenance().GetMembers())
 
 			// No dependencies still carries the complete composition; this is not
@@ -116,14 +116,14 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 
 			// This solution's own dev workspace incorrectly admits the route as
 			// a module-to-module edge. The request restores the stricter verdict.
-			write("solution-cache/workspace.codefly.yaml", "name: solution-dev\nlayout: modules\nmodules:\n  - name: lastlogin-go\n    path: module\n  - name: saas\n    path: ../cache/module\n")
-			write("solution-cache/module/module.codefly.yaml", "kind: module\nname: lastlogin-go\nservices: []\n")
+			write("solution-cache/workspace.codefly.yaml", "name: solution-dev\nlayout: modules\nmodules:\n  - name: beacon-go\n    path: module\n  - name: saas\n    path: ../cache/module\n")
+			write("solution-cache/module/module.codefly.yaml", "kind: module\nname: beacon-go\nservices: []\n")
 			solutionLocation := filepath.Join(root, "solution-cache/module/services/api")
 			require.NoError(t, os.MkdirAll(solutionLocation, 0o755))
-			require.Equal(t, "dependency inputs accepted", agentDependencyJudgment(t, solutionLocation, "lastlogin-go", dependency, withoutProvenance))
-			require.Contains(t, agentDependencyJudgment(t, solutionLocation, "lastlogin-go", dependency, received), resources.ErrSolutionReachesThroughHost.Error())
+			require.Equal(t, "dependency inputs accepted", agentDependencyJudgment(t, solutionLocation, "beacon-go", dependency, withoutProvenance))
+			require.Contains(t, agentDependencyJudgment(t, solutionLocation, "beacon-go", dependency, received), resources.ErrSolutionReachesThroughHost.Error())
 
-			instance.Module.Name = "lastlogin-go"
+			instance.Module.Name = "beacon-go"
 			_, err = builder.deployRequest(ctx, request)
 			require.ErrorIs(t, err, resources.ErrSolutionReachesThroughHost)
 			require.Empty(t, peer.requests, "a solution's direct route must never reach the agent")

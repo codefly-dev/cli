@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -53,7 +53,7 @@ bindings:
 destinations: []
 `
 
-const bothOwners = "OWNER_AUDIENCES=robin,documents\nOWNER_RESOURCE_KINDS=robin=robin.answers,documents=documents.versions\n"
+const bothOwners = "OWNER_AUDIENCES=sidekick,documents\nOWNER_RESOURCE_KINDS=sidekick=sidekick.answers,documents=documents.versions\n"
 
 // targetPolicy is one owner's declaration for one owner-protocol method:
 // what it requires.
@@ -85,7 +85,7 @@ func requirement(kind string, actions ...string) []*hopv1.Requirement {
 	return []*hopv1.Requirement{{ResourceKind: kind, Actions: actions}}
 }
 
-// audienceListWorkspace composes the shop beside robin and the document store,
+// audienceListWorkspace composes the shop beside sidekick and the document store,
 // each serving the owner protocol under its own policies; documentsListKinds
 // says whether the document store serves ListKinds.
 func audienceListWorkspace(t *testing.T, documentsListKinds bool, assistant string) (*resources.Workspace, *resources.Module) {
@@ -96,10 +96,10 @@ func audienceListWorkspace(t *testing.T, documentsListKinds bool, assistant stri
 	config, err := os.ReadFile(configuration)
 	require.NoError(t, err)
 	require.Contains(t, string(config), "modules:\n  - name: shop\n")
-	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: robin\n  - name: documents\n", 1)), 0o644))
-	writeOwner(t, workspace.Dir(), "robin", map[string]targetPolicy{
-		"Reach":     {requires: requirement("robin.answers", "read")},
-		"ListKinds": {requires: requirement("robin.answers", "list")},
+	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: sidekick\n  - name: documents\n", 1)), 0o644))
+	writeOwner(t, workspace.Dir(), "sidekick", map[string]targetPolicy{
+		"Reach":     {requires: requirement("sidekick.answers", "read")},
+		"ListKinds": {requires: requirement("sidekick.answers", "list")},
 	})
 	documents := map[string]targetPolicy{"Reach": {requires: append(requirement("documents.versions", "read"), requirement("documents", "read")...)}}
 	if documentsListKinds {
@@ -133,34 +133,34 @@ func TestABindingAddressedToTwoOwnersIsDeliveredOncePerOwner(t *testing.T) {
 		{ID: "owner:documents", Audience: "documents", Operations: map[string][]string{
 			"invoke": {"documents.versions:read", "documents:read"}, "headless": {"documents.versions:list"},
 		}},
-		{ID: "owner:robin", Audience: "robin", Operations: map[string][]string{
-			"invoke": {"robin.answers:read"}, "headless": {"robin.answers:list"},
+		{ID: "owner:sidekick", Audience: "sidekick", Operations: map[string][]string{
+			"invoke": {"sidekick.answers:read"}, "headless": {"sidekick.answers:list"},
 		}},
 		{ID: "owner-review:documents", Audience: "documents", Operations: map[string][]string{
 			"invoke": {"documents.versions:read", "documents.versions:review"},
 		}},
-		{ID: "owner-review:robin", Audience: "robin", Operations: map[string][]string{
-			"invoke": {"robin.answers:read", "robin.answers:review"},
+		{ID: "owner-review:sidekick", Audience: "sidekick", Operations: map[string][]string{
+			"invoke": {"sidekick.answers:read", "sidekick.answers:review"},
 		}},
 	}
 	require.Equal(t, want, authority.Bindings)
 	_, manifest := renderShopManifest(t, workspace, module, env)
 	require.Equal(t, want, manifest.Authority.Bindings, "the delivered manifest carries one binding per listed owner")
 	logged := recorder.joined()
-	require.Contains(t, logged, "module shop: binding owner is delivered once per listed audience, as owner:documents, owner:robin")
-	require.Contains(t, logged, "module shop: binding owner-review is delivered once per listed audience, as owner-review:documents, owner-review:robin")
+	require.Contains(t, logged, "module shop: binding owner is delivered once per listed audience, as owner:documents, owner:sidekick")
+	require.Contains(t, logged, "module shop: binding owner-review is delivered once per listed audience, as owner-review:documents, owner-review:sidekick")
 }
 
 // TestAnOwnerCallOneListedOwnerDoesNotServeIsRefusedByName: the document store
 // does not serve ListKinds, so the render refuses naming the binding, the call
-// and that owner, and robin, which serves it, is not blamed.
+// and that owner, and sidekick, which serves it, is not blamed.
 func TestAnOwnerCallOneListedOwnerDoesNotServeIsRefusedByName(t *testing.T) {
 	workspace, module := audienceListWorkspace(t, false, bothOwners)
 	env := selectedEnvironment(t, workspace, "staging")
 	_, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
 	require.ErrorIs(t, err, modulecontract.ErrUnresolvedCall)
 	require.Contains(t, err.Error(), "binding owner headless call /targets.v1.TargetService/ListKinds at documents: documents does not serve it")
-	require.NotContains(t, err.Error(), "at robin")
+	require.NotContains(t, err.Error(), "at sidekick")
 }
 
 // TestAnOptionalOwnerListLeftEmptyIsOmitted: no owner listed — absent, or
@@ -193,7 +193,7 @@ func TestAnOptionalOwnerListLeftEmptyIsOmitted(t *testing.T) {
 // under the derived id, so a composition adding a second owner later adds a
 // binding and renames none.
 func TestASingleOwnerListDeliversOneBinding(t *testing.T) {
-	workspace, module := audienceListWorkspace(t, true, "OWNER_AUDIENCES=robin\nOWNER_RESOURCE_KINDS=robin=robin.answers\n")
+	workspace, module := audienceListWorkspace(t, true, "OWNER_AUDIENCES=sidekick\nOWNER_RESOURCE_KINDS=sidekick=sidekick.answers\n")
 	env := selectedEnvironment(t, workspace, "staging")
 	authority, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
 	require.NoError(t, err)
@@ -201,5 +201,5 @@ func TestASingleOwnerListDeliversOneBinding(t *testing.T) {
 	for _, binding := range authority.Bindings {
 		ids = append(ids, binding.ID)
 	}
-	require.Equal(t, []string{"model", "owner:robin", "owner-review:robin"}, ids)
+	require.Equal(t, []string{"model", "owner:sidekick", "owner-review:sidekick"}, ids)
 }

@@ -8,11 +8,11 @@ import (
 
 func TestEveryEnvironmentHasAPathOfItsOwn(t *testing.T) {
 	root := t.TempDir()
-	if Module(root, "blue", "saas") == Module(root, "staging", "saas") {
+	if Module(root, "aurora", "saas") == Module(root, "staging", "saas") {
 		t.Fatal("two environments share one working render")
 	}
-	if want := filepath.Join(root, ".codefly", "renders", "blue", "modules", "saas"); Module(root, "blue", "saas") != want {
-		t.Fatalf("Module = %s, want %s", Module(root, "blue", "saas"), want)
+	if want := filepath.Join(root, ".codefly", "renders", "aurora", "modules", "saas"); Module(root, "aurora", "saas") != want {
+		t.Fatalf("Module = %s, want %s", Module(root, "aurora", "saas"), want)
 	}
 }
 
@@ -24,11 +24,11 @@ func TestPrepareIgnoresTheRendersAndRefusesAnUnnamedEnvironment(t *testing.T) {
 		}
 	}
 	for range 2 {
-		if err := Prepare(root, "blue"); err != nil {
+		if err := Prepare(root, "aurora"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if info, err := os.Stat(Modules(root, "blue")); err != nil || !info.IsDir() {
+	if info, err := os.Stat(Modules(root, "aurora")); err != nil || !info.IsDir() {
 		t.Fatalf("the environment's modules directory was not created: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(Root(root), ".gitignore"))
@@ -39,17 +39,17 @@ func TestPrepareIgnoresTheRendersAndRefusesAnUnnamedEnvironment(t *testing.T) {
 
 func TestOnlyAModulesWorkingRenderHasARecord(t *testing.T) {
 	root := t.TempDir()
-	workspace, environment, module, ok := RecordOf(Module(root, "blue", "saas"))
-	if !ok || workspace != root || environment != "blue" || module != "saas" {
-		t.Fatalf("RecordOf(the working render of saas for blue) = %q %q %q %v", workspace, environment, module, ok)
+	workspace, environment, module, ok := RecordOf(Module(root, "aurora", "saas"))
+	if !ok || workspace != root || environment != "aurora" || module != "saas" {
+		t.Fatalf("RecordOf(the working render of saas for aurora) = %q %q %q %v", workspace, environment, module, ok)
 	}
-	if Record(root, "blue", "saas") == Record(root, "staging", "saas") {
+	if Record(root, "aurora", "saas") == Record(root, "staging", "saas") {
 		t.Fatal("two environments share one render record")
 	}
 	for _, other := range []string{
-		filepath.Join(Environment(root, "blue"), "services", "saas", "api"),
+		filepath.Join(Environment(root, "aurora"), "services", "saas", "api"),
 		filepath.Join(root, "deployments", "modules", "saas"),
-		filepath.Join(root, "renders", "blue", "modules", "saas"),
+		filepath.Join(root, "renders", "aurora", "modules", "saas"),
 	} {
 		if _, _, _, ok := RecordOf(other); ok {
 			t.Fatalf("RecordOf(%s) answered a module's working render", other)

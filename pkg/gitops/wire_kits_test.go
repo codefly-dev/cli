@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -44,7 +44,7 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	config, err := os.ReadFile(configuration)
 	require.NoError(t, err)
 	require.Contains(t, string(config), "modules:\n  - name: shop\n")
-	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: assistant\n  - name: documents\n  - name: model-gateway\n", 1)), 0o644))
+	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: assistant\n  - name: documents\n  - name: model-gateway\n  - name: agent\n", 1)), 0o644))
 	// The callees a binding that names its calls is resolved against
 	// (binding-names-calls): each declares what its calls require in its own
 	// published contract, a protobuf one and an OpenAPI one.
@@ -56,7 +56,11 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 		filepath.Join("modules", "assistant", resources.ModuleConfigurationName):                     "kind: module\nname: assistant\nservices:\n  - name: api\n",
 		filepath.Join("modules", "assistant", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "assistant") + "module-identity: true\n",
 		filepath.Join("modules", "assistant", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/assistant\nversion: 1.0.0\n",
-		filepath.Join("configurations", "staging", "assistant.env"):                                  "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nEVIDENCE_BINDING=evidence\nANNOTATIONS_PREFIX=annotations\nDOCUMENTS_AUDIENCE=documents\nREPLICA_AUDIENCE=documents\nCOLLECTIONS_AUDIENCE=documents\n",
+		// role-includes-bundles: the bundles its roles include are the ones
+		// module agent publishes in its own contract.
+		filepath.Join("modules", "agent", resources.ModuleConfigurationName): "kind: module\nname: agent\n",
+		filepath.Join("modules", "agent", modulecontract.FileName):           "schema: codefly/module-contract/v1\nprincipal: agent\nnamespaces: []\nqueues: []\nscope_ceilings:\n    - resource_kind: agent.turns\n      actions: [read, run]\nbindings: []\ndestinations: []\nbundles:\n    - name: talk\n      scopes:\n          - resource_kind: agent.turns\n            actions: [run]\n    - name: review\n      includes: [talk]\n      scopes:\n          - resource_kind: agent.turns\n            actions: [read]\n",
+		filepath.Join("configurations", "staging", "assistant.env"):          "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nEVIDENCE_BINDING=evidence\nANNOTATIONS_PREFIX=annotations\nDOCUMENTS_AUDIENCE=documents\nREPLICA_AUDIENCE=documents\nCOLLECTIONS_AUDIENCE=documents\nAGENT_AUDIENCE=agent\n",
 	} {
 		full := filepath.Join(workspace.Dir(), rel)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))

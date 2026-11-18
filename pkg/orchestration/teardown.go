@@ -206,6 +206,10 @@ func (flow *Flow) runTeardown(name string, budget time.Duration, invoke func(IMa
 
 	w := wool.Get(stoppedContext).In("flow." + name)
 
+	// Before any agent is reached: one that removes its containers here no
+	// longer shows which networks they were on.
+	flow.noteRunNetworks(stoppedContext)
+
 	// Clear any stale pause state — if a paused action is still sitting in the
 	// PauseManager, the spinner keeps spinning even as teardown runs. Force-
 	// clear so the UI reflects reality.

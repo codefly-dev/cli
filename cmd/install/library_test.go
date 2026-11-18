@@ -40,14 +40,14 @@ func TestInstallLibraryRequiresNameAtConstraintSpec(t *testing.T) {
 	t.Cleanup(resetInstallLibraryFlags)
 	installLanguage = "go"
 	cmd, _ := newInstallTestCmd()
-	err := installLibrary(cmd, "authkit")
+	err := installLibrary(cmd, "signkit")
 	require.ErrorContains(t, err, "<name>@<constraint>")
 }
 
 func TestInstallLibraryRequiresLanguageFlag(t *testing.T) {
 	t.Cleanup(resetInstallLibraryFlags)
 	cmd, _ := newInstallTestCmd()
-	err := installLibrary(cmd, "authkit@^1.0.0")
+	err := installLibrary(cmd, "signkit@^1.0.0")
 	require.ErrorContains(t, err, "--language")
 }
 
@@ -56,7 +56,7 @@ func TestInstallLibraryMissingWorkspaceReturnsError(t *testing.T) {
 	installLanguage = "go"
 	t.Chdir(t.TempDir())
 	cmd, _ := newInstallTestCmd()
-	require.Error(t, installLibrary(cmd, "authkit@^1.0.0"))
+	require.Error(t, installLibrary(cmd, "signkit@^1.0.0"))
 }
 
 // TestInstallIntoTypeScriptConfiguresRegistryBeforeInvokingNpm proves the
@@ -94,6 +94,6 @@ func TestInstallLibraryUnconfiguredLanguageReturnsErrorBeforeNetwork(t *testing.
 
 	installLanguage = "go"
 	cmd, _ := newInstallTestCmd()
-	err := installLibrary(cmd, "authkit@^1.0.0")
+	err := installLibrary(cmd, "signkit@^1.0.0")
 	require.ErrorContains(t, err, "go.owner")
 }

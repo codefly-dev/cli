@@ -20,7 +20,7 @@ import (
 
 func accountsPlan(digest string) *generators.ModuleClientPlan {
 	return &generators.ModuleClientPlan{
-		Name: "saas-starter-accounts-connect-client",
+		Name: "starterkit-accounts-connect-client",
 		Endpoint: composition.APIContractEndpoint{
 			Service: "accounts", Endpoint: "connect", Kind: composition.APIContractKindProtobuf,
 			Package: "saas.accounts.v1", Digest: digest,
@@ -46,7 +46,7 @@ func TestClientsCommandReturnsErrorsThroughCobra(t *testing.T) {
 		t.Fatal("publish clients command is not exclusively RunE")
 	}
 	require.NoError(t, clientsCmd.Args(clientsCmd, nil), "the module defaults to the active one")
-	require.NoError(t, clientsCmd.Args(clientsCmd, []string{"saas-starter"}))
+	require.NoError(t, clientsCmd.Args(clientsCmd, []string{"starterkit"}))
 	require.Error(t, clientsCmd.Args(clientsCmd, []string{"a", "b"}))
 }
 
@@ -69,21 +69,21 @@ func TestLoadClientsManifestRejectsUnknownSchema(t *testing.T) {
 func TestLoadClientsManifestRejectsIncompleteEvidence(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "contracts"), 0o755))
-	data := `{"schema":"codefly/module-clients/v1","package":"codefly/saas-starter","version":"0.1.0","clients":[{"library":"client","service":"accounts","endpoint":"connect","contractDigest":"sha256:aaaa","exports":[{"language":"go"}]}]}`
+	data := `{"schema":"codefly/module-clients/v1","package":"codefly/starterkit","version":"0.1.0","clients":[{"library":"client","service":"accounts","endpoint":"connect","contractDigest":"sha256:aaaa","exports":[{"language":"go"}]}]}`
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "contracts", ClientsManifestFileName), []byte(data), 0o644))
 	_, err := LoadClientsManifest(dir)
 	require.ErrorContains(t, err, "incomplete publication evidence")
 }
 
 func TestClientsManifestForVersionDropsAnotherVersionsRecords(t *testing.T) {
-	stored := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/saas-starter", Version: "0.1.0",
-		Clients: []PublishedClient{{Library: "saas-starter-accounts-client"}}}
-	same := stored.forVersion("codefly/saas-starter", "0.1.0")
+	stored := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/starterkit", Version: "0.1.0",
+		Clients: []PublishedClient{{Library: "starterkit-accounts-client"}}}
+	same := stored.forVersion("codefly/starterkit", "0.1.0")
 	require.Len(t, same.Clients, 1)
-	bumped := stored.forVersion("codefly/saas-starter", "0.1.1")
+	bumped := stored.forVersion("codefly/starterkit", "0.1.1")
 	require.Empty(t, bumped.Clients)
 	require.Equal(t, "0.1.1", bumped.Version)
-	require.Equal(t, "codefly/saas-starter", bumped.Package)
+	require.Equal(t, "codefly/starterkit", bumped.Package)
 }
 
 func TestValidateClientPackageRejectsArtifactAndVersionDrift(t *testing.T) {
@@ -95,7 +95,7 @@ func TestValidateClientPackageRejectsArtifactAndVersionDrift(t *testing.T) {
 	digest := composition.APIContractDigest(contract)
 	manifest := fmt.Sprintf(`kind: module-package
 schema: codefly/module-package/v2
-id: codefly/saas-starter
+id: codefly/starterkit
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"
 artifact-roots: [contracts/api]
@@ -112,24 +112,24 @@ services:
 `, digest)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, composition.PackageManifestFileName), []byte(manifest), 0o644))
 	catalog := &composition.APIContractCatalog{
-		Schema: composition.APIContractCatalogSchema, Package: "codefly/saas-starter", Version: "0.1.0",
+		Schema: composition.APIContractCatalogSchema, Package: "codefly/starterkit", Version: "0.1.0",
 		Endpoints: []composition.APIContractEndpoint{{
 			Service: "accounts", Endpoint: "connect", API: "connect", Kind: composition.APIContractKindProtobuf,
 			Package: "saas.accounts.v1", Path: "contracts/api/accounts/connect/contract.binpb", Digest: digest,
 			Services: []composition.APIContractService{{Name: "AccountsService", FullName: "saas.accounts.v1.AccountsService"}},
 		}},
 	}
-	require.NoError(t, validateClientPackage(dir, "saas-starter", catalog))
+	require.NoError(t, validateClientPackage(dir, "starterkit", catalog))
 
 	require.NoError(t, os.WriteFile(contractPath, []byte("corrupt"), 0o644))
-	require.ErrorContains(t, validateClientPackage(dir, "saas-starter", catalog), "digest")
+	require.ErrorContains(t, validateClientPackage(dir, "starterkit", catalog), "digest")
 	require.NoError(t, os.WriteFile(contractPath, contract, 0o644))
 	catalog.Version = "0.1.1"
-	require.ErrorContains(t, validateClientPackage(dir, "saas-starter", catalog), "identifies codefly/saas-starter@0.1.0")
+	require.ErrorContains(t, validateClientPackage(dir, "starterkit", catalog), "identifies codefly/starterkit@0.1.0")
 }
 
 func TestReconcileClientExportDecisions(t *testing.T) {
-	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/saas-starter", Version: "0.1.0"}
+	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/starterkit", Version: "0.1.0"}
 	plan := accountsPlan("sha256:aaaa")
 
 	goExport := recordedExport(t, plan, languages.GO)
@@ -156,7 +156,7 @@ func TestReconcileClientExportDecisions(t *testing.T) {
 }
 
 func TestReconcileClientExportRejectsChangedFacadeAndIncompleteEvidence(t *testing.T) {
-	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/saas-starter", Version: "0.1.0"}
+	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/starterkit", Version: "0.1.0"}
 	plan := accountsPlan("sha256:aaaa")
 	export := recordedExport(t, plan, languages.GO)
 	manifest.record(plan, export)
@@ -174,8 +174,8 @@ func TestReconcileClientExportRejectsChangedFacadeAndIncompleteEvidence(t *testi
 
 func TestClientsManifestRoundTripIsCanonical(t *testing.T) {
 	dir := t.TempDir()
-	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/saas-starter", Version: "0.1.0"}
-	gateway := &generators.ModuleClientPlan{Name: "saas-starter-auth-gateway-grpc-client",
+	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/starterkit", Version: "0.1.0"}
+	gateway := &generators.ModuleClientPlan{Name: "starterkit-auth-gateway-grpc-client",
 		Endpoint: composition.APIContractEndpoint{Service: "auth-gateway", Endpoint: "grpc", Digest: "sha256:cccc"}}
 	manifest.record(gateway, recordedExport(t, gateway, languages.GO))
 	accountsPlan := accountsPlan("sha256:aaaa")
@@ -190,7 +190,7 @@ func TestClientsManifestRoundTripIsCanonical(t *testing.T) {
 
 	loaded, err := LoadClientsManifest(dir)
 	require.NoError(t, err)
-	require.Equal(t, []string{"saas-starter-accounts-connect-client", "saas-starter-auth-gateway-grpc-client"},
+	require.Equal(t, []string{"starterkit-accounts-connect-client", "starterkit-auth-gateway-grpc-client"},
 		[]string{loaded.Clients[0].Library, loaded.Clients[1].Library}, "clients sorted by library")
 	accounts := loaded.Clients[0]
 	require.Equal(t, []string{"AuditService"}, accounts.Services)
@@ -207,7 +207,7 @@ func TestClientsManifestRoundTripIsCanonical(t *testing.T) {
 }
 
 func TestCheckClientsNamesEveryMissingOrStaleExport(t *testing.T) {
-	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/saas-starter", Version: "0.1.0"}
+	manifest := &ClientsManifest{Schema: ClientsManifestSchema, Package: "codefly/starterkit", Version: "0.1.0"}
 	plan := accountsPlan("sha256:aaaa")
 	manifest.record(plan, recordedExport(t, plan, languages.GO))
 
@@ -215,13 +215,13 @@ func TestCheckClientsNamesEveryMissingOrStaleExport(t *testing.T) {
 	version := semver.MustParse("0.1.0")
 	err := checkClients(&out, manifest, []generators.ModuleClientPlan{*plan}, version, clientsTestStoreConfig, librarystore.RepositoryPolicy{})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "saas-starter-accounts-connect-client typescript is not published at 0.1.0")
-	require.NotContains(t, err.Error(), "saas-starter-accounts-connect-client go is not")
+	require.Contains(t, err.Error(), "starterkit-accounts-connect-client typescript is not published at 0.1.0")
+	require.NotContains(t, err.Error(), "starterkit-accounts-connect-client go is not")
 
 	manifest.record(plan, recordedExport(t, plan, languages.TYPESCRIPT))
 	out.Reset()
 	require.NoError(t, checkClients(&out, manifest, []generators.ModuleClientPlan{*plan}, version, clientsTestStoreConfig, librarystore.RepositoryPolicy{}))
-	require.Contains(t, out.String(), "codefly/saas-starter@0.1.0")
+	require.Contains(t, out.String(), "codefly/starterkit@0.1.0")
 
 	err = checkClients(&out, manifest, []generators.ModuleClientPlan{*accountsPlan("sha256:bbbb")}, version, clientsTestStoreConfig, librarystore.RepositoryPolicy{})
 	require.Error(t, err)
@@ -234,7 +234,7 @@ func TestWithClientsPublishLockPreventsLostManifestUpdates(t *testing.T) {
 	moduleDir := t.TempDir()
 	base := accountsPlan("sha256:aaaa")
 	other := accountsPlan("sha256:bbbb")
-	other.Name = "saas-starter-billing-grpc-client"
+	other.Name = "starterkit-billing-grpc-client"
 	other.Endpoint.Service = "billing"
 	other.Endpoint.Endpoint = "grpc"
 
@@ -252,7 +252,7 @@ func TestWithClientsPublishLockPreventsLostManifestUpdates(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				manifest = manifest.forVersion("codefly/saas-starter", "0.1.0")
+				manifest = manifest.forVersion("codefly/starterkit", "0.1.0")
 				time.Sleep(25 * time.Millisecond)
 				manifest.record(plan, &PublishedClientExport{Language: "go", ImportPath: "path", Ref: "ref", Digest: "sha256:d", InstallHint: "hint"})
 				return manifest.Save(t.Context(), moduleDir)

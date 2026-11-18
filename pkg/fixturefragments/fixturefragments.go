@@ -1,10 +1,12 @@
 // Package fixturefragments builds the local authority's fixture-composition
 // document for a run: the merge of the fragment every module of the workspace
-// ships next to its code. Each module states, once, what the local
-// authority's standard fixture roles may do at its kinds
-// (<module>/configurations/<profile>/fixture-composition.yaml); the
-// composition's own module states only what is the composition's own (a
-// collection its seed writes). The rules of the document and of the merge are
+// ships next to its code. Each module states, once, what is its own in the local
+// authority's fixture (<module>/configurations/<profile>/fixture-composition.yaml):
+// a module the run stands in for, the installation of a solution and who is
+// seated on its roles. No fragment grants an organisation role anything
+// (schema v2 has no roles section; a fragment still stating one, or schema
+// v1, is refused by the authority's parser naming the fragment). The rules
+// of the document and of the merge are
 // the authority's (codefly-dev/authority libraries/fixture-composition): this
 // package finds the fragments and writes the result where a service that
 // declares the group reads it, as the workspace's own document.
@@ -195,7 +197,7 @@ func Write(prepared *Prepared) (bool, error) {
 	case err != nil:
 		return false, err
 	case !bytes.HasPrefix(existing, []byte(generatedMarker)):
-		return false, fmt.Errorf("%w: %s; move each module's grants into that module's fragment and what is the composition's own into its own module's, then delete it", ErrHandWritten, prepared.Target)
+		return false, fmt.Errorf("%w: %s; move each module's statements into that module's fragment and what is the composition's own into its own module's, then delete it", ErrHandWritten, prepared.Target)
 	case bytes.Equal(existing, prepared.Content):
 		return false, nil
 	}

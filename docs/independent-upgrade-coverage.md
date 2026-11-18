@@ -376,14 +376,13 @@ A clean-home reproduction independently downloaded Python `0.0.62`, Next.js
 declarations at `pkg/engine/supervisor.go`'s `GetAgentInformation`/`contract.Check`
 boundary. This rules out stale ambient installs as the explanation for the eight
 engine/gateway failures. Command: `GOWORK=off CODEFLY_HOME=<empty directory> go test
-./pkg/engine ./pkg/gateway -run '^(TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization|TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent|TestGatewayRunsEveryDeclaredCodeUnitThroughItsProductionPlugin)$' -count=1`.
+./pkg/engine -run '^(TestReadOnlyCodeAndToolingRunWithoutRuntimeInitialization|TestGatewayInspectsJVMAndDotNetCodeUnitsThroughGenericAgent|TestGatewayRunsEveryDeclaredCodeUnitThroughItsProductionPlugin)$' -count=1`.
 Evidence: `/tmp/cli752-agent-declaration-clean.log`; downloaded artifacts are kept
 in `/tmp/cli752-agent-declaration-clean-f8b447dd`. Linked build metadata is diagnostic
 provenance only, never a replacement for the failing runtime declaration check.
 
 Authentic packaged contract/usage evidence and real consumer qualification also
-depend on module-saas-starter#852 and obin-ai/platform-obin#25, as tracked in
-#753. Fixtures and source-built agent tests do not replace that evidence.
+depend on a packaged module and a consuming composition, as tracked in #753. Fixtures and source-built agent tests do not replace that evidence.
 
 Runtime module/solution onboarding without restarting the host is not delivered
 by these changes. Configuration delivery, registration and actual host

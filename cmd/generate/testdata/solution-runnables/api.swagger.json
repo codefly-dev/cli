@@ -262,7 +262,7 @@
             }
           }
         },
-        "summary": "Name the Robin intent and installation the page binds its chat to",
+        "summary": "Name the Sidekick intent and installation the page binds its chat to",
         "tags": [
           "releases"
         ],
@@ -273,7 +273,7 @@
     },
     "/v1/releases/chat/install": {
       "post": {
-        "description": "An organization administrator\n\nRobin asks the host to approve each intent version before writing it",
+        "description": "An organization administrator\n\nSidekick asks the host to approve each intent version before writing it",
         "operationId": "Releases_Post_V1_Releases_Chat_Install",
         "responses": {
           "200": {
@@ -295,14 +295,14 @@
             }
           }
         },
-        "summary": "Import this solution's Robin intent into the installation",
+        "summary": "Import this solution's Sidekick intent into the installation",
         "tags": [
           "releases"
         ],
         "x-codefly-authority-policy": {
           "requires": [
             {
-              "resource_kind": "robin.intents",
+              "resource_kind": "sidekick.intents",
               "actions": [
                 "import",
                 "activate"

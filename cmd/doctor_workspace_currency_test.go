@@ -151,15 +151,15 @@ func failedPinChecks(report *workspaceReadinessReport) []string {
 func TestDoctorWorkspaceNarrowedToOneModuleKeepsEveryHoldValid(t *testing.T) {
 	t.Setenv("CODEFLY_HOME", t.TempDir())
 	stubSource(t, &composition.SourceHead{Branch: "main", Tip: strings.Repeat("c", 40), Tags: []string{"v0.2.0"}}, nil)
-	two := "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\n    wiki: git\nmodules:\n" +
+	two := "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\n    quill: git\nmodules:\n" +
 		"    - name: saas\n      source: owner/saas\n      version: \"0.2.0\"\n" +
-		"    - name: wiki\n      source: owner/wiki\n      version: \"0.1.0\"\n" +
-		"pin-holds:\n    - name: wiki\n      pin: \"0.1.0\"\n      reason: held\n      until: 2999-01-01\n"
+		"    - name: quill\n      source: owner/quill\n      version: \"0.1.0\"\n" +
+		"pin-holds:\n    - name: quill\n      pin: \"0.1.0\"\n      reason: held\n      until: 2999-01-01\n"
 	dir := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": two})
 
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir, module: "saas", requireCurrentPins: true})
-	require.Empty(t, failedPinChecks(report), "rendering saas must not trip over a hold on wiki, nor judge wiki")
-	require.Nil(t, findCheck(report, "pin currency of wiki"))
+	require.Empty(t, failedPinChecks(report), "rendering saas must not trip over a hold on quill, nor judge quill")
+	require.Nil(t, findCheck(report, "pin currency of quill"))
 	require.NotNil(t, findCheck(report, "pin currency of saas"))
 }
 

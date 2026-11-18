@@ -68,6 +68,52 @@ the caller's own label and wins; passing it empty asks for no scope at all.
 This is applied by the run command, not by `Flow.WithTemporaryPorts`.
 `codefly ci run --temporary-ports` alone remains a port strategy.
 
+A generated scope is never run again, so the invocation also declares the state
+created under it **disposable** (`orchestration.IsolateEnvironment`, carried to
+agents as `Environment.disposable`). That is what lets the native state
+directories of its stores (a Postgres cluster under the user cache directory,
+say) be removed instead of accumulating one per run: the run removes its own
+when it ends (`Flow.RemoveNativeStateOfThisRun`), an agent removes its
+directory when it is destroyed, and `codefly clear` removes what a killed run
+left. A killed run leaves its servers running as well, and a directory is in
+use for as long as one runs, so both sweeps first stop the servers a killed
+disposable run left (`runstate.SweepOptions.StopAbandoned`: only the processes
+the run's agent recorded in the directory, only when no live run claims it,
+each checked against its recorded birth); `codefly clear --keep-processes`
+stops none, and `--dry-run` names what it would stop. A plain run, or a scope
+the caller named, is never disposable: its data is never removed and its
+server never stopped. The record and the rule are core's `runners/runstate`.
+
+The same declaration decides what the run leaves on the container runtime. A
+stopped run stops its agents and never destroys them, and an agent keeps its
+container across a stop for the next run to reuse, so a disposable run's
+containers (Redis, the object store's MinIO and gateway), the anonymous volumes
+they created and the data directories mounted into them (a Postgres container's
+cluster under `<codefly home>/runtime-cache`) used to stay after every kind of
+stop. The run now takes them back when it ends, however it ended: Ctrl-C,
+SIGTERM, a hangup, the process it was started for gone, a clean finish or a
+failure (`Flow.RemoveContainersOfThisDisposableRun`, from `ReclaimAfterRun`).
+Core decides and removes (`dockerrun.RemoveDisposableRun`), on the run's
+`Disposable` fact alone: every container labelled with the run's own recovery
+scope, never one bound to a session ledger. The networks they leave empty go
+after them. A plain run, or a scope the caller named, keeps its containers and
+their data exactly as before; only a failed one removes the containers it
+created (#1233). An explicit Local or Nix run never reaches Docker.
+
+The SDK's dependency stack is the one explicit `--naming-scope` that is
+disposable. The SDK does not let the CLI generate the scope: it generates one
+from its own session's random identity (`s…`, behind the caller's label) and
+passes it, so `--naming-scope` wins and nothing above applies. The run command
+therefore also declares disposable a scope that ends with the identity of the
+SDK session that started this process (`orchestration.DeclareSessionScope`,
+from the session environment the SDK installs): the session proves the scope
+was generated for this run and can never be run again. A stack kept running
+(`sdk.WithKeepRunning`) runs under the developer's label alone and stays a
+developer's, as does any scope a person typed. Without this a test's
+dependency stack was never disposable: its native state stayed on the machine,
+and an agent refused it what only a disposable run is given (the Postgres
+agent's fixture principal).
+
 Agent conformance additionally passes **`--disposable`**, also available on
 `codefly ci test`. Each lint, compile or test flow receives a fresh naming scope and ephemeral
 ports, even if the copied fixture declares a stable scope. Teardown calls both

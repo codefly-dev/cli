@@ -267,8 +267,8 @@ export default function SolutionApp() {
 
 // shellNextConfig lets the shell compile the remote's source.
 //
-// It is NOT wiki's config. wiki aliases React and drops the page from the
-// server bundle through a `webpack` block, and that block is a hard ERROR on
+// It carries no `webpack` block. A shell that aliases React and drops the page
+// from the server bundle through one, and that block is a hard ERROR on
 // the Next this agent scaffolds: Next 16 runs Turbopack by default and
 // refuses a webpack config it was not told to use. Neither alias is needed
 // here — npm hoists one React for the linked remote, and ssr: false is what

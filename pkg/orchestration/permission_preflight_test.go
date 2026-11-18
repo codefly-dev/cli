@@ -13,7 +13,7 @@ import (
 func TestCompositionPreflightRunsBeforeFlowAndRechecksRefresh(t *testing.T) {
 	ctx := t.Context()
 	workspace := multiRootWorkspace(t)
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
@@ -24,18 +24,18 @@ func TestCompositionPreflightRunsBeforeFlowAndRechecksRefresh(t *testing.T) {
 	reject := true
 	check := func(_ context.Context, w *resources.Workspace, _ *environments.Environment) error {
 		calls++
-		require.ElementsMatch(t, []string{"wiki", "saas", "documents"}, moduleNames(w))
+		require.ElementsMatch(t, []string{"quill", "saas", "documents"}, moduleNames(w))
 		if reject {
 			return refusal
 		}
 		return nil
 	}
-	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("wiki"), WithCompositionCheck(check))
+	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("quill"), WithCompositionCheck(check))
 	require.ErrorIs(t, err, refusal)
 	require.Nil(t, flow)
 	require.Equal(t, 1, calls)
 	reject = false
-	flow, err = NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("wiki"), WithCompositionCheck(check))
+	flow, err = NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("quill"), WithCompositionCheck(check))
 	require.NoError(t, err)
 	reject = true
 	require.ErrorIs(t, flow.CheckComposition(ctx, workspace), refusal)

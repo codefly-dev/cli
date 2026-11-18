@@ -3,4 +3,4 @@ layout: modules
 modules:
     - name: host
     - name: docs
-    - name: wiki
+    - name: quill

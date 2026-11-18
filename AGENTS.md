@@ -4,6 +4,17 @@
 > other tool-specific file is a thin forwarder pointing here. Every codefly repo uses this
 > layout — see [Maintaining this doc set](#maintaining-this-doc-set).
 
+## How you build here
+
+1. What a person exercises is a composed service started by `codefly run
+   service`, never a hand-written server or a launcher.
+2. Code generated from a contract comes from `codefly generate`.
+3. Never hardcode an address, port, DSN, credential or host name; the SDK and
+   the CLI resolve each one.
+4. Local first, from the lowest level, and no pull request until the change is
+   validated on an environment.
+5. No test starts a Kubernetes cluster.
+
 ## Module & Repository
 
 - **Module:** `github.com/codefly-dev/cli`
@@ -18,7 +29,7 @@ integration.
 
 ## How to work here
 
-These rules are fleet-wide (obin-ai/handbook#68) and outrank anything below them.
+These rules are this repository's own contributor rules and outrank anything below them.
 
 **A gap in the tooling is a bug in the tooling** — never a reason to reach around it. If
 `codefly` cannot express what you need, the deliverable is the missing capability, not a
@@ -48,7 +59,7 @@ digest mismatch has meant a missing token, with the digest verified correct by h
 suite — starts k3s, k3d, kind, minikube or any Kubernetes cluster. Authorization and admission
 are proven in-process against the authority core; a deployment is validated by `codefly run`
 and a hosted dev cell, never by a test. `codefly run cluster` run by a person is product, not a
-test ([development contract, rule 5](https://github.com/obin-ai/handbook/blob/main/getting-started/development.md#5-no-cluster-tests)).
+test.
 
 **Say what you did not verify.** Unverified is not the same as working. If you could not
 exercise a path — no cluster, no credentials, agents not rebuilt — the PR says so.
@@ -63,10 +74,7 @@ tells you are reinventing: what you are writing re-answers a question an
 existing seam answered, and your reason for its placement is that a convenient
 loop was already there rather than that the responsibility belongs to it.
 
-**Build the simplest thing that works; size is the signal.** A coding task's
-budget is about **500 hand-written lines** — generated output does not count,
-tests count apart — and past **2,000** the change has become a second system,
-so **stop and ask the user** instead of finishing it. Two tells, checkable
+**Build the simplest thing that works.** Two tells that a change is not it, checkable
 before the code exists: you cannot name the one responsibility the change adds,
 and it is growing to make the end goal pass rather than to put a behaviour
 where it belongs. Wanting it to work licenses no means to get there.
@@ -158,7 +166,7 @@ implemented. Don't rely on a list kept here — it drifts the moment a command l
 - **pkg/mcp/** — Model Context Protocol server exposing codefly to AI tools. See [docs/mcp-server.md](docs/mcp-server.md).
 - **pkg/cliupdate/** — Version stamping (`version`/`commit`/`buildDate` set via ldflags at
   release), self-update, and the release-signing certificate.
-- **pkg/platform/** / **pkg/gateway/** — Platform ops and Mind Gateway gRPC server.
+- **pkg/platform/** — Platform ops.
 - **pkg/agentkinds/** — the one owner of the short agent kind a user types (`runnable`)
   ↔ the kind core registers (`codefly:runnable`). Used by `codefly agent install --kind`
   and the MCP `list_agents`/`agent_info` schemas so the convention has a single copy.

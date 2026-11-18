@@ -18,7 +18,7 @@ import (
 // admission, that module's delivery sync fails, and the refusal names neither
 // the label nor the rename.
 //
-// That is not hypothetical. #1058 renamed it to "carrier"; obin-staging's
+// That is not hypothetical. #1058 renamed it to "carrier"; northwind-staging's
 // cell.yaml declared the old value for 10 namespaces and 9 modules' delivered
 // Jobs carried it on their pod templates, so the next render would have broken
 // delivery for every module not republished in the same change. #1077 put it

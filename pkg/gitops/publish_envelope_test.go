@@ -3,14 +3,15 @@ package gitops
 import (
 	"context"
 	"encoding/json"
-	"github.com/codefly-dev/cli/pkg/environments"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
+
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )

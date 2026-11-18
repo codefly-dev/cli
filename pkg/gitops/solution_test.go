@@ -127,7 +127,7 @@ environments:
       delivery: hello/host/rest
     service-identity:
       default:
-        principal: lastlogin@example.iam.test
+        principal: beacon@example.iam.test
 gitops:
   repo-url: file://%s
   fetch-repo-url: https://host.k3d.internal/manifests.git
@@ -174,7 +174,7 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 		Workspace:   workspace,
 		Environment: env,
 		Agent:       agent,
-		Name:        "lastlogin-go",
+		Name:        "beacon-go",
 		Source:      filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:   "ghcr.io/codefly-dev/hello-solution:0.0.1",
 		AppProject:  "hello",
@@ -193,13 +193,13 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	if fake.renderArtifact != "ghcr.io/codefly-dev/hello-solution:0.0.1@sha256:"+digestPlaceholder {
 		t.Fatalf("executor rendered from artifact %q", fake.renderArtifact)
 	}
-	if filepath.Base(fake.renderDestination) != "lastlogin-go" || filepath.Base(filepath.Dir(fake.renderDestination)) != solutionUnitDir {
-		t.Fatalf("executor render destination %q, want .../solutions/lastlogin-go", fake.renderDestination)
+	if filepath.Base(fake.renderDestination) != "beacon-go" || filepath.Base(filepath.Dir(fake.renderDestination)) != solutionUnitDir {
+		t.Fatalf("executor render destination %q, want .../solutions/beacon-go", fake.renderDestination)
 	}
 	// The host must tell the executor the solution's own namespace, derived from
 	// its id — not the shared environment namespace "hello".
-	if fake.renderNamespace != "lastlogin-go" {
-		t.Fatalf("executor was told namespace %q, want the solution namespace %q", fake.renderNamespace, "lastlogin-go")
+	if fake.renderNamespace != "beacon-go" {
+		t.Fatalf("executor was told namespace %q, want the solution namespace %q", fake.renderNamespace, "beacon-go")
 	}
 
 	inventory := result.Inventory
@@ -207,7 +207,7 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 		t.Fatalf("inventory units = %+v", inventory.Units)
 	}
 	unit := inventory.Units[0]
-	if unit.Kind != UnitKindSolution || unit.Name != "lastlogin-go" || unit.Path != "solutions/lastlogin-go" {
+	if unit.Kind != UnitKindSolution || unit.Name != "beacon-go" || unit.Path != "solutions/beacon-go" {
 		t.Fatalf("solution unit = %+v", unit)
 	}
 	if unit.Output == nil || unit.Output.Validation == nil || !unit.Output.Validation.Restricted {
@@ -220,10 +220,10 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Module != "lastlogin-go" || loaded.Namespace != "lastlogin-go" {
+	if loaded.Module != "beacon-go" || loaded.Namespace != "beacon-go" {
 		t.Fatalf("persisted inventory = %+v", loaded)
 	}
-	if _, err := os.Stat(filepath.Join(result.Path, "solutions", "lastlogin-go", "overlays", "local", "configmap.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(result.Path, "solutions", "beacon-go", "overlays", "local", "configmap.yaml")); err != nil {
 		t.Fatalf("rendered overlay missing: %v", err)
 	}
 }
@@ -240,7 +240,7 @@ func TestRenderSolutionRejectsInvalidNamespace(t *testing.T) {
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
 	_, err := RenderSolution(context.Background(), &SolutionRenderRequest{
-		Workspace: workspace, Environment: env, Agent: agent, Name: "LastLogin_Go",
+		Workspace: workspace, Environment: env, Agent: agent, Name: "Beacon_Go",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
 		AppProject: "hello",
@@ -331,18 +331,18 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	// see the doc's "What is not verified"), so this test writes the entry by
 	// hand, and the render records it with the tree.
 	if _, err := RenderSolution(ctx, &SolutionRenderRequest{
-		Workspace: workspace, Environment: env, Agent: agent, Name: "lastlogin-go",
+		Workspace: workspace, Environment: env, Agent: agent, Name: "beacon-go",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
-		AppProject: "lastlogin-go",
+		AppProject: "beacon-go",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	configureSSHSigning(t)
 
 	request := PublishRequest{
-		Module: "lastlogin-go", Environment: "local", Local: true,
-		PromotionBranch: "codefly/promote-lastlogin-go-local",
+		Module: "beacon-go", Environment: "local", Local: true,
+		PromotionBranch: "codefly/promote-beacon-go-local",
 	}
 	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
@@ -355,7 +355,7 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 
 	appSet := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/bootstrap/applicationset.yaml")
 	if !strings.Contains(appSet, "kind: ApplicationSet") ||
-		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/lastlogin-go/overlays/local") {
+		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/beacon-go/overlays/local") {
 		t.Fatalf("published bootstrap does not stamp the solution Application:\n%s", appSet)
 	}
 	// Every Application reads the one immutable snapshot revision, so the
@@ -364,7 +364,7 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 		t.Fatalf("the bootstrap does not target the snapshot %s:\n%s", result.SnapshotRevision, appSet)
 	}
 	snapshot := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", result.SnapshotRevision, result.Path+"/")
-	if !strings.Contains(snapshot, result.Path+"/solutions/lastlogin-go/overlays/local/") {
+	if !strings.Contains(snapshot, result.Path+"/solutions/beacon-go/overlays/local/") {
 		t.Fatalf("the snapshot revision %s does not hold the solution's overlay:\n%s", result.SnapshotRevision, snapshot)
 	}
 	// A packaged solution declares no service, so nothing runs as it and it
@@ -374,10 +374,10 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	}
 	// The packaged solution's own Namespace is authorized by the generated
 	// AppProject: destination namespace plus a cluster-scoped Namespace whitelist.
-	// It is the solution's own namespace ("lastlogin-go"), not the shared host
+	// It is the solution's own namespace ("beacon-go"), not the shared host
 	// namespace ("hello").
 	project := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/bootstrap/project.yaml")
-	if !strings.Contains(project, "namespace: lastlogin-go") || !strings.Contains(project, "kind: Namespace") {
+	if !strings.Contains(project, "namespace: beacon-go") || !strings.Contains(project, "kind: Namespace") {
 		t.Fatalf("generated AppProject does not authorize the solution namespace:\n%s", project)
 	}
 	if strings.Contains(project, "namespace: hello") {
@@ -404,7 +404,7 @@ func TestRenderSolutionReportsAnUnavailableExecutorUnderTheSentinel(t *testing.T
 		Workspace:   workspace,
 		Environment: selectedEnvironment(t, workspace, "local"),
 		Agent:       agent,
-		Name:        "lastlogin-go",
+		Name:        "beacon-go",
 		Source:      filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:   "ghcr.io/codefly-dev/hello-solution:0.0.1",
 		AppProject:  "hello",
@@ -432,8 +432,8 @@ func TestAPackagedSolutionDeclaresNoManifest(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "local")
 	result, err := RenderSolution(context.Background(), &SolutionRenderRequest{
 		Workspace: workspace, Environment: env,
-		Agent:  &resources.Agent{Kind: resources.SolutionAgent, Publisher: "example", Name: "lastlogin", Version: "0.0.1"},
-		Name:   "lastlogin-go",
+		Agent:  &resources.Agent{Kind: resources.SolutionAgent, Publisher: "example", Name: "beacon", Version: "0.0.1"},
+		Name:   "beacon-go",
 		Source: filepath.Join(workspace.Dir(), "solution-src"), Reference: "ghcr.io/codefly-dev/hello-solution:0.0.1", AppProject: "hello",
 	})
 	if err != nil {
@@ -442,7 +442,7 @@ func TestAPackagedSolutionDeclaresNoManifest(t *testing.T) {
 	if result.ModuleManifest != nil || result.Inventory.ModuleManifestPath != "" {
 		t.Fatalf("a packaged solution declared a manifest: %+v", result.ModuleManifest)
 	}
-	if !strings.Contains(result.UndeclaredManifest, "packaged solution lastlogin-go declares no module-identity service") {
+	if !strings.Contains(result.UndeclaredManifest, "packaged solution beacon-go declares no module-identity service") {
 		t.Fatalf("the render does not say why it declares nothing: %q", result.UndeclaredManifest)
 	}
 }

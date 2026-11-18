@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/workingrender"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 const localDeveloper = "      developers:\n        - key_id: dev-0123456789abcdef\n"
@@ -191,7 +191,7 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 // delivering into its own repository declares `path: deployments`, the
 // directory its render already writes `modules/<module>` under. The publish
 // delivers to exactly that tree — never `deployments/deployments/modules`,
-// the doubled path obin-ai/platform-obin#128 committed, which the cell's
+// the doubled path northwind/platform-northwind#128 committed, which the cell's
 // ApplicationSet never globs — and the next publish reads the prior
 // generation back from the same tree, so a changed manifest settles at
 // generation 2 against generation 1 rather than against nothing. (A rebuild

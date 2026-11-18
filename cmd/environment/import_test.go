@@ -132,14 +132,14 @@ func TestImportCreatesEnvironment(t *testing.T) {
 }
 
 func TestImportActualInfraBaseOutput(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "pkg", "environments", "testdata", "coordinates", "infra-base-lodestar.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "pkg", "environments", "testdata", "coordinates", "infra-kit-meridian.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := writeWorkspace(t, "name: product\nlayout: modules\n")
 	doImport(t, dir, importOptions{envName: "staging", contractData: data})
 	env := loadWorkspace(t, dir).FindEnvironment("staging")
-	if env.Namespace != "lodestar" {
+	if env.Namespace != "meridian" {
 		t.Fatalf("namespace = %q", env.Namespace)
 	}
 	contract, err := environments.ParseCoordinateContract(data)
@@ -292,7 +292,7 @@ func TestImportRejectsWrongSchema(t *testing.T) {
 	opts := importOptions{
 		dir:          dir,
 		envName:      "azure",
-		contractData: []byte(`{"schema": "obin-infra/cell-contract/v1", "coordinate": "x"}`),
+		contractData: []byte(`{"schema": "northwind-infra/cell-contract/v1", "coordinate": "x"}`),
 		now:          time.Now(),
 		stdout:       &bytes.Buffer{},
 	}

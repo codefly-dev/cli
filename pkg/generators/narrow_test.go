@@ -309,6 +309,24 @@ func TestNarrowEntriesRefusesAServiceTheContractDoesNotDeclare(t *testing.T) {
 	}
 }
 
+// A service the catalog lists as the protocol of an interface other modules
+// implement is not served by this endpoint, so a client of the endpoint cannot
+// be narrowed to it: it is refused as a service the endpoint does not serve,
+// naming the ones it does.
+func TestNarrowEntriesRefusesAServiceDeclaredAsAnInterfaceOthersImplement(t *testing.T) {
+	entry := narrowEntry(narrowFixture(t), "Other")
+	for i := range entry.Endpoint.Services {
+		if entry.Endpoint.Services[i].Name == "Other" {
+			entry.Endpoint.Services[i].Interface = "example.dev/other@0.1.0"
+			entry.Endpoint.Services[i].Procedures = nil
+		}
+	}
+	_, err := narrowEntries([]ContractEntry{entry})
+	if err == nil || !strings.Contains(err.Error(), `services "Other" are not declared by contract acme.v1, which declares CommonService, Wanted`) {
+		t.Fatalf("err = %v, want Other refused and only the served services named", err)
+	}
+}
+
 func TestNarrowEntriesLeavesALibrarySelectingNothingAsIs(t *testing.T) {
 	contract := narrowFixture(t)
 	entries := []ContractEntry{narrowEntry(contract)}

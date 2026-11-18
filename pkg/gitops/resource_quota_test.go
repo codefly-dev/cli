@@ -24,11 +24,11 @@ func fullResourceQuota() *environments.EnvironmentResourceQuota {
 }
 
 func TestResourceQuotaManifestRendersHardCaps(t *testing.T) {
-	manifest := resourceQuotaManifest("lodestar", fullResourceQuota())
+	manifest := resourceQuotaManifest("meridian", fullResourceQuota())
 	if manifest == nil {
 		t.Fatal("full quota rendered no ResourceQuota")
 	}
-	if manifest.Kind != resourceQuotaKind || manifest.Metadata.Namespace != "lodestar" {
+	if manifest.Kind != resourceQuotaKind || manifest.Metadata.Namespace != "meridian" {
 		t.Fatalf("manifest identity = %s in %s", manifest.Kind, manifest.Metadata.Namespace)
 	}
 	want := map[string]string{
@@ -51,13 +51,13 @@ func TestResourceQuotaManifestNilWithoutHardCaps(t *testing.T) {
 			Requests: &environments.EnvironmentResourceList{CPU: "100m"},
 		},
 	}
-	if manifest := resourceQuotaManifest("lodestar", onlyDefaults); manifest != nil {
+	if manifest := resourceQuotaManifest("meridian", onlyDefaults); manifest != nil {
 		t.Fatalf("quota with only container defaults rendered a ResourceQuota: %+v", manifest)
 	}
 }
 
 func TestLimitRangeManifest(t *testing.T) {
-	manifest := limitRangeManifest("lodestar", fullResourceQuota())
+	manifest := limitRangeManifest("meridian", fullResourceQuota())
 	if manifest == nil {
 		t.Fatal("quota with container defaults rendered no LimitRange")
 	}
@@ -68,7 +68,7 @@ func TestLimitRangeManifest(t *testing.T) {
 	if item.Default["cpu"] != "500m" || item.DefaultRequest["memory"] != "128Mi" {
 		t.Fatalf("limit range defaults = %+v", item)
 	}
-	if manifest := limitRangeManifest("lodestar", &environments.EnvironmentResourceQuota{Pods: "10"}); manifest != nil {
+	if manifest := limitRangeManifest("meridian", &environments.EnvironmentResourceQuota{Pods: "10"}); manifest != nil {
 		t.Fatalf("quota without container defaults rendered a LimitRange: %+v", manifest)
 	}
 }
@@ -90,8 +90,8 @@ func writeBootstrapTree(t *testing.T, root, environment, namespace string) {
 
 func TestProjectResourceQuotaInjectsPromotableManifests(t *testing.T) {
 	root := t.TempDir()
-	writeBootstrapTree(t, root, "staging", "lodestar")
-	projected, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "lodestar", fullResourceQuota())
+	writeBootstrapTree(t, root, "staging", "meridian")
+	projected, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "meridian", fullResourceQuota())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,8 +142,8 @@ func TestProjectResourceQuotaInjectsPromotableManifests(t *testing.T) {
 
 func TestProjectResourceQuotaNoOpWithoutDeclaration(t *testing.T) {
 	root := t.TempDir()
-	writeBootstrapTree(t, root, "staging", "lodestar")
-	projected, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "lodestar", nil)
+	writeBootstrapTree(t, root, "staging", "meridian")
+	projected, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "meridian", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestProjectResourceQuotaNoOpWithoutDeclaration(t *testing.T) {
 
 func TestProjectResourceQuotaRejectsMissingNamespace(t *testing.T) {
 	root := t.TempDir()
-	writeBootstrapTree(t, root, "staging", "lodestar")
+	writeBootstrapTree(t, root, "staging", "meridian")
 	if _, err := projectResourceQuota(testRenderRoot(t, root), root, "staging", "", fullResourceQuota()); err == nil {
 		t.Fatal("expected an error when the environment has no namespace")
 	}

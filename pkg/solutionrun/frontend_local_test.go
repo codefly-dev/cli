@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// wikiRepository is a repository holding the wiki component, whose remote
+// wikiRepository is a repository holding the quill component, whose remote
 // depends on a sibling package, beside another package it does not use.
 func wikiRepository(t *testing.T) (string, *resources.Module) {
 	t.Helper()
@@ -26,21 +26,21 @@ func wikiRepository(t *testing.T) (string, *resources.Module) {
 		"packages/shared/package.json": `{"name":"shared"}`,
 		"packages/shared/index.ts":     "shared v1",
 		"packages/other/index.ts":      "not a dependency",
-		"solutions/wiki/services/fe-remote/package.json":                  `{"dependencies":{"shared":"file:../../../../packages/shared"}}`,
-		"solutions/wiki/services/fe-remote/package-lock.json":             "{}",
-		"solutions/wiki/services/fe-remote/Page.tsx":                      "page v1",
-		"solutions/wiki/services/fe-remote/dist/mf-manifest.json":         "tracked stale bundle",
-		"solutions/wiki/services/api/main.go":                             "package main",
-		"solutions/wiki/services/api/" + FrontendFileName:                 "title: Wiki\n",
-		"solutions/wiki/module.codefly.yaml":                              "name: wiki",
-		"solutions/wiki/services/fe-remote/.env.production":               "a committed env file is source",
-		"solutions/wiki/services/fe-remote/src/nested/Widget.tsx":         "widget",
-		"solutions/wiki/services/fe-remote/node_modules/tracked/index.js": "vendored",
+		"solutions/quill/services/fe-remote/package.json":                  `{"dependencies":{"shared":"file:../../../../packages/shared"}}`,
+		"solutions/quill/services/fe-remote/package-lock.json":             "{}",
+		"solutions/quill/services/fe-remote/Page.tsx":                      "page v1",
+		"solutions/quill/services/fe-remote/dist/mf-manifest.json":         "tracked stale bundle",
+		"solutions/quill/services/api/main.go":                             "package main",
+		"solutions/quill/services/api/" + FrontendFileName:                 "title: Quill\n",
+		"solutions/quill/module.codefly.yaml":                              "name: quill",
+		"solutions/quill/services/fe-remote/.env.production":               "a committed env file is source",
+		"solutions/quill/services/fe-remote/src/nested/Widget.tsx":         "widget",
+		"solutions/quill/services/fe-remote/node_modules/tracked/index.js": "vendored",
 	})
 	require.NoError(t, os.Symlink("CLAUDE.md", filepath.Join(root, "AGENTS.md")))
 	gitCommitAll(t, root)
-	module := &resources.Module{Name: "wiki", ServiceEntry: "api"}
-	module.WithDir(filepath.Join(root, "solutions/wiki"))
+	module := &resources.Module{Name: "quill", ServiceEntry: "api"}
+	module.WithDir(filepath.Join(root, "solutions/quill"))
 	return root, module
 }
 
@@ -51,12 +51,12 @@ func wikiRepository(t *testing.T) (string, *resources.Module) {
 func TestFrontendSourcesAreWhatTheBuildReads(t *testing.T) {
 	root, module := wikiRepository(t)
 	for name, content := range map[string]string{
-		"solutions/wiki/services/fe-remote/NewWidget.tsx":    "not yet added",
-		"solutions/wiki/services/fe-remote/.env":             "untracked secrets",
-		"solutions/wiki/services/fe-remote/.env.development": "untracked secrets",
-		"solutions/wiki/services/fe-remote/settings.local":   "ignored",
-		"solutions/wiki/services/fe-remote/node_modules/x/x": "installed",
-		"packages/shared/added.ts":                           "a new sibling file",
+		"solutions/quill/services/fe-remote/NewWidget.tsx":    "not yet added",
+		"solutions/quill/services/fe-remote/.env":             "untracked secrets",
+		"solutions/quill/services/fe-remote/.env.development": "untracked secrets",
+		"solutions/quill/services/fe-remote/settings.local":   "ignored",
+		"solutions/quill/services/fe-remote/node_modules/x/x": "installed",
+		"packages/shared/added.ts":                            "a new sibling file",
 	} {
 		full := filepath.Join(root, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
@@ -64,21 +64,21 @@ func TestFrontendSourcesAreWhatTheBuildReads(t *testing.T) {
 	}
 	sources, err := selectFrontendSources(t.Context(), module)
 	require.NoError(t, err)
-	require.Equal(t, "solutions/wiki", sources.component)
-	require.Equal(t, "solutions/wiki/services/fe-remote", sources.project)
+	require.Equal(t, "solutions/quill", sources.component)
+	require.Equal(t, "solutions/quill/services/fe-remote", sources.project)
 	require.Equal(t, []string{
 		".gitignore",
 		"CLAUDE.md",
 		"packages/shared/added.ts",
 		"packages/shared/index.ts",
 		"packages/shared/package.json",
-		"solutions/wiki/module.codefly.yaml",
-		"solutions/wiki/services/fe-remote/.env.production",
-		"solutions/wiki/services/fe-remote/NewWidget.tsx",
-		"solutions/wiki/services/fe-remote/Page.tsx",
-		"solutions/wiki/services/fe-remote/package-lock.json",
-		"solutions/wiki/services/fe-remote/package.json",
-		"solutions/wiki/services/fe-remote/src/nested/Widget.tsx",
+		"solutions/quill/module.codefly.yaml",
+		"solutions/quill/services/fe-remote/.env.production",
+		"solutions/quill/services/fe-remote/NewWidget.tsx",
+		"solutions/quill/services/fe-remote/Page.tsx",
+		"solutions/quill/services/fe-remote/package-lock.json",
+		"solutions/quill/services/fe-remote/package.json",
+		"solutions/quill/services/fe-remote/src/nested/Widget.tsx",
 		"tsconfig.base.json",
 	}, sources.files)
 }
@@ -273,16 +273,16 @@ func packTarball(t *testing.T, vendorDir, version, content string) string {
 func strconvQuote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
 
 // A project depending on a vendored tarball beside another component — as
-// every solution depending on the wiki's vendored UI does — reads it: the
+// every solution depending on the quill's vendored UI does — reads it: the
 // tarball is a source at the path npm resolves, so an empty npm cache installs
 // it from the staged copy; replacing it changes the digest, and a vendor bump
 // rebuilds with the new tarball.
 func TestAVendoredTarballDependencyIsASource(t *testing.T) {
 	root := gitRepository(t, map[string]string{
-		"solutions/wiki/services/fe-remote/package.json":  `{"name":"wiki"}`,
-		"solutions/other/services/fe-remote/package.json": `{"name":"remote","version":"1.0.0","private":true,"dependencies":{"shared":"file:../../../wiki/services/fe-remote/vendor/shared-1.0.0.tgz"}}`,
+		"solutions/quill/services/fe-remote/package.json": `{"name":"quill"}`,
+		"solutions/other/services/fe-remote/package.json": `{"name":"remote","version":"1.0.0","private":true,"dependencies":{"shared":"file:../../../quill/services/fe-remote/vendor/shared-1.0.0.tgz"}}`,
 	})
-	vendor := filepath.Join(root, "solutions/wiki/services/fe-remote/vendor")
+	vendor := filepath.Join(root, "solutions/quill/services/fe-remote/vendor")
 	module := &resources.Module{Name: "other", ServiceEntry: "api"}
 	module.WithDir(filepath.Join(root, "solutions/other"))
 	remote := filepath.Join(module.ServicesDir(), "fe-remote")
@@ -291,12 +291,12 @@ func TestAVendoredTarballDependencyIsASource(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(vendor, "shared-1.0.0.tgz"), []byte("v1"), 0o600))
 	sources, err := selectFrontendSources(t.Context(), module)
 	require.NoError(t, err)
-	require.Contains(t, sources.files, "solutions/wiki/services/fe-remote/vendor/shared-1.0.0.tgz")
+	require.Contains(t, sources.files, "solutions/quill/services/fe-remote/vendor/shared-1.0.0.tgz")
 	first, _, err := sources.digest(module, false)
 	require.NoError(t, err)
 	staged := t.TempDir()
 	require.NoError(t, sources.sync(t.Context(), staged))
-	require.FileExists(t, filepath.Join(staged, "solutions/wiki/services/fe-remote/vendor/shared-1.0.0.tgz"))
+	require.FileExists(t, filepath.Join(staged, "solutions/quill/services/fe-remote/vendor/shared-1.0.0.tgz"))
 	require.NoError(t, os.WriteFile(filepath.Join(vendor, "shared-1.0.0.tgz"), []byte("v2"), 0o600))
 	replaced, _, err := sources.digest(module, false)
 	require.NoError(t, err)
@@ -315,7 +315,7 @@ func TestAVendoredTarballDependencyIsASource(t *testing.T) {
 	}
 	require.NoError(t, os.Remove(filepath.Join(vendor, "shared-1.0.0.tgz")))
 	depend := func(tarball string) {
-		require.NoError(t, os.WriteFile(filepath.Join(remote, "package.json"), []byte(`{"name":"remote","version":"1.0.0","private":true,"scripts":{"build":"node build.cjs"},"dependencies":{"shared":"file:../../../wiki/services/fe-remote/vendor/`+tarball+`"}}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(remote, "package.json"), []byte(`{"name":"remote","version":"1.0.0","private":true,"scripts":{"build":"node build.cjs"},"dependencies":{"shared":"file:../../../quill/services/fe-remote/vendor/`+tarball+`"}}`), 0o600))
 	}
 	depend(packTarball(t, vendor, "1.0.0", "shared v1"))
 	require.NoError(t, os.WriteFile(filepath.Join(remote, "build.cjs"), []byte(`const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/mf-manifest.json',JSON.stringify({shared:require('shared')}));`), 0o600))

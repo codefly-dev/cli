@@ -86,8 +86,8 @@ func TestShowNetworkJSONReportsDeployedPorts(t *testing.T) {
 	require.Equal(t, "saas/accounts", report.Services[0].Service)
 	require.Equal(t, map[string]uint16{"authority": 52893, "connect": 8081, "grpc": 9090, "rest": 8080}, deployedPorts(t, report))
 
-	report = runNetworkJSON(t, writeNetworkWorkspace(t, "saas-starter"), "staging")
-	require.Equal(t, uint16(6003), deployedPorts(t, report)["authority"])
+	report = runNetworkJSON(t, writeNetworkWorkspace(t, "starterkit"), "staging")
+	require.Equal(t, uint16(7963), deployedPorts(t, report)["authority"])
 }
 
 func TestShowNetworkJSONRefusesAnUndeclaredEnvironment(t *testing.T) {

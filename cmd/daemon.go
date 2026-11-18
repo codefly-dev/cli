@@ -11,7 +11,6 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/daemon"
-	"github.com/codefly-dev/cli/pkg/gateway"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/spf13/cobra"
 )
@@ -39,32 +38,15 @@ Examples:
 		var childArgs []string
 
 		// Propagate global log-level flags to the child process so the
-		// re-exec'd gateway (or service) runs with the same verbosity.
+		// re-exec'd service runs with the same verbosity.
 		if trace {
 			childArgs = append(childArgs, "--trace")
 		} else if debug {
 			childArgs = append(childArgs, "--debug")
 		}
-
-		if startGateway {
-			// Start the gateway gRPC server as a daemon.
-			childArgs = append(childArgs, "daemon", "gateway",
-				"--dir", gatewayDir,
-				"--port", fmt.Sprintf("%d", gatewayPort),
-			)
-			executionArgs, err := gatewayExecution.childArgs()
-			if err != nil {
-				return err
-			}
-			childArgs = append(childArgs, executionArgs...)
-		} else {
-			if gatewayExecution.enabled || gatewayExecution.hasConfiguration() {
-				return fmt.Errorf("governed execution flags require daemon start --gateway")
-			}
-			// Default: "run service" + whatever the user passed after "--"
-			childArgs = append(childArgs, "run", "service")
-			childArgs = append(childArgs, args...)
-		}
+		// "run service" + whatever the user passed after "--"
+		childArgs = append(childArgs, "run", "service")
+		childArgs = append(childArgs, args...)
 
 		pid, err := daemon.Start(childArgs)
 		if err != nil {
@@ -75,9 +57,6 @@ Examples:
 		cli.Header(1, "Daemon started (PID %d)", pid)
 		fmt.Printf("  Logs: %s\n", logPath)
 		fmt.Printf("  Stop: codefly daemon stop\n")
-		if startGateway {
-			fmt.Printf("  Gateway: 127.0.0.1:%d\n", gatewayPort)
-		}
 		return nil
 	},
 }
@@ -209,91 +188,6 @@ func printTail(f *os.File, n int) error {
 	return nil
 }
 
-// --- daemon gateway (internal: runs the gateway gRPC server in foreground) ---
-
-var (
-	gatewayDir       string
-	gatewayPort      int
-	gatewayExecution gatewayExecutionOptions
-)
-
-var daemonGatewayCmd = &cobra.Command{
-	Use:    "gateway",
-	Short:  "Serve Codefly workspace operations to Mind over gRPC",
-	Long:   "Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.",
-	Hidden: false,
-	Args:   cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		// Catch SIGTERM too: `daemon stop` sends SIGTERM for graceful shutdown.
-		// Listening only for SIGINT meant SIGTERM killed the gateway by default
-		// disposition, skipping the deferred RemovePortFile and the server's
-		// graceful unwind — leaving a stale port file read as a live gateway.
-		ctx, stop := common.SignalContext(cmd.Context())
-		defer stop()
-
-		absDir := gatewayDir
-		if absDir == "" {
-			absDir = "."
-		}
-		// The gateway serves the workspace it was POINTED at, for its whole
-		// life, which is not necessarily the one it was started in. Everything
-		// it runs must be attributed to that workspace, or a stop issued there
-		// cannot see its own run.
-		markLaunchWorkspaceFrom(absDir)
-
-		execution, err := gatewayExecution.open(ctx, absDir)
-		if err != nil {
-			return fmt.Errorf("cannot configure governed execution: %w", err)
-		}
-		if execution != nil {
-			defer func() {
-				if closeErr := execution.Close(); closeErr != nil {
-					fmt.Fprintf(os.Stderr, "[gateway] close governed execution: %v\n", closeErr)
-				}
-			}()
-		}
-
-		// CODEFLY_GATEWAY_HOST lets a container expose the gateway over the
-		// network (set it to 0.0.0.0). Non-loopback binds require a bearer
-		// token plus a TLS certificate/key. Supplying a client CA additionally
-		// requires verified client certificates (mTLS). Empty host keeps the
-		// local-only 127.0.0.1 default.
-		var executionRecorder gateway.ExecutionRecorder
-		var executionDispatcher gateway.ExecutionDispatcher
-		if execution != nil {
-			executionRecorder = execution.Recorder
-			executionDispatcher = execution.Dispatcher
-		}
-		srv, err := gateway.NewServer(&gateway.Config{
-			WorkDir:             absDir,
-			Port:                gatewayPort,
-			Host:                os.Getenv("CODEFLY_GATEWAY_HOST"),
-			Token:               os.Getenv("CODEFLY_GATEWAY_TOKEN"),
-			TLSCertFile:         os.Getenv("CODEFLY_GATEWAY_TLS_CERT"),
-			TLSKeyFile:          os.Getenv("CODEFLY_GATEWAY_TLS_KEY"),
-			TLSClientCAFile:     os.Getenv("CODEFLY_GATEWAY_TLS_CLIENT_CA"),
-			ExecutionRecorder:   executionRecorder,
-			ExecutionDispatcher: executionDispatcher,
-		})
-		if err != nil {
-			return fmt.Errorf("cannot create gateway server: %w", err)
-		}
-
-		// Clean up port file on exit; a port file that cannot be removed is
-		// said, since the next daemon reads it.
-		defer func() {
-			if err := gateway.RemovePortFile(); err != nil {
-				cli.Warning("cannot remove the daemon port file: %v", err)
-			}
-		}()
-
-		if err := srv.Serve(ctx); err != nil {
-			return fmt.Errorf("gateway server error: %w", err)
-		}
-		return nil
-	},
-}
-
 // --- daemon restart ---
 
 var daemonRestartCmd = &cobra.Command{
@@ -390,22 +284,9 @@ Use --kill-orphans to clean up orphaned agent processes.`,
 	},
 }
 
-// --- daemon start --gateway ---
-
-var startGateway bool
-
 func init() {
 	daemonLogsCmd.Flags().BoolVarP(&logFollow, "follow", "f", false, "Follow log output")
 	daemonLogsCmd.Flags().IntVarP(&logTail, "tail", "n", 0, "Show last N lines")
-
-	daemonGatewayCmd.Flags().StringVar(&gatewayDir, "dir", ".", "Working directory containing mind.yaml")
-	daemonGatewayCmd.Flags().IntVar(&gatewayPort, "port", 50051, "gRPC listen port")
-	addGatewayExecutionFlags(daemonGatewayCmd)
-
-	daemonStartCmd.Flags().BoolVar(&startGateway, "gateway", false, "Start the Mind Gateway gRPC server instead of running services")
-	daemonStartCmd.Flags().StringVar(&gatewayDir, "dir", ".", "Working directory for gateway (requires --gateway)")
-	daemonStartCmd.Flags().IntVar(&gatewayPort, "port", 50051, "gRPC port for gateway (requires --gateway)")
-	addGatewayExecutionFlags(daemonStartCmd)
 
 	daemonMonitorCmd.Flags().BoolVarP(&monitorWatch, "watch", "w", false, "Run continuously (every 30s)")
 	daemonMonitorCmd.Flags().BoolVar(&monitorKill, "kill-orphans", false, "Kill orphaned agent processes")
@@ -415,6 +296,5 @@ func init() {
 	DaemonCmd.AddCommand(daemonRestartCmd)
 	DaemonCmd.AddCommand(daemonStatusCmd)
 	DaemonCmd.AddCommand(daemonLogsCmd)
-	DaemonCmd.AddCommand(daemonGatewayCmd)
 	DaemonCmd.AddCommand(daemonMonitorCmd)
 }

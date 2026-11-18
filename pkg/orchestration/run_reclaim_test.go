@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/base"
+	"github.com/codefly-dev/core/runners/dockerrun"
+	"github.com/codefly-dev/core/runners/runstate"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/stretchr/testify/require"
@@ -29,6 +32,21 @@ type exitedRun struct {
 	recovered []int
 	removed   []string
 	networks  []string
+	// present is the containers the engine still holds, by id.
+	present map[string]container.Summary
+	// disposed is every run core was asked to remove from the container
+	// runtime as a disposable one, with the scope it was asked for.
+	disposed       []runstate.Run
+	disposedScopes []dockerrun.ContainerRecoveryScope
+	// otherRunLive is whether another run is live in the workspace.
+	otherRunLive bool
+}
+
+// storeAgentRemovesItsContainers makes the store agent remove its containers
+// when it is stopped or destroyed, and leave their network, as the agent of a
+// disposable run does on Stop.
+func (run *exitedRun) storeAgentRemovesItsContainers() {
+	run.managers[2].onTeardown = func() { clear(run.present) }
 }
 
 func newExitedRun(t *testing.T, started time.Time) *exitedRun {
@@ -47,10 +65,30 @@ func newExitedRun(t *testing.T, started time.Time) *exitedRun {
 
 	previousList, previousPreview, previousRecover := listRegisteredProcessGroups, previewProcessGroupRecovery, recoverProcessGroup
 	previousContainers, previousRemove, previousNetwork, previousLive := listOwnedContainers, removeRunContainer, removeRunNetwork, otherRunsLive
+	previousDisposable := removeDisposableRun
 	t.Cleanup(func() {
 		listRegisteredProcessGroups, previewProcessGroupRecovery, recoverProcessGroup = previousList, previousPreview, previousRecover
 		listOwnedContainers, removeRunContainer, removeRunNetwork, otherRunsLive = previousContainers, previousRemove, previousNetwork, previousLive
+		removeDisposableRun = previousDisposable
 	})
+	// Core's removal, standing on the engine above: it decides on the run it
+	// is handed, as core does, and removes every container of the scope with
+	// the data directory mounted into it.
+	removeDisposableRun = func(_ context.Context, scope dockerrun.ContainerRecoveryScope, disposable runstate.Run) (dockerrun.DisposableRunRemoval, error) {
+		run.disposed, run.disposedScopes = append(run.disposed, disposable), append(run.disposedScopes, scope)
+		var removal dockerrun.DisposableRunRemoval
+		if !disposable.Disposable {
+			return removal, nil
+		}
+		for id := range run.present {
+			removal.Containers = append(removal.Containers, id)
+			removal.DataDirectories = append(removal.DataDirectories, "runtime-cache/"+id)
+		}
+		slices.Sort(removal.Containers)
+		slices.Sort(removal.DataDirectories)
+		clear(run.present)
+		return removal, nil
+	}
 	listRegisteredProcessGroups = func(context.Context) ([]int, error) { return []int{700, 800, 900}, nil }
 	owners := map[int]int{700: 4100, 800: 5100}
 	previewProcessGroupRecovery = func(_ context.Context, pgid int) (*runners.ProcessGroupRecoveryExpectation, error) {
@@ -71,21 +109,37 @@ func newExitedRun(t *testing.T, started time.Time) *exitedRun {
 		}}
 		return c
 	}
+	run.present = map[string]container.Summary{
+		"minio":   onNetwork(summary("minio", 4100, started.Add(time.Second), "")),
+		"gateway": onNetwork(summary("gateway", 4100, started.Add(2*time.Second), "")),
+	}
 	listOwnedContainers = func(context.Context, string) ([]container.Summary, error) {
-		return []container.Summary{
-			onNetwork(summary("minio", 4100, started.Add(time.Second), "")),
-			onNetwork(summary("gateway", 4100, started.Add(2*time.Second), "")),
-		}, nil
+		var listed []container.Summary
+		for _, c := range run.present {
+			listed = append(listed, c)
+		}
+		return listed, nil
 	}
 	removeRunContainer = func(_ context.Context, id string) error {
 		run.removed = append(run.removed, id)
+		delete(run.present, id)
 		return nil
 	}
+	// The engine removes a network once: one a container is still attached
+	// to is kept, and one already removed is not found.
 	removeRunNetwork = func(_ context.Context, name string) (bool, error) {
+		for _, c := range run.present {
+			if _, attached := c.NetworkSettings.Networks[name]; attached {
+				return false, nil
+			}
+		}
+		if slices.Contains(run.networks, name) {
+			return false, nil
+		}
 		run.networks = append(run.networks, name)
 		return true, nil
 	}
-	otherRunsLive = func(context.Context, *World) bool { return false }
+	otherRunsLive = func(context.Context, *World) bool { return run.otherRunLive }
 	return run
 }
 
@@ -111,13 +165,122 @@ func TestARunsExitTakesBackWhatItsAgentsLeft(t *testing.T) {
 			require.Equal(t, []int{700}, run.recovered)
 			if !failed {
 				require.Empty(t, run.removed, "a stopped run keeps its containers for the next run to reuse")
-				require.Empty(t, run.networks)
+				require.Empty(t, run.networks, "and the network they are attached to")
 				return
 			}
 			slices.Sort(run.removed)
 			require.Equal(t, []string{"gateway", "minio"}, run.removed)
 			require.Equal(t, []string{"codefly-saas-object-storage-network"}, run.networks, "the shared network once, and never the engine's bridge")
 			require.Equal(t, []string{"codefly-saas-object-storage-network"}, reclaim.Networks)
+		})
+	}
+}
+
+// A run whose agents removed their containers as it ended — stopped by the
+// operator, or destroyed by the SDK session that owns it — takes back the
+// network those containers were on, which the agent left: it was noted before
+// the teardown reached the agent, and nothing is attached to it any more.
+// While another run is live in the workspace nothing is removed.
+func TestARunThatEndedWithoutItsContainersRemovesTheirNetwork(t *testing.T) {
+	started := time.Unix(1_800_000_000, 0)
+	for name, tc := range map[string]struct {
+		end          func(*Flow) error
+		otherRunLive bool
+		want         []string
+	}{
+		"stopped":                         {end: (*Flow).Stop, want: []string{"codefly-saas-object-storage-network"}},
+		"destroyed":                       {end: (*Flow).Shutdown, want: []string{"codefly-saas-object-storage-network"}},
+		"stopped while another run lives": {end: (*Flow).Stop, otherRunLive: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := newExitedRun(t, started)
+			run.storeAgentRemovesItsContainers()
+			run.otherRunLive = tc.otherRunLive
+
+			require.NoError(t, tc.end(run.flow))
+			require.Empty(t, run.present, "the agent removed its containers")
+
+			reclaim, err := run.flow.ReclaimAfterRun(context.Background(), started, false)
+			require.NoError(t, err)
+			require.Empty(t, run.removed, "the run removes no container itself")
+			require.Equal(t, tc.want, run.networks)
+			require.Equal(t, tc.want, reclaim.Networks)
+		})
+	}
+}
+
+// A disposable run's scope is never run again, so the run takes back what it
+// left on the container runtime however it ended: stopped on purpose (Ctrl-C,
+// SIGTERM, a hangup, the process it was started for gone), finished or failed.
+// Core is handed the run as its agents were told it and the scope their
+// containers are labelled with, and removes the containers, their volumes and
+// their data directories; the network they shared goes after them. A stop used
+// to keep all of it, for the next run of a scope nothing runs again.
+func TestADisposableRunsExitRemovesItsContainersHoweverItEnded(t *testing.T) {
+	started := time.Unix(1_800_000_000, 0)
+	for name, tc := range map[string]struct {
+		end    func(*Flow) error
+		failed bool
+	}{
+		"stopped on purpose": {end: (*Flow).Stop},
+		"destroyed":          {end: (*Flow).Shutdown},
+		"failed to start":    {end: (*Flow).Stop, failed: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := newExitedRun(t, started)
+			workspace := t.TempDir()
+			run.flow.world.Workspace.WithDir(workspace)
+			run.flow.world.Env = &environments.Environment{Name: "local"}
+			scope := run.flow.WithIsolatedInvocation()
+			require.NotEmpty(t, scope)
+			nativeStateUnder(t, t.TempDir())
+
+			require.NoError(t, tc.end(run.flow))
+			reclaim, err := run.flow.ReclaimAfterRun(context.Background(), started, tc.failed)
+			require.NoError(t, err)
+
+			require.Equal(t, []runstate.Run{{Workspace: workspace, NamingScope: scope, Disposable: true}}, run.disposed)
+			labelled, err := ContainerRecoveryScopeFor(run.flow.world.Workspace, run.flow.world.Env)
+			require.NoError(t, err)
+			require.Equal(t, []dockerrun.ContainerRecoveryScope{labelled}, run.disposedScopes, "the scope the run's containers are labelled with")
+			require.Equal(t, []string{"gateway", "minio"}, reclaim.DisposableContainers)
+			require.Equal(t, []string{"runtime-cache/gateway", "runtime-cache/minio"}, reclaim.ContainerData)
+			require.Empty(t, run.present)
+			require.Equal(t, []string{"codefly-saas-object-storage-network"}, reclaim.Networks, "the network they leave empty goes with them")
+		})
+	}
+}
+
+// A plain run, or one whose scope the caller named, is a developer's: a stop
+// keeps its containers for the next run to reuse, and their data. Core is not
+// even asked. Nor is it for a disposable run that never reaches Docker.
+func TestAPersistentRunsExitKeepsItsContainers(t *testing.T) {
+	started := time.Unix(1_800_000_000, 0)
+	for name, tc := range map[string]struct {
+		scope      string
+		disposable bool
+		runtime    string
+	}{
+		"plain":                             {},
+		"a scope the developer named":       {scope: "pinned"},
+		"declared disposable with no scope": {disposable: true},
+		"disposable on the native runtime":  {scope: "invgenerated", disposable: true, runtime: resources.RuntimeContextNative},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := newExitedRun(t, started)
+			run.flow.world.Workspace.WithDir(t.TempDir())
+			run.flow.world.Env = &environments.Environment{Name: "local", NamingScope: tc.scope, Disposable: tc.disposable}
+			run.flow.WithRuntimeContext(tc.runtime)
+			nativeStateUnder(t, t.TempDir())
+
+			require.NoError(t, run.flow.Stop())
+			reclaim, err := run.flow.ReclaimAfterRun(context.Background(), started, false)
+			require.NoError(t, err)
+			require.Empty(t, run.disposed, "core was asked to remove a run that is not disposable")
+			require.Empty(t, reclaim.DisposableContainers)
+			require.Empty(t, reclaim.ContainerData)
+			require.Len(t, run.present, 2, "a stopped run keeps its containers for the next run to reuse")
+			require.Empty(t, run.networks)
 		})
 	}
 }
@@ -161,4 +324,26 @@ func TestAPortHeldByAnEarlierRunsOrphanNamesItsRecovery(t *testing.T) {
 	err = runner.checkInitialPortAvailability(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(held))})
 	require.ErrorContains(t, err, "already in use")
 	require.NotContains(t, err.Error(), "codefly recover")
+}
+
+// A run answers for a registered group one of its agents started, whether the
+// agent still runs (the group is its child) or is gone (Core's recovery names
+// it as the owner), and for no other.
+func TestARunOwnsTheProcessGroupsItsAgentsStarted(t *testing.T) {
+	run := newExitedRun(t, time.Now())
+	previousParent := parentOfProcess
+	t.Cleanup(func() { parentOfProcess = previousParent })
+	// 900 is a live group no recovery previews: its parent decides.
+	parents := map[int]int{900: 4200, 950: 5100}
+	parentOfProcess = func(_ context.Context, pid int) (int, bool) {
+		parent, ok := parents[pid]
+		return parent, ok
+	}
+	ctx := context.Background()
+	require.True(t, run.flow.OwnsProcessGroup(ctx, 700), "the orphan agent 4100 of this run left")
+	require.True(t, run.flow.OwnsProcessGroup(ctx, 900), "the group live agent 4200 of this run started")
+	require.False(t, run.flow.OwnsProcessGroup(ctx, 800), "another run's orphan")
+	require.False(t, run.flow.OwnsProcessGroup(ctx, 950), "a group another run's live agent started")
+	require.False(t, run.flow.OwnsProcessGroup(ctx, 960), "a group nothing attributes")
+	require.False(t, (*Flow)(nil).OwnsProcessGroup(ctx, 700), "a run that never had a flow owns nothing")
 }

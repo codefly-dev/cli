@@ -166,7 +166,7 @@ exit 0
 }
 
 // writeSiblingCLI creates the cli/ checkout buildLinuxCLI cross-compiles from.
-// Companions that bake the CLI (codefly, execution, the language runtimes)
+// Companions that bake the CLI (codefly, a leaf, the language runtimes)
 // stage a linux binary before Docker runs, and that step resolves ../cli
 // relative to the core directory.
 func writeSiblingCLI(t *testing.T, coreDir string) {
@@ -182,10 +182,11 @@ func writeSiblingCLI(t *testing.T, coreDir string) {
 // Everything else resolves the base as its FROM, so continuing past a failed
 // base build would publish dependents against a stale or missing image.
 func TestBuildTargets_BaseBuildFailureAbortsTheRun(t *testing.T) {
+	withLeafSpec(t)
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
 	writeManifest(t, root, "codefly", "0.0.1", true, false)
-	writeManifest(t, root, "execution", "0.0.2", true, false)
+	writeManifest(t, root, leafCompanion, "0.0.2", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -202,10 +203,10 @@ exit 0
 
 	base, err := LoadCompanion(filepath.Join(root, "companions", "codefly"))
 	require.NoError(t, err)
-	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
+	leaf, err := LoadCompanion(filepath.Join(root, "companions", leafCompanion))
 	require.NoError(t, err)
 
-	_, err = buildTargets(root, []*Companion{base, execution}, BuildOptions{})
+	_, err = buildTargets(root, []*Companion{base, leaf}, BuildOptions{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "every other companion builds on it")
 
@@ -217,8 +218,9 @@ exit 0
 // a companion others build on could be ordered after them or treated as a
 // leaf whose failure is survivable.
 func TestBaseCompanionIsTheOneOrderedFirst(t *testing.T) {
+	withLeafSpec(t)
 	ordered, err := sortCompanionsForBuild([]*Companion{
-		{Name: "python"}, {Name: "proto"}, {Name: "codefly"}, {Name: "execution"},
+		{Name: "python"}, {Name: "proto"}, {Name: "codefly"}, {Name: leafCompanion},
 	})
 	require.NoError(t, err)
 	require.True(t, isBaseCompanion(ordered[0].Name),
@@ -329,9 +331,10 @@ func TestRunPublish_NamedAlreadyPublishedTargetFailsLoudly(t *testing.T) {
 // operator with no way to republish at all. GetBool discards its error, which
 // is exactly how such a break stays silent.
 func TestRunPublish_ForceRepublishesAnAlreadyPublishedTag(t *testing.T) {
+	withLeafSpec(t)
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
-	writeManifest(t, root, "execution", "0.0.1", true, false)
+	writeManifest(t, root, leafCompanion, "0.0.1", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -343,20 +346,21 @@ exit 0
 	require.NoError(t, publishedAll(t, root, map[string]string{"force": "true"}))
 	built, err := os.ReadFile(buildLog)
 	require.NoError(t, err, "--force must rebuild and overwrite the published tag")
-	require.Contains(t, string(built), "execution")
+	require.Contains(t, string(built), leafCompanion)
 }
 
 // Provenance attestation consumes this file. It must list what the run pushed
 // and nothing else: signing a tag the run skipped as already published claims
 // a build that never happened, in a transparency log that cannot be retracted.
 func TestRunPublish_ManifestRecordsOnlyWhatThisRunPushed(t *testing.T) {
+	withLeafSpec(t)
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
-	writeManifest(t, root, "execution", "0.0.1", true, false)
+	writeManifest(t, root, leafCompanion, "0.0.1", true, false)
 	writeManifest(t, root, baseCompanionName, "0.0.2", true, false)
 	t.Setenv("DOCKER_CONFIG", "")
 
-	// The codefly tag already resolves in the registry; the execution one does
+	// The codefly tag already resolves in the registry; the leaf one does
 	// not. Only the authenticated lookup decides that — DOCKER_CONFIG marks the
 	// anonymous probe pushImage runs afterwards, which must see the pushed image.
 	writeFakeDocker(t, `
@@ -378,7 +382,7 @@ exit 0
 	var entries []publishedEntry
 	require.NoError(t, json.Unmarshal(raw, &entries))
 	require.Len(t, entries, 1, "a skipped companion must not appear in the attestable set")
-	require.Equal(t, "execution", entries[0].Companion)
+	require.Equal(t, leafCompanion, entries[0].Companion)
 	require.Equal(t, "0.0.1", entries[0].Version)
 }
 
@@ -489,10 +493,11 @@ func TestBuildTargets_FailsWhenADependentsBaseCannotBeResolved(t *testing.T) {
 // The base builds itself, and a companion whose spec names no base takes none —
 // passing one would be an unconsumed build-arg on every such image.
 func TestBuildTargets_PassesNoBaseArgumentWhereNoneIsDeclared(t *testing.T) {
+	withLeafSpec(t)
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
 	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
-	writeManifest(t, root, "execution", "0.0.1", true, false)
+	writeManifest(t, root, leafCompanion, "0.0.1", true, false)
 
 	buildLog := filepath.Join(t.TempDir(), "built.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -502,10 +507,10 @@ exit 0
 
 	base, err := LoadCompanion(filepath.Join(root, "companions", baseCompanionName))
 	require.NoError(t, err)
-	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
+	leaf, err := LoadCompanion(filepath.Join(root, "companions", leafCompanion))
 	require.NoError(t, err)
 
-	_, err = buildTargets(root, []*Companion{base, execution}, BuildOptions{})
+	_, err = buildTargets(root, []*Companion{base, leaf}, BuildOptions{})
 	require.NoError(t, err)
 
 	built, err := os.ReadFile(buildLog)

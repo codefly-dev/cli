@@ -415,13 +415,13 @@ func TestRecordBuildRecipeOfMaterializedServiceArchivesUnderWorkspaceScratch(t *
 
 func TestReleasedVersionTagIsAnExactPublishedVersion(t *testing.T) {
 	for image, released := range map[string]bool{
-		"us-east1-docker.pkg.dev/p/r/platform-obin/documents/store:0.1.12": true,
-		"registry.local:5000/team/app:v1.2.3":                              true,
-		"us-east1-docker.pkg.dev/p/r/platform-obin/saas/accounts:0.0.0":    false,
-		"registry.local:5000/team/app":                                     false,
-		"example.test/app:latest":                                          false,
-		"example.test/app:1.2.3-rc.1":                                      false,
-		"example.test/app@sha256:" + strings.Repeat("a", 64):               false,
+		"us-east1-docker.pkg.dev/p/r/platform-northwind/documents/store:0.1.12": true,
+		"registry.local:5000/team/app:v1.2.3":                                   true,
+		"us-east1-docker.pkg.dev/p/r/platform-northwind/saas/accounts:0.0.0":    false,
+		"registry.local:5000/team/app":                                          false,
+		"example.test/app:latest":                                               false,
+		"example.test/app:1.2.3-rc.1":                                           false,
+		"example.test/app@sha256:" + strings.Repeat("a", 64):                    false,
 	} {
 		require.Equal(t, released, releasedVersionTag(image), image)
 	}

@@ -37,9 +37,9 @@ func TestPublishedContractSourcesFollowBufModulesThroughPinnedCompanion(t *testi
 		Service: "accounts", Endpoint: "connect", Kind: composition.APIContractKindProtobuf,
 		Path: "contracts/api/accounts/connect/contract.binpb", Digest: composition.APIContractDigest(contract),
 	}}
-	catalog := &composition.APIContractCatalog{Package: "codefly/saas-starter", Version: "0.1.0"}
+	catalog := &composition.APIContractCatalog{Package: "codefly/starterkit", Version: "0.1.0"}
 
-	entry, err := generators.BuildModuleClientEntry(t.Context(), moduleDir, "saas-starter", catalog, plan, generate.ListProtoSources)
+	entry, err := generators.BuildModuleClientEntry(t.Context(), moduleDir, "starterkit", catalog, plan, generate.ListProtoSources)
 	require.NoError(t, err)
 	var names []string
 	for _, source := range entry.ProtoSources {

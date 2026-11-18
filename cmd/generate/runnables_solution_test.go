@@ -43,8 +43,8 @@ var releasesRoutes = []releasesRoute{
 		summary: "Record every tag and pin the board shows that is not recorded yet", response: "RecordResult",
 		policy: `{"requires":[{"resource_kind":"records.records","actions":["read","write"]}]}`},
 	{method: "post", path: "/v1/releases/chat/install", id: "Releases_Post_V1_Releases_Chat_Install",
-		summary: "Import this solution's Robin intent into the installation", response: "RecordResult",
-		policy: `{"requires":[{"resource_kind":"robin.intents","actions":["import","activate"]}]}`},
+		summary: "Import this solution's Sidekick intent into the installation", response: "RecordResult",
+		policy: `{"requires":[{"resource_kind":"sidekick.intents","actions":["import","activate"]}]}`},
 	{method: "get", path: "/v1/releases/status", id: "Releases_Get_V1_Releases_Status",
 		summary: "Report whether the viewer's GitHub source is connected", response: "RecordResult",
 		policy: `{"any_checked_caller":true}`},
@@ -136,7 +136,7 @@ func publishSolutionContract(t *testing.T, moduleDir string, document []byte) {
 	}
 	catalog := &composition.APIContractCatalog{
 		Schema:  composition.APIContractCatalogSchema,
-		Package: "obin/releases",
+		Package: "northwind/releases",
 		Version: "0.3.0",
 		Endpoints: []composition.APIContractEndpoint{{
 			Service:  "backend",
@@ -270,7 +270,7 @@ func TestGenerateRunnableBindingsPreparesASolutionsReads(t *testing.T) {
 // committedArtifact is testdata/solution-runnables/api.swagger.json: the
 // releases backend's interface artifact exactly as solution-runtime-go's
 // Server.InterfaceArtifact renders it (codefly-dev/solution-runtime-go#77) —
-// every operation core-solutions' releases solution serves, each with the
+// every operation solution-kit' releases solution serves, each with the
 // policy it declares on the authority runtime, and its MCP server — with no
 // edit. It is a snapshot of that shape; the runtime's own tests hold
 // InterfaceArtifact to deriving in core.
@@ -302,7 +302,7 @@ func saveCommittedSolution(t *testing.T, ctx context.Context, artifact []byte) (
 	writeFixtureFile(t, filepath.Join(moduleDir, "services", "backend", filepath.FromSlash(standards.OpenAPIPath)), artifact)
 	writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(`schema: codefly/module-package/v2
 kind: module-package
-id: obin/releases
+id: northwind/releases
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"
 artifact-roots:

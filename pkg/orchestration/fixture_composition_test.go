@@ -15,7 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
 )
 
-const fragmentHead = "schema: codefly.dev/authority/fixture-composition/v1\n"
+const fragmentHead = "schema: codefly.dev/authority/fixture-composition/v2\n"
 
 // fragmentWorkspace composes two modules from OUTSIDE the workspace tree, as a
 // pinned module materializes, each shipping a fixture-composition fragment —
@@ -37,11 +37,8 @@ func fragmentWorkspace(t *testing.T, own string) *resources.Workspace {
 	write(authority, "configurations/local/"+fixturefragments.Group+".yaml", fragmentHead)
 	write(documents, "module.codefly.yaml", "name: documents\nservices:\n - name: documents\n")
 	write(documents, "services/documents/service.codefly.yaml", strings.Replace(service, "%s", "documents", 1))
-	write(documents, "configurations/local/"+fixturefragments.Group+".yaml", fragmentHead+`roles:
-  - organization: acme
-    name: viewer
-    scopes:
-      - {kind: documents, actions: [read]}
+	write(documents, "configurations/local/"+fixturefragments.Group+".yaml", fragmentHead+`installations:
+  - {organization: acme, target: documents, owner: alice, members: {user: [carol]}}
 `)
 	files := map[string]string{
 		"workspace.codefly.yaml": "name: fragments\nlayout: modules\nmodules:\n - name: authority\n   path: " + authority +
@@ -84,9 +81,9 @@ func TestTheReaderSuppliesTheMergeOfEveryModulesFragment(t *testing.T) {
 	require.Len(t, groups, 1, "the merge is supplied exactly once")
 	doc, err := fixturecomposition.Decode([]byte(groups[0]))
 	require.NoError(t, err)
-	require.Len(t, doc.Roles, 1)
-	require.Equal(t, "acme/viewer", doc.Roles[0].Key())
-	require.Equal(t, "documents", doc.Roles[0].Scopes[0].Kind)
+	require.Len(t, doc.Installations, 1)
+	require.Equal(t, "documents", doc.Installations[0].Target)
+	require.Equal(t, map[string][]string{"user": {"carol"}}, doc.Installations[0].Members)
 
 	require.Contains(t, reader.ConfigurationInformationLocalReader.AmbiguousWorkspaceConfigurations(), fixturefragments.Group,
 		"the premise: core reports the second provider as an ambiguity, which is what this resolves")
@@ -99,11 +96,8 @@ func TestTheReaderSuppliesTheMergeOfEveryModulesFragment(t *testing.T) {
 // any configuration, and core's precedence then applies untouched.
 func TestTheWorkspacesOwnDocumentWins(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	own := fragmentHead + `roles:
-  - organization: acme
-    name: admin
-    scopes:
-      - {kind: documents.collection, actions: [read]}
+	own := fragmentHead + `installations:
+  - {organization: acme, target: documents, owner: alice, members: {admin: [dana]}}
 `
 	reader := readerFor(t, fragmentWorkspace(t, own))
 	groups := fixtureGroups(reader)
@@ -166,18 +160,18 @@ func TestLocalFragmentMustJoinForeignFragment(t *testing.T) {
 	ws := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml":                                        "name: mixed\nlayout: modules\nmodules:\n - name: authority\n   path: " + authority + "\n - name: product\n",
 		"modules/product/module.codefly.yaml":                           "name: product\nservices: []\n",
-		"modules/product/configurations/local/fixture-composition.yaml": fragmentHead + "roles: [{organization: acme, name: viewer, scopes: [{kind: product, actions: [read]}]}]\n",
+		"modules/product/configurations/local/fixture-composition.yaml": fragmentHead + "installations: [{organization: acme, target: product, owner: alice, members: {user: [carol]}}]\n",
 	})
 	prepared, err := fixturefragments.Prepare(context.Background(), ws, &environments.Environment{Name: "local"})
 	require.NoError(t, err)
 	expected, err := fixturecomposition.Decode(prepared.Content)
 	require.NoError(t, err)
-	require.Len(t, expected.Roles, 1)
+	require.Len(t, expected.Installations, 1)
 	groups := fixtureGroups(readerFor(t, ws))
 	require.Len(t, groups, 1)
 	got, err := fixturecomposition.Decode([]byte(groups[0]))
 	require.NoError(t, err)
-	require.Equal(t, expected, got, "run and read-only consumers must see the same merged grants")
+	require.Equal(t, expected, got, "run and read-only consumers must see the same merged document")
 }
 
 func TestNoFragmentsMatchesGeneratedEmptyDocument(t *testing.T) {
@@ -203,7 +197,7 @@ func TestNoFragmentsMatchesGeneratedEmptyDocument(t *testing.T) {
 // delivery scoping; that must not cause the fixture provider to replace it.
 func TestWorkspaceDocumentOverridesAnUnambiguousModuleFragment(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	own := fragmentHead + "roles: [{organization: acme, name: admin, scopes: [{kind: product, actions: [read]}]}]\n"
+	own := fragmentHead + "installations: [{organization: acme, target: product, owner: alice, members: {admin: [dana]}}]\n"
 	ws := fragmentWorkspace(t, own)
 	modules, err := ws.LoadModules(context.Background())
 	require.NoError(t, err)

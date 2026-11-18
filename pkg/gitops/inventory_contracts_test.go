@@ -18,7 +18,7 @@ func hostInventory(version, digest string) Inventory {
 	return Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        "saas",
-		Package:       &InventoryPackage{ID: "codefly/saas-starter", Version: version},
+		Package:       &InventoryPackage{ID: "codefly/starterkit", Version: version},
 		Units: []InventoryUnit{
 			{
 				Kind: UnitKindService, Module: "saas", Name: "accounts",
@@ -30,15 +30,15 @@ func hostInventory(version, digest string) Inventory {
 	}
 }
 
-// consumerInventory builds the "lastlogin" solution inventory consuming
+// consumerInventory builds the "beacon" solution inventory consuming
 // saas/accounts/connect under the given version/constraint/digest.
 func consumerInventory(version, constraint, digest string) Inventory {
 	return Inventory{
 		SchemaVersion: SchemaVersion,
-		Module:        "lastlogin",
+		Module:        "beacon",
 		Units: []InventoryUnit{
 			{
-				Kind: UnitKindSolution, Module: "lastlogin", Name: "lastlogin",
+				Kind: UnitKindSolution, Module: "beacon", Name: "beacon",
 				Contracts: []InventoryContract{
 					{
 						Role: ContractRoleConsumes, Module: "saas", Service: "accounts", Endpoint: "connect",
@@ -190,12 +190,12 @@ func TestCheckContractsRejectsWhenExposedProtoPackageChanged(t *testing.T) {
 func TestCheckContractsHandlesPriorSchemaInventoryWithNoContracts(t *testing.T) {
 	raw := `{
 		"schemaVersion": 4,
-		"module": "lastlogin",
+		"module": "beacon",
 		"environment": "production",
-		"appProject": "lastlogin",
-		"ownedPath": "deployments/modules/lastlogin",
+		"appProject": "beacon",
+		"ownedPath": "deployments/modules/beacon",
 		"units": [
-			{"kind": "solution", "module": "lastlogin", "name": "lastlogin", "path": "solutions/lastlogin"}
+			{"kind": "solution", "module": "beacon", "name": "beacon", "path": "solutions/beacon"}
 		],
 		"files": [],
 		"digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"

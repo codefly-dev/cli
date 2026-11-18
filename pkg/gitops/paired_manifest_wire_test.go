@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,7 +44,7 @@ var updateWire = flag.Bool("update-wire", false, "write testdata/paired-manifest
 //   - its fields, each with its whole JSON tag (a field added, renamed or
 //     dropped is "field … not found"; an omitempty added or removed changes
 //     the bytes the image re-encodes and compares);
-//   - the closed value sets its decoder enforces, read from core's own
+//   - the closed value sets its decoder enforces, read from their owners
 //     declarations: the binding operations, the edge presences, the kinds and
 //     the schema (a value allowed later is refused by an older image);
 //   - the canonical bytes of one manifest exercising every section
@@ -73,7 +73,7 @@ func TestTheModuleManifestWireIsFrozenAtTheFloor(t *testing.T) {
 	want, err := os.ReadFile(golden)
 	require.NoError(t, err)
 	require.Equal(t, string(want), got,
-		"core's module manifest wire moved since %s: a paired image on that core refuses it. Raise pairedManifestFloor, publish a codefly companion, pin it as pairedDeliveryImage, and update the golden", pairedManifestFloor)
+		"the module manifest wire moved since %s: a paired image on that core refuses it. Raise pairedManifestFloor, publish a codefly companion, pin it as pairedDeliveryImage, and update the golden", pairedManifestFloor)
 }
 
 // wireManifest is a manifest with every section the CLI renders filled:
@@ -82,7 +82,7 @@ func TestTheModuleManifestWireIsFrozenAtTheFloor(t *testing.T) {
 // endpoints, and an authority block with every list and every operation.
 func wireManifest() *solutionhost.ModuleManifest {
 	return &solutionhost.ModuleManifest{
-		Schema: solutionhost.SchemaModuleManifestV1, Binding: "ws.blue.shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 3,
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "ws.aurora.shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 3,
 		Host:      solutionhost.HostTarget{Coordinate: "local", Domain: "local"},
 		Release:   solutionhost.Release{Publisher: "acme", Name: "shop", Version: "1.2.3"},
 		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}, {Service: "worker", Container: "run"}},
@@ -92,7 +92,7 @@ func wireManifest() *solutionhost.ModuleManifest {
 		Endpoints: []solutionhost.Endpoint{{Name: "grpc", Service: "api", API: "grpc", Address: "http://api.shop.svc.cluster.local:9090"}},
 		Authority: &solutionhost.Authority{
 			Principal: "shop", InstallationRole: "admin",
-			EdgeDependencies: []modulecontract.EdgeDependency{{Module: "robin", Presence: modulecontract.PresenceRequired}, {Module: "notes", Presence: modulecontract.PresenceOptional}},
+			EdgeDependencies: []modulecontract.EdgeDependency{{Module: "sidekick", Presence: modulecontract.PresenceRequired}, {Module: "notes", Presence: modulecontract.PresenceOptional}},
 			SourceGovernance: []string{"shop.item:write"},
 			Bindings: []solutionhost.AuthorityBinding{
 				{ID: "store", Audience: "store", Operations: map[string][]string{
@@ -105,7 +105,7 @@ func wireManifest() *solutionhost.ModuleManifest {
 }
 
 // coreValueSets are the closed value sets core's manifest decoder enforces,
-// read from core's own source at the version this CLI builds with: the
+// read from the host library's and core's source at the versions this CLI builds with: the
 // constants that spell them and the lists it checks against, each resolved to
 // its values.
 func coreValueSets(t *testing.T) []string {
@@ -114,7 +114,10 @@ func coreValueSets(t *testing.T) []string {
 	require.NoError(t, err, "locate core's source")
 	dir := strings.TrimSpace(string(out))
 	contract := packageConsts(t, filepath.Join(dir, "contracts", "module"))
-	host := packageConsts(t, filepath.Join(dir, "solutionhost"))
+	// The manifest's own types and value sets are the host's library's.
+	out, err = exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/codefly-dev/authority/libraries/solutionhost/go").Output()
+	require.NoError(t, err, "locate the host library's source")
+	host := packageConsts(t, strings.TrimSpace(string(out)))
 	var lines []string
 	for _, set := range []struct {
 		pkg    string
@@ -129,7 +132,7 @@ func coreValueSets(t *testing.T) []string {
 	}
 	for _, name := range []string{"operations", "kinds"} {
 		list, ok := host.lists[name]
-		require.True(t, ok, "core's solutionhost declares no %s list: the decoder's value set moved", name)
+		require.True(t, ok, "the host library's solutionhost declares no %s list: the decoder's value set moved", name)
 		var values []string
 		for _, element := range list {
 			switch e := element.(type) {

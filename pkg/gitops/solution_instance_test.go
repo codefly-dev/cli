@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/solutionhost"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -20,7 +20,7 @@ schema_version: codefly.solution-manifest/v0
 protocol_version: codefly.solution/v0
 agent:
   kind: codefly:solution
-  publisher: obin
+  publisher: northwind
   name: crm
   version: 1.4.0
 api:
@@ -54,7 +54,7 @@ func solutionModule(t *testing.T, name, entry string) *resources.Module {
 }
 
 func identityEnvironment() *environments.Environment {
-	return &environments.Environment{Name: "prod", Namespace: "obin", Host: testHost()}
+	return &environments.Environment{Name: "prod", Namespace: "northwind", Host: testHost()}
 }
 
 // instanceOf is moduleInstanceOf over a composition that supplies no
@@ -73,14 +73,14 @@ func TestSolutionInstanceComesFromTheModuleTheRenderResolved(t *testing.T) {
 	carriers := map[string]string{
 		resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "crm", Service: "api", Name: "grpc", API: "grpc"}): "api.crm.svc.cluster.local:9090",
 	}
-	instance, undeclared, err := instanceOf(t, module, services, &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}, carriers)
+	instance, undeclared, err := instanceOf(t, module, services, &InventoryPackage{ID: "northwind/crm", Version: "1.4.0"}, carriers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if instance == nil {
 		t.Fatalf("a module shipping a solution manifest is not a solution instance: %s", undeclared)
 	}
-	if instance.Kind != solutionhost.KindSolution || instance.Name != "crm" || instance.Package != "obin/crm" || instance.Version != "1.4.0" {
+	if instance.Kind != solutionhost.KindSolution || instance.Name != "crm" || instance.Package != "northwind/crm" || instance.Version != "1.4.0" {
 		t.Fatalf("instance identity %+v", instance)
 	}
 	if len(instance.Identities) != 1 || instance.Identities[0] != (IdentityWorkload{Service: "api"}) {
@@ -128,7 +128,7 @@ func TestAModuleShippingNoSolutionManifestIsAModuleInstance(t *testing.T) {
 // read off the composition rather than off bindingID: two composed modules
 // shipping the same solution manifest are two instances.
 func TestTwoInstancesOfOneSolutionAreTwoBindings(t *testing.T) {
-	pkg := &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}
+	pkg := &InventoryPackage{ID: "northwind/crm", Version: "1.4.0"}
 	identity := []*resources.Service{{Name: "api", ModuleIdentity: true}}
 	first, _, err := instanceOf(t, solutionModule(t, "crm", "api"), identity, pkg, nil)
 	if err != nil {
@@ -138,11 +138,11 @@ func TestTwoInstancesOfOneSolutionAreTwoBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstID, err := bindingID("obin", "prod", first.Name)
+	firstID, err := bindingID("northwind", "prod", first.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondID, err := bindingID("obin", "prod", second.Name)
+	secondID, err := bindingID("northwind", "prod", second.Name)
 	if err != nil {
 		t.Fatal(err)
 	}

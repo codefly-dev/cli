@@ -78,7 +78,7 @@ func GetK8sConfig(ctx context.Context, env *environments.Environment) (string, e
 	}
 
 	// Legacy fallback for envs that haven't migrated to the declared
-	// schema. Once saas-starter (and other workspaces) declare their
+	// schema. Once every workspace declares its
 	// environments explicitly, this branch becomes dead code we can
 	// drop.
 	if env != nil && env.Name == "aws" {

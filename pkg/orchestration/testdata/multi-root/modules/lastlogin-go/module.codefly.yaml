@@ -1,4 +1,0 @@
-kind: module
-name: lastlogin-go
-services:
-    - name: backend

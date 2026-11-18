@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	"net"
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/solutionhost"
+	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
+
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

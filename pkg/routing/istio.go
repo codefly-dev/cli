@@ -1,7 +1,7 @@
 package routing
 
 // istioRenderer emits the legacy networking.istio.io VirtualService envelope
-// (the saas-starter shape) plus, optionally, the same STRICT-mTLS policy. It
+// plus, optionally, the same STRICT-mTLS policy. It
 // exists so a workspace already standardized on VirtualService keeps working;
 // new solutions should prefer the gateway-api backend.
 //

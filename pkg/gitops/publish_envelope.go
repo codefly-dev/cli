@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/run/fixture"
-	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,7 +48,7 @@ const (
 	// environment's host holds one.
 	deliveredEnvelopeID = "module-envelope"
 	// envelopeDeliveryPath is the host's envelope delivery route.
-	envelopeDeliveryPath = "/platform/_delivery/envelope"
+	envelopeDeliveryPath = solutionhost.EnvelopeDeliveryPath
 	// moduleEnvelopeConfigMap names the envelope's ConfigMap, its documentLabel
 	// value, and (with .yaml) its file in the overlay; moduleEnvelopeDocument
 	// is the key of the readable canonical document beside the carrier.

@@ -39,16 +39,16 @@ func storeWorkspace(t *testing.T) *World {
 
 func managedStoreEnvironment() *environments.Environment {
 	return &environments.Environment{
-		Name: "blue",
+		Name: "aurora",
 		ManagedServices: map[string]environments.EnvironmentManagedService{
 			"records/store": {Kind: "postgres", ExternalName: "10.87.0.7", Port: 5432, Carried: environments.Carried{
 				"auth-mode":                yamlScalar("external-identity"),
-				"instance-connection-name": yamlScalar("obin-blue-data:us-east1:obin-blue-shared"),
+				"instance-connection-name": yamlScalar("northwind-aurora-data:us-east1:northwind-aurora-shared"),
 			}},
 		},
 		ServiceIdentity: &environments.EnvironmentServiceIdentity{Services: map[string]environments.EnvironmentWorkloadIdentity{
-			"records/store":   {Principal: "obin-blue-db-store@obin-blue-data.iam.gserviceaccount.com"},
-			"records/records": {Principal: "obin-blue-b641b7@obin-blue-data.iam.gserviceaccount.com"},
+			"records/store":   {Principal: "northwind-aurora-db-store@northwind-aurora-data.iam.gserviceaccount.com"},
+			"records/records": {Principal: "northwind-aurora-b641b7@northwind-aurora-data.iam.gserviceaccount.com"},
 		}},
 	}
 }
@@ -89,9 +89,9 @@ func TestManagedStoreAgentIsHandedTheEnvironmentsDeclaration(t *testing.T) {
 	require.Len(t, declared.GetInfos(), 2)
 	require.Equal(t, map[string]string{
 		"login-mode":         "external-identity",
-		"instance":           "obin-blue-data:us-east1:obin-blue-shared",
-		"owner-principal":    "obin-blue-db-store@obin-blue-data.iam.gserviceaccount.com",
-		"runtime-principals": "obin-blue-b641b7@obin-blue-data.iam.gserviceaccount.com",
+		"instance":           "northwind-aurora-data:us-east1:northwind-aurora-shared",
+		"owner-principal":    "northwind-aurora-db-store@northwind-aurora-data.iam.gserviceaccount.com",
+		"runtime-principals": "northwind-aurora-b641b7@northwind-aurora-data.iam.gserviceaccount.com",
 	}, declarationValues(t, declared, ManagedServiceInformation))
 	for _, value := range declared.GetInfos()[1].GetConfigurationValues() {
 		require.False(t, resources.IsSensitiveKey(value.GetKey()), "%s reads as a credential and would be refused by a restricted render", value.GetKey())
@@ -99,13 +99,13 @@ func TestManagedStoreAgentIsHandedTheEnvironmentsDeclaration(t *testing.T) {
 
 	// A consumer with no identity of its own takes the one the managed service
 	// declares for its consumers, the way the render's pods do.
-	world.Env.ServiceIdentity.Services = map[string]environments.EnvironmentWorkloadIdentity{"records/store": {Principal: "owner@obin-blue-data.iam.gserviceaccount.com"}}
+	world.Env.ServiceIdentity.Services = map[string]environments.EnvironmentWorkloadIdentity{"records/store": {Principal: "owner@northwind-aurora-data.iam.gserviceaccount.com"}}
 	consumers := world.Env.ManagedServices["records/store"]
-	consumers.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "consumers@obin-blue-data.iam.gserviceaccount.com"}
+	consumers.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "consumers@northwind-aurora-data.iam.gserviceaccount.com"}
 	world.Env.ManagedServices["records/store"] = consumers
 	declared, err = withEnvironmentServiceDeclaration(ctx, nil, store, postgresAgent(), world)
 	require.NoError(t, err)
-	require.Equal(t, "consumers@obin-blue-data.iam.gserviceaccount.com", declarationValues(t, declared, ManagedServiceInformation)["runtime-principals"])
+	require.Equal(t, "consumers@northwind-aurora-data.iam.gserviceaccount.com", declarationValues(t, declared, ManagedServiceInformation)["runtime-principals"])
 
 	// A service nothing declares gets its configuration back as it was.
 	bystander := &resources.ServiceIdentity{Module: "records", Name: "bystander"}
@@ -178,15 +178,15 @@ func TestAStoreTheEnvironmentPlacesNowhereIsRefusedByTheCLI(t *testing.T) {
 	own := &basev0.Configuration{Origin: "records/store", Infos: []*basev0.ConfigurationInformation{{Name: "postgres"}}}
 
 	world := storeWorkspace(t)
-	world.Env = &environments.Environment{Name: "blue"}
+	world.Env = &environments.Environment{Name: "aurora"}
 	_, err := withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
 	require.Error(t, err)
-	for _, named := range []string{"records/store", `environment "blue"`, "managed-services", "in-cluster-services", "codefly.dev/postgres:0.0.149"} {
+	for _, named := range []string{"records/store", `environment "aurora"`, "managed-services", "in-cluster-services", "codefly.dev/postgres:0.0.149"} {
 		require.ErrorContains(t, err, named)
 	}
 
 	// Declared in-cluster: rendered, and told so.
-	world.Env = &environments.Environment{Name: "blue", InClusterServices: []string{"records/store"}}
+	world.Env = &environments.Environment{Name: "aurora", InClusterServices: []string{"records/store"}}
 	declared, err := withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
 	require.NoError(t, err)
 	require.Empty(t, declarationValues(t, declared, InClusterServiceInformation))
@@ -207,7 +207,7 @@ func TestAStoreServerAgentIsKnownByItsReferenceNotItsName(t *testing.T) {
 	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
 	own := &basev0.Configuration{Origin: "records/store"}
 	world := storeWorkspace(t)
-	world.Env = &environments.Environment{Name: "blue"}
+	world.Env = &environments.Environment{Name: "aurora"}
 
 	for _, agent := range []*resources.Agent{
 		peerAgent(),

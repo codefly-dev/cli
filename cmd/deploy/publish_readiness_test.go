@@ -10,15 +10,15 @@ import (
 	"github.com/codefly-dev/cli/pkg/workingrender"
 )
 
-// writeRecord leaves the render record a render of saas for blue would,
+// writeRecord leaves the render record a render of saas for aurora would,
 // carrying pinCurrency (raw JSON, "" for none).
 func writeRecord(t *testing.T, dir, outcome, pinCurrency string) {
 	t.Helper()
-	path := workingrender.Record(dir, "blue", "saas")
+	path := workingrender.Record(dir, "aurora", "saas")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	record := `{"module":"saas","environment":"blue","outcome":"` + outcome + `"`
+	record := `{"module":"saas","environment":"aurora","outcome":"` + outcome + `"`
 	if pinCurrency != "" {
 		record += `,"pinCurrency":` + pinCurrency
 	}
@@ -27,7 +27,7 @@ func writeRecord(t *testing.T, dir, outcome, pinCurrency string) {
 	}
 }
 
-// The 2026-11-13 Blue deploy: a render judged every pin current, and while it
+// The 2026-11-13 Aurora deploy: a render judged every pin current, and while it
 // ran (6–16 minutes) other merges moved a pinned source's main, so publish —
 // judging the pins again — refused the render's own commits as "N commits
 // behind main", and the round was rescued with hand-written pin-holds. A
@@ -39,7 +39,7 @@ func TestPublishIsHeldToThePinJudgementItsRenderRecorded(t *testing.T) {
 	dir := t.TempDir()
 	writeRecord(t, dir, "rendered", `{}`)
 
-	if err := publishReady(context.Background(), "publish", dir, "blue", "saas"); err != nil {
+	if err := publishReady(context.Background(), "publish", dir, "aurora", "saas"); err != nil {
 		t.Fatalf("a render that judged its pins current was refused: %v", err)
 	}
 	if len(judged) != 1 || judged[0] {
@@ -56,7 +56,7 @@ func TestPublishRefusesPinsItsRenderFoundBehind(t *testing.T) {
 	dir := t.TempDir()
 	writeRecord(t, dir, "rendered", `{"behind":["saas pins owner/saas at commit 49d5158e: 4 commits behind main (188b1fb2)"]}`)
 
-	err := publishReady(context.Background(), "publish", dir, "blue", "saas")
+	err := publishReady(context.Background(), "publish", dir, "aurora", "saas")
 	if err == nil {
 		t.Fatal("a render on pins behind their sources was published")
 	}
@@ -68,7 +68,7 @@ func TestPublishRefusesPinsItsRenderFoundBehind(t *testing.T) {
 
 	withSkip(t, true)
 	lines := captureWarnings(t)
-	if err = publishReady(context.Background(), "publish", dir, "blue", "saas"); err != nil {
+	if err = publishReady(context.Background(), "publish", dir, "aurora", "saas"); err != nil {
 		t.Fatalf("the override must let the publication proceed: %v", err)
 	}
 	if !strings.Contains(joined(lines), "4 commits behind main") {
@@ -90,7 +90,7 @@ func TestPublishJudgesThePinsOfARenderThatRecordedNoJudgement(t *testing.T) {
 			stubReadiness(t, func(context.Context, string, string) error { return nil })
 			dir := t.TempDir()
 			prepare(dir)
-			if err := publishReady(context.Background(), "plan", dir, "blue", "saas"); err != nil {
+			if err := publishReady(context.Background(), "plan", dir, "aurora", "saas"); err != nil {
 				t.Fatal(err)
 			}
 			if len(judged) != 1 || !judged[0] {
@@ -105,7 +105,7 @@ func TestPublishJudgesThePinsOfARenderThatRecordedNoJudgement(t *testing.T) {
 func TestARenderCarriesItsGatesPinJudgement(t *testing.T) {
 	withSkip(t, false)
 	stubReadiness(t, func(context.Context, string, string) error { return nil })
-	pins, err := requireWorkspaceReady(context.Background(), "render", "blue", "saas")
+	pins, err := requireWorkspaceReady(context.Background(), "render", "aurora", "saas")
 	if err != nil || pins == nil || len(pins.Behind) != 0 {
 		t.Fatalf("a passing render gate judged %+v (%v), want every pin current", pins, err)
 	}
@@ -116,7 +116,7 @@ func TestARenderCarriesItsGatesPinJudgement(t *testing.T) {
 	previous := WorkspaceReadiness
 	WorkspaceReadiness = nil
 	t.Cleanup(func() { WorkspaceReadiness = previous })
-	if pins, err = requireWorkspaceReady(context.Background(), "render", "blue", "saas"); err != nil || pins != nil {
+	if pins, err = requireWorkspaceReady(context.Background(), "render", "aurora", "saas"); err != nil || pins != nil {
 		t.Fatalf("with no engine nothing was judged, yet the render carries %+v (%v)", pins, err)
 	}
 }
@@ -128,7 +128,7 @@ func TestPublishJudgesAgainOnceAHoldItsRenderReliedOnEnded(t *testing.T) {
 	stubReadiness(t, func(context.Context, string, string) error { return nil })
 	dir := t.TempDir()
 	writeRecord(t, dir, "rendered", `{"heldUntil":"2026-01-01"}`)
-	if err := publishReady(context.Background(), "publish", dir, "blue", "saas"); err != nil {
+	if err := publishReady(context.Background(), "publish", dir, "aurora", "saas"); err != nil {
 		t.Fatal(err)
 	}
 	if len(judged) != 1 || !judged[0] {

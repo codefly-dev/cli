@@ -304,9 +304,9 @@ func TestExcludeServicesRefusesAMalformedEntry(t *testing.T) {
 // The producer's JSON contract preserves the environment exclusion alongside
 // the module-owned KMS choice when imported into workspace YAML.
 func TestCoordinateContractCarriesExcludedServices(t *testing.T) {
-	contract, err := environments.ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"blue","namespace":"obin","key-service":"kms","exclude-services":[{"service":"saas/vault","withdrawn-from":["saas/accounts"]}]}}`))
+	contract, err := environments.ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"aurora","namespace":"northwind","key-service":"kms","exclude-services":[{"service":"saas/vault","withdrawn-from":["saas/accounts"]}]}}`))
 	require.NoError(t, err)
-	env, err := contract.ToEnvironment("blue", "obin")
+	env, err := contract.ToEnvironment("aurora", "northwind")
 	require.NoError(t, err)
 	require.Equal(t, "kms", env.Carried["key-service"].Value)
 	require.Equal(t, []environments.EnvironmentExcludedService{{Service: "saas/vault", WithdrawnFrom: []string{"saas/accounts"}}}, env.ExcludeServices)
@@ -368,7 +368,7 @@ func TestValidateWorkspaceHoldsOnlyTheSelectedEnvironment(t *testing.T) {
 }
 
 // TestValidateWorkspaceHoldsOnlyTheSelectedScopedNames is the direct half of
-// the Blue m106 defect: a bare service-scoped name goes ambiguous when a
+// the Aurora m106 defect: a bare service-scoped name goes ambiguous when a
 // second module composes a service of that name, and every environment was
 // being held to the environment that wrote the bare key.
 //
@@ -434,12 +434,12 @@ environments:
 }
 
 // TestSelectedEnvironmentIsStillHeldToItsOwnMalformedKeys pins what the
-// narrowing does NOT do, because Blue's real workspace is this shape and it
+// narrowing does NOT do, because Aurora's real workspace is this shape and it
 // would otherwise be easy to read the fix as clearing their render.
 //
 // Narrowing holds each environment to its OWN declarations. If the selected
 // environment is itself malformed, it is still refused — the refusal moves to
-// it rather than disappearing. Blue carries BOTH "object-storage" and
+// it rather than disappearing. Aurora carries BOTH "object-storage" and
 // "documents/object-storage" in the same block, because `environment import`
 // adds a producer's new key spelling and keeps the old one, so a bare key
 // outlives the rename. The qualified sibling does not redeem the bare key:
@@ -463,7 +463,7 @@ modules:
   - name: documents
   - name: saas
 environments:
-  - name: blue
+  - name: aurora
     namespace: platform
     service-config:
       services:
@@ -484,7 +484,7 @@ environments:
 	require.Len(t, declared, 1)
 
 	err = environments.ValidateWorkspace(ctx, workspace, declared[0])
-	require.ErrorContains(t, err, `environment "blue" service-config references ambiguous service "object-storage"`,
+	require.ErrorContains(t, err, `environment "aurora" service-config references ambiguous service "object-storage"`,
 		"selecting an environment does not excuse its own stale bare key; the fix moves this refusal, it does not remove it")
 }
 

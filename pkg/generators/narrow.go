@@ -123,11 +123,27 @@ func entryLabel(entry *ContractEntry) string {
 	return entry.ModuleName + "/" + entry.Endpoint.Service + "/" + entry.Endpoint.Endpoint
 }
 
+// ServedServices is the catalog rows of the services an endpoint serves: every
+// row but those declared as the protocol of an interface other modules
+// implement (APIContractService.Interface), which the module defines and no
+// listener of it serves. A client of the endpoint is narrowed among these
+// alone, so naming an interface row is refused like any service the endpoint
+// does not serve.
+func ServedServices(services []composition.APIContractService) []composition.APIContractService {
+	served := make([]composition.APIContractService, 0, len(services))
+	for _, service := range services {
+		if service.Interface == "" {
+			served = append(served, service)
+		}
+	}
+	return served
+}
+
 // selectedServices is the catalog entries of the services entry names, in
 // catalog order. A name the contract does not declare is refused by name.
 func selectedServices(entry *ContractEntry) ([]composition.APIContractService, error) {
 	declared := map[string][]string{}
-	services := slices.Clone(entry.Endpoint.Services)
+	services := ServedServices(entry.Endpoint.Services)
 	for i := range services {
 		service := &services[i]
 		if service.FullName == "" {

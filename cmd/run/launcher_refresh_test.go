@@ -10,9 +10,9 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity/native"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/core/wool"
-	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
 

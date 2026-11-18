@@ -12,6 +12,7 @@ import (
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/declare"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
@@ -19,7 +20,6 @@ import (
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -150,6 +150,13 @@ func resolveContract(ctx context.Context, workspace *resources.Workspace, env *e
 		}
 		return HostMethodPolicies(ctx, workspace, env, callee)
 	})
+	callees.contract = func(name string) (*modulecontract.Contract, error) {
+		callee, loadErr := workspace.LoadModuleFromName(ctx, name)
+		if loadErr != nil {
+			return nil, fmt.Errorf("it is not a module this workspace composes: %w", loadErr)
+		}
+		return modulecontract.Load(callee.Dir())
+	}
 	var infos []*basev0.ConfigurationInformation
 	if provided != nil {
 		infos = provided.Infos
@@ -327,6 +334,21 @@ func refuseUndeclaredDestinations(module string, contract *modulecontract.Resolv
 type composedCallees struct {
 	read     func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)
 	policies map[string]map[string]*compositionv1.MethodPolicyV1
+	// contract reads a composed module's published module contract, for the
+	// bundles it publishes (Bundle); nil reads none.
+	contract func(module string) (*modulecontract.Contract, error)
+}
+
+// Bundle implements modulecontract.Bundles: a bundle a composed module
+// publishes is read from that module's own contract, and a bundle it includes
+// from another composed module from that module's (modulecontract.Publishers,
+// core's one resolver over published contracts), so a role including it names
+// none of either module's kinds.
+func (c *composedCallees) Bundle(module, name string) ([]modulecontract.CeilingScope, error) {
+	if c.contract == nil {
+		return nil, fmt.Errorf("no composed module contracts are read here")
+	}
+	return modulecontract.Publishers(c.contract).Bundle(module, name)
 }
 
 func newComposedCallees(read func(module string) ([]*compositionv1.MethodPolicyV1, bool, error)) *composedCallees {

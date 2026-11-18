@@ -13,7 +13,7 @@ import (
 )
 
 // renderPublishFixtureFailing is renderPublishFixture's render failing part
-// way, as `codefly deploy gitops render saas --env blue` did on 2026-11-12
+// way, as `codefly deploy gitops render saas --env aurora` did on 2026-11-12
 // when a dependency image was refused.
 func renderPublishFixtureFailing(t *testing.T, root, module, environment string) {
 	t.Helper()

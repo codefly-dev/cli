@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // --- Settling module manifests at publish ---
@@ -407,7 +407,7 @@ func settledManifestSet(rendered, prior map[string]deliveredManifest) (map[strin
 // took Core-only: a publish from before paired settlement advanced on
 // entering paired a binding at the generation it had, and whether the host
 // had taken that generation Core-only first, or never, is written nowhere in
-// the tree — two bindings with one history went each way on Blue. The host's
+// the tree — two bindings with one history can go each way. The host's
 // refusal says it, and the person answers it with Advance (advanceNamed).
 func settlePairedGenerations(ctx context.Context, settled, prior map[string]deliveredManifest, opts *deliveryPublishOptions) error {
 	for binding, entry := range settled {

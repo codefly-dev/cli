@@ -61,7 +61,7 @@ func TestPinnedManaged(t *testing.T) {
 		},
 		{
 			name: "no source is a local/in-repo module",
-			ref:  &resources.ModuleReference{Name: "wiki"},
+			ref:  &resources.ModuleReference{Name: "quill"},
 			want: false,
 		},
 		{
@@ -231,7 +231,7 @@ func TestMaterializePinnedModulesPullsAndWritesOverlay(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeGitFallbackOverlay(t, workspaceDir, "saas")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Module: "module", Version: "v0.0.1"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -282,7 +282,7 @@ func TestMaterializePinnedModulesLatestResolvesHighestTag(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeGitFallbackOverlay(t, workspaceDir, "saas")
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "latest"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -313,7 +313,7 @@ func TestMaterializePinnedModulesRespectsUserOverride(t *testing.T) {
 	}
 
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: "owner/repo", Version: "latest"}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -490,7 +490,7 @@ func TestMaterializePinnedModulesBestEffortOnPullFailure(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeGitFallbackOverlay(t, workspaceDir, "good", "broken")
 	workspace := &resources.Workspace{
-		Name: "wiki",
+		Name: "quill",
 		Modules: []*resources.ModuleReference{
 			{Name: "good", Source: good, Version: "v0.0.1"},
 			{Name: "broken", Source: dead, Version: "v9.9.9"},
@@ -586,7 +586,7 @@ func TestRunFallsBackToGitOnlyWhenOptedIn(t *testing.T) {
 	t.Run("no module-trust and no opt-out errors", func(t *testing.T) {
 		workspaceDir := t.TempDir()
 		workspace := &resources.Workspace{
-			Name:    "wiki",
+			Name:    "quill",
 			Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 		}
 		workspace.WithDir(workspaceDir)
@@ -607,7 +607,7 @@ func TestRunFallsBackToGitOnlyWhenOptedIn(t *testing.T) {
 		workspaceDir := t.TempDir()
 		writeGitFallbackOverlay(t, workspaceDir, "saas")
 		workspace := &resources.Workspace{
-			Name:    "wiki",
+			Name:    "quill",
 			Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
 		}
 		workspace.WithDir(workspaceDir)
@@ -659,7 +659,7 @@ func TestMaterializePinnedModulesConcurrentRunsConvergeOnAConsistentOverlay(t *t
 	if err := os.WriteFile(filepath.Join(workspaceDir, resources.LocalOverlayConfigurationName), []byte(overlayDoc.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	workspace := &resources.Workspace{Name: "wiki", Modules: modules}
+	workspace := &resources.Workspace{Name: "quill", Modules: modules}
 	workspace.WithDir(workspaceDir)
 
 	var wg sync.WaitGroup
@@ -730,7 +730,7 @@ func TestPruneStalePinnedEntries(t *testing.T) {
 // through a real resources.Workspace load — the way `codefly run` sees it.
 func writeSolutionWorkspace(t *testing.T, dir, source, version string) {
 	t.Helper()
-	manifest := fmt.Sprintf("name: wiki\nlayout: modules\nmodules:\n    - name: saas\n      source: %s\n      version: %s\n", source, version)
+	manifest := fmt.Sprintf("name: quill\nlayout: modules\nmodules:\n    - name: saas\n      source: %s\n      version: %s\n", source, version)
 	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +940,7 @@ func TestMaterializePinnedModulesPrunesGitRecordForRemovedModule(t *testing.T) {
 	}
 
 	if err = os.WriteFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName),
-		[]byte("name: wiki\nlayout: modules\n"), 0o644); err != nil {
+		[]byte("name: quill\nlayout: modules\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspaceDir)
@@ -1391,7 +1391,7 @@ func TestMaterializePinnedModulesRevokedGitOptOutDoesNotKeepTheClone(t *testing.
 // module package at version, with the module-trust policy that verifies it.
 func writeVerifiedWorkspace(t *testing.T, dir string, fixture *pinnedfixture.Fixture, version string) {
 	t.Helper()
-	doc := fmt.Sprintf(`name: wiki
+	doc := fmt.Sprintf(`name: quill
 layout: modules
 modules:
     - name: saas
@@ -1422,7 +1422,7 @@ func TestMaterializePinnedModulesStillMaterializesTheModulesThatResolve(t *testi
 
 	workspaceDir := t.TempDir()
 	manifest := func(staleVersion string) {
-		doc := fmt.Sprintf("name: wiki\nlayout: modules\nmodules:\n"+
+		doc := fmt.Sprintf("name: quill\nlayout: modules\nmodules:\n"+
 			"    - name: saas\n      source: %s\n      version: %s\n"+
 			"    - name: blog\n      source: %s\n      version: v0.0.1\n", stale, staleVersion, good)
 		if err := os.WriteFile(filepath.Join(workspaceDir, resources.WorkspaceConfigurationName), []byte(doc), 0o644); err != nil {
@@ -1898,7 +1898,7 @@ func TestMaterializePinnedModulesPinsAtCommit(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Module: "module", Version: second}},
 	}
 	workspace.WithDir(workspaceDir)
@@ -2025,7 +2025,7 @@ func TestResolveWorkspaceReferenceAtCommit(t *testing.T) {
 	source := initModuleRepo(t, "platform")
 	second := commitFixtureFile(t, source, "platform/second")
 	commitFixtureFile(t, source, "platform/third")
-	dir, err := ResolveWorkspaceReference(context.Background(), &resources.WorkspaceReference{Name: "platform-core", Source: source, Workspace: "platform", Version: second})
+	dir, err := ResolveWorkspaceReference(context.Background(), &resources.WorkspaceReference{Name: "platform-base", Source: source, Workspace: "platform", Version: second})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), second, "platform"), dir)
 	require.FileExists(t, filepath.Join(dir, "second"))

@@ -13,22 +13,22 @@ import (
 
 const importedPlatformCommit = "5a8d5ffa0d1e2c3b4a5968778695a4b3c2d1e0f9"
 
-// importingWorkspace writes a product workspace importing platform-core by
-// source and commit pin, with platform-core already in the module cache at
+// importingWorkspace writes a product workspace importing platform-base by
+// source and commit pin, with platform-base already in the module cache at
 // that pin — what a previous pull, or a module pin on the same source, leaves
 // there. apps/web requires an interface platform/api implements.
 func importingWorkspace(t *testing.T) string {
 	t.Helper()
 	cacheRoot := t.TempDir()
 	t.Setenv(modulecache.Env, cacheRoot)
-	core := filepath.Join(cacheRoot, "obin-ai", "platform-core", importedPlatformCommit)
+	core := filepath.Join(cacheRoot, "northwind", "platform-base", importedPlatformCommit)
 	product := t.TempDir()
 	agent := "agent:\n    kind: codefly:service\n    name: go\n    version: 0.0.67\n    publisher: codefly.dev\n"
 	files := map[string]string{
-		filepath.Join(core, "workspace.codefly.yaml"):                             "name: platform-core\nlayout: modules\nmodules:\n    - name: platform\n",
+		filepath.Join(core, "workspace.codefly.yaml"):                             "name: platform-base\nlayout: modules\nmodules:\n    - name: platform\n",
 		filepath.Join(core, "modules/platform/module.codefly.yaml"):               "kind: module\nname: platform\nservices:\n    - name: api\ninterface:\n    endpoints:\n        - service: api\n          endpoint: grpc\n          visibility: public\n          implements:\n              - example.dev/widgets@1.2.0\n",
 		filepath.Join(core, "modules/platform/services/api/service.codefly.yaml"): "kind: service\nname: api\nversion: 0.0.0\n" + agent + "endpoints:\n    - name: grpc\n      api: grpc\n",
-		filepath.Join(product, "workspace.codefly.yaml"):                          "name: product\nlayout: modules\nworkspaces:\n    - name: platform-core\n      source: obin-ai/platform-core\n      version: " + importedPlatformCommit + "\nmodules:\n    - name: apps\n",
+		filepath.Join(product, "workspace.codefly.yaml"):                          "name: product\nlayout: modules\nworkspaces:\n    - name: platform-base\n      source: northwind/platform-base\n      version: " + importedPlatformCommit + "\nmodules:\n    - name: apps\n",
 		filepath.Join(product, "modules/apps/module.codefly.yaml"):                "kind: module\nname: apps\nservices:\n    - name: web\n",
 		filepath.Join(product, "modules/apps/services/web/service.codefly.yaml"):  "kind: service\nname: web\nversion: 0.0.0\n" + agent + "endpoints:\n    - name: http\n      api: http\nservice-dependencies:\n    - interface: example.dev/widgets@^1.1\n",
 	}
@@ -66,5 +66,5 @@ func TestResolvedWorkspaceImportBindsTheServiceForItsAgent(t *testing.T) {
 func TestUnresolvedWorkspaceImportRequiresHostResolution(t *testing.T) {
 	product := importingWorkspace(t)
 	_, err := resources.LoadWorkspaceFromDir(context.Background(), product)
-	require.ErrorContains(t, err, `workspace "platform-core" at obin-ai/platform-core@`+importedPlatformCommit+" requires host resolution")
+	require.ErrorContains(t, err, `workspace "platform-base" at northwind/platform-base@`+importedPlatformCommit+" requires host resolution")
 }

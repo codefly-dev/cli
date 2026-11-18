@@ -41,7 +41,7 @@ type publishedImage struct {
 
 var qualifiedTag = regexp.MustCompile(`-t example\.test/app:1\.2\.3-build\.[0-9a-f]{16} `)
 
-// The obin-blue defect: a release is published, the workspace overrides the
+// The northwind-aurora defect: a release is published, the workspace overrides the
 // agent its services build with, and the render refused the release's own
 // version as "not moved with its code". The overridden build is another build,
 // so it is pushed under a tag of its own — never the release's — is not
@@ -112,7 +112,7 @@ func classLabels(t *testing.T, args string) map[string]string {
 // means the release tag holds another build than this one; anything else
 // adopts the release's build.
 //
-// And the 2026-11-13 friction: robin/chat:0.1.45 and documents/documents:0.2.3
+// And the 2026-11-13 friction: sidekick/chat:0.1.45 and documents/documents:0.2.3
 // were refused as "already published from other code", which cost two hand
 // version bumps, two re-pins and a re-render. A build whose release tag holds
 // another build is now pushed under <version>-build.<identity> — the scheme an
@@ -254,19 +254,19 @@ func TestAnOverriddenBuildIsPushedQualifiedAtTheRegistryItPullsThrough(t *testin
 	harness.env = pullThroughEnv()
 	harness.agentOverride = "0.2.0"
 	harness.noCapture = true
-	pulled := remoteRepository + "/obin-ai/saas/api:1.2.3"
+	pulled := remoteRepository + "/northwind/saas/api:1.2.3"
 	harness.peer.image = pulled
-	stubRegistry(t, map[string]publishedImage{"ghcr.io/obin-ai/saas/api:1.2.3": {
+	stubRegistry(t, map[string]publishedImage{"ghcr.io/northwind/saas/api:1.2.3": {
 		digest: "sha256:" + strings.Repeat("d", 64), labels: map[string]string{buildInputsLabel: "sha256:" + strings.Repeat("e", 64)},
 	}})
 
 	digest := harness.build(t)
 	args := harness.docker.buildArgs(t)
 	require.Len(t, args, 1)
-	pushed := overrideBuildImage("ghcr.io/obin-ai/saas/api:1.2.3", harness.key(t))
+	pushed := overrideBuildImage("ghcr.io/northwind/saas/api:1.2.3", harness.key(t))
 	require.Contains(t, args[0], "-t "+pushed+" ", "pushed at ghcr.io under the qualified tag")
 	require.NotContains(t, args[0], remoteRepository)
-	require.NotContains(t, args[0], "-t ghcr.io/obin-ai/saas/api:1.2.3 ")
+	require.NotContains(t, args[0], "-t ghcr.io/northwind/saas/api:1.2.3 ")
 	// The agent renders the deployed image from its own plan name (the pull
 	// repository) and this digest; the cell keeps that repository and digest.
 	require.Equal(t, "sha256:"+fmt.Sprintf("%064d", 1), digest, "the digest the deployment pins is the pushed one")

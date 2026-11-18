@@ -1,0 +1,4 @@
+kind: module
+name: beacon-go
+services:
+    - name: backend

@@ -33,8 +33,9 @@ type fakeGitHubPullRequests struct {
 	// last entry repeats once exhausted.
 	states []string
 	// checkRuns is the check-runs payload served for the head SHA.
-	checkRuns    string
-	commitStatus string
+	publisherJobs string
+	checkRuns     string
+	commitStatus  string
 	// checkRunsStatus, when non-zero, is served instead of checkRuns.
 	checkRunsStatus int
 	// mergeFailsAfterMerging reproduces a merge that commits server-side and
@@ -70,6 +71,9 @@ type fakeGitHubPullRequests struct {
 func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/codefly-dev/cli/actions/runs/42/attempts/1/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, f.publisherJobs)
+	})
 	mux.HandleFunc("/repos/codefly-dev/cli/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			require.Equal(t, "open", r.URL.Query().Get("state"))

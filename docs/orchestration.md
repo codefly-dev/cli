@@ -66,7 +66,7 @@ flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode, o
 ```go
 flow.WithStandAlone(true)           // Don't start dependencies
 flow.WithExcludeRoot(true)          // Start dependencies only, skip target
-flow.WithCoRoots("wiki/backend")    // Start more roots against this same graph
+flow.WithCoRoots("quill/backend")    // Start more roots against this same graph
 flow.WithRuntimeContext("nix")      // Set runtime context
 flow.WithFixture("seed")            // Use named test fixture
 flow.WithRemotes([]*Remote{...})    // Use remote services for some deps
@@ -140,6 +140,14 @@ The `World` holds shared state that all managers can access:
 SDK dependency sessions receive these groups through the CLI configuration RPC,
 including excluded-root consumers. The RPC uses the same resolver as a running
 service, preserving endpoint resolution and credential withholding.
+It refuses what a run refuses: a group the excluded root declares and the
+workspace does not provide fails the session (`no configuration found for
+<group>`), as it fails that root's own start. A module's own workspace does not
+provide the groups its composition supplies, nor the ones the module ships for
+its consumers (an in-repo module's `configurations/` is read only where the
+module is composed from elsewhere), so a suite booting there leaves them out by
+name: `--exclude-workspace-configuration`, which the dependency SDK passes for
+`WithExcludedWorkspaceConfigurations`.
 The current dependency RPC resolves references for the service's selected runtime
 context; the SDK process must use that same context. An excluded SDK consumer's
 saved container preference does not negotiate a native test process's context.
@@ -688,25 +696,26 @@ references resolved against nothing.
   `exclude-workspace-configurations` trims the **run** only — build and
   deployment operations ignore profiles.
 
-- **A root group's `${endpoint:…}` does not order the run**, so under
-  `--temporary-ports` its producer may have no address yet. Core's dependency
+- **A root group's `${endpoint:…}` does not order the run.** Core's dependency
   graph orders a consumer after the producers of the groups it *declares*
   (`ServiceDependencies.addConfigurationReferenceEdges`, core
   `architecture/service_dependencies.go`, reads a consumer's
   `workspace-configuration-dependencies` and no more), so nothing puts the
   producer of a root group's reference first.
 
-  Note what this does **not** mean, because the earlier wording here had the
-  mechanism wrong: with deterministic ports a consumer that merely starts early
-  still resolves, because a producer's address is derived from the endpoints it
-  recorded at **Load**, and every service of a run loads before any initializes.
-  The value is lost only where no address can exist yet — under
-  `--temporary-ports`, where each address is allocated at initialization
-  (`codefly ci`, `test --temporary-ports`), or where the producer recorded no
-  endpoint at all. There it is dropped; a *declared* group's reference is
-  ordered, so the same failure there stays a hard error.
-  `TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet` pins the drop,
-  and `TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor` pins that the
+  A consumer that merely starts early still resolves, because a producer's
+  address is derived from the endpoints it recorded at **Load**, and every
+  service of a run loads before any initializes. Under `--temporary-ports`
+  (`codefly ci`, `test --temporary-ports`) the first mapping that names a
+  producer allocates its ports and pins them, so its own Init proposes the
+  address its consumers already read; two services whose groups reference each
+  other resolve the same way
+  (`TestMutualReferencesResolveToTheAddressEachInitProposes`). The value is
+  lost only where the producer recorded no endpoint at all. There it is
+  dropped; a *declared* group's reference is ordered, so the same failure there
+  stays a hard error.
+  `TestARunWithTemporaryPortsResolvesARootReferenceBeforeItsProducerInitializes`
+  pins the resolution, and `TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor` pins that the
   render refuses rather than emitting a manifest with the value missing.
 
 - **A run of fewer services than the composition does not contain the producer**
@@ -924,7 +933,7 @@ sets `services.BuilderInstance.Workspace` to that same loaded workspace before
 the CLI judges dependency addresses. This applies to checkouts and pinned modules,
 including requests without dependency mappings. The agent judges with the request;
 the development workspace above a module cache is not a second authority. For
-example, a package locally called `saas-starter` but composed as `saas` is sent as
+example, a package locally called `starterkit` but composed as `saas` is sent as
 `saas`. A solution's direct route to a module endpoint still refuses with
 `ErrSolutionReachesThroughHost`.
 
@@ -932,8 +941,7 @@ Deployment requires the running builder's `AgentContract` to advertise
 `deployment-composition-provenance/v1`. A missing capability refuses before the
 Deploy RPC; the CLI's linked Core version cannot establish agent adoption.
 The wire field and request-backed judge are supplied by
-[core#752](https://github.com/codefly-dev/core/pull/752), following
-[handbook#266](https://github.com/obin-ai/handbook/pull/266). This CLI change alone
+[core#752](https://github.com/codefly-dev/core/pull/752). This CLI change alone
 does not qualify released agents or an end-to-end staging render.
 
 For a full module GitOps render (`codefly deploy gitops render`), the render
@@ -1163,6 +1171,47 @@ HTTP readiness deliberately stops at TCP reachability. Probing `/` would invent 
 health contract and can itself keep a development server unready.
 ## Teardown
 
+A run stops in order — its services stopped, its agents closed, what they left
+reclaimed — on each of these, and they are one path (`cmd/common.SignalContext`
+and `cmd/run/owner.go` cancel the same context):
+
+- **SIGINT, SIGTERM and SIGHUP.** A hangup (a closed terminal, a parent shell
+  that was stopped) stops the run like the other two; it is never the second
+  signal that forces the exit. A run that must outlive its terminal is started
+  detached from it.
+- **The process the run was started for is gone.** The SDK declares itself the
+  owner of a dependency stack it starts (`CODEFLY_RUN_OWNER`, core's
+  `runstate.OwnedBy`); `run service` watches that birth and stops when it
+  ends, however it ended, because a test binary that timed out or was killed
+  calls nothing. The owner is never signalled, and the declaration is removed
+  from the environment the run's own agents and services inherit. A stack kept
+  running (`sdk.WithKeepRunning`) has no owner.
+
+**A repeated signal forces the exit only after an interval.** A SIGINT or
+SIGTERM that arrives at least two seconds after the first
+(`common.ForceQuitInterval`) is a person insisting on a stop that does not end,
+and exits at once with status 130. One that arrives sooner is the same request
+delivered again and is dropped, with a line saying when to insist: whatever
+stops a process group signals every member, and a parent in the group (`make`,
+a shell) forwards the signal to its child a second time, milliseconds later.
+That second delivery used to force the exit 0.2 s into the stop and left every
+agent, server and store of the run behind. Two seconds is longer than any
+machine takes to deliver one request twice and short enough for a person
+watching a stop that hangs.
+
+A forced quit abandons the stop that was running. For a **disposable** run it
+still takes the run back in the ten seconds it allows itself
+(`common.OnForcedQuit`, `Flow.TakeBackOnForcedQuit`): the run's own agents are
+sent SIGTERM, which is what stops what they run, and then what the run left is
+reclaimed as at its ordinary end — process groups, native state, containers.
+Nothing runs that scope again, so nothing else would. A developer's run is left
+as it stands, as before.
+
+`kill -9` of the CLI itself runs nothing here. Its agents notice that their
+launcher is gone and stop what they run (core's `agents.Serve`, see core's
+`docs/agent-contract.md`, "Native run state"); an agent built on a Core older
+than that keeps running until `codefly clear` or the next run's sweep.
+
 `codefly stop` discovers supported process-group registrations through Core,
 which authenticates their recorded identities and owns signaling and removal.
 The command does not kill CLI/agent processes by executable name or path.
@@ -1191,6 +1240,16 @@ group, nor a stop from handling them. Recover the owning run
 and update its agent before restarting. A successful stop must not hide a
 process it could not authenticate. If registry cleanup fails, stop also skips
 the signature-based orphan fallback so it cannot bypass that refusal.
+
+A run that exits makes the same machine-wide stale sweep, and a group it
+cannot decide about is kept there too. It fails the run only when the group is
+the run's own: one of the agents this run spawned started it (the group's
+leader is that agent's child, or Core's recovery names the agent as its
+recorded owner). Any other undecided group is reported as a warning, with the
+same `codefly recover process-group PGID --preview`, and the run's exit status
+says how the run ended: an agent built on an older Core registers such a group
+for as long as it runs, anywhere on the machine, and that is not a failure of
+every other run.
 
 An operator can separately select a retained orphan generation using
 `codefly recover process-group PGID --preview`, review its Core-produced receipt,
@@ -1319,6 +1378,23 @@ boundary, not live route reconfiguration. Existing hop versions that do not
 declare `hop-routes` keep their existing configuration mode; a new hop requires
 both the CLI projection and the generated group.
 
+**The edge routes what a module declares.** A service declaring the
+`edge-routes` workspace group (a composition's browser edge) receives one
+generated document, `ROUTES` (schema `codefly.dev/edge-routes/v1`): for every
+module the edge mounts (`edge/MODULES`) that is published through the hop
+(`hop/MODULES`), the procedures its own published catalog declares on a Connect
+listener. It comes from the same catalogs, read by the same reader, as the
+hop's routes, so a composition no longer types a `<MODULE>_RPC` list and cannot
+forget a service its module publishes. The group carries no address: where a
+module's face is stays the composition's `<MODULE>_CONNECT` endpoint reference.
+It holds every Connect procedure a mounted module publishes, whichever caller it
+is meant for, since the hop decides admission; it leaves out a foreign method
+(another module's protocol, which several mounted modules may serve) and a
+mounted module that is not behind the hop. Like `hop-routes` it is supplied to
+the declaring service only, is never authored, and lasts for one run. Declaring
+it makes a service a reader of the document and nothing else: declaring
+`hop-routes` is still what makes a service the hop.
+
 A local run's port for an endpoint starts from the one derived from the
 workspace, the service, the endpoint and the naming scope, and is claimed on
 this machine before the first mapping names it (`pkg/portclaims`, a locked
@@ -1386,8 +1462,12 @@ When a service declares `fixture-composition`, the shared workspace configuratio
 reader supplies one document merged from every composed module's fragment using
 Authority's fixture-composition library. This includes modules inside the workspace
 and foreign modules. Doctor, CI and run planning use that reader; a single module's
-resolved default does not substitute for the full merge. Duplicate grants or
-installations fail the merge even when their source documents are identical.
+resolved default does not substitute for the full merge. The document is schema
+v2: it states installations (and who is seated on their roles) and stand-in
+modules, and grants no organisation role anything. A fragment still stating
+schema v1 or a `roles` section is refused by the library's own sentence, naming
+the fragment. Duplicate installations or stand-in modules fail the merge even
+when their source documents are identical.
 Other workspace groups retain Core's ordinary provider ambiguity rules.
 
 An explicit workspace document retains precedence, including a document written
@@ -1409,5 +1489,14 @@ The dependency SDK receives the prepared workload projection through
 `GetConfiguration.ProcessVariables`, alongside the active environment and
 service-scoped overrides. The same carriers reach `--output-env`. Reading
 configuration never creates or restores a credential, and no dependency's token
-is substituted for the root's. A root requesting identity in a run with no
-workload authority fails before its dependency environment is reported ready.
+is substituted for the root's. Where the environment declares a host, a root
+requesting identity in a run with no workload authority fails before its
+dependency environment is reported ready.
+
+`module-identity` is a request the environment's host answers. An environment
+that declares no host has no authority to admit the root, as when a module's
+own workspace boots that module's dependencies for its integration suites. The
+excluded root there is not declared to anything and nothing waits on an
+admission: it receives the environment a started root receives in that
+composition, every other carrier and no workload credential. An identity is
+only ever handed out by a run that vouched for it.

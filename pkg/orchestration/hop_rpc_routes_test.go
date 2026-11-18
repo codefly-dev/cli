@@ -21,7 +21,7 @@ import (
 
 // rpcHopWorkspace composes module `owner`, each of whose services publishes
 // one protobuf contract (package <service>.v1, service Service, method Call)
-// on a grpc and a connect endpoint, as robin, tracing, annotations and model
+// on a grpc and a connect endpoint, as sidekick, tracing, annotations and model
 // do, with the foreign methods its module contract declares; and a hop service
 // that reads the generated routes.
 func rpcHopWorkspace(t *testing.T, services []string, foreign []string) *resources.Workspace {
@@ -109,14 +109,14 @@ func TestHopRoutesPlanOneServicePublishedOnGRPCAndConnect(t *testing.T) {
 	require.Equal(t, "${endpoint:owner/chat/connect}", destination.Address)
 }
 
-// A module's foreign methods — robin's side of annotations' owner protocol,
+// A module's foreign methods — sidekick's side of annotations' owner protocol,
 // tracing's OTLP Export — are routed to its one gRPC/Connect service, so the
 // hop has a destination for every method the authority holds a policy for.
 func TestHopRoutesCarryTheForeignMethodsOfTheOneRPCService(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	for name, foreign := range map[string][]string{
-		"robin":   {"/annotations.v1.TargetAuthorityService/ListKinds", "/annotations.v1.TargetAuthorityService/CheckPinned", "/annotations.v1.TargetAuthorityService/Reach"},
-		"tracing": {"/opentelemetry.proto.collector.trace.v1.TraceService/Export", "/opentelemetry.proto.collector.logs.v1.LogsService/Export"},
+		"sidekick": {"/annotations.v1.TargetAuthorityService/ListKinds", "/annotations.v1.TargetAuthorityService/CheckPinned", "/annotations.v1.TargetAuthorityService/Reach"},
+		"tracing":  {"/opentelemetry.proto.collector.trace.v1.TraceService/Export", "/opentelemetry.proto.collector.logs.v1.LogsService/Export"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			routes, err := hopRoutesOf(t, rpcHopWorkspace(t, []string{"chat"}, foreign))

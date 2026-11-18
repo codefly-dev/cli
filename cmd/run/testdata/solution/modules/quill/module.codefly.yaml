@@ -1,0 +1,5 @@
+kind: module
+name: quill
+service-entry: backend
+services:
+    - name: backend

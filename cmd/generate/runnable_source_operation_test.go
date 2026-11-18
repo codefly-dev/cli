@@ -43,7 +43,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 		Agent:     &resources.Agent{Kind: resources.ServiceAgent, Name: "go-grpc", Version: "0.1.53", Publisher: "codefly.dev"},
 		Endpoints: []*resources.Endpoint{{Name: "authority", API: "grpc", Visibility: resources.VisibilityInternal}, {Name: "connect", API: "connect", Visibility: resources.VisibilityInternal}},
 	}
-	root, moduleDir := saveFixtureWorkspace(t, context.Background(), "saas-starter",
+	root, moduleDir := saveFixtureWorkspace(t, context.Background(), "starterkit",
 		&resources.ModuleInterface{Endpoints: []*resources.InterfaceEndpoint{{Service: "accounts", Endpoint: "authority", Visibility: resources.VisibilityInternal}, {Service: "accounts", Endpoint: "connect", Visibility: resources.VisibilityInternal}}},
 		service)
 	// The fixture declares the trust boundary carried by its explicit operations.
@@ -54,7 +54,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	require.NoError(t, err)
 	const contractPath = "contracts/api/accounts/authority/contract.binpb"
 	writeFixtureFile(t, filepath.Join(moduleDir, contractPath), contract)
-	catalog := &composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: "codefly/saas-starter", Version: "0.0.0", Endpoints: []composition.APIContractEndpoint{{
+	catalog := &composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: "codefly/starterkit", Version: "0.0.0", Endpoints: []composition.APIContractEndpoint{{
 		Service: "accounts", Endpoint: "authority", API: "grpc", Kind: composition.APIContractKindProtobuf, Package: "saas.accounts.v1", Path: contractPath, Digest: composition.APIContractDigest(contract),
 		Services: surfaces["authority"],
 	}}}
@@ -81,7 +81,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	resetRunnableBindingsFlags(t)
-	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"saas-starter"}))
+	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"starterkit"}))
 	derived, err := runnablespkg.LoadDerivedOperations(moduleDir)
 	require.NoError(t, err)
 	require.Len(t, derived, 2)
@@ -92,7 +92,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 	selections := map[string]environments.ScopeSelections{}
 	for _, operation := range derived {
-		selections[RunnableBindingKey("saas-starter", operation.Entry.Name)] = environments.ScopeSelections{sourceSelection()}
+		selections[RunnableBindingKey("starterkit", operation.Entry.Name)] = environments.ScopeSelections{sourceSelection()}
 	}
 	writeSelectionEnvironment(t, root, selections)
 	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
@@ -105,11 +105,11 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 		require.Len(t, operation.Operation.RequiredScopeSlots, 1)
 		require.Equal(t, "source", operation.Operation.RequiredScopeSlots[0].Name)
 		require.True(t, operation.Operation.RequiredScopeSlots[0].Lookup)
-		key := RunnableBindingKey("saas-starter", operation.Entry.Name)
+		key := RunnableBindingKey("starterkit", operation.Entry.Name)
 		value := values[key]
 		prepared := verifyResolvedBinding(t, value, nil)
 		// The producer's committed package predates the wire spelling (core
-		// #843: JSON names, 64-bit integers as strings); module-saas-starter
+		// #843: JSON names, 64-bit integers as strings); module-starterkit
 		// regenerates to it. Until then the two agree field for field once the
 		// committed one is re-spelled, which is what this holds.
 		require.True(t, proto.Equal(operation.Package.GetContract(), prepared.Contract), "prepared contract is the derived one")
@@ -122,7 +122,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 		t.Logf("rendered %s=%s", key, value)
 	}
 	runnablesCheck, runnableBindingsCheck = true, true
-	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"saas-starter"}))
+	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"starterkit"}))
 	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
 }
 
@@ -130,7 +130,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 // spelling to the one derived now: the same members in the same order, each
 // named by its JSON name, a 64-bit integer as a STRING of format int64 or
 // uint64 and nothing else, every non-required key optional, array items held
-// the same way. A stopgap: it goes when module-saas-starter regenerates.
+// the same way. A stopgap: it goes when module-starterkit regenerates.
 func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev0.RunnableField) {
 	t.Helper()
 	require.Len(t, derived, len(committed))

@@ -88,3 +88,28 @@ func TestTheCompanionIsRecordedByTagWhenNoImageDigestExists(t *testing.T) {
 		t.Fatalf("with no digest: companion = %q, want %q", got, image.FullName())
 	}
 }
+
+// TestTheLibraryManifestNamesNoCLIVersion: generated-by names the bytes'
+// producers by content. A CLI version there made every CLI release regenerate
+// every library in the fleet even when the generated code was byte-identical.
+func TestTheLibraryManifestNamesNoCLIVersion(t *testing.T) {
+	stubCompanionRun(t, false, func(context.Context, string) (string, error) { return "", nil })
+	dir := t.TempDir()
+	entries := []ContractEntry{releaseClientEntry("billing", "0.1.0")}
+	if err := writeLibraryManifest(t.Context(), dir, "client", "0.1.0", entries, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, resources.LibraryConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		GeneratedBy map[string]any `yaml:"generated-by"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.GeneratedBy["codefly"]; ok {
+		t.Fatalf("generated-by names the CLI version: %v", doc.GeneratedBy)
+	}
+}

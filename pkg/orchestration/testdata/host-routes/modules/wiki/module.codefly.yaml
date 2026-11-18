@@ -1,5 +1,0 @@
-kind: module
-name: wiki
-service-entry: backend
-services:
-    - name: backend

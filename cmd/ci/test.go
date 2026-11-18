@@ -46,7 +46,7 @@ func testEnvironment(workspace *resources.Workspace, disposable bool) (*environm
 	if disposable {
 		// The fixture's declared scope may name retained data. Never destroy
 		// it: disposal requires a new scope even when the fixture names one.
-		env.NamingScope = orchestration.NewInvocationID()
+		orchestration.IsolateEnvironment(env)
 	}
 	return env, nil
 }

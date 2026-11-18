@@ -224,8 +224,8 @@ func validateResourcePathComponent(kind, name string) error {
 // holding EVERY environment to it refuses a flow over a declaration that is
 // not its own: an environment imported before a module overlay added a service
 // has no withdrawal for that service, and a render of a different, correct
-// environment then fails over it. Blue hit exactly that — `render --env blue`
-// refused over `staging`, whose composition predates robin/sandbox.
+// environment then fails over it: a render of one environment refused over
+// another whose composition predates a service the first one composes.
 //
 // So a caller that has selected an environment passes it, and gets
 // ValidateEnvironmentExclusions' contract: "a flow is held to its own
@@ -280,9 +280,9 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace, sele
 	// against the workspace's CURRENT service graph, so an environment whose
 	// composition predates a module overlay disagrees with that graph through
 	// no fault of the operation being run. Holding every environment to it
-	// refused `render --env blue` over `staging`'s bare "object-storage",
-	// which two modules now declare — and blue could not be repaired from its
-	// own side, because the offending declaration is not blue's.
+	// refused a render of one environment over another's bare service name,
+	// which two modules now declare — and the first could not be repaired
+	// from its own side, because the offending declaration is not its own.
 	scoped := selectedOrAll(environments, selected)
 	needsGraph := false
 	for _, env := range scoped {

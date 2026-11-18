@@ -13,7 +13,7 @@ import (
 )
 
 // blueRenderBuildSeconds are the 25 image build durations of one real
-// `deploy gitops render --all --env blue`, in seconds, in the order that render
+// `deploy gitops render --all --env aurora`, in seconds, in the order that render
 // built them. Their sum is the build phase's whole wall clock, because no two
 // of those builds ever overlapped. That render went on to fail at its deploy
 // step, on a missing secret declaration unrelated to building; every image was

@@ -71,7 +71,7 @@ func TestProductIntentRefusalsDoNotWrite(t *testing.T) {
 		"unknown top key":        "registry: attacker.example\n" + productExclusionIntent,
 		"legacy launcher":        "name: product\nconfiguration-profiles: [local]\n" + productExclusionIntent,
 		"unknown exclusion key":  strings.Replace(productExclusionIntent, "withdrawn-from:", "withdrawn-fom:", 1),
-		"missing environment":    strings.Replace(productExclusionIntent, "azure:", "blue:", 1),
+		"missing environment":    strings.Replace(productExclusionIntent, "azure:", "aurora:", 1),
 		"omitted exclusion":      "environments:\n  azure: {}\n",
 		"null exclusion":         "environments:\n  azure:\n    exclude-services: null\n",
 		"multiple documents":     productExclusionIntent + "---\nenvironments: {}\n",

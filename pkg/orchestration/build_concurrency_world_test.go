@@ -17,7 +17,7 @@ func TestImagePlatformsResolvesOnceUnderConcurrentBuilds(t *testing.T) {
 	var mu sync.Mutex
 	world := &World{
 		Env: &environments.Environment{
-			Name:    "blue",
+			Name:    "aurora",
 			Cluster: &environments.EnvironmentCluster{Kind: "kind"},
 		},
 		hostArchitecture: func() (string, error) {

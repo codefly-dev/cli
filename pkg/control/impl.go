@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
+	"github.com/codefly-dev/core/discovery"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -334,20 +335,15 @@ func workspaceRootFrom(start string) (string, error) {
 	if start == "" {
 		return "", fmt.Errorf("control-plane root is required")
 	}
-	current := filepath.Clean(start)
-	for {
+	for _, current := range discovery.Ancestors(start, discovery.Ceilings) {
 		config := filepath.Join(current, resources.WorkspaceConfigurationName)
 		if info, err := os.Stat(config); err == nil && !info.IsDir() {
 			return current, nil
 		} else if err != nil && !os.IsNotExist(err) {
 			return "", fmt.Errorf("inspect workspace configuration %s: %w", config, err)
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("no workspace found from %s", start)
-		}
-		current = parent
 	}
+	return "", fmt.Errorf("no workspace found from %s", start)
 }
 
 // --- Introspector ---

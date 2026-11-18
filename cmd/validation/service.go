@@ -119,7 +119,7 @@ func RunServiceWithOptions(
 	}
 
 	if options.Disposable {
-		env.NamingScope = orchestration.NewInvocationID()
+		orchestration.IsolateEnvironment(env)
 	}
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, mode)

@@ -28,12 +28,12 @@ func moduleNames(workspace *resources.Workspace) []string {
 func TestRunModuleClosureCarriesOnlyWhatTheRootReaches(t *testing.T) {
 	workspace := multiRootWorkspace(t)
 
-	scoped, err := runModuleClosure(t.Context(), workspace, []string{"wiki"})
+	scoped, err := runModuleClosure(t.Context(), workspace, []string{"quill"})
 	require.NoError(t, err)
 
-	require.ElementsMatch(t, []string{"wiki", "saas", "documents"}, moduleNames(scoped))
+	require.ElementsMatch(t, []string{"quill", "saas", "documents"}, moduleNames(scoped))
 	require.ElementsMatch(t,
-		[]string{"analytics", "contracts", "documents", "lastlogin-go", "saas", "wiki"},
+		[]string{"analytics", "contracts", "documents", "beacon-go", "saas", "quill"},
 		moduleNames(workspace),
 		"the pin set the composition committed is left alone")
 }
@@ -43,10 +43,10 @@ func TestRunModuleClosureCarriesOnlyWhatTheRootReaches(t *testing.T) {
 func TestRunModuleClosureUnionsEveryRoot(t *testing.T) {
 	workspace := multiRootWorkspace(t)
 
-	scoped, err := runModuleClosure(t.Context(), workspace, []string{"lastlogin-go", "wiki"})
+	scoped, err := runModuleClosure(t.Context(), workspace, []string{"beacon-go", "quill"})
 	require.NoError(t, err)
 
-	require.ElementsMatch(t, []string{"lastlogin-go", "wiki", "saas", "documents"}, moduleNames(scoped))
+	require.ElementsMatch(t, []string{"beacon-go", "quill", "saas", "documents"}, moduleNames(scoped))
 }
 
 // Without seeds there is nothing to derive the graph from, so the run keeps the
@@ -81,7 +81,7 @@ func TestRunModuleClosureRefusesWhatValidationRefuses(t *testing.T) {
 func TestRunModuleClosureIgnoresAViolationOutsideTheRun(t *testing.T) {
 	workspace := multiRootWorkspace(t)
 
-	_, err := runModuleClosure(t.Context(), workspace, []string{"wiki"})
+	_, err := runModuleClosure(t.Context(), workspace, []string{"quill"})
 	require.NoError(t, err)
 }
 
@@ -127,14 +127,14 @@ service-dependencies:
 func TestNewFlowBuildsTheGraphFromTheRunClosure(t *testing.T) {
 	ctx := t.Context()
 	workspace := multiRootWorkspace(t)
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
 
-	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("wiki"))
+	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("quill"))
 	require.NoError(t, err)
 
 	_, err = flow.world.Dependencies.ServiceFromUnique("saas/frontend")
@@ -142,7 +142,7 @@ func TestNewFlowBuildsTheGraphFromTheRunClosure(t *testing.T) {
 	_, err = flow.world.Dependencies.ServiceFromUnique("analytics/reports")
 	require.Error(t, err, "a pinned module no root reaches is not in the run's graph")
 
-	require.ElementsMatch(t, []string{"wiki", "saas", "documents"}, moduleNames(flow.graphWorkspace))
+	require.ElementsMatch(t, []string{"quill", "saas", "documents"}, moduleNames(flow.graphWorkspace))
 	require.Same(t, workspace, flow.workspace,
 		"configurations and run profiles stay resolved against the whole composition")
 }
@@ -152,7 +152,7 @@ func TestNewFlowBuildsTheGraphFromTheRunClosure(t *testing.T) {
 func TestNewFlowWithoutSeedsKeepsEveryPinnedModuleInTheGraph(t *testing.T) {
 	ctx := t.Context()
 	workspace := multiRootWorkspace(t)
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
@@ -176,28 +176,28 @@ func TestRunModuleClosureRunsASolutionSpanningTwoVendoredModules(t *testing.T) {
 		"workspace.codefly.yaml": `name: platform
 layout: modules
 modules:
-    - name: wiki
+    - name: quill
       source: acme/solutions
       version: "0.0.1"
-      path: vendor/solutions/wiki
+      path: vendor/solutions/quill
     - name: saas
-      source: acme/lodestar
+      source: acme/meridian
       version: "0.0.62"
-      path: vendor/lodestar/saas
+      path: vendor/meridian/saas
     - name: documents
-      source: acme/lodestar
+      source: acme/meridian
       version: "0.0.62"
-      path: vendor/lodestar/documents
+      path: vendor/meridian/documents
 `,
-		"vendor/solutions/wiki/module.codefly.yaml": `kind: module
-name: wiki
+		"vendor/solutions/quill/module.codefly.yaml": `kind: module
+name: quill
 services:
     - name: backend
 `,
-		"vendor/solutions/wiki/services/backend/service.codefly.yaml": `kind: service
+		"vendor/solutions/quill/services/backend/service.codefly.yaml": `kind: service
 name: backend
 version: 0.0.0
-module: wiki
+module: quill
 agent:
     kind: runtime::service
     name: go-grpc
@@ -218,12 +218,12 @@ endpoints:
       visibility: public
       exposure: none
 `,
-		"vendor/lodestar/saas/module.codefly.yaml": `kind: module
+		"vendor/meridian/saas/module.codefly.yaml": `kind: module
 name: saas
 services:
     - name: auth-gateway
 `,
-		"vendor/lodestar/saas/services/auth-gateway/service.codefly.yaml": `kind: service
+		"vendor/meridian/saas/services/auth-gateway/service.codefly.yaml": `kind: service
 name: auth-gateway
 version: 0.0.0
 module: saas
@@ -238,12 +238,12 @@ endpoints:
       visibility: public
       exposure: none
 `,
-		"vendor/lodestar/documents/module.codefly.yaml": `kind: module
+		"vendor/meridian/documents/module.codefly.yaml": `kind: module
 name: documents
 services:
     - name: api
 `,
-		"vendor/lodestar/documents/services/api/service.codefly.yaml": `kind: service
+		"vendor/meridian/documents/services/api/service.codefly.yaml": `kind: service
 name: api
 version: 0.0.0
 module: documents
@@ -266,17 +266,17 @@ endpoints:
 	require.NoError(t, err)
 	require.Equal(t, resources.ResolutionLocalPath, resolution.Kind)
 
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
 
-	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("wiki"))
+	flow, err := NewFlow(ctx, workspace, module, service, env, RunMode, WithRunModuleClosure("quill"))
 	require.NoError(t, err)
 
-	order, err := flow.world.Dependencies.OrderTo(ctx, "wiki/backend")
+	order, err := flow.world.Dependencies.OrderTo(ctx, "quill/backend")
 	require.NoError(t, err)
 	got := make([]string, 0, len(order))
 	for _, entry := range order {

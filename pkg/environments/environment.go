@@ -68,7 +68,7 @@ type EnvironmentCluster struct {
 //	      side-effects based on this value.
 //	Mirrors: where to READ an image from instead of the registry its
 //	      reference names, keyed by that registry's canonical host
-//	      ("docker.io": "us-east1-docker.pkg.dev/<project>/<remote-repo>").
+//	      ("docker.io": "mirror.example.com/<project>/<remote-repo>").
 //	      It is a read-side substitution only: nothing is pushed to a mirror,
 //	      and the reference a recipe is written against never changes. See
 //	      Validate for what a key and a value may be. A mirror of the
@@ -327,8 +327,8 @@ func (ref EnvironmentSecretRemoteRef) Equal(other EnvironmentSecretRemoteRef) bo
 	return *ref.SecretStore == *other.SecretStore
 }
 
-// UnmarshalYAML accepts either a scalar remote key ("lodestar-accounts", which
-// means {key: "lodestar-accounts"}) or an explicit {key, property} mapping, so a
+// UnmarshalYAML accepts either a scalar remote key ("meridian-accounts", which
+// means {key: "meridian-accounts"}) or an explicit {key, property} mapping, so a
 // store that holds bare scalars stays terse while a store of JSON documents can
 // name the property.
 func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
@@ -1480,17 +1480,22 @@ type Environment struct {
 	Description string `yaml:"description,omitempty"`
 	NamingScope string `yaml:"naming-scope,omitempty"`
 	Fixture     string `yaml:"fixture,omitempty"`
+	// Disposable tells agents that the runtime state created under NamingScope
+	// is throwaway and may be removed when the run ends. Only an invocation
+	// that generated the scope sets it (orchestration.IsolateEnvironment), so
+	// it is never declared in a workspace.
+	Disposable bool `yaml:"-"`
 
 	// Class is this environment's ENVIRONMENT CLASS: its release stage, how
 	// far along the promotion path it sits — development, staging or
 	// production (modulecontract.EnvironmentClasses). It is the axis a
 	// coordinate already names, the `development` segment of
-	// `hosted/gcp/us-east1/US/development/blue`, stated here because the
+	// `hosted/<cloud>/<region>/<jurisdiction>/development/<cell>`, stated here because the
 	// coordinate contract carries none of it: the producer emits
 	// configuration, not a tier, exactly as it carries no host block.
 	//
 	// It is DECLARED and never derived. An environment's name is not its
-	// class: `blue`, `green` and `dev` are all development cells, and a class
+	// class: two cells named `alpha` and `dev` can both be development cells, and a class
 	// read off a name is the defect IsK3d's legacy reading is — it would make
 	// a production environment development the day someone named one
 	// `prod-2`. Absent is "no class declared", which resolves every contract
@@ -1672,7 +1677,8 @@ func (env *Environment) Runtime() *resources.Environment {
 	}
 	return &resources.Environment{
 		Name: env.Name, Description: env.Description, NamingScope: env.NamingScope,
-		Fixture: env.Fixture, ConfigurationProfile: env.ConfigurationProfile,
+		Disposable: env.Disposable,
+		Fixture:    env.Fixture, ConfigurationProfile: env.ConfigurationProfile,
 		ConfigurationProfiles: env.ConfigurationProfiles, Secrets: env.Secrets,
 	}
 }

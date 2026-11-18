@@ -65,7 +65,6 @@ cli/
 │   ├── orchestration/      # Flow, Playbook, Runner, Builder, Policies, StateManager
 │   ├── daemon/             # Background process management + monitor
 │   ├── mcp/                # MCP server, tools, resources, protocol types
-│   ├── gateway/            # Mind Gateway gRPC server
 │   ├── builder/            # Docker build context utilities
 │   ├── cli/                # CLI utilities (logging, errors, TUI communication)
 │   ├── deployments/        # Deployment manager interface
@@ -291,10 +290,6 @@ Two files:
 - `service_tools.go` -- Per-service tools (read/write/build/test)
 - `symbol_tools.go` -- LSP-backed symbol intelligence tools
 - `resources.go` -- Resource registrations (workspace/module/service configs)
-
-### `pkg/gateway/`
-
-Mind Gateway gRPC server for the Mind engineering platform.
 
 ---
 

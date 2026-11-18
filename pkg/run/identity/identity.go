@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codefly-dev/core/workloadidentity"
-	"github.com/codefly-dev/core/workloadidentity/native"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity/native"
 )
 
 // Credential is one projected identity: the workload it names, the container

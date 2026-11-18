@@ -16,7 +16,7 @@ import (
 
 const fixturePackageManifest = `kind: module-package
 schema: codefly/module-package/v2
-id: saas-starter
+id: starterkit
 version: 1.0.0
 minimum-codefly-version: ">=0.3.32"
 artifact-roots:
@@ -111,7 +111,7 @@ type composedModule struct {
 func composedWorkspace(t *testing.T, modules ...composedModule) *resources.Workspace {
 	t.Helper()
 	root := t.TempDir()
-	workspace := &resources.Workspace{Name: "wiki"}
+	workspace := &resources.Workspace{Name: "quill"}
 	for _, module := range modules {
 		dir := filepath.Join(root, module.name)
 		if err := os.MkdirAll(filepath.Join(dir, "contracts"), 0o755); err != nil {
@@ -191,8 +191,8 @@ func TestComposedPackageManifestsSkipsAModuleShippingNoPackage(t *testing.T) {
 	if len(manifests) != 1 {
 		t.Fatalf("manifests = %d, want only the composed package", len(manifests))
 	}
-	if manifests[0].ID != "saas-starter" {
-		t.Errorf("manifest id = %q, want saas-starter", manifests[0].ID)
+	if manifests[0].ID != "starterkit" {
+		t.Errorf("manifest id = %q, want starterkit", manifests[0].ID)
 	}
 }
 
@@ -336,7 +336,7 @@ func TestValidateFixtureSelectionRefusesAnAmbiguousSelection(t *testing.T) {
 	if !errors.Is(err, corecomposition.ErrCollision) {
 		t.Errorf("error = %v, want ErrCollision", err)
 	}
-	for _, owner := range []string{"saas-starter", "rival-starter"} {
+	for _, owner := range []string{"starterkit", "rival-starter"} {
 		if !strings.Contains(err.Error(), owner) {
 			t.Errorf("error %q does not name the declaring package %q", err, owner)
 		}
@@ -346,7 +346,7 @@ func TestValidateFixtureSelectionRefusesAnAmbiguousSelection(t *testing.T) {
 // One package composed under two module references declares its fixtures twice,
 // identically. That still names one seed, so treating it as a collision refused
 // a selection that was never ambiguous — and said so as "declared by both
-// saas-starter and saas-starter".
+// starterkit and starterkit".
 func TestValidateFixtureSelectionAcceptsOnePackageComposedTwice(t *testing.T) {
 	workspace := composedWorkspace(t,
 		composedModule{name: "saas-a", manifest: fixturePackageManifest},
@@ -431,7 +431,7 @@ func TestValidateFixtureSelectionStaysQuietWhenNothingIsWrong(t *testing.T) {
 // resolved principal rewrites the composed package's own declaration.
 func TestDeclarationsByNameDoesNotAliasManifestPrincipals(t *testing.T) {
 	manifest := &corecomposition.PackageManifest{
-		ID: "saas-starter",
+		ID: "starterkit",
 		Fixtures: []corecomposition.ProvidedFixture{{
 			Name:       "dev-admin",
 			Principals: []corecomposition.FixturePrincipal{{ID: "user-admin", Email: "admin@example.com", Role: "admin"}},

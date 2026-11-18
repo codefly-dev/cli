@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -76,7 +78,7 @@ const (
 	// companions/codefly/Dockerfile at core_ref c446f742, codefly-dev/core#929)
 	// and published and attested by this repository's Companions workflow
 	// (run 43712550709, `codefly companion publish`, which cross-compiles the
-	// CLI into bin/linux/<arch>/codefly) from blue-delivery at 8a87d630, so its
+	// CLI into bin/linux/<arch>/codefly) from a CLI branch at 8a87d630, so its
 	// binary embeds codefly/core v0.19.30 and authority-core 00d983d2 (read
 	// back from its build info).
 	//
@@ -115,7 +117,7 @@ const (
 	// manifestDeliveryPath is the host's manifest delivery route, relative to
 	// the delivery endpoint the environment names (envelopeDeliveryPath is the
 	// envelope's).
-	manifestDeliveryPath = "/platform/_delivery/manifest"
+	manifestDeliveryPath = solutionhost.ManifestDeliveryPath
 
 	// deliveryLabel marks the objects that deliver documents, and
 	// deliveryCarrierValue is its one value: it names the CARRIER — the pod a

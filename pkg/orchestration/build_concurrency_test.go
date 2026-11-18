@@ -61,11 +61,11 @@ func TestBuildTranscriptReportsUnderItsService(t *testing.T) {
 	_, err = transcript.Write([]byte("ERROR: failed to solve\n"))
 	require.NoError(t, err)
 
-	report := transcript.Report("robin/chat", "registry/robin/chat:0.1.0")
-	require.Contains(t, report, "robin/chat build output")
-	require.Contains(t, report, "registry/robin/chat:0.1.0")
+	report := transcript.Report("sidekick/chat", "registry/sidekick/chat:0.1.0")
+	require.Contains(t, report, "sidekick/chat build output")
+	require.Contains(t, report, "registry/sidekick/chat:0.1.0")
 	require.Contains(t, report, "ERROR: failed to solve")
-	require.Contains(t, report, "end of robin/chat build output")
+	require.Contains(t, report, "end of sidekick/chat build output")
 }
 
 func TestBuildTranscriptOfASilentBuildIsEmpty(t *testing.T) {

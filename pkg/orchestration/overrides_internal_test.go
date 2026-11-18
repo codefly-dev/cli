@@ -11,11 +11,11 @@ import (
 // module-qualified unique, and that entry must not be diluted by a same-named
 // service elsewhere in the graph — nor leak into it.
 func TestFlowOverridesForPrefersTheModuleQualifiedKey(t *testing.T) {
-	entry := serviceIn("wiki", "backend")
+	entry := serviceIn("quill", "backend")
 	sameNameElsewhere := serviceIn("documents", "backend")
 
 	flow := &Flow{overrides: map[string]map[string]string{
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "[{\"id\":\"documents\"}]"},
+		"quill/backend": {"CODEFLY__API_CONSUMES": "[{\"id\":\"documents\"}]"},
 	}}
 
 	if got := flow.overridesFor(entry); got["CODEFLY__API_CONSUMES"] == "" {
@@ -31,21 +31,21 @@ func TestFlowOverridesForPrefersTheModuleQualifiedKey(t *testing.T) {
 // for a different service.
 func TestFlowOverridesForFallsBackToTheBareName(t *testing.T) {
 	flow := &Flow{overrides: map[string]map[string]string{
-		"warden":       {"CODEFLY__FIXTURE": "dogfood"},
-		"wiki/backend": {"CODEFLY__API_CONSUMES": "[]"},
+		"warden":        {"CODEFLY__FIXTURE": "dogfood"},
+		"quill/backend": {"CODEFLY__API_CONSUMES": "[]"},
 	}}
 
 	if got := flow.overridesFor(serviceIn("infra", "warden")); got["CODEFLY__FIXTURE"] != "dogfood" {
 		t.Fatalf("--set by bare name stopped reaching its service: %v", got)
 	}
-	if got := flow.overridesFor(serviceIn("wiki", "backend")); got["CODEFLY__FIXTURE"] != "" {
+	if got := flow.overridesFor(serviceIn("quill", "backend")); got["CODEFLY__FIXTURE"] != "" {
 		t.Fatalf("unrelated bare-name override bled into the qualified match: %v", got)
 	}
 }
 
 func TestFlowOverridesForEmpty(t *testing.T) {
 	flow := &Flow{}
-	if got := flow.overridesFor(serviceIn("wiki", "backend")); got != nil {
+	if got := flow.overridesFor(serviceIn("quill", "backend")); got != nil {
 		t.Fatalf("expected nil overrides, got %v", got)
 	}
 }

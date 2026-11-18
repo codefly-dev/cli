@@ -51,7 +51,7 @@ Signing uses release custody (VAULT_ADDR + VAULT_TOKEN +
 CODEFLY_RELEASE_TRANSIT_KEY, or CODEFLY_RELEASE_KMS_KEY). Pass --developer to
 sign with this machine's developer key instead, which only a local
 qualification host admits.`,
-	Example: `  codefly delivery prepare --overlay deployments/environments/blue/modules/wiki/delivery --out ./prepared --env blue
+	Example: `  codefly delivery prepare --overlay deployments/environments/dev/modules/notes/delivery --out ./prepared --env dev
   codefly delivery prepare --overlay ./delivery --out ./prepared --env local --developer`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {

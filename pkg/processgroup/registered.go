@@ -42,12 +42,63 @@ func PreviewManagedProcessGroups(ctx context.Context, scope Scope) ([]int, error
 // errUnproven: the group's members do not prove they belong to its record.
 var errUnproven = errors.New("live group ownership is unproven")
 
-// undecided is a live registered group Core cannot decide is the one its
-// record describes (an unproven owner, or a boot identity an older writer
+// UndecidedGroupError is a live registered group Core cannot decide is the one
+// its record describes (an unproven owner, or a boot identity an older writer
 // recorded differently). It is kept without signaling; the error names it and
 // the supported way to recover it, so one such group never hides the others.
+type UndecidedGroupError struct {
+	PGID   int
+	Reason error
+}
+
+func (e *UndecidedGroupError) Error() string {
+	return fmt.Sprintf("inspect registered group %d: %v; kept without signaling, recover it with `codefly recover process-group %d --preview`", e.PGID, e.Reason, e.PGID)
+}
+
+func (e *UndecidedGroupError) Unwrap() error { return e.Reason }
+
 func undecided(pgid int, err error) error {
-	return fmt.Errorf("inspect registered group %d: %w; kept without signaling, recover it with `codefly recover process-group %d --preview`", pgid, err, pgid)
+	return &UndecidedGroupError{PGID: pgid, Reason: err}
+}
+
+// ReapStaleProcessGroupsAfterRun is the machine-wide sweep a run makes as it
+// exits. It recovers what ReapStaleProcessGroupsWithEvidence recovers, and
+// tells apart the groups it had to keep undecided: one that own names is the
+// run's failure, any other is somebody else's group on the same machine (an
+// agent built on an older Core registers a boot identity this reader refuses
+// to decide about, for as long as it runs) and is answered as kept, for the
+// caller to report without failing a run that has nothing to do with it.
+func ReapStaleProcessGroupsAfterRun(ctx context.Context, own func(pgid int) bool) (evidence CleanupEvidence, kept []*UndecidedGroupError, err error) {
+	evidence, err = ReapStaleProcessGroupsWithEvidence(ctx, AllWorkspaces())
+	kept, err = splitUndecided(err, own)
+	return evidence, kept, err
+}
+
+// splitUndecided takes out of a cleanup error the undecided groups own does
+// not name. Everything else stays the error, in order.
+func splitUndecided(err error, own func(pgid int) bool) ([]*UndecidedGroupError, error) {
+	var kept []*UndecidedGroupError
+	var rest []error
+	var walk func(error)
+	walk = func(current error) {
+		if current == nil {
+			return
+		}
+		if joined, ok := current.(interface{ Unwrap() []error }); ok {
+			for _, each := range joined.Unwrap() {
+				walk(each)
+			}
+			return
+		}
+		var group *UndecidedGroupError
+		if errors.As(current, &group) && (own == nil || !own(group.PGID)) {
+			kept = append(kept, group)
+			return
+		}
+		rest = append(rest, current)
+	}
+	walk(err)
+	return kept, errors.Join(rest...)
 }
 
 // Core owns supported registry discovery, authentication and identity-bound

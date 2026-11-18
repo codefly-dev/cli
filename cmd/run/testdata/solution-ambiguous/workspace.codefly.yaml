@@ -1,5 +1,5 @@
 name: two-entries
 layout: modules
 modules:
-    - name: wiki
+    - name: quill
     - name: host

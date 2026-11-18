@@ -20,7 +20,7 @@ func TestRunFlowBuildsTheGraphFromTheRunClosure(t *testing.T) {
 
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "../../pkg/orchestration/testdata/multi-root")
 	require.NoError(t, err)
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)

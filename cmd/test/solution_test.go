@@ -193,12 +193,12 @@ func TestVerifyOutputEnvReachesOriginRefusesAFileItCannotCompose(t *testing.T) {
 	flow := &orchestration.Flow{}
 
 	outputEnv = ""
-	if err := verifyOutputEnvReachesOrigin(flow, "wiki/backend"); err != nil {
+	if err := verifyOutputEnvReachesOrigin(flow, "quill/backend"); err != nil {
 		t.Fatalf("a test that asked for no exported environment was refused: %v", err)
 	}
 
 	outputEnv = "/tmp/codefly-test-env"
-	err := verifyOutputEnvReachesOrigin(flow, "wiki/backend")
+	err := verifyOutputEnvReachesOrigin(flow, "quill/backend")
 	if err == nil {
 		t.Fatal("--output-env accepted although the origin's runtime environment is only composed at Start")
 	}

@@ -32,19 +32,19 @@ func TestModuleNamespaceSuffixesOnlyWhenSeveralModulesAreComposed(t *testing.T) 
 
 // TestADeliveredNamespaceIsNamedByItsDeliveryEnvironmentAndModule is the
 // handbook decision a-delivered-namespace-is-named-by-its-delivery-environment-and-module
-// (obin-ai/handbook#339): a module composed beside others is delivered into
+// (northwind/handbook#339): a module composed beside others is delivered into
 // <delivery>-<environment>-<module>, the environment's namespace being
 // <delivery>-<environment>. Never the bare module name — an ordinary word that
 // collides across environments of one cell and with every other application —
 // and never <delivery>-<module>, which two environments of one delivery on one
 // cell would share.
 func TestADeliveredNamespaceIsNamedByItsDeliveryEnvironmentAndModule(t *testing.T) {
-	composition := &resources.Workspace{Name: "platform-obin", Layout: resources.LayoutKindModules, Modules: []*resources.ModuleReference{{Name: "saas"}, {Name: "records"}}}
-	staging := &environments.Environment{Name: "staging", Namespace: "platform-obin-staging"}
-	production := &environments.Environment{Name: "production", Namespace: "platform-obin-production"}
+	composition := &resources.Workspace{Name: "platform-northwind", Layout: resources.LayoutKindModules, Modules: []*resources.ModuleReference{{Name: "saas"}, {Name: "records"}}}
+	staging := &environments.Environment{Name: "staging", Namespace: "platform-northwind-staging"}
+	production := &environments.Environment{Name: "production", Namespace: "platform-northwind-production"}
 
-	require.Equal(t, "platform-obin-staging-saas", staging.ModuleNamespace(composition, "saas"))
-	require.Equal(t, "platform-obin-staging-records", staging.ModuleNamespace(composition, "records"))
+	require.Equal(t, "platform-northwind-staging-saas", staging.ModuleNamespace(composition, "saas"))
+	require.Equal(t, "platform-northwind-staging-records", staging.ModuleNamespace(composition, "records"))
 	require.NotEqual(t, staging.ModuleNamespace(composition, "saas"), production.ModuleNamespace(composition, "saas"),
 		"two environments of one delivery on one cell never share a module's namespace")
 	for _, module := range []string{"saas", "records"} {

@@ -21,16 +21,16 @@ func boundWorkspace(t *testing.T, body string, extra map[string]string) *resourc
 		"workspace.codefly.yaml": `name: artifact-delivery
 layout: modules
 modules:
-    - name: wiki
-      path: modules/wiki
+    - name: quill
+      path: modules/quill
 `,
-		"modules/wiki/module.codefly.yaml":                   excludedRootExportModule,
-		"modules/wiki/services/backend/service.codefly.yaml": excludedRootExportService + "workspace-configuration-dependencies:\n    - docs\n",
-		"modules/wiki/docs/install.md":                       body,
+		"modules/quill/module.codefly.yaml":                   excludedRootExportModule,
+		"modules/quill/services/backend/service.codefly.yaml": excludedRootExportService + "workspace-configuration-dependencies:\n    - docs\n",
+		"modules/quill/docs/install.md":                       body,
 		"configurations/local/module-artifacts.codefly.json": `{
   "schemaVersion": 1,
   "bindings": [
-    {"configuration": "docs", "key": "README", "source": {"module": "wiki", "path": "docs/install.md"}}
+    {"configuration": "docs", "key": "README", "source": {"module": "quill", "path": "docs/install.md"}}
   ]
 }`,
 	}
@@ -83,7 +83,7 @@ func TestAnOrdinaryLoadDeliversTheBoundArtifactWithItsEvidence(t *testing.T) {
 	require.Nil(t, value.GetModuleArtifact(), "the declaration is resolved, not delivered unresolved")
 	evidence := value.GetResolvedModuleArtifact()
 	require.NotNil(t, evidence)
-	require.Equal(t, "wiki", evidence.GetReference().GetModule())
+	require.Equal(t, "quill", evidence.GetReference().GetModule())
 	require.Equal(t, "docs/install.md", evidence.GetReference().GetPath())
 	require.Equal(t, int64(len(body)), evidence.GetArtifactIdentity().GetSizeBytes())
 	require.NoError(t, resources.ValidateModuleArtifactValue(value))
@@ -96,7 +96,7 @@ func TestANextLoadDeliversChangedSource(t *testing.T) {
 	workspace := boundWorkspace(t, "A\n", nil)
 	require.Equal(t, "A\n", boundValue(loadBound(t, workspace)).GetValue())
 
-	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "modules/wiki/docs/install.md"), []byte("B\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "modules/quill/docs/install.md"), []byte("B\n"), 0o600))
 	later := boundValue(loadBound(t, workspace))
 	require.Equal(t, "B\n", later.GetValue(), "the next load acquires the then-selected source")
 	require.NoError(t, resources.ValidateModuleArtifactValue(later))
@@ -122,7 +122,7 @@ func TestALiteralCannotSilentlyTakeTheBoundDestination(t *testing.T) {
 // whose source is gone.
 func TestAMissingArtifactRefusesTheLoad(t *testing.T) {
 	workspace := boundWorkspace(t, "# Install\n", nil)
-	require.NoError(t, os.Remove(filepath.Join(workspace.Dir(), "modules/wiki/docs/install.md")))
+	require.NoError(t, os.Remove(filepath.Join(workspace.Dir(), "modules/quill/docs/install.md")))
 
 	reader, err := NewWorkspaceConfigurationReader(context.Background(), workspace)
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestAMissingArtifactRefusesTheLoad(t *testing.T) {
 	require.NoError(t, err)
 	err = reader.Load(context.Background(), env.Runtime())
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "wiki", "the refusal names the declared module")
+	require.Contains(t, err.Error(), "quill", "the refusal names the declared module")
 	require.Contains(t, err.Error(), "docs/install.md", "and its declared path")
 }
 
@@ -192,7 +192,7 @@ func TestAnAdditionalOfferCannotTakeABoundDestination(t *testing.T) {
 func TestTheExcludedRootExportChecksItsOwnPayload(t *testing.T) {
 	ctx := context.Background()
 	workspace := boundWorkspace(t, "# Install\n", nil)
-	module, err := workspace.LoadModuleFromName(ctx, "wiki")
+	module, err := workspace.LoadModuleFromName(ctx, "quill")
 	require.NoError(t, err)
 	service, err := module.LoadServiceFromName(ctx, "backend")
 	require.NoError(t, err)

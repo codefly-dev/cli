@@ -66,12 +66,12 @@ func (f *fakeDeliveryRepository) serve(t *testing.T) {
 			if head == "" {
 				head = mergeHead
 			}
-			fmt.Fprintf(w, `{"number":9,"node_id":"PR_9","state":%q,"merged":%t,"mergeable_state":%q,"merge_commit_sha":"feedfacefeedfacefeedfacefeedfacefeedface","head":{"sha":%q},"base":{"ref":"blue-delivery"}}`,
+			fmt.Fprintf(w, `{"number":9,"node_id":"PR_9","state":%q,"merged":%t,"mergeable_state":%q,"merge_commit_sha":"feedfacefeedfacefeedfacefeedfacefeedface","head":{"sha":%q},"base":{"ref":"aurora-delivery"}}`,
 				state, merged, mergeable, head)
-		case r.Method == http.MethodGet && path == "/repos/owner/delivery/branches/blue-delivery":
+		case r.Method == http.MethodGet && path == "/repos/owner/delivery/branches/aurora-delivery":
 			checks, _ := json.Marshal(f.protection)
-			fmt.Fprintf(w, `{"name":"blue-delivery","protection":{"enabled":true,"required_status_checks":{"contexts":%s}}}`, checks)
-		case r.Method == http.MethodGet && path == "/repos/owner/delivery/rules/branches/blue-delivery":
+			fmt.Fprintf(w, `{"name":"aurora-delivery","protection":{"enabled":true,"required_status_checks":{"contexts":%s}}}`, checks)
+		case r.Method == http.MethodGet && path == "/repos/owner/delivery/rules/branches/aurora-delivery":
 			if f.rules == "" {
 				fmt.Fprint(w, `[]`)
 				return
@@ -143,13 +143,13 @@ func mergeIt(t *testing.T) (MergeResult, []string, error) {
 	t.Helper()
 	var said []string
 	result, err := MergePromotion(context.Background(), &PublishResult{
-		Repository: "https://github.com/owner/delivery.git", BaseBranch: "blue-delivery",
+		Repository: "https://github.com/owner/delivery.git", BaseBranch: "aurora-delivery",
 		Commit: mergeHead, PullRequest: "https://github.com/owner/delivery/pull/9", PullRequestID: 9,
 	}, MergeOptions{Interval: time.Millisecond, Timeout: 5 * time.Second, Progress: func(state string) { said = append(said, state) }})
 	return result, said, err
 }
 
-// The 2026-11-13 Blue deploy: a check that is not required — a workflow about
+// The 2026-11-13 Aurora deploy: a check that is not required — a workflow about
 // another environment — failed on every promotion, so the pull request read
 // UNSTABLE and a poll for CLEAN timed out on promotions the repository would
 // have merged. Only what the base branch requires is waited on.
@@ -211,7 +211,7 @@ func TestARequiredCheckThatNeverReportsTimesOut(t *testing.T) {
 	repository.serve(t)
 	var said []string
 	_, err := MergePromotion(context.Background(), &PublishResult{
-		Repository: "https://github.com/owner/delivery.git", BaseBranch: "blue-delivery", Commit: mergeHead, PullRequestID: 9,
+		Repository: "https://github.com/owner/delivery.git", BaseBranch: "aurora-delivery", Commit: mergeHead, PullRequestID: 9,
 	}, MergeOptions{Interval: time.Millisecond, Timeout: 30 * time.Millisecond, Progress: func(state string) { said = append(said, state) }})
 	require.ErrorContains(t, err, "waiting on required check(s) secret-scan")
 	require.ErrorContains(t, err, "was not merged")
@@ -285,17 +285,17 @@ func TestALocalPromotionIsNotMergedHere(t *testing.T) {
 
 func TestDependencyOrderPutsEachModuleAfterWhatItDependsOn(t *testing.T) {
 	dependsOn := map[string]map[string]bool{
-		"wiki":      {"documents": true, "robin": true},
-		"robin":     {"documents": true, "model": true},
+		"quill":     {"documents": true, "sidekick": true},
+		"sidekick":  {"documents": true, "model": true},
 		"documents": {"records": true},
 		"a":         {"b": true},
 		"b":         {"a": true},
 	}
-	require.Equal(t, []string{"model", "records", "documents", "robin", "wiki"},
-		dependencyOrder([]string{"wiki", "robin", "model", "documents", "records"}, dependsOn))
+	require.Equal(t, []string{"model", "records", "documents", "sidekick", "quill"},
+		dependencyOrder([]string{"quill", "sidekick", "model", "documents", "records"}, dependsOn))
 	// A dependency outside the set orders nothing; a cycle waits for every free
 	// module, then goes by name.
-	require.Equal(t, []string{"wiki", "a", "b"}, dependencyOrder([]string{"wiki", "b", "a"}, dependsOn))
+	require.Equal(t, []string{"quill", "a", "b"}, dependencyOrder([]string{"quill", "b", "a"}, dependsOn))
 }
 
 // The module hosting the delivery API is published last, after every module
@@ -315,7 +315,7 @@ func TestAPromotionBehindAStrictBaseIsNotRewritten(t *testing.T) {
 	repository.serve(t)
 
 	_, _, err := mergeIt(t)
-	require.ErrorContains(t, err, "fell behind blue-delivery")
+	require.ErrorContains(t, err, "fell behind aurora-delivery")
 	require.ErrorContains(t, err, "publish again")
 	require.False(t, repository.merged)
 }

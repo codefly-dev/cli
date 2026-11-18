@@ -16,11 +16,12 @@ import (
 // before the build; one that names none takes its CLI from the base image with
 // COPY --from and needs nothing staged.
 func TestNeedsLinuxCLIFollowsTheDeclaredCLIBinary(t *testing.T) {
+	withLeafSpec(t)
 	specs, err := loadBuildSpecs()
 	require.NoError(t, err)
 
-	require.True(t, needsLinuxCLI(specs, []*Companion{{Name: "execution"}}),
-		"the execution companion bakes a freshly built linux CLI")
+	require.True(t, needsLinuxCLI(specs, []*Companion{{Name: leafCompanion}}),
+		"a leaf companion bakes a freshly built linux CLI")
 	require.False(t, needsLinuxCLI(specs, []*Companion{{Name: "go"}}),
 		"a language companion copies the CLI out of the base image, not the context")
 	require.True(t, needsLinuxCLI(specs, []*Companion{{Name: "go"}, {Name: baseCompanionName}}),
@@ -86,18 +87,19 @@ func TestBuildTargetsRefusesTheWholeRunForACompanionCoreDoesNotDeclare(t *testin
 // pinned core module and the Dockerfile from --core-dir, so the two disagree
 // exactly when the CLI's pin trails the tree being built.
 func TestBuildTargetsRefusesWhenTheTreeTakesABaseTheSpecDoesNotDeclare(t *testing.T) {
+	withLeafSpec(t)
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
-	writeManifest(t, root, "execution", "0.0.2", true, false)
-	writeBaseDependentDockerfile(t, root, "execution", "ghcr.io/codefly-dev/codefly:0.0.4")
+	writeManifest(t, root, leafCompanion, "0.0.2", true, false)
+	writeBaseDependentDockerfile(t, root, leafCompanion, "ghcr.io/codefly-dev/codefly:0.0.4")
 
 	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
 	writeFakeDocker(t, fmt.Sprintf("echo \"$@\" >> %q\nexit 0\n", dockerLog))
 
-	execution, err := LoadCompanion(filepath.Join(root, "companions", "execution"))
+	leaf, err := LoadCompanion(filepath.Join(root, "companions", leafCompanion))
 	require.NoError(t, err)
 
-	_, err = buildTargets(root, []*Companion{execution}, BuildOptions{})
+	_, err = buildTargets(root, []*Companion{leaf}, BuildOptions{})
 	require.ErrorContains(t, err, companions.BaseImageArg)
 	require.ErrorContains(t, err, "names no base companion")
 
@@ -357,12 +359,13 @@ exit 0
 // others. Passing it to every non-base companion leaves an unconsumed build-arg
 // on each one that takes no base.
 func TestBuildTargets_PassesTheBaseOnlyToCompanionsThatDeclareIt(t *testing.T) {
+	withLeafSpec(t)
 	root := t.TempDir()
 	writeSiblingCLI(t, root)
 	writeManifest(t, root, baseCompanionName, "0.0.5", true, false)
 	writeManifest(t, root, "go", "0.0.9", true, false)
 	writeBaseDependentDockerfile(t, root, "go", "ghcr.io/codefly-dev/codefly:0.0.4")
-	writeManifest(t, root, "execution", "0.0.2", true, false)
+	writeManifest(t, root, leafCompanion, "0.0.2", true, false)
 
 	dockerLog := filepath.Join(t.TempDir(), "docker.txt")
 	writeFakeDocker(t, fmt.Sprintf(`
@@ -381,7 +384,7 @@ exit 0
 
 	logged := readFile(t, dockerLog)
 	require.Contains(t, dependentBuildLine(t, logged, "go"), companions.BaseImageArg+"=")
-	require.NotContains(t, dependentBuildLine(t, logged, "execution"), companions.BaseImageArg,
+	require.NotContains(t, dependentBuildLine(t, logged, leafCompanion), companions.BaseImageArg,
 		"a companion that declares no base takes no base argument")
 }
 

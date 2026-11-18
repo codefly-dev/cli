@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const wikiSelfKey = "CODEFLY__SELF_ENDPOINT__WIKI__BACKEND__HTTP__HTTP"
+const wikiSelfKey = "CODEFLY__SELF_ENDPOINT__QUILL__BACKEND__HTTP__HTTP"
 
 // ownMapping is one endpoint of the service being run, with its listen address
 // (Native) and the address containers reach it at (Container).
 func ownMapping(native, container string) *basev0.NetworkMapping {
 	mapping := &basev0.NetworkMapping{
-		Endpoint: &basev0.Endpoint{Module: "wiki", Service: "backend", Name: "http", Api: "http"},
+		Endpoint: &basev0.Endpoint{Module: "quill", Service: "backend", Name: "http", Api: "http"},
 		Instances: []*basev0.NetworkInstance{
 			{Access: resources.NewNativeNetworkAccess(), Address: native},
 		},
@@ -31,9 +31,9 @@ func ownMapping(native, container string) *basev0.NetworkMapping {
 // listen address.
 func TestSelfEndpointCarriesTheRequestedAccessNotTheListenAddress(t *testing.T) {
 	got := SelfEndpointEnvironmentVariables(t.Context(), []*basev0.NetworkMapping{
-		ownMapping("localhost:8080", "http://backend.example-wiki.svc.cluster.local:8080"),
+		ownMapping("localhost:8080", "http://backend.example-quill.svc.cluster.local:8080"),
 	}, resources.NewContainerNetworkAccess())
-	require.Equal(t, map[string]string{wikiSelfKey: "http://backend.example-wiki.svc.cluster.local:8080"}, got)
+	require.Equal(t, map[string]string{wikiSelfKey: "http://backend.example-quill.svc.cluster.local:8080"}, got)
 }
 
 // The key is core's: same normalization as the endpoint carrier, core's prefix.
@@ -77,11 +77,11 @@ func TestRunnerOverridesCarryTheSelfEndpointAtInitAndStart(t *testing.T) {
 func TestRunnerOverridesLetAnExplicitSetWinOverTheSelfEndpoint(t *testing.T) {
 	runner := &Runner{
 		world:           &World{Env: &environments.Environment{}},
-		overrides:       map[string]string{wikiSelfKey: "https://wiki.example.com"},
+		overrides:       map[string]string{wikiSelfKey: "https://quill.example.com"},
 		networkMappings: []*basev0.NetworkMapping{ownMapping("localhost:8080", "host.docker.internal:8080")},
 		runtimeContext:  resources.RuntimeContextContainer,
 	}
-	require.Equal(t, "https://wiki.example.com", runner.runtimeOverrides()[wikiSelfKey])
+	require.Equal(t, "https://quill.example.com", runner.runtimeOverrides()[wikiSelfKey])
 }
 
 // TestNativeRunDeliversTheEnvironmentsTelemetryCarriers pins that a native run

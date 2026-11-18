@@ -21,9 +21,9 @@ func managedIdentityService() environments.EnvironmentManagedService {
 		EgressCIDRs:  []string{"10.20.11.0/28"},
 		Identity: &environments.EnvironmentWorkloadIdentity{
 			Kind:        "gcp-service-account",
-			Principal:   "platform-db@obinh.iam.gserviceaccount.com",
-			Annotations: map[string]string{"iam.gke.io/gcp-service-account": "platform-db@obinh.iam.gserviceaccount.com"},
-			Labels:      map[string]string{"obin.ai/workload-identity": "true"},
+			Principal:   "platform-db@northwind.iam.gserviceaccount.com",
+			Annotations: map[string]string{"iam.gke.io/gcp-service-account": "platform-db@northwind.iam.gserviceaccount.com"},
+			Labels:      map[string]string{"northwind.ai/workload-identity": "true"},
 		},
 	}
 }
@@ -151,7 +151,7 @@ func TestProjectManagedIdentityProjectsWithoutRewritingEndpoints(t *testing.T) {
 	serviceAccount := manifestOfKind(t, rendered, "ServiceAccount")
 	metadata, _ := serviceAccount.value["metadata"].(map[string]any)
 	annotations, _ := metadata["annotations"].(map[string]any)
-	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@obinh.iam.gserviceaccount.com" {
+	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@northwind.iam.gserviceaccount.com" {
 		t.Errorf("ServiceAccount annotations = %v", annotations)
 	}
 	if spec["serviceAccountName"] != "accounts" {
@@ -159,7 +159,7 @@ func TestProjectManagedIdentityProjectsWithoutRewritingEndpoints(t *testing.T) {
 	}
 	template, _ := mapField(deployment.value, "spec")["template"].(map[string]any)
 	podLabels, _ := mapField(template, "metadata")["labels"].(map[string]any)
-	if podLabels["obin.ai/workload-identity"] != "true" {
+	if podLabels["northwind.ai/workload-identity"] != "true" {
 		t.Errorf("pod labels = %v, want the declared identity label", podLabels)
 	}
 }
@@ -172,7 +172,7 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
 
 	warehouse := managedIdentityService()
-	warehouse.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "warehouse@obinh.iam.gserviceaccount.com"}
+	warehouse.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "warehouse@northwind.iam.gserviceaccount.com"}
 	env := consumerEnvironment(managedIdentityService())
 	env.ManagedServices["warehouse"] = warehouse
 
@@ -293,7 +293,7 @@ func TestProjectManagedIdentityFollowsTheDependencysModule(t *testing.T) {
 	serviceAccount := manifestOfKind(t, buildOverlay(t, root, "production"), "ServiceAccount")
 	metadata, _ := serviceAccount.value["metadata"].(map[string]any)
 	annotations, _ := metadata["annotations"].(map[string]any)
-	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@obinh.iam.gserviceaccount.com" {
+	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@northwind.iam.gserviceaccount.com" {
 		t.Errorf("ServiceAccount annotations = %v, want the identity of payments/store", annotations)
 	}
 }
@@ -341,7 +341,7 @@ func TestProjectManagedIdentityResolvesCrossModuleDependency(t *testing.T) {
 	serviceAccount := manifestOfKind(t, buildOverlay(t, root, "production"), "ServiceAccount")
 	metadata, _ := serviceAccount.value["metadata"].(map[string]any)
 	annotations, _ := metadata["annotations"].(map[string]any)
-	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@obinh.iam.gserviceaccount.com" {
+	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@northwind.iam.gserviceaccount.com" {
 		t.Errorf("ServiceAccount annotations = %v, want the identity of warehouse/store", annotations)
 	}
 }
@@ -354,7 +354,7 @@ func TestProjectManagedIdentityNamesConflictingDependenciesByModule(t *testing.T
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
 
 	other := managedIdentityService()
-	other.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "warehouse@obinh.iam.gserviceaccount.com"}
+	other.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "warehouse@northwind.iam.gserviceaccount.com"}
 	env := consumerEnvironment(managedIdentityService())
 	delete(env.ManagedServices, "store")
 	env.ManagedServices["payments/store"] = managedIdentityService()

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -235,7 +235,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 func TestTheInstallationDeclarationIsCarriedVerbatim(t *testing.T) {
 	declared := `installation_role: admin
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
   - module: annotations
     presence: optional
@@ -247,10 +247,10 @@ edge_dependencies:
 	authority, err := shopAuthority(t, workspace, module, services, env)
 	require.NoError(t, err)
 	require.Equal(t, "admin", authority.InstallationRole)
-	// Declaration order, not sorted: "robin" before "annotations" is the
+	// Declaration order, not sorted: "sidekick" before "annotations" is the
 	// authored order and sorting would reorder them.
 	require.Equal(t, []modulecontract.EdgeDependency{
-		{Module: "robin", Presence: "required"},
+		{Module: "sidekick", Presence: "required"},
 		{Module: "annotations", Presence: "optional"},
 	}, authority.EdgeDependencies)
 

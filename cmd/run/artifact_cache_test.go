@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,11 +50,11 @@ func TestArtifactCacheGroupCreatesTheCacheRoot(t *testing.T) {
 // project (package.json, package-lock.json, one source) beside the services.
 func pageModule(t *testing.T) (*resources.Module, string) {
 	t.Helper()
-	module := &resources.Module{Name: "wiki", ServiceEntry: "api"}
+	module := &resources.Module{Name: "quill", ServiceEntry: "api"}
 	module.WithDir(t.TempDir())
 	entry := filepath.Join(module.ServicesDir(), "api")
 	require.NoError(t, os.MkdirAll(entry, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(entry, solutionrun.FrontendFileName), []byte("title: Wiki\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(entry, solutionrun.FrontendFileName), []byte("title: Quill\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
 	remote := filepath.Join(module.ServicesDir(), "fe-remote")
 	require.NoError(t, os.MkdirAll(remote, 0o755))
 	for name, content := range map[string]string{"package.json": `{"scripts":{"build":"owner-build"}}`, "package-lock.json": `{"lockfileVersion":3}`, "Page.tsx": "page v1"} {
@@ -141,7 +141,7 @@ esac
 	fakeTool(t, bin, "npm", "echo 'owner bundler: Page.tsx failed' >&2\nexit 7\n")
 	bundle, err = cluster.frontendBundle(ctx, module)
 	require.Nil(t, bundle, "a failed build never delivers the old bundle")
-	require.ErrorContains(t, err, "build the frontend of wiki (npm run build in")
+	require.ErrorContains(t, err, "build the frontend of quill (npm run build in")
 	require.ErrorContains(t, err, "owner bundler: Page.tsx failed")
 
 	require.NoError(t, os.Symlink("Page.tsx", filepath.Join(remote, "Alias.tsx")))
@@ -167,18 +167,18 @@ for arg in "$@"; do
  case "$arg" in type=local,dest=*) destination=${arg#type=local,dest=};; esac
 done
 mkdir -p "$destination"
-echo '{"name":"built-wiki"}' > "$destination/mf-manifest.json"
+echo '{"name":"built-quill"}' > "$destination/mf-manifest.json"
 `)
 	bundle, err := cluster.frontendBundle(ctx, module)
 	require.NoError(t, err)
 	contents, err := os.ReadFile(filepath.Join(composition.ArtifactCacheDir(workspace.Dir()), strings.TrimPrefix(string(bundle.Digest), "sha256:")))
 	require.NoError(t, err)
-	require.Contains(t, string(contents), "built-wiki")
+	require.Contains(t, string(contents), "built-quill")
 
 	fakeTool(t, bin, "docker", "cat >/dev/null\necho 'owner build returned without artifacts'\n")
 	require.NoError(t, os.WriteFile(filepath.Join(module.ServicesDir(), "fe-remote", "Page.tsx"), []byte("page v2"), 0o600))
 	_, err = cluster.frontendBundle(ctx, module)
-	require.ErrorContains(t, err, "frontend build of wiki wrote no regular mf-manifest.json")
+	require.ErrorContains(t, err, "frontend build of quill wrote no regular mf-manifest.json")
 	require.ErrorContains(t, err, "owner build returned without artifacts")
 }
 
@@ -213,25 +213,25 @@ func TestAFrontendBuildHoldsNoDeliveryLock(t *testing.T) {
 func TestForgetDropsOnlyTheStoppedWorkload(t *testing.T) {
 	vouch, err := identity.Start("cluster.local", "accounts", t.TempDir())
 	require.NoError(t, err)
-	vouch.DeclareModule("wiki", "api")
+	vouch.DeclareModule("quill", "api")
 	vouch.DeclareModule("crm", "api")
 	cluster := &launcher{
 		vouch:      vouch,
-		identities: map[string]gitops.NativeIdentity{"wiki/api": {Module: "wiki", Service: "api"}, "crm/api": {Module: "crm", Service: "api"}},
-		running:    map[string]bool{"wiki/api": true, "crm/api": true},
-		delivered:  map[string]*solutionhost.ModuleManifest{"wiki": {}, "crm": {}},
+		identities: map[string]gitops.NativeIdentity{"quill/api": {Module: "quill", Service: "api"}, "crm/api": {Module: "crm", Service: "api"}},
+		running:    map[string]bool{"quill/api": true, "crm/api": true},
+		delivered:  map[string]*solutionhost.ModuleManifest{"quill": {}, "crm": {}},
 	}
-	for _, unique := range []string{"wiki/api", "crm/api"} {
+	for _, unique := range []string{"quill/api", "crm/api"} {
 		_, err := vouch.Project(unique, vouch.Workload(cluster.identities[unique].Module, cluster.identities[unique].Service))
 		require.NoError(t, err)
 	}
-	cluster.forget("wiki/api")
-	_, known := cluster.identity("wiki/api")
+	cluster.forget("quill/api")
+	_, known := cluster.identity("quill/api")
 	require.False(t, known)
-	_, projected := vouch.Projected("wiki/api")
+	_, projected := vouch.Projected("quill/api")
 	require.False(t, projected)
-	require.NotContains(t, cluster.running, "wiki/api")
-	require.Contains(t, cluster.delivered, "wiki")
+	require.NotContains(t, cluster.running, "quill/api")
+	require.Contains(t, cluster.delivered, "quill")
 	_, kept := cluster.identity("crm/api")
 	require.True(t, kept)
 	_, projected = vouch.Projected("crm/api")
@@ -246,7 +246,7 @@ func TestForgetDropsOnlyTheStoppedWorkload(t *testing.T) {
 // a coordinate and a domain, receives nothing of it.
 func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.T) {
 	ctx := context.Background()
-	host := &environments.EnvironmentHost{Coordinate: "obin/local/dev", Component: "saas", Domain: "obin", Audience: "accounts", TrustDomain: "cluster.local", Delivery: "saas/accounts/rest"}
+	host := &environments.EnvironmentHost{Coordinate: "northwind/local/dev", Component: "saas", Domain: "northwind", Audience: "accounts", TrustDomain: "cluster.local", Delivery: "saas/accounts/rest"}
 	cluster := &launcher{env: &environments.Environment{Name: "local", Host: host}, hostModule: "saas", hostService: "accounts", identities: map[string]gitops.NativeIdentity{}}
 	accounts := &resources.Service{Name: "accounts", WorkspaceConfigurationDependencies: []string{"abuse-protection", environments.FederationConfiguration}}
 	accounts.WithModule("saas")
@@ -260,8 +260,8 @@ func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.
 		require.False(t, value.Secret)
 	}
 	require.Equal(t, map[string]string{
-		environments.FederationHostCoordinateKey:       "obin/local/dev",
-		environments.FederationHostOwnershipDomainsKey: "obin",
+		environments.FederationHostCoordinateKey:       "northwind/local/dev",
+		environments.FederationHostOwnershipDomainsKey: "northwind",
 		environments.FederationHostTrustPolicyKey:      environments.FederationHostTrustPolicyKeys,
 	}, values)
 
@@ -277,7 +277,7 @@ func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.
 	require.NoError(t, err)
 	require.Empty(t, groups, "a host that does not declare federation is handed none of it")
 
-	_, err = environments.NativeHostFederation(&environments.EnvironmentHost{Coordinate: "obin/local/dev", Delivery: "saas/accounts/rest"}, accounts)
+	_, err = environments.NativeHostFederation(&environments.EnvironmentHost{Coordinate: "northwind/local/dev", Delivery: "saas/accounts/rest"}, accounts)
 	require.ErrorContains(t, err, "host.domain")
 }
 
@@ -286,14 +286,14 @@ func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.
 // reused.
 func TestStagedFrontendCopiesLeaveWithTheModuleAndTheRun(t *testing.T) {
 	cluster := &launcher{stateDir: t.TempDir(), stop: make(chan struct{})}
-	for _, module := range []string{"wiki", "summary"} {
+	for _, module := range []string{"quill", "summary"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(cluster.frontendState(), module, "source", "node_modules"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(cluster.frontendState(), module+".json"), []byte(`{}`), 0o600))
 	}
 	require.NoError(t, cluster.forgetFrontend(context.Background(), "summary"))
 	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "summary"))
-	require.DirExists(t, filepath.Join(cluster.frontendState(), "wiki"))
+	require.DirExists(t, filepath.Join(cluster.frontendState(), "quill"))
 	cluster.close()
-	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "wiki"))
-	require.FileExists(t, filepath.Join(cluster.frontendState(), "wiki.json"))
+	require.NoDirExists(t, filepath.Join(cluster.frontendState(), "quill"))
+	require.FileExists(t, filepath.Join(cluster.frontendState(), "quill.json"))
 }

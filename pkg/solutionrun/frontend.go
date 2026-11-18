@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 // FrontendFileName is the optional frontend declaration for either component

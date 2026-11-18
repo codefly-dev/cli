@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,18 +49,18 @@ func TestAComposedSolutionCarriesItsGroupInItsManifest(t *testing.T) {
 	}
 
 	t.Run("render: grouped, ungrouped, headless and module", func(t *testing.T) {
-		workspace := groupedWorkspace("Operations", "crm", "wiki")
+		workspace := groupedWorkspace("Operations", "crm", "quill")
 		grouped := instance(workspace, solutionModule(t, "crm", "api"))
 		require.Equal(t, expected, grouped.Group)
 
 		ungrouped := instance(workspace, solutionModule(t, "crm-eu", "api"))
 		require.Nil(t, ungrouped.Group, "a solution in no group carries no block")
 
-		headless := solutionModule(t, "wiki", "api")
+		headless := solutionModule(t, "quill", "api")
 		require.NoError(t, os.Remove(filepath.Join(headless.Dir(), "services", "api", solutionrun.FrontendFileName)))
-		wiki := instance(workspace, headless)
-		require.Nil(t, wiki.Frontend)
-		require.Equal(t, expected, wiki.Group, "the catalogue lists a headless solution, so it is grouped too")
+		quill := instance(workspace, headless)
+		require.Nil(t, quill.Frontend)
+		require.Equal(t, expected, quill.Group, "the catalogue lists a headless solution, so it is grouped too")
 
 		module := &ModuleInstance{Kind: solutionhost.KindModule, Name: "crm"}
 		require.Nil(t, solutionGroupOf(workspace, module), "a module is grouped by nothing, whatever a workspace lists")

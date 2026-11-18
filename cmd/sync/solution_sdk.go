@@ -198,7 +198,7 @@ func resolveConsumedContracts(ctx context.Context, workspace *resources.Workspac
 
 		if len(consume.Services) > 0 {
 			known := make(map[string]bool, len(endpointEntry.Services))
-			for _, s := range endpointEntry.Services {
+			for _, s := range generators.ServedServices(endpointEntry.Services) {
 				known[s.Name] = true
 			}
 			var unknown []string

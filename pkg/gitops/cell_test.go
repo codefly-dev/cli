@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,9 +29,9 @@ func TestCellSourceCarriesTheEnvironmentPublicationPath(t *testing.T) {
 	workspace := writeCellWorkspace(t)
 	runGit(t, workspace.Dir(), "init", "--initial-branch=main")
 	runGit(t, workspace.Dir(), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "source")
-	for _, path := range []string{"deployments", "deployments/environments/blue"} {
+	for _, path := range []string{"deployments", "deployments/environments/aurora"} {
 		env := &environments.Environment{Gitops: &environments.EnvironmentGitops{
-			RepoURL: "https://github.com/obin-ai/platform-obin.git", Branch: "main", Path: path,
+			RepoURL: "https://github.com/northwind/platform-northwind.git", Branch: "main", Path: path,
 		}}
 		source := cellSource(context.Background(), workspace, env)
 		require.NotNil(t, source)
@@ -322,7 +322,7 @@ func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {
 // with the rendered module's entries moved to the render's — the other
 // module's namespace byte for byte as it was, a module the composition no
 // longer declares dropped — and it is the file a whole render writes once the
-// missing render is back. This is the Blue incident of 2026-11-12: a
+// missing render is back. This is the Aurora incident of 2026-11-12: a
 // single-module render left the cell approving the old digests, and the
 // promotion merged a tree the cell refused every pod of.
 func TestASingleModuleRenderMovesOnlyItsOwnApprovals(t *testing.T) {

@@ -19,6 +19,9 @@ import (
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
+	nativeidentity "github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity/native"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -30,10 +33,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
-	"github.com/codefly-dev/core/workloadidentity"
-	nativeidentity "github.com/codefly-dev/core/workloadidentity/native"
 )
 
 // A native run of a composition that declares a host stands in for the cell
@@ -50,7 +50,7 @@ import (
 // It is deliberately only as strong as a laptop needs: the issuer lives for
 // the run and its key is never written. The host reads the run's
 // workload-identity anchor and its delivery trust anchor from the two paths the
-// run names (CODEFLY_NATIVE_IDENTITY_ANCHOR, SOLUTION_HOST_LOCAL_TRUST_ANCHOR),
+// run names (CODEFLY_NATIVE_IDENTITY_ANCHOR, solutionhost.LocalTrustAnchorKey),
 // under the run's own state, so nothing is written outside the workspace. The
 // host refuses both settings in a pod, and nothing here imitates a cluster:
 // there is no API server, CA, pod or ServiceAccount, only credentials the run
@@ -388,7 +388,7 @@ func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string
 	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
-		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
+		out[solutionhost.LocalTrustAnchorKey] = cluster.hostAnchorDir
 	}
 	return out
 }

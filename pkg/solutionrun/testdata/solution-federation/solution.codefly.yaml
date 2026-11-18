@@ -3,7 +3,7 @@ protocol_version: codefly.solution/v0
 agent:
   kind: codefly:solution
   publisher: codefly.dev
-  name: wiki
+  name: quill
   version: 0.1.0
 api:
   exposes:

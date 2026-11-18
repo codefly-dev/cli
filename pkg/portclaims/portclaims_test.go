@@ -54,19 +54,19 @@ func sibling(l *Ledger, pid int) *Ledger {
 // gave both runs 57760. Claimed through the ledger they never share one.
 func TestTwoScopesThatDeriveOnePortClaimDisjointPorts(t *testing.T) {
 	ctx := context.Background()
-	a, b := collidingScopes(t, "platform-core")
-	ca := Candidates(ctx, "platform-core", "saas", "store", a, storeEndpoint, network.PortModeHost)
-	cb := Candidates(ctx, "platform-core", "saas", "store", b, storeEndpoint, network.PortModeHost)
+	a, b := collidingScopes(t, "platform-base")
+	ca := Candidates(ctx, "platform-base", "saas", "store", a, storeEndpoint, network.PortModeHost)
+	cb := Candidates(ctx, "platform-base", "saas", "store", b, storeEndpoint, network.PortModeHost)
 	require.Equal(t, ca[0], cb[0], "precondition: the two scopes derive one port")
 
 	first := testLedger(t, 100)
 	second := sibling(first, 200)
 	second.alive = func(p int) bool { return p == 100 || p == 200 }
-	pa, moved, err := first.Claim(context.Background(), RunKey("platform-core", a), "saas/store/tcp", ca, nil)
+	pa, moved, err := first.Claim(context.Background(), RunKey("platform-base", a), "saas/store/tcp", ca, nil)
 	require.NoError(t, err)
 	require.False(t, moved)
 	require.Equal(t, ca[0], pa)
-	pb, moved, err := second.Claim(context.Background(), RunKey("platform-core", b), "saas/store/tcp", cb, nil)
+	pb, moved, err := second.Claim(context.Background(), RunKey("platform-base", b), "saas/store/tcp", cb, nil)
 	require.NoError(t, err)
 	require.True(t, moved)
 	require.NotEqual(t, pa, pb, "two live scopes were handed the same port")
@@ -76,7 +76,7 @@ func TestTwoScopesThatDeriveOnePortClaimDisjointPorts(t *testing.T) {
 // A port another process listens on is skipped, not fatal.
 func TestAHeldPortIsSkipped(t *testing.T) {
 	ctx := context.Background()
-	candidates := Candidates(ctx, "platform-core", "records", "records", "pc153-gate",
+	candidates := Candidates(ctx, "platform-base", "records", "records", "pc153-gate",
 		&basev0.Endpoint{Name: "connect", Api: "connect"}, network.PortModeHost)
 	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(candidates[0]))))
 	if err == nil {
@@ -86,7 +86,7 @@ func TestAHeldPortIsSkipped(t *testing.T) {
 	require.True(t, Held(candidates[0]))
 
 	l := New(filepath.Join(t.TempDir(), "claims.json"))
-	port, moved, err := l.Claim(context.Background(), RunKey("platform-core", "pc153-gate"), "records/records/connect", candidates, nil)
+	port, moved, err := l.Claim(context.Background(), RunKey("platform-base", "pc153-gate"), "records/records/connect", candidates, nil)
 	require.NoError(t, err)
 	require.True(t, moved)
 	require.NotEqual(t, candidates[0], port)

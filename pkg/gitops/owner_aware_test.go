@@ -27,7 +27,7 @@ func TestTheDeliveredDocumentCarriesOwnerAwarenessAsDeclared(t *testing.T) {
 			}
 			require.NotNil(t, user, "the delivered document carries the user role")
 			require.Len(t, user.GetScopes(), 1)
-			require.Equal(t, "wiki.page", user.GetScopes()[0].GetResourceKind())
+			require.Equal(t, "quill.page", user.GetScopes()[0].GetResourceKind())
 			require.Equal(t, []string{"read"}, user.GetScopes()[0].GetActions())
 			require.Len(t, user.GetInstallationOwnedScopes(), 1)
 			require.Equal(t, "documents.collection", user.GetInstallationOwnedScopes()[0].GetResourceKind())

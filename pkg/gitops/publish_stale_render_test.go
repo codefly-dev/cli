@@ -20,12 +20,12 @@ import (
 func TestPublishNamesARenderForAnotherEnvironmentBeforeItsGraph(t *testing.T) {
 	workspace := &resources.Workspace{Name: "platform"}
 	workspace.WithDir(t.TempDir())
-	rendered := workingrender.Module(workspace.Dir(), "blue", "saas")
-	request := &PublishRequest{Module: "saas", Environment: "blue"}
+	rendered := workingrender.Module(workspace.Dir(), "aurora", "saas")
+	request := &PublishRequest{Module: "saas", Environment: "aurora"}
 
 	_, err := loadPublicationInventory(t.Context(), workspace, request, rendered, "")
-	require.ErrorContains(t, err, "module saas has never been rendered for environment blue")
-	require.ErrorContains(t, err, "run `codefly deploy gitops render saas --env blue` first")
+	require.ErrorContains(t, err, "module saas has never been rendered for environment aurora")
+	require.ErrorContains(t, err, "run `codefly deploy gitops render saas --env aurora` first")
 
 	inventory := Inventory{SchemaVersion: SchemaVersion, Module: "saas", Environment: "staging", OwnedPath: "deployments/modules/saas",
 		Units: []InventoryUnit{{Kind: UnitKindService, Module: "saas", Name: "accounts", Path: "services/accounts"}}}
@@ -38,14 +38,14 @@ func TestPublishNamesARenderForAnotherEnvironmentBeforeItsGraph(t *testing.T) {
 
 	_, err = loadPublicationInventory(t.Context(), workspace, request, rendered, "")
 	require.ErrorContains(t, err, `holds the render of module "saas" for environment "staging"`)
-	require.ErrorContains(t, err, "not module saas for environment blue")
-	require.ErrorContains(t, err, "run `codefly deploy gitops render saas --env blue` first")
+	require.ErrorContains(t, err, "not module saas for environment aurora")
+	require.ErrorContains(t, err, "run `codefly deploy gitops render saas --env aurora` first")
 	require.NotContains(t, err.Error(), "unexpected unit")
 
 	// Rendered for this environment by a render that succeeded, the tree is
 	// still held to its graph.
-	require.NoError(t, storeRenderRecord(workspace.Dir(), "blue", "saas", &renderRecord{Outcome: renderRecordRendered}))
-	inventory.Environment = "blue"
+	require.NoError(t, storeRenderRecord(workspace.Dir(), "aurora", "saas", &renderRecord{Outcome: renderRecordRendered}))
+	inventory.Environment = "aurora"
 	canonical, err = json.MarshalIndent(inventory, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(rendered, InventoryFilename), append(canonical, '\n'), 0o644))

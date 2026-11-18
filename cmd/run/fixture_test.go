@@ -14,7 +14,7 @@ import (
 
 const runFixturePackageManifest = `kind: module-package
 schema: codefly/module-package/v2
-id: saas-starter
+id: starterkit
 version: 1.0.0
 minimum-codefly-version: ">=0.3.32"
 artifact-roots:
@@ -43,7 +43,7 @@ func composedFixtureWorkspace(t *testing.T) *resources.Workspace {
 
 	override := "saas"
 	workspace := &resources.Workspace{
-		Name:    "wiki",
+		Name:    "quill",
 		Modules: []*resources.ModuleReference{{Name: "saas", PathOverride: &override}},
 	}
 	workspace.WithDir(root)

@@ -10,12 +10,12 @@
 // depends on an unreleased artifact, and every consumer of that tag inherits the
 // dependency without being told.
 //
-// That is not a hypothetical. module-saas-starter v0.0.85 and module-runtime
-// v0.1.5 were tagged carrying dev agent pins; obin-ai/platform-obin's release
-// procedure then cannot drop its own agent-overrides, because its step 2 rests
-// on "a module released after the agent fix pins the released agent itself", and
-// those modules do not. The pin cost one line at the PR that wrote it and two
-// module release rounds afterwards.
+// That is not a hypothetical. Modules have been tagged carrying dev agent pins,
+// and a composition that consumes them then cannot drop its own
+// agent-overrides, because its release procedure rests on "a module released
+// after the agent fix pins the released agent itself", and those modules do
+// not. The pin costs one line at the PR that writes it and a module release
+// round afterwards.
 //
 // # What is scanned
 //
@@ -36,22 +36,20 @@
 //
 // [CarrierConfig] is refused outright: a prerelease there is the defect above.
 //
-// [CarrierAgentOverride] is the one sanctioned carrier. platform-obin's
-// docs/release.md documents a dev loop that publishes an agent with
-// `codefly publish dev` and pins it in agent-overrides, and
+// [CarrierAgentOverride] is the one sanctioned carrier. A composition's dev
+// loop publishes an agent with `codefly publish dev` and pins it in
+// agent-overrides, and
 // `codefly update workspace --agent-override` exists to write it; that loop also
 // has to reach a shared environment, which a gitignored overlay cannot do. So a
 // prerelease is allowed there on the default branch when the entry carries a
 // label — a comment naming the issue it stands in for — and refused under
-// [Options.Release], which is the scope a tag is cut in. That turns
-// release.md's "drop every dev override before tagging" step, which was never
-// enforced, into a gate.
+// [Options.Release], which is the scope a tag is cut in. That turns a release
+// procedure's "drop every dev override before tagging" step into a gate.
 //
 // [CarrierGoModule] is reported and not refused unless [Options.GoModules] asks
 // for it. First-party Go pseudo-versions are pervasive in trees that are
-// otherwise clean — module-robin v0.1.7, module-annotations v0.2.9 and
-// module-document-store v0.0.24 all carry them, and all three are releases whose
-// agent pins are correct — and many arrive as `// indirect` entries no change in
+// otherwise clean — releases whose agent pins are correct carry them — and many
+// arrive as `// indirect` entries no change in
 // the repository can move. Refusing them by default would fail every repository
 // in the fleet on the day the gate landed, which is how a gate gets switched
 // off. They are surfaced so a repository can tighten at its own pace.

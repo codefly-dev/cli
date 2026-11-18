@@ -19,7 +19,7 @@ Consumer side (install, `self update`, channels): [docs/cli-updates.md](../../..
   recognizes the untagged `release:` commit on `main` and cuts that tag. Bumping past it burns a
   version.
 - **Dry-run first.** `codefly publish --dry-run` shows the version it would cut and changes
-  nothing.
+  nothing. `codefly publish --remote` runs that rehearsal on the runner before publishing.
 - **`main` must be green and hold exactly the commit you want to ship.** The tag is immutable
   once pushed.
 - **Signing is not optional.** The public half of `CODEFLY_RELEASE_SIGNING_KEY` must match

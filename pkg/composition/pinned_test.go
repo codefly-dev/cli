@@ -44,7 +44,7 @@ func TestResolvePinnedModuleAcceptsGitSuffixedTrustRepository(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	pinnedfixture.AllowTempDirCleanup(t, workspaceDir)
-	doc := fmt.Sprintf(`name: wiki
+	doc := fmt.Sprintf(`name: quill
 layout: modules
 module-trust:
   repositories:
@@ -157,7 +157,7 @@ func TestResolvePinnedModuleRejectsUntrustedSigner(t *testing.T) {
 	fixture.UseGitHub(t)
 
 	workspaceDir := t.TempDir()
-	doc := fmt.Sprintf(`name: wiki
+	doc := fmt.Sprintf(`name: quill
 layout: modules
 module-trust:
   repositories:
@@ -703,13 +703,13 @@ func TestResolutionReceiptAnswers(t *testing.T) {
 // composed in the importer, so there was no legal way to say how an imported
 // module resolves. The only mechanism left was a machine-local
 // codefly.local.yaml, which a composition that renders a committed, deployed
-// artifact cannot use (obin-ai/platform-obin#104, codefly-dev/cli#906).
+// artifact cannot use (northwind/platform-northwind#104, codefly-dev/cli#906).
 func TestLoadModuleResolutionsInheritsFromImportedWorkspace(t *testing.T) {
 	root := t.TempDir()
 
-	platform := filepath.Join(root, "platform-core")
+	platform := filepath.Join(root, "platform-base")
 	require.NoError(t, os.MkdirAll(platform, 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(platform, resources.WorkspaceConfigurationName), []byte(`name: platform-core
+	require.NoError(t, os.WriteFile(filepath.Join(platform, resources.WorkspaceConfigurationName), []byte(`name: platform-base
 module-resolution:
     saas: git
     documents: git
@@ -726,12 +726,12 @@ modules:
 	require.NoError(t, os.MkdirAll(product, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(product, resources.WorkspaceConfigurationName), []byte(`name: product
 workspaces:
-    - name: platform-core
-      path: ../platform-core
+    - name: platform-base
+      path: ../platform-base
 module-resolution:
-    wiki: git
+    quill: git
 modules:
-    - name: wiki
+    - name: quill
       source: owner/solutions
       version: "0.0.16"
 `), 0o600))
@@ -739,7 +739,7 @@ modules:
 	declared, err := LoadModuleResolutions(product)
 	require.NoError(t, err)
 	require.Equal(t, map[string]WorkspaceResolution{
-		"wiki":      WorkspaceResolutionGit,
+		"quill":     WorkspaceResolutionGit,
 		"saas":      WorkspaceResolutionGit,
 		"documents": WorkspaceResolutionGit,
 	}, declared, "the importer's own declaration plus the imported workspace's, for the modules each composes")
@@ -759,15 +759,15 @@ workspaces:
     - name: quiet
       path: ../quiet
 module-resolution:
-    wiki: git
+    quill: git
 modules:
-    - name: wiki
+    - name: quill
       source: owner/solutions
       version: "0.0.16"
 `), 0o600))
 	only, err := LoadModuleResolutions(product)
 	require.NoError(t, err)
-	require.Equal(t, map[string]WorkspaceResolution{"wiki": WorkspaceResolutionGit}, only)
+	require.Equal(t, map[string]WorkspaceResolution{"quill": WorkspaceResolutionGit}, only)
 }
 
 // A cycle of imports terminates instead of recursing until the stack goes.
@@ -810,13 +810,13 @@ func TestLoadModuleResolutionsResolvesAReleasedImport(t *testing.T) {
 	require.NoError(t, os.MkdirAll(product, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(product, resources.WorkspaceConfigurationName), []byte(`name: product
 workspaces:
-    - name: platform-core
-      source: owner/platform-core
+    - name: platform-base
+      source: owner/platform-base
       version: "0.0.1"
 module-resolution:
-    wiki: git
+    quill: git
 modules:
-    - name: wiki
+    - name: quill
       source: owner/solutions
       version: "0.0.16"
 `), 0o600))
@@ -826,7 +826,7 @@ modules:
 	// produced the bug this test exists for.
 	_, err := LoadModuleResolutions(product)
 	require.Error(t, err, "a released import that cannot be resolved must say so, not read as nothing declared")
-	require.Contains(t, err.Error(), "platform-core")
+	require.Contains(t, err.Error(), "platform-base")
 }
 
 // The probe carries what a released import declares, so the resolver has
@@ -835,15 +835,15 @@ func TestWorkspaceProbeCarriesAReleasedImportsCoordinates(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(`name: product
 workspaces:
-    - name: platform-core
-      source: owner/platform-core
+    - name: platform-base
+      source: owner/platform-base
       version: "0.0.1"
       workspace: sub
 `), 0o600))
 	probe, err := loadWorkspaceProbe(dir)
 	require.NoError(t, err)
 	require.Len(t, probe.Workspaces, 1)
-	require.Equal(t, "owner/platform-core", probe.Workspaces[0].Source)
+	require.Equal(t, "owner/platform-base", probe.Workspaces[0].Source)
 	require.Equal(t, "0.0.1", probe.Workspaces[0].Version)
 	require.Equal(t, "sub", probe.Workspaces[0].Workspace)
 }

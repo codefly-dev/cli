@@ -44,8 +44,8 @@ func TestResolveSolutionEntryFindsTheOnlyEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveSolutionEntry: %v", err)
 	}
-	if entry != "wiki/backend" {
-		t.Fatalf("entry = %q, want wiki/backend", entry)
+	if entry != "quill/backend" {
+		t.Fatalf("entry = %q, want quill/backend", entry)
 	}
 }
 
@@ -57,7 +57,7 @@ func TestResolveSolutionEntryBreaksATieOnTheWorkspacesOwnModule(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ambiguous solution root") {
 		t.Fatalf("expected an ambiguous-root error, got %v", err)
 	}
-	for _, unique := range []string{"wiki/backend", "host/gateway"} {
+	for _, unique := range []string{"quill/backend", "host/gateway"} {
 		if !strings.Contains(err.Error(), unique) {
 			t.Errorf("error %q does not name the competing root %s", err, unique)
 		}
@@ -71,12 +71,12 @@ func TestResolveSolutionEntryBreaksATieOnTheWorkspacesOwnModule(t *testing.T) {
 		t.Errorf("error %q does not offer `codefly run workspace` for the whole composition", err)
 	}
 
-	workspace.Name = "wiki"
+	workspace.Name = "quill"
 	entry, err := ResolveSolutionEntry(context.Background(), workspace)
 	if err != nil {
 		t.Fatalf("ResolveSolutionEntry with the workspace named like one root: %v", err)
 	}
-	if entry != "wiki/backend" {
+	if entry != "quill/backend" {
 		t.Fatalf("entry = %q, want the workspace's own module to break the tie", entry)
 	}
 }

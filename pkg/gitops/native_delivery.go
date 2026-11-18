@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
+	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
 	runcomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
-	"github.com/codefly-dev/core/solutionhost"
-	"github.com/codefly-dev/core/workloadidentity"
 	"google.golang.org/grpc/codes"
 )
 

@@ -287,7 +287,7 @@ func moduleWithPackageAndCatalog(t *testing.T, digest string) string {
 	}
 	manifest := `kind: module-package
 schema: codefly/module-package/v2
-id: codefly/saas-starter
+id: codefly/starterkit
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"
 artifact-roots:
@@ -351,7 +351,7 @@ func TestRenderRecordsExposedContractsAndPackageFromModuleCatalog(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.Package == nil || inventory.Package.ID != "codefly/saas-starter" || inventory.Package.Version != "0.1.0" {
+	if inventory.Package == nil || inventory.Package.ID != "codefly/starterkit" || inventory.Package.Version != "0.1.0" {
 		t.Fatalf("inventory.Package = %+v", inventory.Package)
 	}
 	if len(inventory.Units) != 1 || len(inventory.Units[0].Contracts) != 1 {
@@ -372,10 +372,10 @@ func TestRenderRecordsExposedContractsAndPackageFromModuleCatalog(t *testing.T) 
 func TestValidateInventoryContractsRejectsUnsafeModulePathComponent(t *testing.T) {
 	for _, module := range []string{"../escape", "a/b", "..", ""} {
 		inventory := &Inventory{
-			Module: "lastlogin",
+			Module: "beacon",
 			Units: []InventoryUnit{
 				{
-					Kind: UnitKindSolution, Module: "lastlogin", Name: "lastlogin",
+					Kind: UnitKindSolution, Module: "beacon", Name: "beacon",
 					Contracts: []InventoryContract{
 						{Role: ContractRoleConsumes, Module: module, Service: "accounts", Endpoint: "connect", Package: "saas.accounts.v1", Digest: testContractDigestA, Version: "0.1.0"},
 					},

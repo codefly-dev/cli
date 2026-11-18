@@ -8,8 +8,8 @@ import (
 
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -73,17 +73,17 @@ func TestTheSignedSidecarOnTheWireCarriesTheDeclaration(t *testing.T) {
 	}{
 		"a named selector with ordered edges": {`installation_role: admin
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
   - module: annotations
     presence: optional
-`, "admin", [][2]string{{"robin", "required"}, {"annotations", "optional"}}, true},
+`, "admin", [][2]string{{"sidekick", "required"}, {"annotations", "optional"}}, true},
 		"the none selector alone is reason enough for a sidecar": {
 			"installation_role: none\n", "none", nil, true},
 		"edges alone are reason enough for a sidecar": {`edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
-`, "", [][2]string{{"robin", "required"}}, true},
+`, "", [][2]string{{"sidekick", "required"}}, true},
 		"no declaration, and nothing else to declare, means no sidecar": {"", "", nil, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -176,7 +176,7 @@ func TestAnInstallationOnlyChangeAdvancesTheGeneration(t *testing.T) {
 	// Add ONLY an edge. The generation must move again.
 	write(`installation_role: none
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
 `)
 	_, err = d.Deliver(t.Context(), pairedManifest())
@@ -204,7 +204,7 @@ func TestTheProducedCarriersAgree(t *testing.T) {
 	for name, declaration := range map[string]string{
 		"a named selector with ordered edges": `installation_role: admin
 edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
   - module: annotations
     presence: optional
@@ -212,7 +212,7 @@ edge_dependencies:
 		"the none selector": "installation_role: none\n",
 		"no declaration":    "",
 		"edges without a selector": `edge_dependencies:
-  - module: robin
+  - module: sidekick
     presence: required
 `,
 	} {

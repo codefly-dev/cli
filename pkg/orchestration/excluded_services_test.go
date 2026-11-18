@@ -202,14 +202,14 @@ environments:
 		"ambiguity outside the run's closure is still judged, for the selected environment's own keys")
 }
 
-// TestFlowIsNotRefusedOverAnotherEnvironmentsExclusion is the Blue render
+// TestFlowIsNotRefusedOverAnotherEnvironmentsExclusion is the Aurora render
 // defect: a flow selecting one environment was refused over a DIFFERENT
 // environment's exclude-services.
 //
 // The exclusion graph is built from the workspace's current composition, so an
 // environment imported before a module overlay added a service carries no
 // withdrawal for it. Holding every environment to that graph meant a correct
-// `--env blue` render failed over `staging`, whose composition predates the
+// `--env aurora` render failed over `staging`, whose composition predates the
 // service — and the operator could not fix it from the declaration side,
 // because the product intent declares no `staging` to re-import.
 //

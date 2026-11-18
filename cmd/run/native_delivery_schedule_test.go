@@ -19,12 +19,12 @@ import (
 	"time"
 
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -227,7 +227,7 @@ func TestANativeDeliveryRefusedAsUnavailableIsRetriedUntilAccepted(t *testing.T)
 	require.Equal(t, 3, host.calls)
 }
 
-// The shape of the platform-core run end to end through the real envelope
+// The shape of the platform-base run end to end through the real envelope
 // client: two 503s, then the answer that lets the delivery proceed.
 func TestALegacyHTTPDeliveryRefusedWith503IsRetriedUntilAccepted(t *testing.T) {
 	var reads atomic.Int64

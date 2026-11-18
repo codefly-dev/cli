@@ -442,7 +442,7 @@ func writeCell(file *cellfile.File, path string) error {
 // will hold the rendered trees and this file — a render cannot name the commit
 // it will be committed in — and equals it only for a re-render that changed
 // nothing. A consumer that binds a delivery to an exact commit sets the
-// revision itself when it pins the file (infra-base's pin, which requires the
+// revision itself when it pins the file (a platform pin that requires the
 // field and writes the commit it reviewed); a cell tracking the branch reads
 // the branch head. Nil when either half is missing, which the result reports
 // rather than inventing a revision.

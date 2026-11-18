@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
+	"github.com/codefly-dev/core/discovery"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 )
@@ -219,11 +220,7 @@ func (d *serviceDescriptor) agentName() (string, error) {
 }
 
 func parentResourceDir(start, configurationName string) (string, error) {
-	current, err := filepath.Abs(start)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s search root: %w", configurationName, err)
-	}
-	for {
+	for _, current := range discovery.Ancestors(start, discovery.Ceilings) {
 		info, statErr := os.Stat(filepath.Join(current, configurationName))
 		if statErr == nil && !info.IsDir() {
 			return current, nil
@@ -231,12 +228,8 @@ func parentResourceDir(start, configurationName string) (string, error) {
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			return "", fmt.Errorf("inspect %s: %w", configurationName, statErr)
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("%s not found above %s", configurationName, start)
-		}
-		current = parent
 	}
+	return "", fmt.Errorf("%s not found above %s", configurationName, start)
 }
 
 // AgentSourceRoot reports the tree an agent bound to root will treat as its

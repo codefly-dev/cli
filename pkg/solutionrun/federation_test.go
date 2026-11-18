@@ -29,43 +29,43 @@ func TestRootRef(t *testing.T) {
 		{
 			name: "self identified by path: .",
 			workspace: &resources.Workspace{
-				Name: "lastlogin-go",
+				Name: "beacon-go",
 				Modules: []*resources.ModuleReference{
-					{Name: "lastlogin-go", PathOverride: strptr(".")},
-					{Name: "saas-starter", PathOverride: strptr("../../../module-saas-starter/module")},
+					{Name: "beacon-go", PathOverride: strptr(".")},
+					{Name: "starterkit", PathOverride: strptr("../../../module-starterkit/module")},
 				},
 			},
-			want: "lastlogin-go",
+			want: "beacon-go",
 		},
 		{
 			name: "path: . wins even when listed after the dependency",
 			workspace: &resources.Workspace{
-				Name: "wiki",
+				Name: "quill",
 				Modules: []*resources.ModuleReference{
-					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
+					{Name: "starterkit", PathOverride: strptr("../saas/module")},
 					{Name: "documents"},
-					{Name: "wiki", PathOverride: strptr(".")},
+					{Name: "quill", PathOverride: strptr(".")},
 				},
 			},
-			want: "wiki",
+			want: "quill",
 		},
 		{
 			name: "falls back to name == workspace when no explicit path: .",
 			workspace: &resources.Workspace{
-				Name: "lastlogin-python",
+				Name: "beacon-python",
 				Modules: []*resources.ModuleReference{
-					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
-					{Name: "lastlogin-python"},
+					{Name: "starterkit", PathOverride: strptr("../saas/module")},
+					{Name: "beacon-python"},
 				},
 			},
-			want: "lastlogin-python",
+			want: "beacon-python",
 		},
 		{
 			name: "no self module present",
 			workspace: &resources.Workspace{
 				Name: "orphan",
 				Modules: []*resources.ModuleReference{
-					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
+					{Name: "starterkit", PathOverride: strptr("../saas/module")},
 				},
 			},
 			want: "",
@@ -147,7 +147,7 @@ func TestEntryConsumesOnlyTargetsTheModulesOwnEntry(t *testing.T) {
 		},
 		{
 			name:    "a module with no directory to ship a manifest in",
-			module:  &resources.Module{Name: "wiki", ServiceEntry: "backend"},
+			module:  &resources.Module{Name: "quill", ServiceEntry: "backend"},
 			service: wikiService("backend"),
 		},
 	} {
@@ -173,7 +173,7 @@ func TestEntryConsumesIsLocatedByTheModuleNotTheWorkspace(t *testing.T) {
 	workspaceDir := t.TempDir()
 	writeSolutionManifest(t, workspaceDir, solutionManifestWithoutConsumes)
 
-	composed := &resources.Module{Name: "lastlogin", ServiceEntry: "backend"}
+	composed := &resources.Module{Name: "beacon", ServiceEntry: "backend"}
 	composed.WithDir(checkout)
 	consumed, value, err := entryConsumes(composed, wikiService("backend"))
 	if err != nil {
@@ -283,15 +283,15 @@ func TestEntryConsumesRejectsUnparseableManifest(t *testing.T) {
 	}
 }
 
-// wikiModuleAt is the wiki solution module as a run loads it: with the directory
+// wikiModuleAt is the quill solution module as a run loads it: with the directory
 // its solution manifest sits in.
 func wikiModuleAt(dir string) *resources.Module {
-	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+	module := &resources.Module{Name: "quill", ServiceEntry: "backend"}
 	module.WithDir(dir)
 	return module
 }
 
-// wikiModuleIn is the wiki module of a loaded workspace where it is the `path: .`
+// wikiModuleIn is the quill module of a loaded workspace where it is the `path: .`
 // module, so its directory is the workspace's.
 func wikiModuleIn(workspace *resources.Workspace) *resources.Module {
 	return wikiModuleAt(workspace.Dir())
@@ -328,7 +328,7 @@ protocol_version: codefly.solution/v0
 agent:
   kind: codefly:solution
   publisher: codefly.dev
-  name: wiki
+  name: quill
   version: 0.1.0
 api:
   exposes:
@@ -344,7 +344,7 @@ protocol_version: codefly.solution/v0
 agent:
   kind: codefly:solution
   publisher: codefly.dev
-  name: wiki
+  name: quill
   version: 0.1.0
 api:
   exposes:
@@ -372,17 +372,17 @@ func TestDerivedRunInputsProjectsConsumesIntoTheEntryOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	derived, err := DerivedRunInputs(module, wikiService("backend"), "wiki/backend")
+	derived, err := DerivedRunInputs(module, wikiService("backend"), "quill/backend")
 	if err != nil {
 		t.Fatalf("DerivedRunInputs: %v", err)
 	}
 	want := map[string]map[string]string{
-		"wiki/backend": {manifest.APIConsumesEnvironmentVariable: solutionManifest.ConsumedAPIsEnvValue()},
+		"quill/backend": {manifest.APIConsumesEnvironmentVariable: solutionManifest.ConsumedAPIsEnvValue()},
 	}
 	if !reflect.DeepEqual(derived.Overrides, want) {
 		t.Fatalf("overrides = %+v, want the projection on the entry alone: %+v", derived.Overrides, want)
 	}
-	if len(derived.Notes) != 1 || derived.Notes[0].Warning || !strings.Contains(derived.Notes[0].Message, "wiki/backend") {
+	if len(derived.Notes) != 1 || derived.Notes[0].Warning || !strings.Contains(derived.Notes[0].Message, "quill/backend") {
 		t.Errorf("notes = %+v, want one statement naming the entry", derived.Notes)
 	}
 }
@@ -393,7 +393,7 @@ func TestDerivedRunInputsNoOpsWithoutConsumes(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, solutionManifestWithoutConsumes)
 
-	derived, err := DerivedRunInputs(wikiModuleAt(dir), wikiService("backend"), "wiki/backend")
+	derived, err := DerivedRunInputs(wikiModuleAt(dir), wikiService("backend"), "quill/backend")
 	if err != nil {
 		t.Fatalf("DerivedRunInputs: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestDerivedRunInputsReportsNotesWithoutPrinting(t *testing.T) {
 	var derived RunInputs
 	var derivedErr error
 	stdout := captureStdout(t, func() {
-		derived, derivedErr = DerivedRunInputs(wikiModuleIn(workspace), wikiService("backend"), "wiki/backend")
+		derived, derivedErr = DerivedRunInputs(wikiModuleIn(workspace), wikiService("backend"), "quill/backend")
 	})
 	if derivedErr != nil {
 		t.Fatalf("DerivedRunInputs: %v", derivedErr)
@@ -500,18 +500,18 @@ func TestDerivedRunInputsForAComposedSolution(t *testing.T) {
 // notes in root order; merging nothing yields nothing.
 func TestMergeLayersOverridesAcrossRoots(t *testing.T) {
 	first := RunInputs{
-		Overrides: map[string]map[string]string{"wiki/backend": {"A": "1"}},
+		Overrides: map[string]map[string]string{"quill/backend": {"A": "1"}},
 		Notes:     []Note{{Message: "first"}},
 	}
 	second := RunInputs{
-		Overrides: map[string]map[string]string{"notes/backend": {"B": "2"}, "wiki/backend": {"A": "3"}},
+		Overrides: map[string]map[string]string{"notes/backend": {"B": "2"}, "quill/backend": {"A": "3"}},
 		Notes:     []Note{{Message: "second"}},
 	}
 	merged := Merge(first, second)
-	if merged.Overrides["wiki/backend"]["A"] != "3" || merged.Overrides["notes/backend"]["B"] != "2" {
+	if merged.Overrides["quill/backend"]["A"] != "3" || merged.Overrides["notes/backend"]["B"] != "2" {
 		t.Errorf("overrides did not layer key by key: %+v", merged.Overrides)
 	}
-	if first.Overrides["wiki/backend"]["A"] != "1" {
+	if first.Overrides["quill/backend"]["A"] != "1" {
 		t.Error("merging wrote through into the first root's overrides")
 	}
 	if len(merged.Notes) != 2 || merged.Notes[0].Message != "first" || merged.Notes[1].Message != "second" {

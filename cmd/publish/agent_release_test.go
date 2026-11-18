@@ -135,7 +135,7 @@ func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
 		nativeOnly      bool
 		skipConformance bool
 	}{
-		{"codefly:module", "saas-starter", true, true},
+		{"codefly:module", "starterkit", true, true},
 		{"codefly:provider", "stripe", false, false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {

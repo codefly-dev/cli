@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -287,7 +287,7 @@ func TestASolutionsDeclaredKindsAreNamedInItsManifest(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "staging")
 	authority, err := shopAuthority(t, workspace, module, loadServices(t, workspace, "shop", "api"), env)
 	require.NoError(t, err)
-	require.Equal(t, []string{"wiki.page"}, authority.ResourceKinds)
+	require.Equal(t, []string{"quill.page"}, authority.ResourceKinds)
 
 	workspace, module = writeConsumingSolutionWorkspace(t, consumingSolution)
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(wikiContract), 0o644))

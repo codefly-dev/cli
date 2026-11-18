@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,16 +28,16 @@ principal: shop
 namespaces: []
 queues: []
 scope_ceilings:
-  - resource_kind: wiki.page
+  - resource_kind: quill.page
     actions: [read, write, publish]
 roles:
   - name: admin
     scopes:
-      - resource_kind: wiki.page
+      - resource_kind: quill.page
         actions: [read, write, publish]
   - name: user
     scopes:
-      - {resource_kind: wiki.page, actions: [read, write]}
+      - {resource_kind: quill.page, actions: [read, write]}
 bindings: []
 destinations: []
 `
@@ -50,13 +50,13 @@ func writeContract(t *testing.T, document string) string {
 }
 
 var (
-	wikiPage = &authorityv1.WorkScopeV1{ResourceKind: "wiki.page", Actions: []string{"read", "write", "publish"}}
+	wikiPage = &authorityv1.WorkScopeV1{ResourceKind: "quill.page", Actions: []string{"read", "write", "publish"}}
 	// wikiRoles is what the authority's document carries for wikiContract —
 	// exactly what the retired roles.codefly.yaml declaring the same roles
 	// delivered.
 	wikiRoles = []*compositionv1.RoleV1{
 		{Name: "admin", Scopes: []*authorityv1.WorkScopeV1{wikiPage}},
-		{Name: "user", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}}},
+		{Name: "user", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read", "write"}}}},
 	}
 )
 
@@ -113,7 +113,7 @@ func TestTheDeliveryRendersRolesAsDeclared(t *testing.T) {
 	for name, document := range map[string]string{
 		"a role neither admin nor user":    strings.Replace(wikiContract, "name: admin", "name: owner", 1),
 		"a role beyond the kind's actions": strings.Replace(wikiContract, "actions: [read, write]}", "actions: [read, write, delete]}", 1),
-		"a kind that starts with a digit":  strings.ReplaceAll(wikiContract, "wiki.page", "2wiki.page"),
+		"a kind that starts with a digit":  strings.ReplaceAll(wikiContract, "quill.page", "2wiki.page"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeContract(t, document)
@@ -149,24 +149,24 @@ func TestContractRolesReachTheAuthorityDocument(t *testing.T) {
 	require.True(t, proto.Equal(wikiPage, doc.GetScopeCeilings()[0]))
 }
 
-// ownedContract declares a user that reads the wiki's own pages and, of the
+// ownedContract declares a user that reads the quill's own pages and, of the
 // collections it consumes through a binding, only those its installation owns.
 const ownedContract = `schema: codefly/module-contract/v1
 principal: shop
 namespaces: []
 queues: []
 scope_ceilings:
-  - resource_kind: wiki.page
+  - resource_kind: quill.page
     actions: [read, write]
 roles:
   - name: admin
     scopes:
-      - {resource_kind: wiki.page, actions: [read, write]}
+      - {resource_kind: quill.page, actions: [read, write]}
     installation_owned_scopes:
       - {resource_kind: documents.collection, actions: [read, write]}
   - name: user
     scopes:
-      - {resource_kind: wiki.page, actions: [read]}
+      - {resource_kind: quill.page, actions: [read]}
     installation_owned_scopes:
       - {resource_kind: documents.collection, actions: [read]}
 bindings:
@@ -188,12 +188,12 @@ func TestInstallationOwnedScopesReachTheAuthorityDocument(t *testing.T) {
 	requireRoles(t, []*compositionv1.RoleV1{
 		{
 			Name:                    "admin",
-			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read", "write"}}},
+			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read", "write"}}},
 			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read", "write"}}},
 		},
 		{
 			Name:                    "user",
-			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
+			Scopes:                  []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read"}}},
 			InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read"}}},
 		},
 	}, doc.GetRoles())
@@ -213,19 +213,19 @@ principal: shop
 namespaces: []
 queues: []
 scope_ceilings:
-  - resource_kind: wiki.page
+  - resource_kind: quill.page
     actions: [read]
-  - resource_kind: wiki.catalogue
+  - resource_kind: quill.catalogue
     actions: [read]
     shared: true
 roles:
   - name: admin
     scopes:
-      - {resource_kind: wiki.page, actions: [read]}
+      - {resource_kind: quill.page, actions: [read]}
   - name: user
     scopes:
       - {resource_kind: model.profiles, actions: [invoke, read], through: agent}
-      - {resource_kind: wiki.page, actions: [read]}
+      - {resource_kind: quill.page, actions: [read]}
       - {resource_kind: documents, actions: [read], through: agent}
 bindings:
   - id: agent
@@ -243,15 +243,15 @@ destinations: []
 func TestReachThroughABindingAndSharedKindsReachTheAuthorityDocument(t *testing.T) {
 	doc := deliveredAuthorityDocument(t, writeContract(t, reachContract))
 	requireRoles(t, []*compositionv1.RoleV1{
-		{Name: "admin", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}},
-		{Name: "user", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}},
+		{Name: "admin", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read"}}}},
+		{Name: "user", Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read"}}},
 			Through: []*compositionv1.RoleThroughV1{{Binding: "agent", Scopes: []*authorityv1.WorkScopeV1{
 				{ResourceKind: "model.profiles", Actions: []string{"invoke", "read"}}, {ResourceKind: "documents", Actions: []string{"read"}}}}}},
 	}, doc.GetRoles())
-	require.Equal(t, []string{"wiki.catalogue"}, doc.GetSharedKinds())
+	require.Equal(t, []string{"quill.catalogue"}, doc.GetSharedKinds())
 
 	// Core's rules hold a through to a binding the unit declares.
-	_, err := Roles(writeContract(t, strings.Replace(reachContract, "through: agent}\n      - {resource_kind: wiki.page", "through: nowhere}\n      - {resource_kind: wiki.page", 1)), composed)
+	_, err := Roles(writeContract(t, strings.Replace(reachContract, "through: agent}\n      - {resource_kind: quill.page", "through: nowhere}\n      - {resource_kind: quill.page", 1)), composed)
 	require.ErrorContains(t, err, `through binding "nowhere", which the contract does not declare`)
 }
 
@@ -264,7 +264,7 @@ func TestAnOmittedOptionalBindingCarriesNoReachThrough(t *testing.T) {
 	optional := strings.Replace(reachContract, "  - id: agent\n    operations: [invoke]\n", "  - id: agent\n    optional: true\n    operations: [invoke]\n", 1)
 	require.NotEqual(t, reachContract, optional)
 	dir := writeContract(t, optional)
-	userOwn := []*authorityv1.WorkScopeV1{{ResourceKind: "wiki.page", Actions: []string{"read"}}}
+	userOwn := []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read"}}}
 	admin := &compositionv1.RoleV1{Name: "admin", Scopes: userOwn}
 
 	roles, err := Roles(dir, resolvedWith(nil))
@@ -306,7 +306,7 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "shop", Alias: "shop", Kind: solutionhost.KindSolution, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "shop", Version: "0.1.0"},
-		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}}, Authority: &solutionhost.Authority{Principal: "shop", ResourceKinds: []string{"wiki.page"}},
+		Workloads: []solutionhost.Workload{{Service: "api", Container: "app"}}, Authority: &solutionhost.Authority{Principal: "shop", ResourceKinds: []string{"quill.page"}},
 	}
 	document, err := solutionhost.SignedPayload(manifest)
 	require.NoError(t, err)

@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -560,6 +561,7 @@ func TestExternalIdentityReadinessWaitsForAdmissionWithoutRunning(t *testing.T) 
 	stack := newReadinessStack(t)
 	flow := stack.flow
 	flow.world.Mode = RunMode
+	flow.world.Env = &environments.Environment{Host: &environments.EnvironmentHost{}}
 	flow.originService.ModuleIdentity = true
 	entered, release := make(chan struct{}), make(chan struct{})
 	flow.world.PrepareExternalWorkload = func(ctx context.Context, _ *resources.Service) (func(), error) {
@@ -591,6 +593,7 @@ func TestExcludedIdentityPolicyNeverEmitsRunning(t *testing.T) {
 	stack := newReadinessStack(t)
 	flow := stack.flow
 	flow.world.Mode = RunMode
+	flow.world.Env = &environments.Environment{Host: &environments.EnvironmentHost{}}
 	flow.originService.ModuleIdentity = true
 	flow.world.PrepareExternalWorkload = func(context.Context, *resources.Service) (func(), error) { return func() {}, nil }
 	flow.hub = &Hub{managers: []IManager{&environmentOnlyManager{

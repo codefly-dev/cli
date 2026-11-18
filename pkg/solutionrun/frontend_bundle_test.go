@@ -13,7 +13,7 @@ import (
 // at its root: absent is no bundle, present is the archive root, and a dist
 // without the manifest is refused as no bundle.
 func TestFrontendBundleIsTheBuiltDistWithItsManifest(t *testing.T) {
-	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+	module := &resources.Module{Name: "quill", ServiceEntry: "backend"}
 	module.WithDir(t.TempDir())
 	root, built, err := FrontendBundle(module)
 	require.NoError(t, err)

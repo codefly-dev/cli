@@ -79,12 +79,12 @@ func TestEnvironmentDeclaredSecretsPromoteToReferencesWhenTheServiceShipsNoFile(
 		SecretStore: environments.EnvironmentSecretStoreReference{Kind: "ClusterSecretStore", Name: "cell-secrets"},
 		Generate: []environments.EnvironmentSecretGenerator{
 			{Scope: environments.SecretGeneratorScopeService, Configuration: "postgres", Format: "identifier",
-				Services: []string{"model/store", "robin/store"}, Keys: []string{"POSTGRES_USER"}},
+				Services: []string{"model/store", "sidekick/store"}, Keys: []string{"POSTGRES_USER"}},
 			{Scope: environments.SecretGeneratorScopeService, Configuration: "postgres",
-				Services: []string{"model/store", "robin/store"}, Keys: []string{"POSTGRES_USER", "POSTGRES_PASSWORD"}},
+				Services: []string{"model/store", "sidekick/store"}, Keys: []string{"POSTGRES_USER", "POSTGRES_PASSWORD"}},
 			// Another service's keys and a workspace group are not this service's.
 			{Scope: environments.SecretGeneratorScopeService, Configuration: "postgres",
-				Services: []string{"robin/store"}, Keys: []string{"POSTGRES_READER_PASSWORD"}},
+				Services: []string{"sidekick/store"}, Keys: []string{"POSTGRES_READER_PASSWORD"}},
 			{Scope: environments.SecretGeneratorScopeWorkspace, Configuration: "internal-auth", Keys: []string{"CODEFLY_INTERNAL_TOKEN"}},
 		},
 	}}
@@ -274,10 +274,10 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 	workspaceConfiguration := &basev0.Configuration{
 		Origin: resources.ConfigurationWorkspace,
 		Infos: []*basev0.ConfigurationInformation{{
-			Name: "workos",
+			Name: "idkit",
 			ConfigurationValues: []*basev0.ConfigurationValue{
 				{Key: "MODE", Value: "production"},
-				{Key: "WORKOS_CLIENT_SECRET", Value: "credential-bearing-value", Secret: true},
+				{Key: "IDKIT_CLIENT_SECRET", Value: "credential-bearing-value", Secret: true},
 			},
 		}},
 	}
@@ -294,9 +294,9 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 	require.Equal(t, "production", values[0].GetValue())
 	require.False(t, values[0].GetSecret())
 	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
-		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORKOS__WORKOS_CLIENT_SECRET": {
+		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDKIT__IDKIT_CLIENT_SECRET": {
 			Name: "accounts-secrets",
-			Key:  "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORKOS__WORKOS_CLIENT_SECRET",
+			Key:  "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDKIT__IDKIT_CLIENT_SECRET",
 		},
 	}, references)
 }

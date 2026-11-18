@@ -7,6 +7,7 @@ import (
 	"time"
 
 	runners "github.com/codefly-dev/core/runners/base"
+	"github.com/shirou/gopsutil/v3/process"
 
 	"github.com/codefly-dev/cli/pkg/processgroup"
 )
@@ -30,28 +31,44 @@ import (
 // RunReclaim is what ReclaimAfterRun took back.
 type RunReclaim struct {
 	ProcessGroups []int
+	// NativeState is the native state directories a disposable run left.
+	NativeState []string
+	// DisposableContainers and ContainerData are the containers a disposable
+	// run left and the data directories mounted into them.
+	DisposableContainers []string
+	ContainerData        []string
 	RunRemovals
 }
 
 // ReclaimAfterRun takes back what this run's agents started and left behind,
 // once they have exited: their orphaned process groups on every exit, then —
 // when removeContainers, for a failed run — the containers they created and
-// the networks those leave empty. The groups go first: a group still
-// registered in the workspace reads as another live run, and while one is
-// live no container is removed.
+// the networks those leave empty, and on every exit the networks its
+// containers were attached to at teardown and no longer are. The groups go
+// first: a group still registered in the workspace reads as another live run,
+// and while one is live no container or network is removed. A disposable run
+// also takes back the native state directories of its stores, after the groups
+// because a directory is in use for as long as a server started in it runs,
+// and its containers with their volumes and data directories, however it
+// ended, before the networks so that the ones they leave empty go too.
 func (flow *Flow) ReclaimAfterRun(ctx context.Context, started time.Time, removeContainers bool) (RunReclaim, error) {
 	var reclaim RunReclaim
 	recovered, groupsErr := flow.RecoverProcessGroupsOfThisRun(ctx)
 	reclaim.ProcessGroups = recovered
-	if !removeContainers {
-		return reclaim, groupsErr
+	nativeState, nativeStateErr := flow.RemoveNativeStateOfThisRun()
+	reclaim.NativeState = nativeState
+	disposable, disposableErr := flow.RemoveContainersOfThisDisposableRun(ctx)
+	reclaim.DisposableContainers, reclaim.ContainerData = disposable.Containers, disposable.DataDirectories
+	var containersErr error
+	if removeContainers {
+		reclaim.RunRemovals, containersErr = flow.RemoveContainersCreatedByThisRun(ctx, started)
+		if containersErr != nil {
+			containersErr = fmt.Errorf("remove the failed run's containers: %w", containersErr)
+		}
 	}
-	removals, containersErr := flow.RemoveContainersCreatedByThisRun(ctx, started)
-	reclaim.RunRemovals = removals
-	if containersErr != nil {
-		containersErr = fmt.Errorf("remove the failed run's containers: %w", containersErr)
-	}
-	return reclaim, errors.Join(groupsErr, containersErr)
+	networks, networksErr := flow.RemoveNetworksThisRunLeftEmpty(ctx)
+	reclaim.Networks = append(reclaim.Networks, networks...)
+	return reclaim, errors.Join(groupsErr, nativeStateErr, disposableErr, containersErr, networksErr)
 }
 
 // listRegisteredProcessGroups lists the pgids of every live registered group.
@@ -109,6 +126,36 @@ func (flow *Flow) RecoverProcessGroupsOfThisRun(ctx context.Context) ([]int, err
 		recovered = append(recovered, pgid)
 	}
 	return recovered, errors.Join(failures...)
+}
+
+// parentOfProcess is the pid of the process that pid is a child of. A variable
+// so a test can stand in for the process table.
+var parentOfProcess = func(ctx context.Context, pid int) (int, bool) {
+	proc, err := process.NewProcessWithContext(ctx, int32(pid)) //nolint:gosec // a pid fits
+	if err != nil {
+		return 0, false
+	}
+	parent, err := proc.PpidWithContext(ctx)
+	if err != nil || parent <= 1 {
+		return 0, false
+	}
+	return int(parent), true
+}
+
+// OwnsProcessGroup reports whether a registered process group is this run's
+// own: one of the agents this run spawned started it. While that agent lives,
+// the group's leader is its child; once the agent is gone, Core's recovery
+// names it as the group's recorded owner. It decides what a run answers for,
+// never what may be signaled.
+func (flow *Flow) OwnsProcessGroup(ctx context.Context, pgid int) bool {
+	if flow == nil || flow.world == nil {
+		return false
+	}
+	if parent, ok := parentOfProcess(ctx, pgid); ok && flow.world.agents.has(parent) {
+		return true
+	}
+	expected, err := previewProcessGroupRecovery(ctx, pgid)
+	return err == nil && expected != nil && expected.PGID == pgid && flow.world.agents.has(expected.Owner.PID)
 }
 
 // orphanedProcessGroupOf names the registered process group pid belongs to

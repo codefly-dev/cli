@@ -71,11 +71,11 @@ The COMPOSITION is not: which workspace composes this solution, which modules
 it pins and at what commits, and the configuration groups those modules need,
 are the composition's to say and are never guessed here.`,
 	Example: `  # A solution with a Go backend that calls two modules.
-  codefly add solution wiki --package-id obin/wiki \
-      --consumes connect:documents/documents/grpc --consumes connect:robin/chat/connect
+  codefly add solution notes --package-id acme/notes \
+      --consumes connect:documents/documents/grpc --consumes connect:assistant/chat/connect
 
   # A solution agent other than the default.
-  codefly add solution forecast --package-id obin/forecast --agent solution-python`,
+  codefly add solution forecast --package-id acme/forecast --agent solution-python`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		cli.Init()

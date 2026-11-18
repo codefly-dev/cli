@@ -75,12 +75,12 @@ func manifestKinds(t *testing.T, root string) map[string][]string {
 // the render deploys into is dropped, the render still succeeds, and the tree it
 // installs is valid without it.
 func TestPromotableRenderDropsAServiceUnitNamespaceForItsOwnDestination(t *testing.T) {
-	const namespace = "platform-obin-wiki"
-	destination := filepath.Join(t.TempDir(), "wiki")
+	const namespace = "platform-northwind-quill"
+	destination := filepath.Join(t.TempDir(), "quill")
 
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: destination, Module: "wiki", UnitNames: []string{"backend"},
-		Environment: "staging", Namespace: namespace, AppProject: "platform-obin", Promotable: true,
+		Destination: destination, Module: "quill", UnitNames: []string{"backend"},
+		Environment: "staging", Namespace: namespace, AppProject: "platform-northwind", Promotable: true,
 	}, func(_ context.Context, root string) error {
 		writeFiles(t, filepath.Join(root, serviceUnitDir, "backend"), serviceUnitFiles(namespace, "staging"))
 		return nil
@@ -110,7 +110,7 @@ func TestPromotableRenderDropsAServiceUnitNamespaceForItsOwnDestination(t *testi
 	}
 	// The installed tree is the committed output: it has to validate, and to
 	// kustomize-build, without the manifest that was dropped.
-	if err := ValidateRenderedTree(result.Path, "platform-obin", true); err != nil {
+	if err := ValidateRenderedTree(result.Path, "platform-northwind", true); err != nil {
 		t.Fatalf("validate installed tree: %v", err)
 	}
 }
@@ -120,9 +120,9 @@ func TestPromotableRenderDropsAServiceUnitNamespaceForItsOwnDestination(t *testi
 // nothing claiming the namespace there is nothing left to refuse, so a workspace
 // whose namespaces are pre-created externally renders either way.
 func TestPromotableRenderWithoutAnAppProjectNoLongerRefusesTheProvisionedNamespace(t *testing.T) {
-	const namespace = "platform-obin-wiki"
+	const namespace = "platform-northwind-quill"
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(t.TempDir(), "wiki"), Module: "wiki", UnitNames: []string{"backend"},
+		Destination: filepath.Join(t.TempDir(), "quill"), Module: "quill", UnitNames: []string{"backend"},
 		Environment: "staging", Namespace: namespace, Promotable: true,
 	}, func(_ context.Context, root string) error {
 		writeFiles(t, filepath.Join(root, serviceUnitDir, "backend"), serviceUnitFiles(namespace, "staging"))
@@ -140,15 +140,15 @@ func TestPromotableRenderWithoutAnAppProjectNoLongerRefusesTheProvisionedNamespa
 // destination is a genuine cluster-level claim: it stays in the tree and keeps
 // facing the AppProject contract check, which is the boundary being protected.
 func TestPromotableRenderKeepsAServiceUnitNamespaceNamingAnotherNamespace(t *testing.T) {
-	const namespace = "platform-obin-wiki"
+	const namespace = "platform-northwind-quill"
 	files := serviceUnitFiles(namespace, "staging")
 	files[filepath.Join("base", "kustomization.yaml")] = "apiVersion: kustomize.config.k8s.io/v1beta1\n" +
 		"kind: Kustomization\nresources:\n  - namespace.yaml\n  - elsewhere.yaml\n  - deployment.yaml\n"
-	files[filepath.Join("base", "elsewhere.yaml")] = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: platform-obin-model\n"
+	files[filepath.Join("base", "elsewhere.yaml")] = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: platform-northwind-model\n"
 
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(t.TempDir(), "wiki"), Module: "wiki", UnitNames: []string{"backend"},
-		Environment: "staging", Namespace: namespace, AppProject: "platform-obin", Promotable: true,
+		Destination: filepath.Join(t.TempDir(), "quill"), Module: "quill", UnitNames: []string{"backend"},
+		Environment: "staging", Namespace: namespace, AppProject: "platform-northwind", Promotable: true,
 	}, func(_ context.Context, root string) error {
 		writeFiles(t, filepath.Join(root, serviceUnitDir, "backend"), files)
 		return nil
@@ -157,8 +157,8 @@ func TestPromotableRenderKeepsAServiceUnitNamespaceNamingAnotherNamespace(t *tes
 		t.Fatal(err)
 	}
 	kinds := manifestKinds(t, result.Path)
-	if len(kinds["Namespace"]) != 1 || kinds["Namespace"][0] != "platform-obin-model" {
-		t.Fatalf("Namespace manifests after render = %v, want only platform-obin-model", kinds["Namespace"])
+	if len(kinds["Namespace"]) != 1 || kinds["Namespace"][0] != "platform-northwind-model" {
+		t.Fatalf("Namespace manifests after render = %v, want only platform-northwind-model", kinds["Namespace"])
 	}
 }
 
@@ -166,16 +166,16 @@ func TestPromotableRenderKeepsAServiceUnitNamespaceNamingAnotherNamespace(t *tes
 // the AppProject its publish generates authorizes it — so the service-unit rule
 // must not reach across into a solution unit.
 func TestPromotableRenderKeepsASolutionUnitNamespace(t *testing.T) {
-	const namespace = "lastlogin-go"
+	const namespace = "beacon-go"
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(t.TempDir(), "lastlogin-go"), Module: "lastlogin-go",
+		Destination: filepath.Join(t.TempDir(), "beacon-go"), Module: "beacon-go",
 		Units: []InventoryUnit{{
-			Kind: UnitKindSolution, Module: "lastlogin-go", Name: "lastlogin-go",
-			Path: filepath.ToSlash(filepath.Join(solutionUnitDir, "lastlogin-go")),
+			Kind: UnitKindSolution, Module: "beacon-go", Name: "beacon-go",
+			Path: filepath.ToSlash(filepath.Join(solutionUnitDir, "beacon-go")),
 		}},
-		Environment: "staging", Namespace: namespace, AppProject: "lastlogin-go", Promotable: true,
+		Environment: "staging", Namespace: namespace, AppProject: "beacon-go", Promotable: true,
 	}, func(_ context.Context, root string) error {
-		writeFiles(t, filepath.Join(root, solutionUnitDir, "lastlogin-go"), serviceUnitFiles(namespace, "staging"))
+		writeFiles(t, filepath.Join(root, solutionUnitDir, "beacon-go"), serviceUnitFiles(namespace, "staging"))
 		return nil
 	})
 	if err != nil {
@@ -194,12 +194,12 @@ func TestPromotableRenderKeepsASolutionUnitNamespace(t *testing.T) {
 // ("modules/<module>/services/<service>"). The rule follows the unit directory,
 // not a fixed depth, so that layout is covered by the same pass.
 func TestPromotableServiceRenderDropsTheNamespaceInItsNestedUnitLayout(t *testing.T) {
-	const namespace = "platform-obin-wiki"
+	const namespace = "platform-northwind-quill"
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
-		Destination: filepath.Join(t.TempDir(), "backend"), Module: "wiki", Unit: "backend",
-		Environment: "staging", Namespace: namespace, AppProject: "platform-obin", Promotable: true,
+		Destination: filepath.Join(t.TempDir(), "backend"), Module: "quill", Unit: "backend",
+		Environment: "staging", Namespace: namespace, AppProject: "platform-northwind", Promotable: true,
 	}, func(_ context.Context, root string) error {
-		writeFiles(t, filepath.Join(root, "modules", "wiki", serviceUnitDir, "backend"), serviceUnitFiles(namespace, "staging"))
+		writeFiles(t, filepath.Join(root, "modules", "quill", serviceUnitDir, "backend"), serviceUnitFiles(namespace, "staging"))
 		return nil
 	})
 	if err != nil {

@@ -21,7 +21,7 @@ func TestSnapshotImagesAreNamedByThePullRepository(t *testing.T) {
 		registry *environments.EnvironmentRegistry
 		want     string
 	}{
-		{&environments.EnvironmentRegistry{URL: "ghcr.io/obin-ai", Mirrors: map[string]string{"ghcr.io": "us-east1-docker.pkg.dev/cell/ghcr"}}, "us-east1-docker.pkg.dev/cell/ghcr/obin-ai"},
+		{&environments.EnvironmentRegistry{URL: "ghcr.io/northwind", Mirrors: map[string]string{"ghcr.io": "us-east1-docker.pkg.dev/cell/ghcr"}}, "us-east1-docker.pkg.dev/cell/ghcr/northwind"},
 		{&environments.EnvironmentRegistry{URL: "registry.example.com/team"}, "registry.example.com/team"},
 	} {
 		if err := prepareSnapshotRegistry(context.Background(), &environments.Environment{Name: "snap", Registry: tc.registry}); err != nil {
@@ -42,8 +42,8 @@ func TestFrontendBundlesUseTheArtifactsRegistryWhenDeclared(t *testing.T) {
 		registry *environments.EnvironmentRegistry
 		want     string
 	}{
-		{&environments.EnvironmentRegistry{URL: "ghcr.io/obin-ai", Artifacts: "us-east1-docker.pkg.dev/cell/bundles/"}, "us-east1-docker.pkg.dev/cell/bundles/platform/" + FrontendBundleRepository},
-		{&environments.EnvironmentRegistry{URL: "ghcr.io/obin-ai"}, "ghcr.io/obin-ai/platform/" + FrontendBundleRepository},
+		{&environments.EnvironmentRegistry{URL: "ghcr.io/northwind", Artifacts: "us-east1-docker.pkg.dev/cell/bundles/"}, "us-east1-docker.pkg.dev/cell/bundles/platform/" + FrontendBundleRepository},
+		{&environments.EnvironmentRegistry{URL: "ghcr.io/northwind"}, "ghcr.io/northwind/platform/" + FrontendBundleRepository},
 	} {
 		got, err := frontendBundleRepositoryOf(&environments.Environment{Name: "staging", Registry: tc.registry}, "platform")
 		if err != nil {

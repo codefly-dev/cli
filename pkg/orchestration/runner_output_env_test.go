@@ -419,7 +419,7 @@ func carrierValue(t *testing.T, text, key string) string {
 
 // A writer that names no run environment refuses before it writes anything,
 // by name, rather than failing on the first document with core's contract
-// error — which is what platform-core's composition gate saw on 0.1.219: the
+// error — which is what platform-base's composition gate saw on 0.1.219: the
 // composition root's merged fixture-composition reached every service's
 // `--output-env` and the whole run refused at the first Init.
 func TestServiceProcessOutputEnvRequiresTheRunEnvironment(t *testing.T) {

@@ -21,9 +21,8 @@ import (
 //
 // A failed render leaves the previous tree in place — the new tree is staged
 // and replaces the old one only on success — and nothing in that tree says a
-// later render failed. On 2026-11-12 `codefly deploy gitops render saas --env
-// blue` failed on a dependency image, and the `publish` that followed opened
-// and merged a promotion of the stale tree. The record is written before a
+// later render failed: a render that failed on a dependency image, followed by
+// a `publish`, would open and merge a promotion of the stale tree. The record is written before a
 // render starts (rendering), and again when it ends (rendered or failed), so a
 // render that failed, or was interrupted, leaves a record publish refuses.
 

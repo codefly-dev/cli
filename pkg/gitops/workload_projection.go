@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,7 +37,7 @@ import (
 //     at that path. On any other environment that declares a host it is the
 //     platform's `<host.component>-delivery-trust` ConfigMap at the host's
 //     constant path, as one projected ConfigMap source — the shape the
-//     platform's admission pins (obin-ai/infra-base#1366): the platform
+//     platform's admission pins: the platform
 //     renders that ConfigMap, the composition's Deployment carries the
 //     mount, and this render is that Deployment. The same workloads, and
 //     no other, mount their ServiceAccount's Kubernetes API credential
@@ -56,8 +58,8 @@ const (
 	identityTokenMount  = "/var/run/secrets/codefly" //nolint:gosec // G101: a mount path, not a credential
 	identityTokenFile   = "token"
 	// identityTokenSeconds is the token's lifetime: the longest a host admits
-	// for a mint token (module-saas-starter#1068 refuses one spanning more
-	// than 600 s, so a copied token is replayable for at most that long), and
+	// for a mint token (a host refuses one spanning more than 600 s, so a
+	// copied token is replayable for at most that long), and
 	// the shortest the kubelet projects. It rotates at 80% and the SDK
 	// re-reads the file before every mint.
 	identityTokenSeconds = 600
@@ -67,25 +69,23 @@ const (
 	// render mounts into the verifier.
 	LocalTrustAnchorObjects = "codefly-delivery-trust"
 
-	// HostedTrustAnchorPath is where a deployed host reads its trust anchor,
-	// and the other half of the host's own constant
-	// (module-saas-starter accounts `SolutionHostTrustAnchorPath`, which the
-	// host refuses to relocate from inside a pod). It is never a workspace
+	// HostedTrustAnchorPath is where a deployed host reads its trust anchor:
+	// the host declares it (solutionhost.HostedTrustAnchorPath) and refuses to
+	// relocate it from inside a pod. It is never a workspace
 	// value: the workspace environment is the composition's, so a
 	// composition that could name the path could point the verifier at a
 	// policy it wrote itself and sign its own documents against it. The
 	// anchor stays reachable only by whoever mounts into the pod, which the
 	// render does here at the one path, and workspace.go refuses
 	// host.trust_anchor on every environment that is not a local k3d one.
-	HostedTrustAnchorPath = "/etc/obin/delivery-trust"
+	HostedTrustAnchorPath = solutionhost.HostedTrustAnchorPath
 
 	// hostedTrustAnchorSuffix completes the platform's name for the trust
 	// ConfigMap it renders in the verifier's namespace,
-	// `<host.component>-delivery-trust` (obin-ai/infra-base cell_contract.py,
-	// `{cell.delivery}-delivery-trust`). The render projects it as one
+	// `<host.component>-delivery-trust`. The render projects it as one
 	// ConfigMap source, no items, read-only, at the constant path — the shape
-	// the platform's admission pins (obin-ai/infra-base#1366) — and declares
-	// nothing about its content.
+	// the platform's admission pins — and declares nothing about its
+	// content.
 	hostedTrustAnchorSuffix = "-delivery-trust"
 
 	// TrustAnchorAnnotation is the pod-template annotation a local cluster

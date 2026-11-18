@@ -85,6 +85,14 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	if group != nil {
 		r.combined = append(r.combined, group)
 	}
+	// The edge's routes, from the same catalogs (edge_routes.go).
+	edge, err := generatedEdgeRoutes(ctx, r.workspace, configs)
+	if err != nil {
+		return err
+	}
+	if edge != nil {
+		r.combined = append(r.combined, edge)
+	}
 	// The one fixture-composition document of this composition, merged from
 	// the composed modules' fragments: the group is multi-provider by design,
 	// and this is its provider where the workspace has no answer of its own
@@ -163,7 +171,7 @@ func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, con
 		}
 		if info.GetName() == "hop" {
 			for _, value := range info.GetConfigurationValues() {
-				if value.GetKey() == "MODULES" {
+				if value.GetKey() == routedModulesKey {
 					listed = value.GetValue()
 				}
 			}
@@ -229,44 +237,66 @@ func emptyHopRoutes() *basev0.Configuration {
 	}}}
 }
 
+// publishedHopEndpoints is every listener a module publishes through the hop,
+// with the methods the hop routes to it: the ones its own contracts declare
+// (publishedEndpoints) and the foreign methods its module contract adds.
 func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]routing.RouteEndpoint, error) {
-	contract, err := modulecontract.Load(module.Dir())
+	out, contract, err := publishedEndpoints(ctx, module)
 	if err != nil {
 		return nil, err
 	}
+	if err := routeForeignMethods(out, contract.ForeignMethods); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(out, func(a, b routing.RouteEndpoint) int {
+		return strings.Compare(a.Service+"/"+a.Endpoint, b.Service+"/"+b.Endpoint)
+	})
+	return out, nil
+}
+
+// publishedEndpoints is every listener of a module's published API catalog
+// with the methods its own digest-checked contract declares, in catalog order,
+// and the module contract they were read beside. It is the one reading of a
+// catalog: the hop's routes add the foreign methods to it, the edge's routes
+// (edge_routes.go) are its Connect procedures.
+func publishedEndpoints(ctx context.Context, module *resources.Module) ([]routing.RouteEndpoint, *modulecontract.Contract, error) {
+	contract, err := modulecontract.Load(module.Dir())
+	if err != nil {
+		return nil, nil, err
+	}
 	if contract.Principal != module.Name {
-		return nil, fmt.Errorf("contract principal %q differs from composed module %q", contract.Principal, module.Name)
+		return nil, nil, fmt.Errorf("contract principal %q differs from composed module %q", contract.Principal, module.Name)
 	}
 	manifest, err := composition.LoadPackageManifest(module.Dir())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if catalog.Package != manifest.ID || catalog.Version != manifest.Version {
-		return nil, fmt.Errorf("API catalog package/version differs from its package manifest")
+		return nil, nil, fmt.Errorf("API catalog package/version differs from its package manifest")
 	}
 	if err := composition.ValidatePackageAPIContracts(module.Dir(), manifest, catalog); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var out []routing.RouteEndpoint
 	for i := range catalog.Endpoints {
 		endpoint := &catalog.Endpoints[i]
 		service, loadErr := module.LoadServiceFromName(ctx, endpoint.Service)
 		if loadErr != nil {
-			return nil, loadErr
+			return nil, nil, loadErr
 		}
 		idx := slices.IndexFunc(service.Endpoints, func(e *resources.Endpoint) bool { return e.Name == endpoint.Endpoint })
 		if idx < 0 || service.Endpoints[idx].API != endpoint.API {
-			return nil, fmt.Errorf("catalog listener %s/%s does not match the selected service endpoint", endpoint.Service, endpoint.Endpoint)
+			return nil, nil, fmt.Errorf("catalog listener %s/%s does not match the selected service endpoint", endpoint.Service, endpoint.Endpoint)
 		}
 		entry := routing.RouteEndpoint{Audience: contract.Principal, Service: endpoint.Service, Endpoint: endpoint.Endpoint, Transport: endpoint.API,
 			Address: "${endpoint:" + module.Name + "/" + endpoint.Service + "/" + endpoint.Endpoint + "}", Package: catalog.Package, Version: catalog.Version, Digest: endpoint.Digest}
 		published, findErr := publishedContract(manifest, endpoint)
 		if findErr != nil {
-			return nil, findErr
+			return nil, nil, findErr
 		}
 		// The methods are the policy table the authority receives for this
 		// listener (methodpolicy, the reader of every delivered table), read
@@ -275,10 +305,10 @@ func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]rou
 		// policy for, spelled the same way, basePath included.
 		policies, _, policyErr := methodpolicy.Contract(module.Dir(), catalog, endpoint.Service, published)
 		if policyErr != nil {
-			return nil, fmt.Errorf("catalog listener %s/%s: %w", endpoint.Service, endpoint.Endpoint, policyErr)
+			return nil, nil, fmt.Errorf("catalog listener %s/%s: %w", endpoint.Service, endpoint.Endpoint, policyErr)
 		}
 		switch {
-		case endpoint.Kind == composition.APIContractKindProtobuf && (endpoint.API == "grpc" || endpoint.API == "connect"):
+		case endpoint.Kind == composition.APIContractKindProtobuf && (endpoint.API == "grpc" || endpoint.API == connectTransport):
 			for _, policy := range policies {
 				// A procedure; its google.api.http routes belong to an HTTP face.
 				if strings.HasPrefix(policy.GetMethod(), "/") {
@@ -291,18 +321,12 @@ func publishedHopEndpoints(ctx context.Context, module *resources.Module) ([]rou
 				entry.Methods = append(entry.Methods, policy.GetMethod())
 			}
 		default:
-			return nil, fmt.Errorf("catalog listener %s/%s has unsupported %s/%s publication", endpoint.Service, endpoint.Endpoint, endpoint.API, endpoint.Kind)
+			return nil, nil, fmt.Errorf("catalog listener %s/%s has unsupported %s/%s publication", endpoint.Service, endpoint.Endpoint, endpoint.API, endpoint.Kind)
 		}
 		slices.Sort(entry.Methods)
 		out = append(out, entry)
 	}
-	if err := routeForeignMethods(out, contract.ForeignMethods); err != nil {
-		return nil, err
-	}
-	slices.SortFunc(out, func(a, b routing.RouteEndpoint) int {
-		return strings.Compare(a.Service+"/"+a.Endpoint, b.Service+"/"+b.Endpoint)
-	})
-	return out, nil
+	return out, contract, nil
 }
 
 // routeForeignMethods adds the module contract's foreign methods — served
@@ -319,7 +343,7 @@ func routeForeignMethods(endpoints []routing.RouteEndpoint, foreign []modulecont
 	if len(foreign) == 0 {
 		return nil
 	}
-	rpc := func(e *routing.RouteEndpoint) bool { return e.Transport == "grpc" || e.Transport == "connect" }
+	rpc := func(e *routing.RouteEndpoint) bool { return e.Transport == "grpc" || e.Transport == connectTransport }
 	var services []string
 	for i := range endpoints {
 		if rpc(&endpoints[i]) && !slices.Contains(services, endpoints[i].Service) {
@@ -424,10 +448,9 @@ func (flow *Flow) CheckRoutingSnapshot(ctx context.Context, workspace *resources
 // service's first Init dials the port it is proposed on 127.0.0.1 and ::1 and
 // refuses, naming the holder, if anything answers
 // (Runner.checkInitialPortAvailability), so the run never comes up with the
-// hop routing to a squatter. --temporary-ports never derives an address at
-// all. A process that binds a loopback address on the same port after that
-// probe, or a routed service that crashes or is withdrawn mid-run, is not
-// covered.
+// hop routing to a squatter. A process that binds a loopback address on the
+// same port after that probe, or a routed service that crashes or is withdrawn
+// mid-run, is not covered.
 func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.NetworkMapping) error {
 	routes, err := routing.DecodeRouting(raw)
 	if err != nil {

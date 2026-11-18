@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codefly-dev/core/solutionhost"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 )
 
 // vaultKeyECDSAP256 is Vault Transit's name for an ECDSA P-256 key.

@@ -47,9 +47,9 @@ Configure workspace.codefly.yaml:
       python: {owner: codefly-dev}
 
 Examples:
-  codefly publish library authkit --dry-run
-  codefly publish library authkit --version 1.2.0
-  codefly publish library authkit --language go,python`,
+  codefly publish library payments --dry-run
+  codefly publish library payments --version 1.2.0
+  codefly publish library payments --language go,python`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return publishLibrary(cmd, args[0])

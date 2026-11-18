@@ -142,7 +142,7 @@ Each value is a list of Core `ScopeSelection` messages (`slot`, `invoke`,
 environments:
   - name: staging
     runnable-scope-selections:
-      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
+      STARTERKIT__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
         - slot: source
           invoke:
             - resource_kind: datasource.sources
@@ -163,10 +163,10 @@ row is a binding and needs its own selection. Saas-starter serves this operation
 and its Lookup on `connect`; its `authority` listener does not serve them even
 though both endpoints carry the complete descriptor. Receipt pruning is a
 separate operation and selection key,
-`SAAS_STARTER__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
+`STARTERKIT__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
 
 ```sh
-codefly generate runnables saas-starter
+codefly generate runnables starterkit
 codefly generate runnable-bindings --env staging
 codefly generate runnable-bindings --env staging --check
 ```
@@ -206,7 +206,7 @@ its consuming module's name, and the value is a JSON array of existing prepared
 operation ids (which already identify the providing module/service/operation):
 
 ```dotenv
-ROBIN=["DOCUMENTS__DOCUMENTS_GRPC_GET_DOCUMENT_CONTENT"]
+SIDEKICK=["DOCUMENTS__DOCUMENTS_GRPC_GET_DOCUMENT_CONTENT"]
 RUNTIME=[]
 ```
 
@@ -351,14 +351,23 @@ HTTP-based (`http`, `connect`, `rest` or `mcp`), because a prepared call carries
 HTTP base URL; it resolves in the same environment and scope as the owners.
 Nothing infers such an endpoint: the composition that runs the hop names it.
 
+A local file carries a declared call endpoint by reference, not by address:
+each binding's `call.address` is `${endpoint:<module>/<service>/<endpoint>}`,
+the reference syntax every workspace configuration value uses, and the run that
+delivers the `runnable-bindings` group resolves it to the address that run
+allocated. One file is therefore right for every naming scope, a
+session-qualified one included, and `--check` under another scope agrees. A
+binding sent to its owner's listener (no call endpoint) still carries the
+address of the scope it was generated under.
+
 Only the address moves. Each owner is still loaded and held to its served
 Connect surface (operation and Lookup) and its published contract before the
 address is replaced, so a hop never makes an unserved or stale operation look
 callable. The operation, the Connect procedure or REST verb and path, the
 contract, its digest and the policy stay the owner's. One generation names at
 most one call endpoint, and the output file is the profile's: two generations
-for different scopes into one profile overwrite each other, so parallel runs
-use separate workspaces or profiles.
+of owner-addressed bindings for different scopes into one profile overwrite
+each other, so parallel runs of those use separate workspaces or profiles.
 
 ### Identity and coexistence
 
@@ -434,8 +443,7 @@ Completing these paths requires coordinated work:
 
 - The shared contracts (create, build evidence, invocation framing) are tracked in [codefly-dev/core#472](https://github.com/codefly-dev/core/issues/472).
 - The language agents live in [runnable-python](https://github.com/codefly-dev/runnable-python) and [runnable-go](https://github.com/codefly-dev/runnable-go). Python implements native Builder gRPC and the shared invocation framing; Go currently has typed bindings.
-- The durable surfaces are Orchestration's, coordinated through
-  [obin-ai/module-runtime#63](https://github.com/obin-ai/module-runtime/issues/63).
+- The durable surfaces are Orchestration's.
 
 [codefly-dev/cli#638](https://github.com/codefly-dev/cli/issues/638) is the
 milestone that tracks all of them.

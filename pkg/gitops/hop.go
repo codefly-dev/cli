@@ -136,8 +136,8 @@ func derivedCompositionHop(ctx context.Context, workspace *resources.Workspace, 
 	for _, ref := range refs {
 		// A service this environment withdraws stands nothing: it is not
 		// delivered, so it admits no call and cannot be the second principal
-		// this refusal is about. Counting it made blue — which withdraws
-		// authority/hop because on a cell saas is the host and its gateway
+		// this refusal is about. Counting it made an environment that
+		// withdraws authority/hop — because on a cell the host's gateway
 		// plays the hop role — refuse its own render with "authority/hop and
 		// saas/auth-gateway both declare hop-routes", naming a service the
 		// same render had already skipped. Every other loop over a module's

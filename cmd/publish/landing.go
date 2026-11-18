@@ -222,6 +222,10 @@ func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, 
 }
 
 func (l *pullRequestLanding) inspectChecks(ctx context.Context, sha string) (checkVerdict, error) {
+	publisher, identityErr := l.publisherCheck(ctx, sha)
+	if identityErr != nil {
+		return checkVerdict{}, identityErr
+	}
 	options := &github.ListCheckRunsOptions{Filter: github.Ptr("latest"), ListOptions: github.ListOptions{PerPage: 100}}
 	var failed []string
 	pending, succeeded, observed := false, false, false
@@ -231,7 +235,7 @@ func (l *pullRequestLanding) inspectChecks(ctx context.Context, sha string) (che
 			return checkVerdict{}, err
 		}
 		for _, run := range runs.CheckRuns {
-			if run.GetApp().GetSlug() == dependabotApp {
+			if run.GetApp().GetSlug() == dependabotApp || (publisher != 0 && run.GetID() == publisher && run.GetApp().GetSlug() == githubActionsApp) {
 				continue
 			}
 			observed = true

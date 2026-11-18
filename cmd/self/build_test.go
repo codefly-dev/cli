@@ -92,7 +92,7 @@ func TestResolveAgentRootDoesNotEscapeImmediateWorkspace(t *testing.T) {
 
 func TestReportSkippedPluginCheckouts(t *testing.T) {
 	skipped := []skippedPluginCheckout{
-		{name: "module-saas-starter-onboarding-library", originRepository: "module-saas-starter"},
+		{name: "module-starterkit-onboarding-library", originRepository: "module-starterkit"},
 		{name: "service-postgres-docker-retry", originRepository: "service-postgres"},
 	}
 	var got []string
@@ -107,7 +107,7 @@ func TestReportSkippedPluginCheckouts(t *testing.T) {
 
 	want := []string{
 		"Skipping 2 duplicate or task-specific plugin checkout(s):",
-		"  - module-saas-starter-onboarding-library (origin repository: module-saas-starter)",
+		"  - module-starterkit-onboarding-library (origin repository: module-starterkit)",
 		"  - service-postgres-docker-retry (origin repository: service-postgres)",
 	}
 	if !reflect.DeepEqual(got, want) {

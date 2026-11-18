@@ -112,7 +112,7 @@ module_envelope_admits_every_binding.`,
   codefly doctor solution
 
   # Judge one, and script against the result.
-  codefly doctor solution wiki --json
+  codefly doctor solution notes --json
 
   # Gate a consumer repository's tree, where a solution need not be a workspace.
   for s in solutions/*/; do codefly doctor solution --dir "$s" || exit 1; done
@@ -120,10 +120,10 @@ module_envelope_admits_every_binding.`,
   # The same gate, where every directory walked must BE a solution: this
   # catches a solution whose manifest is missing, which otherwise reads as
   # "not a solution" and passes.
-  codefly doctor solution --dir solutions/robin-builder --require-solution
+  codefly doctor solution --dir solutions/notes --require-solution
 
   # Judge what a cell would actually enforce, not just the directory's shape.
-  codefly doctor solution wiki --env blue`,
+  codefly doctor solution notes --env dev`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -132,9 +132,8 @@ module_envelope_admits_every_binding.`,
 		// --dir judges a module directory on its own, with no workspace
 		// resolution. A consumer repository gating `solutions/*/` has a tree
 		// of module directories and not necessarily a workspace at each one:
-		// obin-ai/core-solutions' excel-extract is a real solution with no
-		// workspace.codefly.yaml, and requiring one made it the single
-		// solution that could not be judged at all.
+		// a solution can ship with no workspace.codefly.yaml of its own, and
+		// requiring one would leave exactly that solution unjudged.
 		if doctorSolutionDir != "" {
 			if len(args) > 0 {
 				return fmt.Errorf("--dir judges the directory itself, so it takes no module name")
@@ -158,8 +157,8 @@ module_envelope_admits_every_binding.`,
 			}
 			// The caller named this directory, so "it is not a solution" is an
 			// answer and not a vacuous pass. A tree gate looping solutions/*/
-			// meets directories that are not solutions — core-solutions'
-			// client-engagement is one — and must not fail on them.
+			// meets directories that are not solutions and must not fail on
+			// them.
 			if !report.IsSolution {
 				if doctorSolutionRequire {
 					return fmt.Errorf("%s ships no %s, so it is not a solution — and --require-solution says it must be", report.Module, solutionManifestName)

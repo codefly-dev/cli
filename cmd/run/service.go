@@ -7,11 +7,10 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"os/signal"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -29,6 +28,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
+	"github.com/codefly-dev/core/sdk/session"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -49,7 +49,7 @@ on container-recovery scope.
 
 Examples:
   codefly run service app/backend
-  codefly run service lastlogin-go/backend lastlogin-python/backend wiki/backend`,
+  codefly run service greeter-go/backend greeter-python/backend notes/backend`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runServiceCommand,
 }
@@ -68,6 +68,10 @@ func resolveRunPins(ctx context.Context) error {
 	return common.ResolvePinnedModules(ctx)
 }
 
+// forcedQuitFlow is the flow of the run this process is running, for the
+// forced quit, which reads it from the signal handler's goroutine.
+var forcedQuitFlow atomic.Pointer[orchestration.Flow]
+
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
 		return err
@@ -79,25 +83,43 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	ctx, done := common.NewContext()
 	defer done()
 
-	// Ignore SIGHUP so the dev stack survives when the invoking shell,
-	// terminal, or parent agent (Claude Code's Bash tool, a closed
-	// Ghostty tab, etc.) hangs up. Without this, a parent-session
-	// teardown cascades SIGHUP through the pgroup and kills every
-	// agent + user binary mid-startup.
-	signal.Ignore(syscall.SIGHUP)
-	defer signal.Reset(syscall.SIGHUP)
-
-	// Catch SIGINT (Ctrl-C) AND SIGTERM (kill, container shutdown).
+	// Catch SIGINT (Ctrl-C), SIGTERM (kill, container shutdown) and SIGHUP (a
+	// closed terminal, a stopped parent shell): each stops the run in order.
 	// os.Kill / SIGKILL cannot be caught, so listing it was a noop bug —
 	// it gave the false impression the parent would clean up on `kill <pid>`,
 	// but `kill` sends SIGTERM, which fell through and orphaned every plugin.
+	// SIGHUP used to be ignored here, which left the whole stack running with
+	// nothing above it once the shell that started it was gone.
 	ctx, stop := common.SignalContext(ctx)
 	defer stop()
+	// The stop has to run to its end even when nothing reads this command's
+	// output any more: the reader that went away is what the run stops for.
+	defer common.OutliveOutput()()
+	// A run started for a process (the SDK's dependency stack for a test) is
+	// that process's: once it is gone the run stops the same way, because a
+	// test binary that timed out or was killed asks for nothing.
+	owner, owned, err := takeOwner()
+	if err != nil {
+		return err
+	}
+	if owned {
+		var release func()
+		ctx, release = stopWithOwner(ctx, owner)
+		defer release()
+	}
 	// signalled tells a run stopped on purpose apart from one that failed.
 	signalled := ctx
 	started := time.Now()
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+
+	// A forced quit (a signal repeated after common.ForceQuitInterval) abandons
+	// the stop below. A disposable run is still stopped and taken back then,
+	// in the short time a forced quit has: nothing else ever would.
+	defer forcedQuitFlow.Store(nil)
+	defer common.OnForcedQuit(func(quit context.Context) {
+		takeBackOnForcedQuit(quit, forcedQuitFlow.Load(), started)
+	})()
 
 	// cleanupRun is the run once it exists, for the deferred cleanup below,
 	// which is registered before it.
@@ -110,16 +132,11 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		if cleanupRun != nil {
 			returnErr = errors.Join(returnErr, reclaimRun(context.WithoutCancel(ctx), cleanupRun.flow, started, runFailed(signalled, returnErr)))
 		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		// Machine-wide on purpose: this recovers records whose owner has exited,
-		// which is garbage collection and never signals a live workspace's run.
-		evidence, err := processgroup.ReapStaleProcessGroupsWithEvidence(cleanupCtx, processgroup.AllWorkspaces())
-		cleanupCancel()
-		if err != nil {
-			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))
-		} else if recovered := evidence.RecoveredPGIDs(); len(recovered) > 0 {
-			cli.Info("reaped %d managed process groups after run: %v", len(recovered), recovered)
+		var flow *orchestration.Flow
+		if cleanupRun != nil {
+			flow = cleanupRun.flow
 		}
+		returnErr = errors.Join(returnErr, reapAfterRun(context.WithoutCancel(ctx), flow))
 	}()
 
 	namingScopeExplicit = cmd.Flags().Changed("naming-scope")
@@ -141,7 +158,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// (parent SIGKILL, terminal force-closed). Without this, zombie
 	// trees from a previous `codefly run` survive and hold ports,
 	// making the next run appear to fork-bomb or fail port binding.
-	if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
+	if err = processgroup.ReapStaleProcessGroups(ctx); err != nil {
 		cli.Warning("stale process-group sweep failed: %v", err)
 	}
 	// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency
@@ -165,11 +182,10 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// referenced by identity is not loadable as a local checkout until the CLI
 	// has pulled it, so the load below is precisely what fails without this —
 	// including for the dependency stacks the SDK spawns here.
-	if err := resolveRunPins(ctx); err != nil {
+	if err = resolveRunPins(ctx); err != nil {
 		return err
 	}
 
-	var err error
 	if servicePath != "" {
 		workspace, module, service, err = common.LoadWithServicePathOverrideE(ctx, servicePath)
 	} else {
@@ -339,6 +355,7 @@ func (run *serviceRun) headless(ctx context.Context) error {
 	phase(tui.StateLoading)
 	var err error
 	run.flow, err = initRunService(ctx, run.workspace, run.module, run.service)
+	forcedQuitFlow.Store(run.flow)
 	run.registerFlow()
 	if err != nil {
 		return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
@@ -528,6 +545,7 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 		var err error
 		t.SendState(serviceName, tui.StateLoading)
 		run.flow, err = initRunService(runCtx, run.workspace, run.module, run.service)
+		forcedQuitFlow.Store(run.flow)
 		run.registerFlow()
 		if err != nil {
 			// Keep the full error: initRunService returns w.NewError
@@ -651,7 +669,7 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 // native run holding one container-pinned service still creates containers —
 // and deciding from the flag alone left them with no ownership guard.
 func shouldSweepStaleContainers(selectedRuntime string) bool {
-	return selectedRuntime != resources.RuntimeContextNative && selectedRuntime != resources.RuntimeContextNix
+	return orchestration.ReachesDocker(selectedRuntime)
 }
 
 // loadRequiredServiceForRun keeps terminal access aligned with the execution
@@ -860,6 +878,9 @@ func runEnvironment(workspace *resources.Workspace) (*environments.Environment, 
 	}
 	if namingScope != "" || namingScopeExplicit {
 		env.NamingScope = namingScope
+		// The SDK names a test's dependency stack itself: a scope its session
+		// generated is throwaway, as one this command generates is.
+		orchestration.DeclareSessionScope(env, session.FromEnvironment(os.Environ()))
 	}
 	return env, nil
 }

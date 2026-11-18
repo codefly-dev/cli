@@ -136,13 +136,13 @@ func TestNpmStorePublishNewPackage(t *testing.T) {
 	registry := newFakeNpmRegistry()
 	store := newTestNpmStore(t, registry)
 
-	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
-	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	artifact := npmPackageDir(t, "@codefly-dev/signkit", "1.0.0")
+	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err)
-	require.Equal(t, "@codefly-dev/authkit", published.ImportPath)
+	require.Equal(t, "@codefly-dev/signkit", published.ImportPath)
 	require.Equal(t, "1.0.0", published.Version)
 	require.Equal(t, 1, registry.putCount, "a new version must PUT exactly once")
-	require.Equal(t, "npm install @codefly-dev/authkit@1.0.0", published.InstallHint)
+	require.Equal(t, "npm install @codefly-dev/signkit@1.0.0", published.InstallHint)
 	require.True(t, strings.HasPrefix(published.Digest, "sha512:"), "digest %q must carry the registry's integrity algorithm", published.Digest)
 }
 
@@ -151,8 +151,8 @@ func TestNpmStorePublishIdempotentOnMatchingIntegrity(t *testing.T) {
 	ctx := context.Background()
 	registry := newFakeNpmRegistry()
 	store := newTestNpmStore(t, registry)
-	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
-	coords := Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"}
+	artifact := npmPackageDir(t, "@codefly-dev/signkit", "1.0.0")
+	coords := Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"}
 
 	first, err := store.Publish(ctx, artifact, coords)
 	require.NoError(t, err)
@@ -169,11 +169,11 @@ func TestNpmStorePublishRejectsDifferentBytesAtSameVersion(t *testing.T) {
 	requireNpm(t)
 	ctx := context.Background()
 	registry := newFakeNpmRegistry()
-	registry.seed("@codefly-dev/authkit", "1.0.0", npmDist{Integrity: "sha512-doesnotmatch=="})
+	registry.seed("@codefly-dev/signkit", "1.0.0", npmDist{Integrity: "sha512-doesnotmatch=="})
 	store := newTestNpmStore(t, registry)
 
-	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
-	_, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	artifact := npmPackageDir(t, "@codefly-dev/signkit", "1.0.0")
+	_, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "different bytes")
 	require.Equal(t, 0, registry.putCount, "a conflicting version must never be pushed to the registry")
 }
@@ -188,16 +188,16 @@ func TestNpmStorePublishSurvivesTransientRegistryLagAfterPublish(t *testing.T) {
 	requireNpm(t)
 	ctx := context.Background()
 	registry := newFakeNpmRegistry()
-	registry.seed("@codefly-dev/authkit", "0.9.0", npmDist{Integrity: "sha512-old=="})
+	registry.seed("@codefly-dev/signkit", "0.9.0", npmDist{Integrity: "sha512-old=="})
 	registry.hideNextVersionForGETs = 3
 	store := newTestNpmStore(t, registry)
 	store.publishConfirmDelay = time.Millisecond
 
-	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
-	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	artifact := npmPackageDir(t, "@codefly-dev/signkit", "1.0.0")
+	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err, "a publish that already succeeded at the registry must not be reported as a failure")
 	require.Equal(t, 1, registry.putCount)
-	require.Equal(t, "@codefly-dev/authkit", published.ImportPath)
+	require.Equal(t, "@codefly-dev/signkit", published.ImportPath)
 	require.NotEmpty(t, published.Ref, "Ref must be populated even though the registry lagged behind the publish")
 	require.True(t, strings.HasPrefix(published.Digest, "sha512:"))
 }
@@ -216,11 +216,11 @@ func TestNpmStorePublishFallsBackWhenRegistryNeverConfirms(t *testing.T) {
 	store.publishConfirmAttempts = 3
 	store.publishConfirmDelay = time.Millisecond
 
-	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
-	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	artifact := npmPackageDir(t, "@codefly-dev/signkit", "1.0.0")
+	published, err := store.Publish(ctx, artifact, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.NoError(t, err)
 	require.Equal(t, 1, registry.putCount)
-	require.Equal(t, store.Registry+"/@codefly-dev/authkit/-/@codefly-dev/authkit-1.0.0.tgz", published.Ref)
+	require.Equal(t, store.Registry+"/@codefly-dev/signkit/-/@codefly-dev/signkit-1.0.0.tgz", published.Ref)
 }
 
 func TestNpmStorePublishRejectsPackageNameOrVersionMismatch(t *testing.T) {
@@ -229,44 +229,44 @@ func TestNpmStorePublishRejectsPackageNameOrVersionMismatch(t *testing.T) {
 	store := newTestNpmStore(t, registry)
 
 	wrongName := npmPackageDir(t, "@codefly-dev/other", "1.0.0")
-	_, err := store.Publish(ctx, wrongName, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
-	require.ErrorContains(t, err, "@codefly-dev/authkit")
+	_, err := store.Publish(ctx, wrongName, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
+	require.ErrorContains(t, err, "@codefly-dev/signkit")
 
-	wrongVersion := npmPackageDir(t, "@codefly-dev/authkit", "2.0.0")
-	_, err = store.Publish(ctx, wrongVersion, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	wrongVersion := npmPackageDir(t, "@codefly-dev/signkit", "2.0.0")
+	_, err = store.Publish(ctx, wrongVersion, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "does not match")
 	require.Equal(t, 0, registry.putCount)
 }
 
 func TestNpmStoreResolveHighestSatisfyingVersion(t *testing.T) {
 	registry := newFakeNpmRegistry()
-	registry.seed("@codefly-dev/authkit", "1.0.0", npmDist{Integrity: "sha512-a==", Tarball: "http://x/authkit-1.0.0.tgz"})
-	registry.seed("@codefly-dev/authkit", "1.2.0", npmDist{Integrity: "sha512-b==", Tarball: "http://x/authkit-1.2.0.tgz"})
-	registry.seed("@codefly-dev/authkit", "2.0.0", npmDist{Integrity: "sha512-c==", Tarball: "http://x/authkit-2.0.0.tgz"})
+	registry.seed("@codefly-dev/signkit", "1.0.0", npmDist{Integrity: "sha512-a==", Tarball: "http://x/signkit-1.0.0.tgz"})
+	registry.seed("@codefly-dev/signkit", "1.2.0", npmDist{Integrity: "sha512-b==", Tarball: "http://x/signkit-1.2.0.tgz"})
+	registry.seed("@codefly-dev/signkit", "2.0.0", npmDist{Integrity: "sha512-c==", Tarball: "http://x/signkit-2.0.0.tgz"})
 	store := newTestNpmStore(t, registry)
 
-	resolved, err := store.Resolve(context.Background(), LanguageTypeScript, "authkit", "^1.0.0")
+	resolved, err := store.Resolve(context.Background(), LanguageTypeScript, "signkit", "^1.0.0")
 	require.NoError(t, err)
 	require.Equal(t, "1.2.0", resolved.Version)
-	require.Equal(t, "http://x/authkit-1.2.0.tgz", resolved.Ref)
+	require.Equal(t, "http://x/signkit-1.2.0.tgz", resolved.Ref)
 	require.Equal(t, "sha512:b==", resolved.Digest)
-	require.Equal(t, "npm install @codefly-dev/authkit@1.2.0", resolved.InstallHint)
+	require.Equal(t, "npm install @codefly-dev/signkit@1.2.0", resolved.InstallHint)
 }
 
 func TestNpmStoreResolveNoPublishedVersions(t *testing.T) {
 	registry := newFakeNpmRegistry()
 	store := newTestNpmStore(t, registry)
-	_, err := store.Resolve(context.Background(), LanguageTypeScript, "authkit", "^1.0.0")
+	_, err := store.Resolve(context.Background(), LanguageTypeScript, "signkit", "^1.0.0")
 	require.ErrorContains(t, err, "no published versions")
 }
 
 func TestNpmStoreList(t *testing.T) {
 	registry := newFakeNpmRegistry()
-	registry.seed("@codefly-dev/authkit", "1.0.0", npmDist{Integrity: "sha512-a=="})
-	registry.seed("@codefly-dev/authkit", "1.2.0", npmDist{Integrity: "sha512-b=="})
+	registry.seed("@codefly-dev/signkit", "1.0.0", npmDist{Integrity: "sha512-a=="})
+	registry.seed("@codefly-dev/signkit", "1.2.0", npmDist{Integrity: "sha512-b=="})
 	store := newTestNpmStore(t, registry)
 
-	versions, err := store.List(context.Background(), LanguageTypeScript, "authkit")
+	versions, err := store.List(context.Background(), LanguageTypeScript, "signkit")
 	require.NoError(t, err)
 	require.Equal(t, []string{"1.2.0", "1.0.0"}, versions)
 }
@@ -279,8 +279,8 @@ func TestNpmStorePublishWithoutCredentialFails(t *testing.T) {
 	store := NewNpmStore(server.URL, "@codefly-dev")
 	store.token = func() string { return "" }
 
-	artifact := npmPackageDir(t, "@codefly-dev/authkit", "1.0.0")
-	_, err := store.Publish(context.Background(), artifact, Coordinates{Language: LanguageTypeScript, Name: "authkit", Version: "1.0.0"})
+	artifact := npmPackageDir(t, "@codefly-dev/signkit", "1.0.0")
+	_, err := store.Publish(context.Background(), artifact, Coordinates{Language: LanguageTypeScript, Name: "signkit", Version: "1.0.0"})
 	require.ErrorContains(t, err, "no npm credential")
 	require.Equal(t, 0, registry.putCount)
 }

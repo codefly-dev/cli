@@ -318,7 +318,7 @@ func TestRunnerLeavesExplicitImageValidationToAgent(t *testing.T) {
 
 // Opt-in host-boundary integration: real buildx builds/loads an offline scratch
 // image, and Runtime.Init receives the reference through the gRPC process peer.
-// This deliberately does not stand in for the platform-obin composition boot.
+// This deliberately does not stand in for the platform-northwind composition boot.
 func TestLocalRuntimeImageDockerHandoff(t *testing.T) {
 	if os.Getenv("CODEFLY_TEST_RUNTIME_IMAGE") != "1" {
 		t.Skip("set CODEFLY_TEST_RUNTIME_IMAGE=1 to exercise real buildx and the image handoff")

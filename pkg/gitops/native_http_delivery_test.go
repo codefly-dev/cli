@@ -14,8 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -267,10 +267,10 @@ func grantsOf(principals ...string) map[string]EnvelopeGrant {
 // the composition states it, under the revision — no approved builds, no
 // workload identities, no bindings.
 func TestTheEnvelopeIsEachPrincipalsGrant(t *testing.T) {
-	document, err := BuildEnvelope(3, grantsOf("wiki", "proposals"))
+	document, err := BuildEnvelope(3, grantsOf("quill", "proposals"))
 	require.NoError(t, err)
 	require.JSONEq(t, `{"revision":3,"principals":{
-		"wiki":{"grant":{"queues":["wiki.jobs"],"cross_tenant":false,"tenant":""}},
+		"quill":{"grant":{"queues":["quill.jobs"],"cross_tenant":false,"tenant":""}},
 		"proposals":{"grant":{"queues":["proposals.jobs"],"cross_tenant":false,"tenant":""}}}}`, string(document))
 }
 
@@ -282,18 +282,18 @@ func TestEnsureWritesTheEnvelopeOnlyWhenItChanges(t *testing.T) {
 	build := func(principals ...string) func(uint64) ([]byte, error) {
 		return func(revision uint64) ([]byte, error) { return BuildEnvelope(revision, grantsOf(principals...)) }
 	}
-	revision, err := writer.Ensure(context.Background(), build("wiki"))
+	revision, err := writer.Ensure(context.Background(), build("quill"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), revision, "a host with no envelope is written its first")
 	require.Len(t, host.writes, 1)
 	require.Equal(t, float64(0), host.writes[0]["expectedRevision"])
 
-	revision, err = writer.Ensure(context.Background(), build("wiki"))
+	revision, err = writer.Ensure(context.Background(), build("quill"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), revision, "the same content is the revision in force")
 	require.Len(t, host.writes, 1, "an unchanged envelope is not rewritten")
 
-	revision, err = writer.Ensure(context.Background(), build("wiki", "proposals"))
+	revision, err = writer.Ensure(context.Background(), build("quill", "proposals"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), revision)
 	require.Len(t, host.writes, 2)

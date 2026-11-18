@@ -297,32 +297,38 @@ describes a deployment.
 // solutions are installed is the composing workspace's to say, merged from
 // each composed module's fragment.
 //
-// alex is the acme admin of the authority's shipped fixture, so the
-// installation is owned by a person who exists. Change the organization, the
-// owner and the role as the solution grows roles of its own.
+// The fixture's one cast: Alice, Acme's organisation admin, installs it and
+// owns the installation; Dana joins its admin team and Carol its user team;
+// Bob holds no role and is the person the page refuses. No organisation role
+// reaches the solution (schema v2 has no roles section).
 func fixtureComposition(name string) string {
 	return fmt.Sprintf(`# %s's fragment of the local authority's fixture-composition document
-# (codefly-dev/authority libraries/fixture-composition, schema v1): what is
+# (codefly-dev/authority libraries/fixture-composition, schema v2): what is
 # this solution's own in the fixture of a run that composes it.
 #
 # `+"`codefly run`"+` merges this with every composed module's fragment into the
 # composing workspace's configurations/local/fixture-composition.yaml, the
-# document the authority reads. A grant a module states in its own fragment is
-# never restated here: the merge refuses it, naming both.
-schema: codefly.dev/authority/fixture-composition/v1
+# document the authority reads. A statement a module makes in its own fragment
+# is never restated here: the merge refuses it, naming both. The document
+# grants no organisation role anything: a person reaches this solution through
+# a role (admin, user) on its installation.
+schema: codefly.dev/authority/fixture-composition/v2
 installations:
   # WITHOUT THIS the authority refuses every capability at this solution —
   # "audience %q is not installed in this organization" — and the page can
   # only render its not-installed branch.
   #
-  # TEAMS ARE WHAT ADMIT ANYONE BUT THE OWNER. The role below is the
-  # owner's, and the owner is alex, the acme admin of the authority's
-  # shipped fixture; with no teams every other person signs in and is
-  # refused by name —
-  # "<person> holds no role on %s" — which is a correct refusal and a
-  # useless local run. finance and engineering are the fixture's acme teams,
-  # so maya, rémi, alex and dev can all open it; no-roles, who is in no team,
-  # still cannot, and that is the fixture showing a real refusal.
-  - {organization: acme, target: %s, role: user, owner: alex, teams: [finance, engineering]}
-`, titleFromName(name), name, name, name)
+  # MEMBERS ARE WHO IS ADMITTED. alice, Acme's organisation admin in the
+  # authority's shipped fixture, installs the solution and owns the
+  # installation. Each person under members joins the team holding that role
+  # on it (%s-admin, %s-user): dana is its admin and carol its user. bob, who
+  # is seated nowhere, signs in and is refused by name —
+  # "<person> holds no role on %s" — and that is the fixture showing a real
+  # refusal.
+  - organization: acme
+    target: %s
+    role: user
+    owner: alice
+    members: {admin: [dana], user: [carol]}
+`, titleFromName(name), name, name, name, name, name)
 }

@@ -98,7 +98,13 @@ against what's on disk, without writing anything.
 			return fmt.Errorf("--format must be text or json, got %q", contractsFormat)
 		}
 
-		workspace, err := common.LoadWorkspace(ctx)
+		// The module asked for may itself be a pin, and loading a service that
+		// declares an interface makes core load every composed module to bind
+		// it: the pins are materialized first, as a run, a render and `generate
+		// runnable-bindings` do. On a fresh checkout — a CI job running
+		// --check — the plain loader refuses with core's "resolves to a pinned
+		// artifact" before anything is compared.
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}
@@ -239,6 +245,9 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		if surfaceErr != nil {
 			return nil, fmt.Errorf("module %s: %w", module.Name, surfaceErr)
 		}
+		if interfaceErr := checkInterfaceRows(ctx, module, surfaces); interfaceErr != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, interfaceErr)
+		}
 
 		// The agent reports each endpoint's API details at Load. An http
 		// endpoint has none to report (its document is the service's file), so
@@ -258,6 +267,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			}
 		}
 
+		var written []composition.APIContractEndpoint
 		for _, endpoint := range carriers {
 			actual, ok := endpoint, true
 			if endpoint.Api != standards.HTTP {
@@ -270,9 +280,15 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			if writeErr != nil {
 				return nil, fmt.Errorf("cannot write contract for %s/%s: %w", serviceName, endpoint.Name, writeErr)
 			}
-			contractEndpoints = append(contractEndpoints, *contractEndpoint)
+			written = append(written, *contractEndpoint)
 			printContractLine(contractEndpoint)
 		}
+		if err = ProtobufCatalogCoverage(written, func(endpoint composition.APIContractEndpoint) ([]byte, error) {
+			return os.ReadFile(filepath.Join(opts.writeDir, endpoint.Service, endpoint.Endpoint, "contract.binpb"))
+		}); err != nil {
+			return nil, fmt.Errorf("module %s: %w; the inventory %s (from %s) lists every method the service serves", module.Name, err, surfacePaths[serviceName], contractSurfacesConfigFile)
+		}
+		contractEndpoints = append(contractEndpoints, written...)
 	}
 
 	return writeContractCatalog(ctx, module, contractEndpoints, opts)

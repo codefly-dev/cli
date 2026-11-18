@@ -15,7 +15,7 @@ func TestEngine_Release_RefusesAWorkspacePinnedAtACommit(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	dir, origin, _ := releaseRepo(t, "0.1.0")
 	workspace := filepath.Join(dir, "workspace.codefly.yaml")
-	require.NoError(t, os.WriteFile(workspace, []byte("name: platform\nlayout: modules\nmodules:\n  - name: saas\n    source: codefly-dev/module-saas-starter\n    version: "+sha+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(workspace, []byte("name: platform\nlayout: modules\nmodules:\n  - name: saas\n    source: codefly-dev/module-starterkit\n    version: "+sha+"\n"), 0o600))
 	gitIn(t, dir, "add", "workspace.codefly.yaml")
 	gitIn(t, dir, "commit", "-m", "compose at a commit")
 	gitIn(t, dir, "push", "origin", "main")
@@ -29,7 +29,7 @@ func TestEngine_Release_RefusesAWorkspacePinnedAtACommit(t *testing.T) {
 	require.Equal(t, "version: 0.1.0\n", string(mustRead(t, filepath.Join(dir, "pkg", "cli", "info.yaml"))), "nothing was bumped")
 
 	// The same workspace pinned at a tag releases.
-	require.NoError(t, os.WriteFile(workspace, []byte("name: platform\nlayout: modules\nmodules:\n  - name: saas\n    source: codefly-dev/module-saas-starter\n    version: v0.0.93\n"), 0o600))
+	require.NoError(t, os.WriteFile(workspace, []byte("name: platform\nlayout: modules\nmodules:\n  - name: saas\n    source: codefly-dev/module-starterkit\n    version: v0.0.93\n"), 0o600))
 	gitIn(t, dir, "add", "workspace.codefly.yaml")
 	gitIn(t, dir, "commit", "-m", "compose at a tag")
 	gitIn(t, dir, "push", "origin", "main")

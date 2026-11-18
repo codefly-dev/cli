@@ -60,7 +60,7 @@ func hostRoutesWorld(t *testing.T, mode Mode, edit func(dir string)) (*World, *r
 
 func writeWikiConsumes(t *testing.T, dir, consumes string) {
 	t.Helper()
-	path := filepath.Join(dir, "modules", "wiki", "solution.codefly.yaml")
+	path := filepath.Join(dir, "modules", "quill", "solution.codefly.yaml")
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	head, _, found := strings.Cut(string(raw), "  consumes:\n")
@@ -70,7 +70,7 @@ func writeWikiConsumes(t *testing.T, dir, consumes string) {
 	require.NoError(t, os.WriteFile(path, []byte(head+"  consumes:\n"+consumes+"lifecycle:"+tail), 0o600))
 }
 
-// In a render the gateway gets the in-cluster carrier of what the wiki consumes
+// In a render the gateway gets the in-cluster carrier of what the quill consumes
 // through the host — and nothing for the host's own endpoint. The address is
 // the producer's as its own deploy records it, derived from ALL its endpoints:
 // web (http) shares no port with rest, which a derivation over the consumed
@@ -84,11 +84,11 @@ func TestTheHostGatewayIsHandedTheAddressOfWhatSolutionsConsume(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, problems)
 	key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
-	backend := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "wiki", Service: "backend", Name: "http", API: "http"})
+	backend := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "quill", Service: "backend", Name: "http", API: "http"})
 	require.Len(t, carriers, 2, "the host's own endpoint is not a route: %v", carriers)
 	require.Contains(t, carriers, key)
 	require.Contains(t, carriers, backend, "the solution's backend is routed like a consumed module")
-	require.Contains(t, carriers[backend], "wiki", "the solution's own in-cluster address: %s", carriers[backend])
+	require.Contains(t, carriers[backend], "quill", "the solution's own in-cluster address: %s", carriers[backend])
 	require.NotContains(t, carriers[backend], "https://", "plain HTTP: a solution serves no certificate, the mesh carries its identity")
 
 	producer, err := world.producerNetworkMappings(ctx, "docs/documents")
@@ -112,7 +112,7 @@ func TestTheHostGatewayIsHandedTheAddressOfWhatSolutionsConsume(t *testing.T) {
 	require.NotEqual(t, rest, web, "web is not rest's port")
 	require.Contains(t, web, ".svc.cluster.local", "an in-cluster address")
 
-	other := parityService(t, workspace, "wiki", "backend")
+	other := parityService(t, workspace, "quill", "backend")
 	none, problems, err := world.hostRouteCarriers(ctx, other, resources.NewContainerNetworkAccess())
 	require.NoError(t, err)
 	require.Empty(t, problems)
@@ -146,12 +146,12 @@ func TestTheHostGatewaysRoutesAreRefusedWhenTheyHaveNoSingleAnswer(t *testing.T)
 			consumes: "    - id: docs\n      protocol: http\n      module: docs\n      service: documents\n      endpoint: web\n      as: docs\n",
 			extra: func(dir string) {
 				second := filepath.Join(dir, "modules", "notes")
-				require.NoError(t, os.CopyFS(second, os.DirFS(filepath.Join(dir, "modules", "wiki"))))
+				require.NoError(t, os.CopyFS(second, os.DirFS(filepath.Join(dir, "modules", "quill"))))
 				for _, file := range []string{"module.codefly.yaml", "services/backend/service.codefly.yaml", "solution.codefly.yaml"} {
 					path := filepath.Join(second, file)
 					raw, err := os.ReadFile(path)
 					require.NoError(t, err)
-					text := strings.ReplaceAll(string(raw), "wiki", "notes")
+					text := strings.ReplaceAll(string(raw), "quill", "notes")
 					text = strings.ReplaceAll(text, "endpoint: web", "endpoint: rest")
 					text = strings.ReplaceAll(text, "protocol: http\n      module: docs", "protocol: rest\n      module: docs")
 					require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
@@ -196,9 +196,9 @@ func TestALocalRunHandsTheGatewayTheRunsAddress(t *testing.T) {
 	require.Nil(t, none)
 	require.Len(t, problems, 2, "neither the consumed module nor the solution's backend is addressed yet")
 	require.Contains(t, problems[0].Error(), "has not allocated")
-	require.Contains(t, problems[1].Error(), "the host fronts component wiki at its backend endpoint wiki/backend/http")
+	require.Contains(t, problems[1].Error(), "the host fronts component quill at its backend endpoint quill/backend/http")
 
-	for _, unique := range []string{"docs/documents", "wiki/backend"} {
+	for _, unique := range []string{"docs/documents", "quill/backend"} {
 		producer := parityService(t, workspace, strings.Split(unique, "/")[0], strings.Split(unique, "/")[1])
 		identity, err := producer.Identity()
 		require.NoError(t, err)
@@ -212,7 +212,7 @@ func TestALocalRunHandsTheGatewayTheRunsAddress(t *testing.T) {
 	require.Empty(t, problems)
 	key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
 	require.Contains(t, carriers, key)
-	backend := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "wiki", Service: "backend", Name: "http", API: "http"})
+	backend := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "quill", Service: "backend", Name: "http", API: "http"})
 	require.Contains(t, carriers, backend, "the solution's backend, at the run's address")
 	require.Contains(t, carriers[backend], "localhost")
 	// The run's own address for the producer's web endpoint, derived over all
@@ -272,7 +272,7 @@ func TestASolutionBackendIsOneHTTPEndpointOfItsEntry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			world, workspace := hostRoutesWorld(t, SnapshotMode, func(dir string) {
-				path := filepath.Join(dir, "modules", "wiki", "services", "backend", "service.codefly.yaml")
+				path := filepath.Join(dir, "modules", "quill", "services", "backend", "service.codefly.yaml")
 				raw, err := os.ReadFile(path)
 				require.NoError(t, err)
 				head, _, found := strings.Cut(string(raw), "endpoints:\n")
@@ -282,7 +282,7 @@ func TestASolutionBackendIsOneHTTPEndpointOfItsEntry(t *testing.T) {
 			gateway := parityService(t, workspace, "host", "gateway")
 			_, _, err := world.hostRouteCarriers(context.Background(), gateway, resources.NewContainerNetworkAccess())
 			require.ErrorContains(t, err, tc.want)
-			require.ErrorContains(t, err, "wiki")
+			require.ErrorContains(t, err, "quill")
 		})
 	}
 }
@@ -317,7 +317,7 @@ func TestModulePageGetsACarrierWithoutASolutionConsumer(t *testing.T) {
 				access := resources.NewContainerNetworkAccess()
 				if mode == RunMode {
 					access = resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
-					for _, pair := range [][2]string{{"docs", "documents"}, {"wiki", "backend"}} {
+					for _, pair := range [][2]string{{"docs", "documents"}, {"quill", "backend"}} {
 						service := parityService(t, workspace, pair[0], pair[1])
 						identity, err := service.Identity()
 						require.NoError(t, err)

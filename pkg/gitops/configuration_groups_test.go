@@ -19,13 +19,13 @@ func renderRecorder(stale map[string]map[string][]string, rendered *[]string) fu
 func TestRenderGroupReadersRendersTheReadersOfAChangedGroupAlone(t *testing.T) {
 	var rendered []string
 	announced := map[string][]string{}
-	// tracing and robin read internal-auth; records reads nothing that changed.
-	stale := map[string]map[string][]string{"saas": {"internal-auth": {"robin", "tracing"}}}
+	// tracing and sidekick read internal-auth; records reads nothing that changed.
+	stale := map[string]map[string][]string{"saas": {"internal-auth": {"sidekick", "tracing"}}}
 	results, err := RenderGroupReaders(t.Context(), "saas", renderRecorder(stale, &rendered), func(reader string, groups []string) { announced[reader] = groups })
 	require.NoError(t, err)
-	require.Equal(t, []string{"saas", "robin", "tracing"}, rendered)
+	require.Equal(t, []string{"saas", "sidekick", "tracing"}, rendered)
 	require.Len(t, results, 3)
-	require.Equal(t, map[string][]string{"robin": {"internal-auth"}, "tracing": {"internal-auth"}}, announced)
+	require.Equal(t, map[string][]string{"sidekick": {"internal-auth"}, "tracing": {"internal-auth"}}, announced)
 	require.NotContains(t, rendered, "records")
 }
 
@@ -40,11 +40,11 @@ func TestRenderGroupReadersRendersAReaderOnceAcrossGroups(t *testing.T) {
 	var rendered []string
 	announced := map[string][]string{}
 	stale := map[string]map[string][]string{
-		"saas":  {"internal-auth": {"robin"}, "platform": {"robin", "saas"}},
-		"robin": {"model": {"tracing"}},
+		"saas":     {"internal-auth": {"sidekick"}, "platform": {"sidekick", "saas"}},
+		"sidekick": {"model": {"tracing"}},
 	}
 	_, err := RenderGroupReaders(t.Context(), "saas", renderRecorder(stale, &rendered), func(reader string, groups []string) { announced[reader] = groups })
 	require.NoError(t, err)
-	require.Equal(t, []string{"saas", "robin", "tracing"}, rendered)
-	require.Equal(t, []string{"internal-auth", "platform"}, announced["robin"])
+	require.Equal(t, []string{"saas", "sidekick", "tracing"}, rendered)
+	require.Equal(t, []string{"internal-auth", "platform"}, announced["sidekick"])
 }

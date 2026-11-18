@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codefly-dev/core/solutionhost"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

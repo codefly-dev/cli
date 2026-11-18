@@ -1061,7 +1061,8 @@ What is read, in files git tracks and nothing else:
                           version
   workspace.codefly.yaml  the top-level agent-overrides block, whose values are
                           versions under an agent identity
-  go.mod                  first-party requires (codefly-dev/*, obin-ai/*),
+  go.mod                  first-party requires (codefly-dev/* and the
+                          organisation of the go.mod's own module),
                           reported but not refused unless --go-modules
 
 testdata/ trees are skipped, because a fixture's job can be to carry a bad pin;
@@ -1086,7 +1087,7 @@ Flags:
 
 ```
       --dir string            Repository directory to scan (default: current directory)
-      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/,github.com/obin-ai/])
+      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/])
       --format string         Report format: text or json (default "text")
       --go-modules            Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them
       --include-testdata      Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose
@@ -1196,14 +1197,28 @@ Remove Codefly processes, containers, and stale local runtime state
 ```
 Clear codefly state.
 
-Without arguments, removes ALL codefly processes and ALL codefly-owned
-docker containers. Pass one or more substring filters to scope the
-container removal — only containers whose name contains at least one
-filter are removed. The process kill is always wholesale because
-codefly processes aren't per-service.
+Without arguments, removes the codefly processes and the codefly-owned
+docker containers of the workspace it is run in: a container is the
+workspace's when a run of that workspace created it. Other workspaces'
+containers, and codefly containers no workspace can be told for, are left
+and named; --all (or a clear run outside any workspace) acts on every
+workspace on this machine. Pass one or more substring filters to narrow
+the container removal further — only containers whose name contains at
+least one filter are removed. The process kill is always wholesale within
+the scope because codefly processes aren't per-service.
+
+It also removes the native state directories (a database run as a host
+process keeps its data under the user cache directory) of disposable runs
+that are no longer alive: runs with --temporary-ports and test-owned
+dependency stacks. A run that was killed leaves its database servers
+running, and they keep its directory in use: unless --keep-processes, those
+servers are stopped first (only the processes the run's agent recorded in
+that directory, and only when no live run claims it). A developer's
+persistent database is never removed, and its server never stopped.
 
 Examples:
-  codefly clear                     # full reset
+  codefly clear                     # full reset of this workspace
+  codefly clear --all               # full reset of every workspace on this machine
   codefly clear neo4j               # only neo4j container (keeps postgres)
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
@@ -1809,7 +1824,7 @@ the readiness gate a launcher can run before starting a service. It never prints
 a value.
 
 Examples:
-  codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
+  codefly config check internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_API_TOKEN
   codefly config check runtime EXECUTION_SCHEDULER_TOKEN --service mind/mind
 ```
 
@@ -1840,7 +1855,7 @@ Generated configurations are always secrets: 0600, in a 0700 directory, refused
 when git would track the file. The value is never printed.
 
 Examples:
-  codefly config generate internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_GATEWAY_TOKEN
+  codefly config generate internal-auth CODEFLY_INTERNAL_TOKEN CODEFLY_API_TOKEN
   codefly config generate mutation_permit ED25519_SEED_BASE64 --format base64 --service coordination/work-coordinator
 ```
 
@@ -1928,36 +1943,12 @@ codefly daemon <subcommand>
 
 Subcommands:
 
-- [`codefly daemon gateway`](#codefly-daemon-gateway)
 - [`codefly daemon logs`](#codefly-daemon-logs)
 - [`codefly daemon monitor`](#codefly-daemon-monitor)
 - [`codefly daemon restart`](#codefly-daemon-restart)
 - [`codefly daemon start`](#codefly-daemon-start)
 - [`codefly daemon status`](#codefly-daemon-status)
 - [`codefly daemon stop`](#codefly-daemon-stop)
-
-## `codefly daemon gateway`
-
-Serve Codefly workspace operations to Mind over gRPC
-
-```
-Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.
-```
-
-```
-codefly daemon gateway [flags]
-```
-
-Flags:
-
-```
-      --dir string                          Working directory containing mind.yaml (default ".")
-      --execution-authority-issuer string   Exact Work Context issuer
-      --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
-      --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
-      --governed-execution                  Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context
-      --port int                            gRPC listen port (default 50051)
-```
 
 ## `codefly daemon logs`
 
@@ -2024,18 +2015,6 @@ Examples:
 
 ```
 codefly daemon start [-- flags passed to 'run service']
-```
-
-Flags:
-
-```
-      --dir string                          Working directory for gateway (requires --gateway) (default ".")
-      --execution-authority-issuer string   Exact Work Context issuer
-      --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
-      --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
-      --gateway                             Start the Mind Gateway gRPC server instead of running services
-      --governed-execution                  Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context
-      --port int                            gRPC port for gateway (requires --gateway) (default 50051)
 ```
 
 ## `codefly daemon status`
@@ -2634,8 +2613,60 @@ codefly doctor [flags]
 
 Subcommands:
 
+- [`codefly doctor parity`](#codefly-doctor-parity)
 - [`codefly doctor solution`](#codefly-doctor-solution)
 - [`codefly doctor workspace`](#codefly-doctor-workspace)
+
+## `codefly doctor parity`
+
+Compare two environments of the workspace both ways: configuration, bindings, composition
+
+```
+Compare what two environments of this workspace fill and compose, in both
+directions, so a run of one says something about the other:
+
+  configuration  every workspace configuration key one environment fills (set,
+                 not empty, not off) the other fills too: through its profile
+                 chain, its service-config values or the secrets it delivers;
+  bindings       every module binding one environment's render delivers the
+                 other's delivers too, resolved exactly as a render resolves
+                 them (an optional binding whose slots are empty is omitted),
+                 and the same runnable bindings are selected with the same
+                 scopes (the generated runnable-bindings group is derived from
+                 them, so it is not compared itself);
+  composition    every service one environment composes the other composes,
+                 withdrawn from the same consumers.
+
+A difference that is deliberate is declared, with its reason, in parity.codefly.yaml
+at the workspace root:
+
+  schema: codefly/environment-parity/v1
+  differences:
+    - against: [<environment>, …]    # optional: every environment when absent
+      configuration: <group>/<key>   # or <group>/* ; or binding: <module>/<binding> ; or service: <module>/<service>
+      reason: <why the two must differ>
+
+A declared difference that no longer matches fails too, so the list only
+shrinks. Read-only: it reads committed configuration and never resolves a
+secret value.
+
+Stable diagnostic codes: parity_configuration, parity_binding,
+parity_composition, parity_unresolved, parity_difference_stale,
+parity_difference_invalid.
+```
+
+```
+codefly doctor parity [flags]
+```
+
+Flags:
+
+```
+      --against string     Environment it must match (required)
+      --env string         Environment the run under test uses (default "local")
+      --json               Print a machine-readable report to stdout; log lines go to stderr
+      --timeout duration   Overall bound (default 2m0s)
+```
 
 ## `codefly doctor solution`
 
@@ -2781,6 +2812,15 @@ checkout's commit and its distance from the source, and the running codefly is
 compared with the newest release. Pins that could not be compared (no network)
 are reported as NOT verified, never as current.
 
+Vendored packages: a package archive a composed module's package.json selects
+(`file:…tgz`), whose *.provenance.json beside it names the repository and
+commit it was built from, fails when that repository is a module the
+workspace composes at another commit (vendored_package_behind_pin), or when
+its bytes are not the digest its provenance records
+(vendored_package_digest_mismatch). Each composed module's published API
+catalog is also held to its descriptors: a method the descriptor serves that
+no listener lists is a warning (contract_catalog_unserved_method).
+
 Stable diagnostic codes: pin_stale, pin_held, pin_hold_invalid,
 pin_currency_unverified, checkout_override_active, cli_stale, workspace_not_found, workspace_invalid,
 environment_not_found, module_not_found, service_not_found,
@@ -2789,6 +2829,8 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
+vendored_package_behind_pin, vendored_package_digest_mismatch,
+vendored_package_uncomparable, contract_catalog_unserved_method,
 agent_dev_build, runnable_binding_declined,
 runnable_binding_decline_invalid, runnable_operations_unreadable,
 configuration_directory_missing, configuration_missing,
@@ -3140,7 +3182,6 @@ Subcommands:
 - [`codefly generate proto`](#codefly-generate-proto)
 - [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
 - [`codefly generate runnables`](#codefly-generate-runnables)
-- [`codefly generate tenant-overlays`](#codefly-generate-tenant-overlays)
 
 ## `codefly generate client`
 
@@ -3231,11 +3272,13 @@ Merge the fixture-composition fragment every module of the workspace ships
 into the workspace's configurations/<profile>/fixture-composition.yaml, the document
 the local authority reads.
 
-Each module states, once, what the local authority's standard fixture roles may
-do at its kinds; the composition's own module states only what is its own (a
-collection its seed writes). Every grant of a role on one kind, every
+Each module states, once, what is its own: a module the run stands in for; the
+composition's own module states the installation of its solution and who is
+seated on its roles. No fragment grants an organisation role anything: a person
+reaches a module through a role (admin, user) on an installation. Every
 installation and every stand-in module has exactly one source: two fragments
-stating the same one are refused, naming both. The rules are the authority's
+stating the same one are refused, naming both, and so is a fragment still
+stating schema v1 or a roles section. The rules are the authority's
 (codefly-dev/authority libraries/fixture-composition).
 
 `codefly run` writes the same document before the local authority boots, so a
@@ -3260,12 +3303,15 @@ Flags:
 
 ## `codefly generate permissions`
 
-Generate typed Go and TypeScript permissions from published contracts
+Generate typed Go, TypeScript and Python permissions from published contracts
 
 ```
 Read the same digest-checked published method policies used by authority delivery.
 Generate typed permission constants and a method requirement table in Go and
-TypeScript. Run codefly generate contracts first after editing an API.
+TypeScript, and in Python for a Python service. A permission a call may carry
+beyond what it requires is a constant too, and its method's row names it apart
+from what the call requires. Run codefly generate contracts first after editing
+an API.
 
 By default each Go service gets its own table in its own Go module:
 <service>/<source-dir>/pkg/gen/permissions, the tree the go-grpc layout
@@ -3277,11 +3323,19 @@ What an endpoint serves is what the contract catalog records
 for it (the declared surface, or every service of its package); a method a
 published descriptor declares that no endpoint serves, such as a protocol other
 modules serve, is left out with a note and needs no policy. The TypeScript file
-sits beside the Go file. A Python service
-gets no table: nothing in it reads one, since the authority's hop in front of it
-decides every call, so it is skipped with a note. Any other service that
-publishes a contract but has no go.mod at its Go source root fails by name.
---output writes the whole module's table to one directory instead.
+sits beside the Go file. A Go service whose go.mod requires the authority's hop
+library also gets declarations_gen.go: Declarations(), the same table as the
+module-side verifier reads it (hop.Declarations), which is how a method of a
+protocol the module does not own (a module contract's foreign_methods) is
+admitted on what it declares. A Python service (a python-* agent) gets its own
+table as one Python file in its own source tree,
+<service>/<source-dir>/src/gen/permissions_gen.py (source-dir is "code" unless
+the service declares another, and is where pyproject.toml lives): the same
+constants and rows, for the verifier it hands its declarations to. A Go
+service that publishes a contract but has no go.mod at its Go source root, and
+a Python one with no pyproject.toml at its source root, fail by name.
+--output writes the whole module's table, in Go and TypeScript, to one
+directory instead.
 --check compares every generated file without writing. A served method with no
 policy, contradictory policies and colliding identifiers fail by name. This validates vocabulary,
 not a person's resource access, installation or consent.
@@ -3295,7 +3349,7 @@ Flags:
 
 ```
       --check           fail on missing or stale output without writing
-      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions)
+      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions and each Python service's <source-dir>/src/gen)
 ```
 
 ## `codefly generate proto`
@@ -3393,7 +3447,10 @@ modules, for example. Declared there, the file and its --check depend on the
 workspace alone. --call-endpoint overrides the declaration for one invocation,
 and an explicitly empty value sends each call to its owner. It must be an HTTP-based
 endpoint of a workspace module, and it is resolved like an owner's (same
-environment, same naming scope). Only the address moves: the owner is still
+environment, same naming scope). A local environment's file carries it as the
+reference ${endpoint:<module>/<service>/<endpoint>}, which the run that delivers
+the group resolves to the address it allocated, so one file serves every naming
+scope. Only the address moves: the owner is still
 loaded and held to its served surface and published contract, and the
 operation, the Connect procedure or REST verb and path, the contract, its
 digest and the policy stay the owner's. The endpoint forwards the call; the
@@ -3516,49 +3573,6 @@ Flags:
       --output string   output directory for derived runnables (default: <module dir>/contracts/runnables)
 ```
 
-## `codefly generate tenant-overlays`
-
-Generate overlays/<tenant>-<cloud>/ from a tenant model
-
-```
-Expand a tenant model into per-tenant Kustomize overlays.
-
-Instead of hand-authoring one overlay per tenant × cloud, declare the matrix
-once in a tenant model file. Each generated overlays/<tenant>-<cloud>/ layers
-the shared base and patches only what varies between tenants: the
-VirtualService host and the External Secrets store reference.
-
-The base directory named by the model must exist and contain a VirtualService.
-
-Example tenant model:
-
-  schema-version: codefly.dev/tenant-model/v1
-  base: base
-  tenants:
-    - name: acme
-      cloud: aws
-      host: acme.example.com
-      secret-store: acme-aws
-    - name: acme
-      cloud: gcp
-      host: acme.gcp.example.com
-      secret-store: acme-gcp
-
-Example:
-  codefly generate tenant-overlays --model deployment/kustomize/tenants.codefly.yaml
-```
-
-```
-codefly generate tenant-overlays [flags]
-```
-
-Flags:
-
-```
-      --model string   path to the tenant model file (required)
-      --root string    deployment tree root containing the base (default: tenant model directory)
-```
-
 ## `codefly get`
 
 Inspect configured service endpoints and their live reachability
@@ -3658,8 +3672,8 @@ Resolve the highest published version of a library export satisfying a
 semantic version constraint, and print its durable install handle.
 
 Examples:
-  codefly install library authkit@^1.0.0 --language go
-  codefly install library authkit@^1.0.0 --language go --destination ./services/api
+  codefly install library payments@^1.0.0 --language go
+  codefly install library payments@^1.0.0 --language go --destination ./services/api
 ```
 
 ```
@@ -4452,10 +4466,10 @@ moved without a package version bump is refused: bump module.package.codefly.yam
 first. Re-running after a partial failure publishes only what is still missing.
 
 Examples:
-  codefly publish clients saas-starter --dry-run     # plan + identities, no toolchain, no network
-  codefly publish clients saas-starter --check       # CI gate: every client of this version is recorded as published
-  codefly publish clients saas-starter --language go
-  codefly publish clients saas-starter --output ./libraries   # keep the generated libraries
+  codefly publish clients billing --dry-run          # plan + identities, no toolchain, no network
+  codefly publish clients billing --check            # CI gate: every client of this version is recorded as published
+  codefly publish clients billing --language go
+  codefly publish clients billing --output ./libraries        # keep the generated libraries
 ```
 
 ```
@@ -4534,9 +4548,9 @@ Configure workspace.codefly.yaml:
       python: {owner: codefly-dev}
 
 Examples:
-  codefly publish library authkit --dry-run
-  codefly publish library authkit --version 1.2.0
-  codefly publish library authkit --language go,python
+  codefly publish library payments --dry-run
+  codefly publish library payments --version 1.2.0
+  codefly publish library payments --language go,python
 ```
 
 ```
@@ -4833,7 +4847,7 @@ on container-recovery scope.
 
 Examples:
   codefly run service app/backend
-  codefly run service lastlogin-go/backend lastlogin-python/backend wiki/backend
+  codefly run service greeter-go/backend greeter-python/backend notes/backend
 ```
 
 ```

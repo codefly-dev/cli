@@ -80,7 +80,7 @@ func TestGHCRLoginReadsTheTokenFromCIThenTheGitHubCLI(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := stubGHCR(t, tc.env, "cli-token", "octocat")
-			if err := RegistryLogin(t.Context(), "ghcr.io/obin-ai", "ghcr"); err != nil {
+			if err := RegistryLogin(t.Context(), "ghcr.io/northwind", "ghcr"); err != nil {
 				t.Fatal(err)
 			}
 			var argv []string
@@ -101,12 +101,12 @@ func TestGHCRLoginReadsTheTokenFromCIThenTheGitHubCLI(t *testing.T) {
 
 func TestGHCRLoginWithoutATokenFailsWithoutLeakingOne(t *testing.T) {
 	stubGHCR(t, map[string]string{}, "", "octocat")
-	err := RegistryLogin(t.Context(), "ghcr.io/obin-ai", "ghcr")
+	err := RegistryLogin(t.Context(), "ghcr.io/northwind", "ghcr")
 	if err == nil || !strings.Contains(err.Error(), "no GitHub token") {
 		t.Fatalf("want a missing-token refusal, got %v", err)
 	}
 	stubGHCR(t, map[string]string{"GITHUB_TOKEN": "secret-token"}, "", "")
-	err = RegistryLogin(t.Context(), "ghcr.io/obin-ai", "ghcr")
+	err = RegistryLogin(t.Context(), "ghcr.io/northwind", "ghcr")
 	if err == nil || !strings.Contains(err.Error(), "no GitHub user") || strings.Contains(err.Error(), "secret-token") {
 		t.Fatalf("want a missing-user refusal naming no token, got %v", err)
 	}

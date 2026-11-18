@@ -8,7 +8,7 @@ import (
 )
 
 // Plane is the complete control surface for a codefly workspace. It is the union
-// of every operation the CLI, Mind Gateway, MCP server, and dashboard need,
+// of every operation the CLI, MCP server, and dashboard need,
 // grouped into capability interfaces so adapters can depend on just the slice
 // they expose. A single implementation (see impl.go, added incrementally as
 // each group is lifted from the legacy surfaces) satisfies the whole thing.
@@ -48,7 +48,7 @@ type GitOps interface {
 
 // Introspector answers read-only questions about the workspace and any live
 // run. Lifted from pkg/web's CLI service (GetWorkspaceInventory, GetActive,
-// GetFlowStatus) and pkg/gateway (ListServices, GetProjectInfo).
+// GetFlowStatus).
 type Introspector interface {
 	// Inventory lists the workspace's modules, services, jobs, and agents.
 	Inventory(ctx context.Context) (Inventory, error)
@@ -81,7 +81,7 @@ type Introspector interface {
 }
 
 // Lifecycle drives services through build/run/test/deploy. Build/Test/Lint/
-// Checks are lifted from pkg/mcp + pkg/gateway; Stop from pkg/web's StopFlow;
+// Checks are lifted from pkg/mcp; Stop from pkg/web's StopFlow;
 // Run and Deploy are NEW (Phase 2) — previously only reachable by shelling out
 // to the `codefly` binary from an MCP tool.
 type Lifecycle interface {
@@ -118,7 +118,7 @@ type ServiceInstallation interface {
 	ServiceStatus(context.Context, ServiceRef) (InstalledServiceStatus, error)
 }
 
-// SourceEditor reads and mutates service source. Lifted from pkg/gateway (the
+// SourceEditor reads and mutates service source. Lifted from a former gRPC surface (the
 // only surface with full CRUD, smart edits, and Search).
 type SourceEditor interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
@@ -136,7 +136,7 @@ type SourceEditor interface {
 	Fix(ctx context.Context, req FixRequest) (FixResult, error)
 }
 
-// VCS exposes git status for the workspace repos. Lifted from pkg/gateway.
+// VCS exposes git status for the workspace repos.
 type VCS interface {
 	GitStatus(ctx context.Context, dir string) (GitStatus, error)
 	GitDiff(ctx context.Context, req GitDiffRequest) (string, error)
@@ -167,8 +167,8 @@ type CommandRunner interface {
 	RunCommand(ctx context.Context, req RunCommandRequest) (CommandResult, error)
 }
 
-// TerminalController manages PTY sessions. Present identically on pkg/web and
-// pkg/gateway today; unified here.
+// TerminalController manages PTY sessions, as pkg/web serves them; unified
+// here.
 type TerminalController interface {
 	OpenTerminal(ctx context.Context, req OpenTerminalRequest) (TerminalID, error)
 	// AttachTerminal streams terminal output to onOutput and writes input from

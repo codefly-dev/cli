@@ -212,7 +212,7 @@ func linkLocal(ctx context.Context, dir string) (returnErr error) {
 				seed = append(seed, "./"+m)
 			}
 		}
-		if err = runGo(ctx, root, seed...); err != nil {
+		if err = runGoWork(ctx, root, seed...); err != nil {
 			return fmt.Errorf("go work init: %w", err)
 		}
 	}
@@ -224,7 +224,7 @@ func linkLocal(ctx context.Context, dir string) (returnErr error) {
 	if len(mods) == 0 {
 		return fmt.Errorf("no go.mod found under %s", dir)
 	}
-	if err := runGo(ctx, root, append([]string{"work", "use"}, mods...)...); err != nil {
+	if err := runGoWork(ctx, root, append([]string{"work", "use"}, mods...)...); err != nil {
 		return fmt.Errorf("go work use: %w", err)
 	}
 	cli.Info("  linked → %d module(s) in %s/go.work [GOWORK=off bypasses]", len(mods), root)
@@ -253,7 +253,7 @@ func unlinkLocal(ctx context.Context, dir string) (returnErr error) {
 		return err
 	}
 	for _, m := range mods {
-		if err := runGo(ctx, root, "work", "edit", "-dropuse", m); err != nil {
+		if err := runGoWork(ctx, root, "work", "edit", "-dropuse", m); err != nil {
 			return fmt.Errorf("go work edit -dropuse %s: %w", m, err)
 		}
 	}
@@ -663,6 +663,20 @@ func fileExists(p string) bool {
 
 func runGo(ctx context.Context, dir string, args ...string) error {
 	return runGoEnv(ctx, dir, os.Environ(), args...)
+}
+
+// runGoWork runs a `go work` command on the workspace file of root, naming it:
+// the caller's GOWORK (off in CI and in any hermetic shell, or another
+// workspace) says which graph the caller builds with, not which file a link
+// edits.
+func runGoWork(ctx context.Context, root string, args ...string) error {
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "GOWORK=") {
+			environment = append(environment, entry)
+		}
+	}
+	return runGoEnv(ctx, root, append(environment, "GOWORK="+filepath.Join(root, "go.work")), args...)
 }
 
 func runGoEnv(ctx context.Context, dir string, env []string, args ...string) error {

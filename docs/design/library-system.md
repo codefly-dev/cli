@@ -529,9 +529,9 @@ for `generate client`'s single contract, so it shares one schema with
 
 ```yaml
 sources:
-  - package: codefly/saas-starter      # or "local" for a live service
+  - package: codefly/starterkit      # or "local" for a live service
     version: 0.1.0
-    module: saas-starter
+    module: starterkit
     service: accounts
     endpoint: connect
     contract-digest: sha256:…
@@ -570,9 +570,9 @@ every language shares one `go.mod`/`package.json`/`pyproject.toml`:
 
 ```yaml
 sources:
-  - package: codefly/saas-starter
+  - package: codefly/starterkit
     version: 0.1.0
-    module: saas-starter
+    module: starterkit
     service: accounts
     endpoint: connect
     contract-digest: sha256:…

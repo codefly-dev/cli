@@ -221,7 +221,7 @@ func TestTheWriterRefusesMalformedRetainedRecords(t *testing.T) {
 // TestAStructuredConfigurationDocumentIsExported is the defect cli#1213's
 // check surfaced, closed: resources.ConfigurationDocumentKey is a prefix plus
 // a LOWERCASE hex SHA-256, and a run that delivers a structured configuration
-// document to the --output-env service — platform-core's merged
+// document to the --output-env service — platform-base's merged
 // fixture-composition, which saas/auth-gateway receives — refused the whole
 // artifact ("its name is not uppercase ASCII…"). The carrier is now written
 // under the name core mints, and a consumer that looks it up the way the SDK
@@ -232,7 +232,7 @@ func TestAStructuredConfigurationDocumentIsExported(t *testing.T) {
 	native := resources.NewRuntimeContextNative()
 	document := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, RuntimeContext: native, Infos: []*basev0.ConfigurationInformation{{
 		Name: "fixture-composition",
-		Data: &basev0.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v1\nroles: []\n")},
+		Data: &basev0.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v2\ninstallations: []\n")},
 	}}}
 	key := resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false)
 	require.NoError(t, validOutputKey(key))
@@ -252,5 +252,5 @@ func TestAStructuredConfigurationDocumentIsExported(t *testing.T) {
 	require.True(t, found, "the document rides the carrier core names")
 	content, err := resources.DecodeConfigurationDocument(encoded, resources.ConfigurationWorkspace, "fixture-composition", "local", false)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"schema":"codefly.dev/authority/fixture-composition/v1","roles":[]}`, string(content))
+	require.JSONEq(t, `{"schema":"codefly.dev/authority/fixture-composition/v2","installations":[]}`, string(content))
 }

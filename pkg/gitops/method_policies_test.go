@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -230,7 +230,7 @@ func routePackage(t *testing.T, document string) string {
 	sum := sha256.Sum256([]byte(document))
 	pkg := `schema: codefly/module-package/v2
 kind: module-package
-id: obin/model
+id: northwind/model
 version: 0.1.0
 minimum-codefly-version: ">=0.3.32 <1.0.0"
 artifact-roots:
@@ -296,7 +296,7 @@ namespaces: []
 queues: []
 scope_ceilings:
     - resource_kind: console.spans
-      actions: [export]
+      actions: [export, review]
 bindings: []
 destinations: []
 foreign_methods:
@@ -304,6 +304,9 @@ foreign_methods:
       requires:
           - resource_kind: console.spans
             actions: [export]
+      carries:
+          - resource_kind: console.spans
+            actions: [review]
 `
 	write := func(method string) {
 		if err := os.WriteFile(filepath.Join(dir, modulecontract.FileName), []byte(fmt.Sprintf(contract, method)), 0o644); err != nil {
@@ -322,6 +325,11 @@ foreign_methods:
 	export := byName["/opentelemetry.proto.collector.trace.v1.TraceService/Export"]
 	if export == nil || len(export.GetRequires()) != 1 || export.GetRequires()[0].GetResourceKind() != "console.spans" || export.GetRequires()[0].GetActions()[0] != "export" {
 		t.Fatalf("the foreign Export: %v", export)
+	}
+	// What the call may carry beyond that is delivered with it, as it is for a
+	// method the module defines.
+	if carries := export.GetCarries(); len(carries) != 1 || carries[0].GetResourceKind() != "console.spans" || len(carries[0].GetActions()) != 1 || carries[0].GetActions()[0] != "review" {
+		t.Fatalf("what the foreign Export carries: %v", export)
 	}
 	if byName["/api.ApiService/WhoAmI"] == nil {
 		t.Fatal("the published methods are still delivered")

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"testing"
 
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 )
@@ -136,8 +136,8 @@ func TestANativeManifestNamesTheBundleTheRunBuilt(t *testing.T) {
 	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: page, Services: services, Started: nativeStarted("crm", "api")})
 	require.ErrorContains(t, err, "built no bundle")
 
-	headless, services := nativeModule(t, "wiki", false)
-	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: headless, Services: services, Started: nativeStarted("wiki", "api"), FrontendBundle: bundle})
+	headless, services := nativeModule(t, "quill", false)
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: headless, Services: services, Started: nativeStarted("quill", "api"), FrontendBundle: bundle})
 	require.ErrorContains(t, err, "declares no frontend")
 }
 

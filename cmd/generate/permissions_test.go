@@ -77,6 +77,51 @@ func TestPermissionGenerationRefusesCollisionsAndMissingPolicies(t *testing.T) {
 	require.ErrorContains(t, err, "no permission policy")
 }
 
+// A call may carry a permission beyond what it requires (a first write creating
+// the collection it writes to). The service performing that effect checks it by
+// name, so it is a constant and the method's row holds it, apart from what the
+// call requires.
+func TestGeneratedPermissionsHoldWhatACallCarries(t *testing.T) {
+	files, err := permissionFiles([]*compositionv1.MethodPolicyV1{
+		{Method: "/api/Create",
+			Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"write"}}},
+			Carries:  []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"create"}}}},
+		{Method: "/api/Version", AnyCheckedCaller: true},
+	})
+	require.NoError(t, err)
+	dir := t.TempDir()
+	for name, data := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module permissions_test\n\ngo 1.26.0\n"), 0644))
+	test := `package permissions
+import "testing"
+func TestConsumer(t *testing.T) {
+ create := Methods()["/api/Create"]
+ if len(create.Requires)!=1 || create.Requires[0]!=DocumentsWrite {t.Fatal("what the call requires changed")}
+ if len(create.Carries)!=1 || create.Carries[0]!=DocumentsCollectionCreate {t.Fatal("what the call carries is lost")}
+ if DocumentsCollectionCreate.Kind()!="documents.collection" || DocumentsCollectionCreate.Action()!="create" {t.Fatal("wrong permission")}
+ if len(Methods()["/api/Version"].Carries)!=0 {t.Fatal("a call that carries nothing carries something")}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer_test.go"), []byte(test), 0644))
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	ts := string(files["permissions_gen.ts"])
+	require.Contains(t, ts, `DocumentsCollectionCreate: "documents.collection:create"`)
+	require.Contains(t, ts, `"/api/Create": { anyCheckedCaller: false, requires: [Permission.DocumentsWrite], carries: [Permission.DocumentsCollectionCreate] }`)
+	require.Contains(t, ts, `"/api/Version": { anyCheckedCaller: true, requires: [], carries: [] }`)
+
+	// A carried permission is a name like any other: it may not collide.
+	_, err = permissionFiles([]*compositionv1.MethodPolicyV1{{Method: "/api/Create",
+		Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"write"}}},
+		Carries:  []*authorityv1.WorkScopeV1{{ResourceKind: "documents_collection", Actions: []string{"write"}}}}})
+	require.ErrorContains(t, err, "collide")
+}
+
 // permissionsModule writes a module "ledger" with two Go services, api
 // (source-dir defaulted) and admin (source-dir go/cmd/admin, so its go.mod is
 // at go/), each publishing one protobuf contract with its own marked methods,
@@ -101,7 +146,9 @@ func permissionsModule(t *testing.T) *resources.Module {
 	write("services/engine/code/pyproject.toml", "[project]\nname = \"engine\"\nversion = \"0.0.0\"\n")
 	write("services/engine/code/src/main.py", "")
 	write("services/api/code/go.mod", "module example.com/ledger/api\n\ngo 1.26.0\n")
-	write("services/admin/go/go.mod", "module example.com/ledger/admin\n\ngo 1.26.0\n")
+	// The admin service is behind the authority's hop: its module requires the
+	// hop library, whose verifier reads what each method declares.
+	write("services/admin/go/go.mod", "module example.com/ledger/admin\n\ngo 1.26.0\n\nrequire github.com/codefly-dev/authority/libraries/hop/go v0.0.0\n")
 	write("module.contract.codefly.yaml", `schema: codefly/module-contract/v1
 principal: ledger
 namespaces: []
@@ -116,6 +163,9 @@ foreign_methods:
     requires:
       - resource_kind: ledger.entry
         actions: [write]
+    carries:
+      - resource_kind: ledger.entry
+        actions: [approve]
 `)
 	contract := func(service, method, action string) string {
 		m := &descriptorpb.MethodDescriptorProto{Name: proto.String(method), InputType: proto.String(".ledger.Empty"), OutputType: proto.String(".ledger.Empty"), Options: &descriptorpb.MethodOptions{}}
@@ -205,10 +255,19 @@ func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	require.NoError(t, generatePermissions(t.Context(), module, "", true))
 	require.NoDirExists(t, filepath.Join(module.Dir(), "pkg"))
 	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "store", "code"))
-	// The Python service publishes policies and gets no table, and its methods
-	// are in no Go service's table.
+	// The Python service's table is a Python file in its own source tree, and
+	// its methods are in no Go service's table.
 	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "engine", "code", "pkg"))
-	require.NoDirExists(t, filepath.Join(module.Dir(), "services", "engine", "code", "src", "gen"))
+	engine := filepath.Join(module.Dir(), "services", "engine", "code", "src", "gen")
+	entries, err := os.ReadDir(engine)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "a Python service gets a Python table and nothing else")
+	table, err := os.ReadFile(filepath.Join(engine, "permissions_gen.py"))
+	require.NoError(t, err)
+	require.Contains(t, string(table), `"/ledger.EngineService/Recompute": MethodPolicy(any_checked_caller=False, requires=(LEDGER_ENTRY_WRITE,), carries=()),`)
+	// A foreign method's row says what the call carries, as any other row does.
+	require.Contains(t, string(table), `"/otlp.TraceService/Export": MethodPolicy(any_checked_caller=False, requires=(LEDGER_ENTRY_WRITE,), carries=(LEDGER_ENTRY_APPROVE,)),`)
+	require.NotContains(t, string(table), "ApiService")
 
 	api := filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions")
 	admin := filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions")
@@ -224,10 +283,21 @@ func TestPermissionsDefaultLandsInEachGoServiceModule(t *testing.T) {
 	require.Contains(t, read(admin, "permissions_gen.go"), `"/ledger.AdminService/Approve"`)
 	require.NotContains(t, read(admin, "permissions_gen.go"), "ApiService")
 	for _, dir := range []string{api, admin} {
-		require.Contains(t, read(dir, "permissions_gen.go"), `"/otlp.TraceService/Export"`)
-		require.Contains(t, read(dir, "permissions_gen.ts"), `"/otlp.TraceService/Export"`)
+		require.Regexp(t, `"/otlp.TraceService/Export": +{AnyCheckedCaller: false, Requires: \[\]Permission{LedgerEntryWrite}, Carries: \[\]Permission{LedgerEntryApprove}},`, read(dir, "permissions_gen.go"))
+		require.Contains(t, read(dir, "permissions_gen.ts"), `"/otlp.TraceService/Export": { anyCheckedCaller: false, requires: [Permission.LedgerEntryWrite], carries: [Permission.LedgerEntryApprove] },`)
 		require.NotContains(t, read(dir, "permissions_gen.go"), "EngineService")
 	}
+
+	// A service whose module requires the hop library also gets its table as
+	// the declarations the module-side verifier reads (hop.Declarations): a
+	// method of a protocol the module does not own carries no policy option on
+	// any descriptor the binary registers, so the verifier learns what it
+	// declares from this alone. A service that does not require the library
+	// gets no file importing it.
+	declarations := read(admin, "declarations_gen.go")
+	require.Contains(t, declarations, `"github.com/codefly-dev/authority/libraries/hop/go/policy"`)
+	require.Contains(t, declarations, "func Declarations() map[string]policy.Method {")
+	require.NoFileExists(t, filepath.Join(api, "declarations_gen.go"))
 
 	// The api service imports its table as a package of its own go.mod.
 	code := filepath.Join(module.Dir(), "services", "api", "code")
@@ -293,30 +363,81 @@ func TestPermissionsRefuseAContractServiceWithNoGoModule(t *testing.T) {
 	require.ErrorContains(t, generatePermissions(t.Context(), module, "", false), "service admin publishes method policies but has no go.mod")
 }
 
-// TestPermissionsSkipAPythonServiceByName pins the mixed module: compute's
-// shape, a Go service beside Python services that publish contracts. The Go
-// services get their tables; the Python one is named as skipped, never a
-// refusal, because nothing in it reads a table (the hop decides every call).
-func TestPermissionsSkipAPythonServiceByName(t *testing.T) {
+// TestPermissionsGiveAPythonServiceItsOwnTable pins the mixed module: a Go
+// service beside Python services that publish contracts. Each gets the table
+// of its own methods in its own source tree, in its own language: the Go
+// services under pkg/gen/permissions of their Go module, the Python one as
+// src/gen/permissions_gen.py beside its pyproject.toml.
+func TestPermissionsGiveAPythonServiceItsOwnTable(t *testing.T) {
 	module := permissionsModule(t)
-	destinations, skipped, _, err := permissionDestinations(t.Context(), module, "")
-	require.NoError(t, err)
-	require.Equal(t, []string{"engine"}, skipped)
-	var dirs []string
-	for _, destination := range destinations {
-		dirs = append(dirs, destination.dir)
+	engine := filepath.Join(module.Dir(), "services", "engine", "code", "src", "gen")
+	placed := func() map[string][]string {
+		destinations, _, err := permissionDestinations(t.Context(), module, "")
+		require.NoError(t, err)
+		files := map[string][]string{}
+		for _, destination := range destinations {
+			files[destination.dir] = destination.files
+		}
+		return files
 	}
-	require.ElementsMatch(t, []string{
-		filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions"),
-		filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions"),
-	}, dirs)
+	want := map[string][]string{
+		filepath.Join(module.Dir(), "services", "api", "code", "pkg", "gen", "permissions"): {"permissions_gen.go", "permissions_gen.ts"},
+		filepath.Join(module.Dir(), "services", "admin", "go", "pkg", "gen", "permissions"): {"permissions_gen.go", "permissions_gen.ts", "declarations_gen.go"},
+		engine: {"permissions_gen.py"},
+	}
+	require.Equal(t, want, placed())
 
-	// A Python service publishing policies is skipped even with a go.mod
-	// lying in its tree: the agent says what the service is built from.
+	// A Python service stays one even with a go.mod lying in its tree: the
+	// agent says what the service is built from.
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), "services", "engine", "code", "go.mod"), []byte("module example.com/ledger/engine\n\ngo 1.26.0\n"), 0o644))
-	_, skipped, _, err = permissionDestinations(t.Context(), module, "")
+	require.Equal(t, want, placed())
+
+	// Without the project its table belongs to, it is refused by name.
+	require.NoError(t, os.Remove(filepath.Join(module.Dir(), "services", "engine", "code", "pyproject.toml")))
+	_, _, err := permissionDestinations(t.Context(), module, "")
+	require.ErrorContains(t, err, "service engine publishes method policies but has no pyproject.toml")
+}
+
+// The Python table says what the Go one says: every permission a constant,
+// every method's row what the call requires and, apart from it, what the call
+// carries. It is read by a Python consumer when the host has an interpreter.
+func TestGeneratedPythonPermissionsHoldWhatACallRequiresAndCarries(t *testing.T) {
+	methods := []*compositionv1.MethodPolicyV1{
+		{Method: "/api/Create",
+			Requires: []*authorityv1.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"write", "read"}}},
+			Carries:  []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"create"}}}},
+		{Method: "/api/Version", AnyCheckedCaller: true},
+	}
+	files, err := permissionFiles(methods)
 	require.NoError(t, err)
-	require.Equal(t, []string{"engine"}, skipped)
+	py := string(files["permissions_gen.py"])
+	require.Contains(t, py, "# Code generated by codefly generate permissions. DO NOT EDIT.")
+	require.Contains(t, py, `DOCUMENTS_COLLECTION_CREATE = Permission("documents.collection", "create")`)
+	require.Contains(t, py, `"/api/Create": MethodPolicy(any_checked_caller=False, requires=(DOCUMENTS_READ, DOCUMENTS_WRITE), carries=(DOCUMENTS_COLLECTION_CREATE,)),`)
+	require.Contains(t, py, `"/api/Version": MethodPolicy(any_checked_caller=True, requires=(), carries=()),`)
+
+	if python, lookErr := exec.LookPath("python3"); lookErr == nil {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "permissions_gen.py"), files["permissions_gen.py"], 0o644))
+		consumer := `import permissions_gen as p
+create = p.METHODS["/api/Create"]
+assert create.requires == (p.DOCUMENTS_READ, p.DOCUMENTS_WRITE), "what the call requires changed"
+assert create.carries == (p.DOCUMENTS_COLLECTION_CREATE,), "what the call carries is lost"
+assert not create.any_checked_caller
+assert p.DOCUMENTS_COLLECTION_CREATE.kind == "documents.collection"
+assert p.DOCUMENTS_COLLECTION_CREATE.action == "create"
+assert str(p.DOCUMENTS_COLLECTION_CREATE) == "documents.collection:create"
+version = p.METHODS["/api/Version"]
+assert version.any_checked_caller and version.requires == () and version.carries == ()
+assert sorted(p.METHODS) == ["/api/Create", "/api/Version"]
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer.py"), []byte(consumer), 0o644))
+		cmd := exec.Command(python, filepath.Join(dir, "consumer.py"))
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+		out, runErr := cmd.CombinedOutput()
+		require.NoError(t, runErr, string(out))
+	}
 }
 
 // servedCatalog writes the module's contract catalog as generate contracts
@@ -388,7 +509,7 @@ func TestPermissionsCoverTheServedMethodsOnly(t *testing.T) {
 	require.ErrorContains(t, generatePermissions(t.Context(), module, "", false), "/ledger.TargetAuthorityService/Check")
 
 	servedCatalog(t, module, "ledger.TargetAuthorityService")
-	_, _, unserved, err := permissionDestinations(t.Context(), module, "")
+	_, unserved, err := permissionDestinations(t.Context(), module, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"/ledger.TargetAuthorityService/Check"}, unserved)
 	require.NoError(t, generatePermissions(t.Context(), module, "", false))

@@ -29,8 +29,8 @@ func scopeCell(revision, aDigest, bDigest string, bConsumers ...string) *cellfil
 		}
 	}
 	return &cellfile.File{
-		Schema: cellfile.Schema, Coordinate: "example/blue/region-a", Component: "platform-host",
-		Environment: "blue", Domain: "example", TrustDomain: "cluster.example", DeliveryTarget: "a/api/rest",
+		Schema: cellfile.Schema, Coordinate: "example/aurora/region-a", Component: "platform-host",
+		Environment: "aurora", Domain: "example", TrustDomain: "cluster.example", DeliveryTarget: "a/api/rest",
 		Source: &cellfile.Source{Repo: "https://example.test/delivery.git", Revision: revision, Branch: "main"},
 		Namespaces: []cellfile.Namespace{
 			{Name: "a", Module: "a", Workloads: []cellfile.Workload{workload("a", "api", aDigest, nil)}},

@@ -13,7 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops"
 )
 
-// The obin-blue shape: a ClickHouse server whose generated password and user
+// The northwind-aurora shape: a ClickHouse server whose generated password and user
 // are filed in its own remote key, and a consumer whose remote key holds the
 // connection URL an operator stored by hand (no producer template), which the
 // plan alone reports as `require`.
@@ -21,8 +21,8 @@ const (
 	evidencePassword   = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__CLICKHOUSE_PASSWORD"
 	evidenceUser       = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__CLICKHOUSE_USER"
 	evidenceConnection = "CODEFLY__SERVICE_SECRET_CONFIGURATION__TRACING__EVIDENCE__CLICKHOUSE__CONNECTION"
-	evidenceKey        = "blue-tracing-evidence"
-	consumerKey        = "blue-tracing-tracing"
+	evidenceKey        = "aurora-tracing-evidence"
+	consumerKey        = "aurora-tracing-tracing"
 	oldPassword        = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
@@ -149,8 +149,8 @@ func TestRotateRefusesAKeyCodeflyDoesNotProduce(t *testing.T) {
 	}
 	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Generators: generators, Store: store, ReadPayloads: true,
 		Rotate:     []string{evidencePassword},
-		Configured: map[string]ConfiguredValue{evidencePassword: {File: "configurations/blue/clickhouse.secret.env", value: oldPassword}}})
-	if err == nil || !strings.Contains(err.Error(), "configurations/blue/clickhouse.secret.env") {
+		Configured: map[string]ConfiguredValue{evidencePassword: {File: "configurations/aurora/clickhouse.secret.env", value: oldPassword}}})
+	if err == nil || !strings.Contains(err.Error(), "configurations/aurora/clickhouse.secret.env") {
 		t.Errorf("rotating a configured key = %v, want a refusal naming the file", err)
 	}
 	signing := []environments.EnvironmentSecretGenerator{{Scope: environments.SecretGeneratorScopeService, Configuration: "clickhouse",
