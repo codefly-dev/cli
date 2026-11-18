@@ -45,6 +45,19 @@ reported by `codefly version --json`. macOS binaries are Developer ID signed and
 
 ### 1. Publish
 
+To release entirely on GitHub, run `codefly publish --remote` (optionally
+`minor` or `major`). The CLI's dispatch-only `publish.yml` calls the existing
+`publish-agent.yml` release engine. It checks out `main`, builds that exact commit of the CLI as its publisher,
+and runs the dry-run before the real publish. Other repositories use the reusable
+workflow's pinned, signature-verified released CLI; the source option is restricted
+to the CLI publishing itself so a release-engine fix can qualify its own release.
+The configured organization `GH_PAT` supplies the release credential so the
+release PR and tag trigger their required workflows. Follow the returned run URL;
+a dispatch alone does not mean the release succeeded. Then follow the tag-triggered
+`release.yaml` run to verify signed distribution, as described in step 2.
+
+For a local release from a clean, synchronized `main` checkout:
+
 `codefly publish` is the release. It bumps the manifest, lands the bump on `main` through a
 release pull request, then tags the commit `main` ends up carrying — in the right order, behind
 pre-flight gates — so there is no step to forget:
