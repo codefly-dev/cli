@@ -29,6 +29,15 @@ var ServiceCmd = &cobra.Command{
 
 		cli.RegisterCleanup(services.ClearAgents)
 
+		// A composed pinned module is loadable only once it is materialized,
+		// and syncing a service loads every module its flow reaches: on a
+		// fresh checkout (a freshly scaffolded solution, whose own test asks
+		// for this sync) the load refused "pinned modules are pulled by the
+		// CLI, not loadable as a local checkout". Cheap once materialized.
+		if err := common.ResolvePinnedModules(ctx); err != nil {
+			return err
+		}
+
 		workspace, module, service, err := common.LoadRequiredE(ctx, args)
 		if err != nil {
 			return err

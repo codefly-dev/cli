@@ -54,7 +54,10 @@ container images, and deploy services to configured environments.`,
 		// without a token exported by hand. Asked at the first download,
 		// never here, once per command, and under the command's context.
 		manager.UseReleaseTokenSource(gh.ReleaseTokenSource(cmd.Context(), common.SignalHandled))
-		return applyRootOptions()
+		if err := applyRootOptions(); err != nil {
+			return err
+		}
+		return checkAgentUpdates(cmd)
 	},
 	Run: func(_ *cobra.Command, _ []string) {
 		common.Logo()

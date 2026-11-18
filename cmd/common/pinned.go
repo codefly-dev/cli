@@ -12,7 +12,7 @@ import (
 // local checkouts rather than identities core refuses to load. Every command
 // boundary that loads composed modules to act on them calls this before
 // resolving what it is about to act on — `run service`/`job`/`command`, `test
-// service`, `deploy gitops render` and its siblings, `deploy module`, `deploy
+// service`, every `sync` verb, `deploy gitops render` and its siblings, `deploy module`, `deploy
 // service`, and every `ci` verb — because the load is precisely what fails
 // without it on a fresh checkout, and a CI render always starts from one.
 //

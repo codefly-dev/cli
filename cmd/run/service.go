@@ -1165,6 +1165,7 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().BoolVar(&openDashboard, "open", false, "Open the dashboard in the default browser (requires --cli-server)")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")
+	ServiceCmd.Flags().Lookup("runtime-context").Annotations = map[string][]string{"codefly.dev/reference-default": {resources.RuntimeContextFree}}
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
 	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")

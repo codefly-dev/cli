@@ -5814,3 +5814,34 @@ its application source is unchanged. This is image selection, not package-source
 restriction, network isolation, automatic Wolfi adaptation or CVE clearance.
 Qualify replacement contents and every target architecture before adoption;
 a variant declaration alone does not prove an image's ABI or tools.
+
+## Automatic agent update checks
+
+Workspace service operations check agent release freshness before execution:
+`run service/workspace/job/command`, `build service/module`, and
+`deploy service/module/gitops render`. The check covers the enclosing workspace's
+service agents, including composed modules. It does not update the CLI executable,
+solution executors, Runnable executors, or already-running processes.
+
+Set `--agent-updates=check|auto|require-current|off`. Precedence is the explicit
+flag, `CODEFLY_AGENT_UPDATES`, workspace `agent-update-policy`, then `check`.
+
+- `check` reports newer stable releases without changing manifests. Discovery
+  failure prints “freshness unknown” and allows the operation to continue.
+- `auto` validates candidates through the existing live agent protocol check,
+  then saves exact selections before run/build. It preserves service YAML and
+  uses workspace agent overrides for composed modules. Review and commit changes.
+  Files are saved atomically individually; an I/O failure can leave earlier files
+  updated. Deployment rejects this mode: update, rebuild, and validate first.
+- `require-current` refuses outdated selections or failed discovery, without
+  modifying selections. Use it in CI and deployments requiring freshness.
+- `off` skips discovery. Local-agent mode skips default advisory checks and
+  refuses explicit `auto` or `require-current`.
+
+For persistent opt-in, add `agent-update-policy: auto` to
+`workspace.codefly.yaml`; use `--agent-updates=require-current` when deploying.
+Explicit prerelease/development pins are preserved, and selections never downgrade.
+Checks reuse the release resolver, deduplicate identical selections per invocation,
+and have a 30-second discovery/admission deadline after workspace loading. A local
+fallback cannot establish freshness. Available releases are advisory candidates;
+auto additionally checks their downloadable binaries and live protocol before writing.
