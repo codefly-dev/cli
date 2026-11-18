@@ -84,6 +84,20 @@ stops none, and `--dry-run` names what it would stop. A plain run, or a scope
 the caller named, is never disposable: its data is never removed and its
 server never stopped. The record and the rule are core's `runners/runstate`.
 
+The SDK's dependency stack is the one explicit `--naming-scope` that is
+disposable. The SDK does not let the CLI generate the scope: it generates one
+from its own session's random identity (`s…`, behind the caller's label) and
+passes it, so `--naming-scope` wins and nothing above applies. The run command
+therefore also declares disposable a scope that ends with the identity of the
+SDK session that started this process (`orchestration.DeclareSessionScope`,
+from the session environment the SDK installs): the session proves the scope
+was generated for this run and can never be run again. A stack kept running
+(`sdk.WithKeepRunning`) runs under the developer's label alone and stays a
+developer's, as does any scope a person typed. Without this a test's
+dependency stack was never disposable: its native state stayed on the machine,
+and an agent refused it what only a disposable run is given (the Postgres
+agent's fixture principal).
+
 Agent conformance additionally passes **`--disposable`**, also available on
 `codefly ci test`. Each lint, compile or test flow receives a fresh naming scope and ephemeral
 ports, even if the copied fixture declares a stable scope. Teardown calls both

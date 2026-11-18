@@ -27,6 +27,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	dockerrun "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
+	"github.com/codefly-dev/core/sdk/session"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
@@ -862,6 +863,9 @@ func runEnvironment(workspace *resources.Workspace) (*environments.Environment, 
 	}
 	if namingScope != "" || namingScopeExplicit {
 		env.NamingScope = namingScope
+		// The SDK names a test's dependency stack itself: a scope its session
+		// generated is throwaway, as one this command generates is.
+		orchestration.DeclareSessionScope(env, session.FromEnvironment(os.Environ()))
 	}
 	return env, nil
 }
