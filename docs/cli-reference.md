@@ -4859,7 +4859,7 @@ Flags:
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 5m0s)
       --remote strings                            Remote services
-      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "native")
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "free")
       --service-path string                       Path to the service
       --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                            Silence services in CLI output
@@ -4914,7 +4914,7 @@ Flags:
       --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the first composition root)
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 10m0s)
-      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "native")
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
       --set strings                               Per-service runtime env override (repeatable)
       --silent strings                            Silence services in CLI output
       --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
