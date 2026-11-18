@@ -93,7 +93,9 @@ func TestLocalRunSkipsAPortAnotherProcessHolds(t *testing.T) {
 	world := claimsTestWorld(t, "pc153-gate", portclaims.New(filepath.Join(t.TempDir(), "claims.json")))
 	port := proposedPort(t, world, endpoint)
 	require.NotEqual(t, derived, port)
-	// The first-Init guard that used to refuse the run passes on the claim.
+	// The first-Init guard that used to refuse the run passes on the claim,
+	// once the Init has taken the port over from the run that held it.
+	world.releaseProposedPorts(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(port))})
 	require.NoError(t, (&Runner{}).checkInitialPortAvailability(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(port))}))
 }
 

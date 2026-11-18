@@ -302,6 +302,10 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	//
 	// A running service being hot-reloaded keeps its port and is marked started,
 	// so it must skip this first-start guard.
+	//
+	// The run held these ports since it chose them, so that nothing else was
+	// handed one; the service takes them over here, before the guard looks.
+	runner.world.releaseProposedPorts(ctx, inputs.networkMappings)
 	if err = runner.checkInitialPortAvailability(ctx, inputs.networkMappings); err != nil {
 		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
 	}
@@ -957,6 +961,8 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
+	// Whatever serves a remote service's local address binds from here on.
+	runner.world.releaseProposedPorts(ctx, networkMappings)
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")

@@ -1770,6 +1770,11 @@ func (flow *Flow) endRuntimeAuthority() {
 	if flow.world != nil && flow.world.BeforeRuntimeStop != nil {
 		flow.world.BeforeRuntimeStop()
 	}
+	// A stopping run starts no service: the ports it still holds for services
+	// that never reached their Init go back.
+	if flow.world != nil {
+		flow.world.ports.reservations.releaseAll()
+	}
 }
 
 func (flow *Flow) Stop() error {

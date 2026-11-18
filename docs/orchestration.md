@@ -1417,6 +1417,19 @@ nothing: the kernel, or the caller, already chose. An unreadable ledger is set
 aside as `claims.json.corrupt-<time>` with a warning; a ledger that cannot be
 used leaves the run on its derived ports, which the guard below still checks.
 
+A chosen port is also held. Claiming a port, or probing for a temporary one,
+only writes the choice down, and every agent the run starts serves its own gRPC
+on a loopback port the kernel assigns — a range that overlaps the derived ports
+and is the whole of the temporary ones — so a chosen port nothing bound was
+handed to another service's agent of the same run before its own service bound
+it. The run listens on each chosen port, on both loopback families, from the
+choice until that service's first Init, where the port guard and the agent take
+it over; a stopping run releases the rest. Between that Init and the service's
+own bind the port is free again: the hand-over is narrowed to one service's
+start, not closed. A consumer that dials a producer before the producer
+initializes connects to the reservation and is not answered, where it used to be
+refused (`pkg/orchestration/local_port_reservations.go`).
+
 A routed module ordered after the hop — one that calls through it is — has
 loaded but not initialized when the hop starts. The snapshot routes it at the
 address its own Init will be proposed, the claimed address above, and that

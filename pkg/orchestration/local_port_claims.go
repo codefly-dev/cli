@@ -27,6 +27,10 @@ type localPortClaims struct {
 	// failed stops claiming for the rest of the run once the ledger cannot be
 	// used, so its endpoints keep one rule rather than a mix.
 	failed bool
+
+	// reservations holds each chosen port until its service's first Init
+	// (local_port_reservations.go).
+	reservations portReservations
 }
 
 func (c *localPortClaims) pin(overrides map[string]uint16) {
@@ -53,6 +57,10 @@ func (c *localPortClaims) settle(destination string) {
 // core's override seam, and every later one, the Init included, proposes the
 // same address. A hot reload keeps it the same way pinAcceptedPorts does.
 //
+// A chosen port is also held, until its service's first Init: writing a choice
+// down keeps other runs off it, and only a bound socket keeps the kernel from
+// handing it to one of this run's own agents (local_port_reservations.go).
+//
 // Under --temporary-ports the kernel hands out a fresh port on every
 // allocation, so the first naming allocates and pins under the claims' lock,
 // and a concurrent or later one reads the pin. Two services whose workspace
@@ -70,10 +78,16 @@ func (world *World) localNetworkMappings(ctx context.Context, identity *resource
 		if overrides := acceptedPortOverrides(mappings); len(overrides) > 0 {
 			world.LocalNetworkManager.WithPortOverrides(overrides)
 		}
+		world.holdProposedPorts(ctx, mappings)
 		return mappings, nil
 	}
 	world.claimLocalPorts(ctx, identity, endpoints, runtimeContext)
-	return world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
+	mappings, err := world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
+	if err != nil {
+		return nil, err
+	}
+	world.holdProposedPorts(ctx, mappings)
+	return mappings, nil
 }
 
 // claimLocalPorts claims, for every endpoint not yet settled, the first port of
