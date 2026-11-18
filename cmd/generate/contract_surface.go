@@ -138,7 +138,8 @@ func ProtobufCatalogCoverage(endpoints []composition.APIContractEndpoint, read f
 	type descriptorKey struct{ service, digest string }
 	var keys []descriptorKey
 	listeners := map[descriptorKey][]composition.APIContractEndpoint{}
-	for _, endpoint := range endpoints {
+	for i := range endpoints {
+		endpoint := &endpoints[i]
 		if endpoint.Kind != composition.APIContractKindProtobuf {
 			continue
 		}
@@ -146,7 +147,7 @@ func ProtobufCatalogCoverage(endpoints []composition.APIContractEndpoint, read f
 		if _, seen := listeners[key]; !seen {
 			keys = append(keys, key)
 		}
-		listeners[key] = append(listeners[key], endpoint)
+		listeners[key] = append(listeners[key], *endpoint)
 	}
 	for _, key := range keys {
 		shared := listeners[key]

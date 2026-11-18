@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 )
 
 // Signer is core's custody boundary. Core owns envelope construction and verification.

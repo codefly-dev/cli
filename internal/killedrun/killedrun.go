@@ -76,17 +76,29 @@ func Helper() {
 			fail(err)
 		}
 		report := fmt.Sprintf("%d %d", os.Getpid(), server.Process.Pid)
-		if err := os.WriteFile(os.Getenv(reportEnv)+".tmp", []byte(report), 0o600); err != nil {
-			_ = server.Process.Kill()
-			fail(err)
-		}
-		if err := os.Rename(os.Getenv(reportEnv)+".tmp", os.Getenv(reportEnv)); err != nil {
+		if err := writeReport(os.Getenv(reportEnv), report); err != nil {
 			_ = server.Process.Kill()
 			fail(err)
 		}
 		time.Sleep(time.Minute)
 		os.Exit(0)
 	}
+}
+
+// writeReport confines the helper's two writes to the test-owned directory.
+func writeReport(path, report string) error {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if filepath.Base(path) != "report" {
+		return fmt.Errorf("unexpected helper report name")
+	}
+	if err := root.WriteFile("report.tmp", []byte(report), 0o600); err != nil {
+		return err
+	}
+	return root.Rename("report.tmp", "report")
 }
 
 func fail(err error) {

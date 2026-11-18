@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/stretchr/testify/require"
 )

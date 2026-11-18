@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"io"
 	"os"
 	"path"
@@ -12,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 
 	"gopkg.in/yaml.v3"
 )

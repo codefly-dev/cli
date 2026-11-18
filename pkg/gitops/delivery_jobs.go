@@ -4,13 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"maps"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 
 	"gopkg.in/yaml.v3"
 )

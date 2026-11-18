@@ -45,11 +45,10 @@ type vendorProvenancePackage struct {
 // vendoredArchive is one archive a package.json of a composed module selects
 // (`file:…tgz`), with the provenance entry that names it.
 type vendoredArchive struct {
-	consumer  string // the composed module that vendors it
-	manifest  string // the package.json selecting it, module-relative
-	archive   string // absolute path of the archive
-	recorded  vendorProvenancePackage
-	sourceDir string // the archive's directory within its source repository
+	consumer string // the composed module that vendors it
+	manifest string // the package.json selecting it, module-relative
+	archive  string // absolute path of the archive
+	recorded vendorProvenancePackage
 }
 
 var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -81,7 +80,7 @@ func checkVendoredPackages(ctx context.Context, ws *resources.Workspace, scope s
 		}
 		found, err := vendoredArchives(ref.Name, resolution.Dir)
 		if err != nil {
-			report.add(codeVendoredPackageUncomparable, "vendored packages of "+ref.Name, "warn",
+			report.add(codeVendoredPackageUncomparable, "vendored packages of "+ref.Name, checkStatusWarn,
 				fmt.Sprintf("the package archives module %q vendors cannot be read: %v", ref.Name, err), "")
 			continue
 		}
@@ -147,7 +146,7 @@ func selectedArchives(manifest string) ([]string, error) {
 		}
 		for _, spec := range deps {
 			target, ok := strings.CutPrefix(spec, "file:")
-			if !ok || !(strings.HasSuffix(target, ".tgz") || strings.HasSuffix(target, ".tar.gz")) {
+			if !ok || !strings.HasSuffix(target, ".tgz") && !strings.HasSuffix(target, ".tar.gz") {
 				continue
 			}
 			archives = append(archives, filepath.Join(filepath.Dir(manifest), filepath.FromSlash(target)))
@@ -174,14 +173,15 @@ func provenanceOf(archive string) (vendorProvenancePackage, bool, error) {
 		if err = json.Unmarshal(data, &provenance); err != nil {
 			return vendorProvenancePackage{}, false, fmt.Errorf("%s: %w", record, err)
 		}
-		for _, entry := range provenance.Packages {
+		for i := range provenance.Packages {
+			entry := &provenance.Packages[i]
 			if entry.Artifact != filepath.Base(archive) {
 				continue
 			}
 			if entry.Repository == "" {
 				entry.Repository = provenance.Repository
 			}
-			return entry, true, nil
+			return *entry, true, nil
 		}
 	}
 	return vendorProvenancePackage{}, false, nil
@@ -202,7 +202,7 @@ func repositoryKey(repository string) string {
 // sourceModule is the composed module an archive was built from: the module
 // of its repository whose directory holds the archive's package directory, or
 // the repository's only composed module.
-func sourceModule(modules []*resources.ModuleReference, recorded vendorProvenancePackage) *resources.ModuleReference {
+func sourceModule(modules []*resources.ModuleReference, recorded *vendorProvenancePackage) *resources.ModuleReference {
 	var candidates []*resources.ModuleReference
 	for _, ref := range modules {
 		if ref.Source != "" && repositoryKey(ref.Source) == repositoryKey(recorded.Repository) {
@@ -231,8 +231,9 @@ func sourceModule(modules []*resources.ModuleReference, recorded vendorProvenanc
 func judgeVendoredArchives(modules []*resources.ModuleReference, archives []vendoredArchive) []workspaceDiagnostic {
 	var findings []workspaceDiagnostic
 	compared := 0
-	for _, archive := range archives {
-		source := sourceModule(modules, archive.recorded)
+	for i := range archives {
+		archive := &archives[i]
+		source := sourceModule(modules, &archive.recorded)
 		if source == nil || source.Name == archive.consumer {
 			continue
 		}
@@ -268,7 +269,7 @@ func judgeVendoredArchives(modules []*resources.ModuleReference, archives []vend
 				Message:     fmt.Sprintf("module %q bundles %s built from %s tag %s, but the workspace composes module %q at %s", archive.consumer, where, source.Source, archive.recorded.Tag, source.Name, source.Version),
 				Remediation: fmt.Sprintf("re-vendor %s from %s at %s, or move module %q's pin to %s", archive.recorded.Package, source.Source, source.Version, source.Name, archive.recorded.Tag)})
 		default:
-			findings = append(findings, workspaceDiagnostic{Code: codeVendoredPackageUncomparable, Name: name, Status: "warn",
+			findings = append(findings, workspaceDiagnostic{Code: codeVendoredPackageUncomparable, Name: name, Status: checkStatusWarn,
 				Message:     fmt.Sprintf("module %q bundles %s from %s, recorded at %q, while module %q is pinned at %q: one is not a full commit and no tag joins them, so the two cannot be compared offline", archive.consumer, where, source.Source, archive.recorded.Commit, source.Name, source.Version),
 				Remediation: "pin the module by commit, or record the full commit (and tag) the archive was built from in its provenance"})
 		}

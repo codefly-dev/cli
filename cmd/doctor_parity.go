@@ -76,11 +76,11 @@ func (names *environmentNames) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // appliesTo reports whether the difference is declared against target.
-func (d parityDifference) appliesTo(target string) bool {
+func (d *parityDifference) appliesTo(target string) bool {
 	return len(d.Against) == 0 || slices.Contains(d.Against, target)
 }
 
-func (d parityDifference) kind() (string, string) {
+func (d *parityDifference) kind() (string, string) {
 	switch {
 	case d.Configuration != "":
 		return codeParityConfiguration, d.Configuration
@@ -363,7 +363,7 @@ func loadParityDifferences(dir string) ([]parityDifference, error) {
 }
 
 // declares reports whether a difference covers a finding.
-func (d parityDifference) declares(target string, finding parityFinding) bool {
+func (d *parityDifference) declares(target string, finding parityFinding) bool {
 	if !d.appliesTo(target) {
 		return false
 	}
@@ -419,7 +419,7 @@ func environmentParity(ctx context.Context, dir, local, against string) *workspa
 		}
 		status := checkStatusFail
 		if finding.code == codeParityUnresolved {
-			status = "warn"
+			status = checkStatusWarn
 		}
 		report.add(finding.code, finding.subject, status, finding.message,
 			fmt.Sprintf("make %s and %s agree, or declare the difference with its reason in %s", local, against, ParityFileName))

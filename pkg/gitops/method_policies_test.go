@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"google.golang.org/genproto/googleapis/api/annotations"

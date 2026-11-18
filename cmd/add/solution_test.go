@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	fixturecomposition "github.com/codefly-dev/authority/libraries/fixture-composition/go"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"

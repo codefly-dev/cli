@@ -3,9 +3,10 @@ package environments
 import (
 	"context"
 	"fmt"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"slices"
 	"strings"
+
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 
 	"github.com/codefly-dev/cli/pkg/runnables"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"

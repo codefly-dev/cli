@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
 	runcomposition "github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"

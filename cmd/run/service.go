@@ -158,7 +158,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// (parent SIGKILL, terminal force-closed). Without this, zombie
 	// trees from a previous `codefly run` survive and hold ports,
 	// making the next run appear to fork-bomb or fail port binding.
-	if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
+	if err = processgroup.ReapStaleProcessGroups(ctx); err != nil {
 		cli.Warning("stale process-group sweep failed: %v", err)
 	}
 	// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency
@@ -182,7 +182,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// referenced by identity is not loadable as a local checkout until the CLI
 	// has pulled it, so the load below is precisely what fails without this —
 	// including for the dependency stacks the SDK spawns here.
-	if err := resolveRunPins(ctx); err != nil {
+	if err = resolveRunPins(ctx); err != nil {
 		return err
 	}
 

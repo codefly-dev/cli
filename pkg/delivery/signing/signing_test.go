@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 )
 
 // testManifest is a valid module manifest, so the verifier exercises the

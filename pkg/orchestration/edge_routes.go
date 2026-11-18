@@ -43,7 +43,9 @@ import (
 // makes a service the hop (gitops/hop.go), and declaring edge-routes makes a
 // service nothing but a reader of this document.
 const (
-	edgeRoutesGroup = "edge-routes"
+	routedModulesKey = "MODULES"
+	connectTransport = "connect"
+	edgeRoutesGroup  = "edge-routes"
 	// edgeRoutesKey is the one value of that group: the document below.
 	edgeRoutesKey = "ROUTES"
 	// EdgeRoutesSchema identifies the document. The edge decodes it
@@ -83,9 +85,9 @@ func generatedEdgeRoutes(ctx context.Context, workspace *resources.Workspace, co
 		}
 		for _, value := range info.GetConfigurationValues() {
 			switch {
-			case info.GetName() == edgeGroup && value.GetKey() == "MODULES":
+			case info.GetName() == edgeGroup && value.GetKey() == routedModulesKey:
 				mounted = value.GetValue()
-			case info.GetName() == "hop" && value.GetKey() == "MODULES":
+			case info.GetName() == "hop" && value.GetKey() == routedModulesKey:
 				fronted = value.GetValue()
 			}
 		}
@@ -115,7 +117,7 @@ func generatedEdgeRoutes(ctx context.Context, workspace *resources.Workspace, co
 		}
 		entry := edgeModuleRoutes{Audience: contract.Principal, Procedures: []string{}}
 		for i := range endpoints {
-			if endpoints[i].Transport == "connect" {
+			if endpoints[i].Transport == connectTransport {
 				entry.Procedures = append(entry.Procedures, endpoints[i].Methods...)
 			}
 		}
