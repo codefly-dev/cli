@@ -33,6 +33,10 @@ type RunReclaim struct {
 	ProcessGroups []int
 	// NativeState is the native state directories a disposable run left.
 	NativeState []string
+	// DisposableContainers and ContainerData are the containers a disposable
+	// run left and the data directories mounted into them.
+	DisposableContainers []string
+	ContainerData        []string
 	RunRemovals
 }
 
@@ -44,13 +48,17 @@ type RunReclaim struct {
 // first: a group still registered in the workspace reads as another live run,
 // and while one is live no container or network is removed. A disposable run
 // also takes back the native state directories of its stores, after the groups
-// because a directory is in use for as long as a server started in it runs.
+// because a directory is in use for as long as a server started in it runs,
+// and its containers with their volumes and data directories, however it
+// ended, before the networks so that the ones they leave empty go too.
 func (flow *Flow) ReclaimAfterRun(ctx context.Context, started time.Time, removeContainers bool) (RunReclaim, error) {
 	var reclaim RunReclaim
 	recovered, groupsErr := flow.RecoverProcessGroupsOfThisRun(ctx)
 	reclaim.ProcessGroups = recovered
 	nativeState, nativeStateErr := flow.RemoveNativeStateOfThisRun()
 	reclaim.NativeState = nativeState
+	disposable, disposableErr := flow.RemoveContainersOfThisDisposableRun(ctx)
+	reclaim.DisposableContainers, reclaim.ContainerData = disposable.Containers, disposable.DataDirectories
 	var containersErr error
 	if removeContainers {
 		reclaim.RunRemovals, containersErr = flow.RemoveContainersCreatedByThisRun(ctx, started)
@@ -60,7 +68,7 @@ func (flow *Flow) ReclaimAfterRun(ctx context.Context, started time.Time, remove
 	}
 	networks, networksErr := flow.RemoveNetworksThisRunLeftEmpty(ctx)
 	reclaim.Networks = append(reclaim.Networks, networks...)
-	return reclaim, errors.Join(groupsErr, nativeStateErr, containersErr, networksErr)
+	return reclaim, errors.Join(groupsErr, nativeStateErr, disposableErr, containersErr, networksErr)
 }
 
 // listRegisteredProcessGroups lists the pgids of every live registered group.

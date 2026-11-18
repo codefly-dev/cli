@@ -84,6 +84,22 @@ stops none, and `--dry-run` names what it would stop. A plain run, or a scope
 the caller named, is never disposable: its data is never removed and its
 server never stopped. The record and the rule are core's `runners/runstate`.
 
+The same declaration decides what the run leaves on the container runtime. A
+stopped run stops its agents and never destroys them, and an agent keeps its
+container across a stop for the next run to reuse, so a disposable run's
+containers (Redis, the object store's MinIO and gateway), the anonymous volumes
+they created and the data directories mounted into them (a Postgres container's
+cluster under `<codefly home>/runtime-cache`) used to stay after every kind of
+stop. The run now takes them back when it ends, however it ended: Ctrl-C,
+SIGTERM, a hangup, the process it was started for gone, a clean finish or a
+failure (`Flow.RemoveContainersOfThisDisposableRun`, from `ReclaimAfterRun`).
+Core decides and removes (`dockerrun.RemoveDisposableRun`), on the run's
+`Disposable` fact alone: every container labelled with the run's own recovery
+scope, never one bound to a session ledger. The networks they leave empty go
+after them. A plain run, or a scope the caller named, keeps its containers and
+their data exactly as before; only a failed one removes the containers it
+created (#1233). An explicit Local or Nix run never reaches Docker.
+
 The SDK's dependency stack is the one explicit `--naming-scope` that is
 disposable. The SDK does not let the CLI generate the scope: it generates one
 from its own session's random identity (`s…`, behind the caller's label) and

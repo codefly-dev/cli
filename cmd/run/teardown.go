@@ -22,20 +22,25 @@ func runFailed(signalled context.Context, err error) bool {
 	return err != nil && signalled.Err() == nil
 }
 
-// removesContainers decides whether a run's exit removes the containers its
-// agents created. Only a failed run does (#1233): a run stopped on purpose
-// keeps them for the next run to reuse — Core's sweep removes a stopped
-// container whose owner is gone, so even stopping them would lose that. An
-// explicit Local/Nix run never touches the Docker control plane.
+// removesContainers decides whether the exit of a run a developer can run
+// again removes the containers its agents created. Only a failed one does
+// (#1233): a run stopped on purpose keeps them for the next run to reuse —
+// Core's sweep removes a stopped container whose owner is gone, so even
+// stopping them would lose that. An explicit Local/Nix run never touches the
+// Docker control plane.
+//
+// A disposable run is not decided here: nothing runs its scope again, so its
+// containers, their volumes and their data directories go however it ended
+// (Flow.RemoveContainersOfThisDisposableRun, on the run's Disposable fact).
 func removesContainers(failed bool, runtimeContexts []string) bool {
 	return failed && slices.ContainsFunc(runtimeContexts, shouldSweepStaleContainers)
 }
 
 // reclaimRun takes back what the run's agents started and left behind once
 // they have exited: whichever way the run ended, their orphaned process
-// groups, the native state directories of a disposable run and the networks
-// its containers left empty, and, for a failed run, the containers they
-// created.
+// groups, the native state directories and the containers of a disposable run
+// and the networks its containers left empty, and, for a failed run, the
+// containers they created.
 func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time, failed bool) error {
 	if flow == nil {
 		return nil
@@ -48,6 +53,12 @@ func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time
 	}
 	if len(reclaimed.NativeState) > 0 {
 		cli.Info("removed %d native state directories of this disposable run: %v", len(reclaimed.NativeState), reclaimed.NativeState)
+	}
+	if len(reclaimed.DisposableContainers) > 0 {
+		cli.Info("removed %d containers of this disposable run, with their volumes: %v", len(reclaimed.DisposableContainers), reclaimed.DisposableContainers)
+	}
+	if len(reclaimed.ContainerData) > 0 {
+		cli.Info("removed %d container data directories of this disposable run: %v", len(reclaimed.ContainerData), reclaimed.ContainerData)
 	}
 	if len(reclaimed.Containers) > 0 {
 		cli.Info("removed %d containers the failed run started: %v", len(reclaimed.Containers), reclaimed.Containers)
