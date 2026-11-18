@@ -98,7 +98,13 @@ against what's on disk, without writing anything.
 			return fmt.Errorf("--format must be text or json, got %q", contractsFormat)
 		}
 
-		workspace, err := common.LoadWorkspace(ctx)
+		// The module asked for may itself be a pin, and loading a service that
+		// declares an interface makes core load every composed module to bind
+		// it: the pins are materialized first, as a run, a render and `generate
+		// runnable-bindings` do. On a fresh checkout — a CI job running
+		// --check — the plain loader refuses with core's "resolves to a pinned
+		// artifact" before anything is compared.
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}

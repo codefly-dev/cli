@@ -100,7 +100,9 @@ Examples:
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
 
-		workspace, err := common.LoadWorkspace(ctx)
+		// Pins first, for the reason `generate contracts` gives: this verb
+		// loads the same modules and services.
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}

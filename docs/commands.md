@@ -2705,11 +2705,13 @@ workspace composed by identity works for each of them with no prior run:
   checkout, so it materializes exactly as `run` does;
 - every `ci` verb (`plan`, `build`, `test`, `run`, `validate`, `push`,
   `deploy`);
-- `generate client`, `generate runnable-bindings` (its `--check` included: the
-  one drift check that group has writes no binding output, but it materializes
-  a pinned module first — dependency cache, overlay, receipt and `.gitignore`
-  entries — so it runs on a fresh checkout), `sync solution-sdk` and the
-  fixture listing, which read a composed module's tree.
+- `generate client`, `generate contracts`, `generate runnables` and `generate
+  runnable-bindings` (their `--check` included: a drift check writes no
+  generated output, but it materializes a pinned module first — dependency
+  cache, overlay, receipt and `.gitignore` entries — so it runs on a fresh
+  checkout; a service declaring an `interface:` makes core load every composed
+  module, so the module asked for being a local checkout is not enough), `sync
+  solution-sdk` and the fixture listing, which read a composed module's tree.
 
 All of them share the fast path: once a receipt answers the request the
 workspace makes, a later command compares and pulls nothing, takes no lock and
