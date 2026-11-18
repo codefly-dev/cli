@@ -130,7 +130,12 @@ func declaredFlags(command *cobra.Command) *pflag.FlagSet {
 	declared.SortFlags = local.SortFlags
 	local.VisitAll(func(f *pflag.Flag) {
 		if _, byCobra := f.Annotations[cobra.FlagSetByCobraAnnotation]; !byCobra {
-			declared.AddFlag(f)
+			// Keep environment-derived defaults out of committed documentation.
+			documented := *f
+			if values := f.Annotations["codefly.dev/reference-default"]; len(values) == 1 {
+				documented.DefValue = values[0]
+			}
+			declared.AddFlag(&documented)
 		}
 	})
 	return declared
@@ -235,5 +240,26 @@ func TestCLIReferenceGuardCatchesANewFlagOnAnExistingCommand(t *testing.T) {
 
 	if after := renderCLIReference(RootCmd); after == before {
 		t.Fatal("adding a flag to `deploy secrets` did not change the reference: flag drift would go unnoticed")
+	}
+}
+
+func TestCLIReferenceIgnoresEnvironmentDefaults(t *testing.T) {
+	for _, leaf := range []string{"service", "workspace"} {
+		target, _, err := RootCmd.Find([]string{"run", leaf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		flag := target.Flags().Lookup("runtime-context")
+		original := flag.DefValue
+		t.Cleanup(func() { flag.DefValue = original })
+		flag.DefValue = "free"
+		baseline := renderCLIReference(RootCmd)
+		flag.DefValue = "native"
+		if got := renderCLIReference(RootCmd); got != baseline {
+			t.Fatal("environment-derived runtime context changed the reference")
+		}
+		if flag.DefValue != "native" {
+			t.Fatal("rendering mutated the runtime default")
+		}
 	}
 }

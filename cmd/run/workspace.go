@@ -146,6 +146,7 @@ func init() {
 	WorkspaceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable)")
 	WorkspaceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	WorkspaceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free)")
+	WorkspaceCmd.Flags().Lookup("runtime-context").Annotations = map[string][]string{"codefly.dev/reference-default": {resources.RuntimeContextFree}}
 	WorkspaceCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
 	WorkspaceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
 	WorkspaceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
