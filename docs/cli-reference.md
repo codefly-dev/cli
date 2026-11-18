@@ -1215,6 +1215,16 @@ servers are stopped first (only the processes the run's agent recorded in
 that directory, and only when no live run claims it). A developer's
 persistent database is never removed, and its server never stopped.
 
+Persistent runs keep their native state for good: every naming scope ever
+run leaves a directory. --dry-run lists the workspace's, each with the run
+it belongs to, how long ago a run last claimed it and its size. Nothing
+removes one but a person: --state <directory> removes the directory named
+(repeatable), and --older-than <age> removes every one of the scope that no
+run has claimed for that long (72h, 30d). A directory still in use, one of
+another workspace (without --all) and one no run is recorded on are refused.
+With either flag, clear does only this: no process is stopped and no
+container removed.
+
 Examples:
   codefly clear                     # full reset of this workspace
   codefly clear --all               # full reset of every workspace on this machine
@@ -1222,6 +1232,9 @@ Examples:
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
   codefly clear --dry-run           # list what would be removed without doing it
+  codefly clear --dry-run --older-than 30d   # the persistent run state that would go
+  codefly clear --older-than 30d    # remove persistent run state unused for 30 days
+  codefly clear --state <directory> # remove one persistent run's state, as --dry-run lists it
 ```
 
 ```
@@ -1231,10 +1244,12 @@ codefly clear [name-filter...]
 Flags:
 
 ```
-      --all               Act on every workspace on this machine, not just the current one
-      --dry-run           List what would be removed without removing anything
-      --keep-containers   Don't remove docker containers (only kill processes)
-      --keep-processes    Don't kill running codefly processes (only remove containers)
+      --all                 Act on every workspace on this machine, not just the current one
+      --dry-run             List what would be removed without removing anything
+      --keep-containers     Don't remove docker containers (only kill processes)
+      --keep-processes      Don't kill running codefly processes (only remove containers)
+      --older-than string   Remove the scope's persistent run state that no run has claimed for this long (72h, 30d); clear then does only this
+      --state stringArray   Remove this persistent run state directory, as --dry-run lists it (repeatable); clear then does only this
 ```
 
 ## `codefly companion`

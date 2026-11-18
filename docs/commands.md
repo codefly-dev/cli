@@ -5233,6 +5233,26 @@ another workspace's containers and any it cannot attribute to a workspace.
 `--all`, or a clear run outside any workspace, removes every codefly container
 on the machine. A name filter narrows the removal within the scope.
 
+Native run state (a database run as a host process keeps its data under the
+user cache directory) has two rules. A disposable run's is removed once the run
+is no longer alive. A persistent run's is a developer's data and no run, agent
+or plain `clear` removes it, so every naming scope ever run keeps a directory:
+`clear --dry-run` lists the scope's, each with its workspace, naming scope, how
+long ago a run last claimed it, its size and whether it is in use. A person
+removes them deliberately, and clear then does only that — no process is
+stopped and no container removed:
+
+```bash
+codefly clear --dry-run                       # what is kept, with age and size
+codefly clear --dry-run --older-than 30d      # what --older-than 30d would remove
+codefly clear --older-than 30d                # persistent state no run claimed for 30 days
+codefly clear --state <directory>             # one directory, as the listing names it (repeatable)
+```
+
+A directory in use, one of another workspace (without `--all`) and one no run
+is recorded on are refused: an agent released before run records leaves
+directories nothing can attribute, and `clear` neither lists nor removes them.
+
 ### `codefly recover process`
 
 Preview or force one independently selected process to exit. This operation

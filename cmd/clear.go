@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -25,6 +26,8 @@ var (
 	clearDryRun         bool
 	clearAllWorkspaces  bool
 	stopAllWorkspaces   bool
+	clearStates         []string
+	clearOlderThan      string
 )
 
 type clearOptions struct {
@@ -35,16 +38,29 @@ type clearOptions struct {
 	// scope bounds which workspace's processes may be signalled. The zero value
 	// is machine-wide, so every construction site states what it means.
 	scope processgroup.Scope
+	// states and olderThan select the persistent run state a person asked to
+	// remove (clear_persistent_state.go). Either makes clear do only that.
+	states    []string
+	olderThan time.Duration
 }
 
-func clearCommandOptions() clearOptions {
-	return clearOptions{
+func clearCommandOptions() (clearOptions, error) {
+	options := clearOptions{
 		verb:           "clear",
 		keepProcesses:  clearKeepProcesses,
 		keepContainers: clearKeepContainers,
 		dryRun:         clearDryRun,
 		scope:          workspaceScope(clearAllWorkspaces),
+		states:         clearStates,
 	}
+	if clearOlderThan != "" {
+		age, err := parseStateAge(clearOlderThan)
+		if err != nil {
+			return options, err
+		}
+		options.olderThan = age
+	}
+	return options, nil
 }
 
 // workspaceScope is the workspace a command acts on or reports: what a stop or
@@ -103,19 +119,36 @@ servers are stopped first (only the processes the run's agent recorded in
 that directory, and only when no live run claims it). A developer's
 persistent database is never removed, and its server never stopped.
 
+Persistent runs keep their native state for good: every naming scope ever
+run leaves a directory. --dry-run lists the workspace's, each with the run
+it belongs to, how long ago a run last claimed it and its size. Nothing
+removes one but a person: --state <directory> removes the directory named
+(repeatable), and --older-than <age> removes every one of the scope that no
+run has claimed for that long (72h, 30d). A directory still in use, one of
+another workspace (without --all) and one no run is recorded on are refused.
+With either flag, clear does only this: no process is stopped and no
+container removed.
+
 Examples:
   codefly clear                     # full reset of this workspace
   codefly clear --all               # full reset of every workspace on this machine
   codefly clear neo4j               # only neo4j container (keeps postgres)
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
-  codefly clear --dry-run           # list what would be removed without doing it`,
+  codefly clear --dry-run           # list what would be removed without doing it
+  codefly clear --dry-run --older-than 30d   # the persistent run state that would go
+  codefly clear --older-than 30d    # remove persistent run state unused for 30 days
+  codefly clear --state <directory> # remove one persistent run's state, as --dry-run lists it`,
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)
 		defer stop()
-		return clearCommand(ctx, args, clearCommandOptions())
+		options, err := clearCommandOptions()
+		if err != nil {
+			return err
+		}
+		return clearCommand(ctx, args, options)
 	},
 }
 
@@ -124,6 +157,8 @@ func init() {
 	ClearCmd.Flags().BoolVar(&clearKeepContainers, "keep-containers", false, "Don't remove docker containers (only kill processes)")
 	ClearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "List what would be removed without removing anything")
 	ClearCmd.Flags().BoolVar(&clearAllWorkspaces, "all", false, "Act on every workspace on this machine, not just the current one")
+	ClearCmd.Flags().StringArrayVar(&clearStates, "state", nil, "Remove this persistent run state directory, as --dry-run lists it (repeatable); clear then does only this")
+	ClearCmd.Flags().StringVar(&clearOlderThan, "older-than", "", "Remove the scope's persistent run state that no run has claimed for this long (72h, 30d); clear then does only this")
 }
 
 func clearCommand(ctx context.Context, args []string, options clearOptions) (returnErr error) {
@@ -133,6 +168,16 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	var failures []error
 
 	w := wool.Get(ctx).In(options.verb)
+
+	// Removing a persistent run's state is its own deliberate act: it stops
+	// no process and removes no container.
+	if options.prunesRunState() {
+		root, err := runstate.Root()
+		if err != nil {
+			return fmt.Errorf("locate native run state: %w", err)
+		}
+		return errors.Join(pruneRunState(w, root, options)...)
+	}
 
 	// Always announce what we're doing — `clear` was silent on the common path
 	// (no docker containers + a quiet process kill), so it looked like a no-op.
@@ -165,6 +210,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		w.Warn("cannot locate native run state", wool.ErrField(err))
 	} else {
 		failures = append(failures, sweepNativeRunState(w, root, options)...)
+		failures = append(failures, reportPersistentRunState(w, root, options)...)
 	}
 
 	if options.keepContainers {
