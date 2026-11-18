@@ -25,13 +25,14 @@ codefly [flags]
 Flags:
 
 ```
-  -d, --debug                Enable debug mode
-      --focus                Enable focus log mode
-      --local-agents         Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working on local agent builds or offline.
-      --plugin-path string   Override the codefly home directory (default: ~/.codefly). Plugins, containers and logs resolve from <plugin-path>/agents, <plugin-path>/containers, <plugin-path>/logs. Equivalent to setting CODEFLY_HOME.
-      --timestamps           Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it (default true)
-      --trace                Enable trace mode
-      --track string         Tracker of actions -- advanced usage
+      --agent-updates string   Agent freshness policy for workspace run/build/deploy: check (default), auto, require-current, off; overrides CODEFLY_AGENT_UPDATES and workspace agent-update-policy
+  -d, --debug                  Enable debug mode
+      --focus                  Enable focus log mode
+      --local-agents           Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working on local agent builds or offline.
+      --plugin-path string     Override the codefly home directory (default: ~/.codefly). Plugins, containers and logs resolve from <plugin-path>/agents, <plugin-path>/containers, <plugin-path>/logs. Equivalent to setting CODEFLY_HOME.
+      --timestamps             Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it (default true)
+      --trace                  Enable trace mode
+      --track string           Tracker of actions -- advanced usage
 ```
 
 Subcommands:
@@ -4858,7 +4859,7 @@ Flags:
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 5m0s)
       --remote strings                            Remote services
-      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "free")
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "native")
       --service-path string                       Path to the service
       --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                            Silence services in CLI output
@@ -4913,7 +4914,7 @@ Flags:
       --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the first composition root)
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 10m0s)
-      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "native")
       --set strings                               Per-service runtime env override (repeatable)
       --silent strings                            Silence services in CLI output
       --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
