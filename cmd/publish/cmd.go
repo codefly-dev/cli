@@ -41,7 +41,7 @@ The mode is auto-detected from cwd:
 
 Pre-flight gates (any failure aborts cleanly with no side effects):
   - working tree clean
-  - on main branch
+  - on main, or detached at origin/main when publishing through a pull request
   - in sync with origin/main
   - tag doesn't already exist (local or remote)
 

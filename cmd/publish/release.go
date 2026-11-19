@@ -74,7 +74,7 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	if err := e.prepareCI(ctx); err != nil {
 		return "", err
 	}
-	if err := e.preflight(ctx); err != nil {
+	if err := e.preflight(ctx, true); err != nil {
 		return "", err
 	}
 
@@ -262,11 +262,11 @@ func (e *Engine) manifests() []*Manifest {
 
 // --- Pre-flight ----------------------------------------------------
 
-func (e *Engine) preflight(ctx context.Context) error {
+func (e *Engine) preflight(ctx context.Context, allowDetachedPR bool) error {
 	if err := e.assertCleanTree(ctx); err != nil {
 		return err
 	}
-	if err := e.assertOnMain(ctx); err != nil {
+	if err := e.assertOnMain(ctx, allowDetachedPR); err != nil {
 		return err
 	}
 	if err := e.assertSyncedWithOrigin(ctx); err != nil {
@@ -331,12 +331,21 @@ func (e *Engine) assertCleanTree(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) assertOnMain(ctx context.Context) error {
+func (e *Engine) assertOnMain(ctx context.Context, allowDetachedPR bool) error {
 	out, err := e.git(ctx, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return fmt.Errorf("git rev-parse: %w", err)
 	}
 	branch := strings.TrimSpace(out)
+	// A linked worktree can release the exact accepted main commit without
+	// taking the main branch away from another checkout. Only PR landing
+	// pushes HEAD to a release branch; direct landing pushes the local main
+	// ref. The following origin sync check still refuses any different commit.
+	if allowDetachedPR && branch == "HEAD" {
+		if _, usesPR := e.landing().(*pullRequestLanding); usesPR {
+			return nil
+		}
+	}
 	if branch != "main" {
 		return fmt.Errorf("not on main (on %q); releases tag from main only", branch)
 	}
@@ -613,7 +622,7 @@ func (e *Engine) ReTag(ctx context.Context) (string, error) {
 	if err := e.prepareCI(ctx); err != nil {
 		return "", err
 	}
-	if err := e.preflight(ctx); err != nil {
+	if err := e.preflight(ctx, false); err != nil {
 		return "", err
 	}
 	tag := e.Manifest.Tag()

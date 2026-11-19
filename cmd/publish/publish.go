@@ -15,8 +15,8 @@
 // error and surfaces at load time.
 //
 // The release engine itself mirrors the hardened core/scripts/
-// publish/tag.sh: four pre-flight gates (working tree clean, on main,
-// in sync with origin, tag doesn't already exist), bump version,
+// publish/tag.sh: four pre-flight gates (working tree clean, main or a
+// detached PR checkout at exactly origin/main, tag doesn't already exist), bump version,
 // commit, tag, push — never with --force on either main or the tag.
 package publish
 
