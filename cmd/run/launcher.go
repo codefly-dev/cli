@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -150,6 +151,16 @@ func AttachNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspa
 	return err
 }
 
+func launcherStateDir(workspace, environment, scope string) string {
+	base := filepath.Join(workspace, ".codefly", "run", environment)
+	if scope == "" {
+		return base
+	}
+	// SDK compositions may overlap in one checkout. Each scope owns its
+	// issuer projections, delivery state and staged frontends.
+	return filepath.Join(base, "scopes", fmt.Sprintf("%x", sha256.Sum256([]byte(scope))))
+}
+
 func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, selectedRuntime, fixture string) (*launcher, error) {
 	if env == nil || env.Host == nil || selectedRuntime == resources.RuntimeContextContainer {
 		return nil, nil
@@ -166,7 +177,7 @@ func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace 
 	if err != nil {
 		return nil, fmt.Errorf("a native run delivers with the developer key, and none is held: %w", err)
 	}
-	stateDir := filepath.Join(workspace.Dir(), ".codefly", "run", env.Name)
+	stateDir := launcherStateDir(workspace.Dir(), env.Name, env.NamingScope)
 	launcherIdentity, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, stateDir)
 	if err != nil {
 		return nil, err

@@ -238,3 +238,23 @@ func writeNonGoWorkloadDir(t *testing.T, name string) string {
 	}
 	return root
 }
+
+func TestScopedLaunchersKeepTheirProjectedCredentials(t *testing.T) {
+	workspace, env := writeHostedNativeWorkspace(t)
+	start := func(scope string) (*identity.Launcher, string) {
+		l, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, launcherStateDir(workspace.Dir(), env.Name, scope))
+		require.NoError(t, err)
+		l.DeclareModule("authority", "edge")
+		projected, err := l.Project("authority/edge", l.Workload("authority", "edge"))
+		require.NoError(t, err)
+		return l, projected.File
+	}
+	first, path := start("builder-scenarios")
+	_, _ = start("builder-code-execution")
+	token, err := os.ReadFile(path)
+	require.NoError(t, err)
+	attester, err := native.NewAttester(first.Anchor())
+	require.NoError(t, err)
+	_, err = attester.Attest(t.Context(), string(token), env.Host.Audience)
+	require.NoError(t, err)
+}
