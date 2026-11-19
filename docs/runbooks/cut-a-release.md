@@ -56,7 +56,8 @@ release PR and tag trigger their required workflows. Follow the returned run URL
 a dispatch alone does not mean the release succeeded. Then follow the tag-triggered
 `release.yaml` run to verify signed distribution, as described in step 2.
 
-For a local release from a clean, synchronized `main` checkout:
+For a local release from a clean, synchronized `main` checkout or a detached
+worktree at exactly `origin/main`:
 
 `codefly publish` is the release. It bumps the manifest, lands the bump on `main` through a
 release pull request, then tags the commit `main` ends up carrying — in the right order, behind
@@ -69,8 +70,18 @@ codefly publish beta        # next beta: 1.4.0 → 1.4.1-beta.1, then beta.2
 ```
 
 It auto-detects this repo from `pkg/cli/info.yaml` and refuses to do anything unless the
-working tree is clean, you are on `main`, it exactly matches `origin/main`, and the target tag
-does not already exist. Neither `main` nor the tag is ever force-pushed.
+working tree is clean, it is on `main` or detached with pull-request landing,
+it exactly matches freshly fetched `origin/main`, and the target tag does not
+already exist. Feature branches and detached direct-push releases are refused. Neither `main` nor the tag is ever force-pushed.
+
+If another worktree owns `main`, prepare an isolated release checkout with
+`git fetch origin main` followed by
+`git worktree add --detach <release-directory> origin/main`, then run the same
+publish commands there. Publication and rollback change that worktree's HEAD,
+index and files; the other worktree's branch, index and files remain untouched.
+Remote-tracking refs and tags are shared Git state and still advance normally.
+Local publication uses the authenticated local GitHub session; it does not
+require copying that credential into an Actions secret.
 
 **The bump lands like any other change.** `publish` pushes the release commit to a short-lived
 `release-x.y.z` branch, opens a `release: vx.y.z` pull request against `main`, waits for

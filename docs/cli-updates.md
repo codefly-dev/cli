@@ -15,6 +15,12 @@ UTC build date with `codefly version --json`. Published macOS binaries are
 Developer ID signed and notarized before they enter either release archives or
 the Homebrew cask.
 
+The canonical release and versioned Go-install entry point is `./cmd/codefly`.
+It and the repository-root executable share command startup, including registration
+of the bundled companion index. A standalone CLI must resolve companion versions
+without `CODEFLY_COMPANION_INDEX`; that variable carries the CLI's selection to
+spawned agents, not a prerequisite an installer supplies.
+
 ## Install
 
 Homebrew owns its installed files:
