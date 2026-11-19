@@ -19,7 +19,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 )
 
 const keychainService = "codefly-delivery-signing"

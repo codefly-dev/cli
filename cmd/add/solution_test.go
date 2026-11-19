@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	fixturecomposition "github.com/codefly-dev/authority/libraries/fixture-composition/go"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
@@ -464,6 +464,18 @@ func TestTheShellLinksAndMountsTheRemote(t *testing.T) {
 		if !strings.Contains(app, required) {
 			t.Fatalf("the shell must contain %q", required)
 		}
+	}
+
+	// The page reaches modules through this solution's installation's edge,
+	// never the session's own: on the person's own session an owner-aware
+	// module (the record store) refuses an organisation role ("reach it
+	// through a role on the installation that owns it").
+	if !strings.Contains(app, "moduleApiBase={pageModuleApiBase(session)}") || strings.Contains(app, "session.moduleApiBase") {
+		t.Fatal("the shell must give the page its installation's module edge, not the session's own")
+	}
+	session := shellSession("notes")
+	if !strings.Contains(session, `installation.target === "notes")?.moduleApiBase`) || strings.Contains(session, "%!") {
+		t.Fatalf("the session must read the module edge of the solution's own installation:\n%s", session)
 	}
 
 	// Turbopack refuses to follow the remote's symlink out of the app's own

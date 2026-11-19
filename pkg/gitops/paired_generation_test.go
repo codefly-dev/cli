@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
-	runcomposition "github.com/codefly-dev/cli/pkg/composition"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	delivery "github.com/codefly-dev/authority/libraries/delivery/go"
+	runcomposition "github.com/codefly-dev/cli/pkg/composition"
+
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

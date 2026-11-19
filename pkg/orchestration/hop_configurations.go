@@ -171,7 +171,7 @@ func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, con
 		}
 		if info.GetName() == "hop" {
 			for _, value := range info.GetConfigurationValues() {
-				if value.GetKey() == "MODULES" {
+				if value.GetKey() == routedModulesKey {
 					listed = value.GetValue()
 				}
 			}
@@ -308,7 +308,7 @@ func publishedEndpoints(ctx context.Context, module *resources.Module) ([]routin
 			return nil, nil, fmt.Errorf("catalog listener %s/%s: %w", endpoint.Service, endpoint.Endpoint, policyErr)
 		}
 		switch {
-		case endpoint.Kind == composition.APIContractKindProtobuf && (endpoint.API == "grpc" || endpoint.API == "connect"):
+		case endpoint.Kind == composition.APIContractKindProtobuf && (endpoint.API == "grpc" || endpoint.API == connectTransport):
 			for _, policy := range policies {
 				// A procedure; its google.api.http routes belong to an HTTP face.
 				if strings.HasPrefix(policy.GetMethod(), "/") {
@@ -343,7 +343,7 @@ func routeForeignMethods(endpoints []routing.RouteEndpoint, foreign []modulecont
 	if len(foreign) == 0 {
 		return nil
 	}
-	rpc := func(e *routing.RouteEndpoint) bool { return e.Transport == "grpc" || e.Transport == "connect" }
+	rpc := func(e *routing.RouteEndpoint) bool { return e.Transport == "grpc" || e.Transport == connectTransport }
 	var services []string
 	for i := range endpoints {
 		if rpc(&endpoints[i]) && !slices.Contains(services, endpoints[i].Service) {

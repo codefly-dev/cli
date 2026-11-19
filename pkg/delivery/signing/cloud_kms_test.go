@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"golang.org/x/oauth2"
 )
 

@@ -7,7 +7,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/codefly-dev/authority/libraries/authority-core/go/domain"
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"

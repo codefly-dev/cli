@@ -37,6 +37,10 @@ on:
           release engine is part of what makes a release reproducible.
         type: string
         required: true
+      build-publisher:
+        description: Build this CLI repository's publisher from the checked-out main commit.
+        type: boolean
+        default: false
     secrets:
       release-token:
         description: >-
@@ -104,6 +108,7 @@ jobs:
       # fingerprint is pinned here (docs/cli-updates.md, "Verify a release
       # manually"). A rotated certificate fails this step loudly.
       - name: Install codefly ${{ inputs.codefly-version }} (verified)
+        if: ${{ !inputs.build-publisher }}
         env:
           CODEFLY_VERSION: ${{ inputs.codefly-version }}
           CERT_SHA256: 90:8A:DE:62:61:EB:3A:48:13:37:F7:D4:1A:5D:80:FF:08:3A:01:4E:53:4E:AD:84:34:76:ED:7F:3D:D1:13:ED
@@ -134,6 +139,18 @@ jobs:
           echo "$work/bin" >> "$GITHUB_PATH"
           "$work/bin/codefly" version
 
+      - name: Build this CLI's publisher from main
+        if: inputs.build-publisher
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$REPOSITORY" != codefly-dev/cli ]; then
+            echo "::error::build-publisher is only for the CLI publishing itself"; exit 1
+          fi
+          GOWORK=off GOBIN="$RUNNER_TEMP/publisher-bin" go install ./cmd/codefly
+          echo "$RUNNER_TEMP/publisher-bin" >> "$GITHUB_PATH"
+
       # `--ci` is also implied by CI=true; it is spelled out so the log says
       # which mode released. The engine commits and tags as the Actions bot
       # with signing off (main receives GitHub's signed squash commit), and
@@ -142,4 +159,7 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
           GITHUB_TOKEN: ${{ secrets.release-token }}
-        run: codefly publish "$BUMP" --ci
+        run: |
+          set -euo pipefail
+          codefly publish "$BUMP" --ci --dry-run
+          codefly publish "$BUMP" --ci

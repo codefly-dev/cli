@@ -25,13 +25,14 @@ codefly [flags]
 Flags:
 
 ```
-  -d, --debug                Enable debug mode
-      --focus                Enable focus log mode
-      --local-agents         Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working on local agent builds or offline.
-      --plugin-path string   Override the codefly home directory (default: ~/.codefly). Plugins, containers and logs resolve from <plugin-path>/agents, <plugin-path>/containers, <plugin-path>/logs. Equivalent to setting CODEFLY_HOME.
-      --timestamps           Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it (default true)
-      --trace                Enable trace mode
-      --track string         Tracker of actions -- advanced usage
+      --agent-updates string   Agent freshness policy for workspace run/build/deploy: check (default), auto, require-current, off; overrides CODEFLY_AGENT_UPDATES and workspace agent-update-policy
+  -d, --debug                  Enable debug mode
+      --focus                  Enable focus log mode
+      --local-agents           Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working on local agent builds or offline.
+      --plugin-path string     Override the codefly home directory (default: ~/.codefly). Plugins, containers and logs resolve from <plugin-path>/agents, <plugin-path>/containers, <plugin-path>/logs. Equivalent to setting CODEFLY_HOME.
+      --timestamps             Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it (default true)
+      --trace                  Enable trace mode
+      --track string           Tracker of actions -- advanced usage
 ```
 
 Subcommands:

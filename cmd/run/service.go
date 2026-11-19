@@ -158,7 +158,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// (parent SIGKILL, terminal force-closed). Without this, zombie
 	// trees from a previous `codefly run` survive and hold ports,
 	// making the next run appear to fork-bomb or fail port binding.
-	if err := processgroup.ReapStaleProcessGroups(ctx); err != nil {
+	if err = processgroup.ReapStaleProcessGroups(ctx); err != nil {
 		cli.Warning("stale process-group sweep failed: %v", err)
 	}
 	// SDK / test runs (`codefly run --cli-server`) spawn per-run dependency
@@ -182,7 +182,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// referenced by identity is not loadable as a local checkout until the CLI
 	// has pulled it, so the load below is precisely what fails without this —
 	// including for the dependency stacks the SDK spawns here.
-	if err := resolveRunPins(ctx); err != nil {
+	if err = resolveRunPins(ctx); err != nil {
 		return err
 	}
 
@@ -1165,6 +1165,7 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().BoolVar(&openDashboard, "open", false, "Open the dashboard in the default browser (requires --cli-server)")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")
+	ServiceCmd.Flags().Lookup("runtime-context").Annotations = map[string][]string{"codefly.dev/reference-default": {resources.RuntimeContextFree}}
 	ServiceCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
 	ServiceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
 	ServiceCmd.Flags().BoolVar(&standAlone, "stand-alone", false, "Begin service as standalone, i.e. without its dependencies")

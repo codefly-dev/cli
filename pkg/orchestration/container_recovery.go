@@ -48,7 +48,7 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 	if err != nil {
 		return scope, err
 	}
-	if err := dockerrun.SetContainerRecoveryScope(scope); err != nil {
+	if err = dockerrun.SetContainerRecoveryScope(scope); err != nil {
 		return scope, err
 	}
 	// The identity agents echo back, captured from our own projection so that
@@ -123,7 +123,7 @@ func ContainerRecoveryNamespaceOf(dir string) (string, error) {
 			_ = os.Unsetenv(recoveryscope.EnvironmentVariable)
 		}
 	}()
-	if err := dockerrun.SetContainerRecoveryScope(scope); err != nil {
+	if err = dockerrun.SetContainerRecoveryScope(scope); err != nil {
 		return "", err
 	}
 	_, namespace, err := recoveryscope.Inherited()

@@ -35,7 +35,7 @@ func TestStoppingCommandHelper(t *testing.T) {
 }
 
 // stoppingCommand starts the helper and waits until it handles signals.
-func stoppingCommand(t *testing.T, stopsIn time.Duration) (*exec.Cmd, *strings.Builder) {
+func stoppingCommand(t *testing.T, stopsIn time.Duration) (*exec.Cmd, func() string) {
 	t.Helper()
 	command := exec.Command(os.Args[0], "-test.run=^TestStoppingCommandHelper$")
 	command.Env = append(os.Environ(), stoppingCommandEnv+"="+stopsIn.String())
@@ -46,7 +46,6 @@ func stoppingCommand(t *testing.T, stopsIn time.Duration) (*exec.Cmd, *strings.B
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = command.Process.Kill() })
 	output := &strings.Builder{}
 	ready := make(chan struct{})
 	done := make(chan struct{})
@@ -66,13 +65,19 @@ func stoppingCommand(t *testing.T, stopsIn time.Duration) (*exec.Cmd, *strings.B
 			}
 		}
 	}()
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		<-done
+	})
 	select {
 	case <-ready:
 	case <-time.After(20 * time.Second):
 		t.Fatal("the command never handled signals")
 	}
-	t.Cleanup(func() { <-done })
-	return command, output
+	return command, func() string {
+		<-done
+		return output.String()
+	}
 }
 
 func exitCode(err error) int {
@@ -104,10 +109,10 @@ func TestASignalRepeatedAtOnceStopsInOrder(t *testing.T) {
 			}
 			err := command.Wait()
 			if code := exitCode(err); code != 0 {
-				t.Fatalf("the command exited %d before it had stopped (%v): %q", code, err, output.String())
+				t.Fatalf("the command exited %d before it had stopped (%v): %q", code, err, output())
 			}
-			if !strings.Contains(output.String(), "stopped in order") {
-				t.Fatalf("the command did not stop in order: %q", output.String())
+			if !strings.Contains(output(), "stopped in order") {
+				t.Fatalf("the command did not stop in order: %q", output())
 			}
 		})
 	}
@@ -129,12 +134,12 @@ func TestASignalRepeatedAfterTheIntervalForcesTheExit(t *testing.T) {
 	select {
 	case err := <-waited:
 		if code := exitCode(err); code != 130 {
-			t.Fatalf("the forced exit is %d (%v), want 130: %q", code, err, output.String())
+			t.Fatalf("the forced exit is %d (%v), want 130: %q", code, err, output())
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a deliberate second signal did not force the exit")
 	}
-	if strings.Contains(output.String(), "stopped in order") {
-		t.Fatalf("the command was not forced: %q", output.String())
+	if strings.Contains(output(), "stopped in order") {
+		t.Fatalf("the command was not forced: %q", output())
 	}
 }

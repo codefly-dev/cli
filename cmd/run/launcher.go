@@ -19,7 +19,7 @@ import (
 	authorityv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/authority/v1"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
-	"github.com/codefly-dev/authority/libraries/solutionhost/go"
+	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity"
 	nativeidentity "github.com/codefly-dev/authority/libraries/solutionhost/go/workloadidentity/native"
 	"github.com/codefly-dev/cli/pkg/composition"
