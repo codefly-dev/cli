@@ -32,8 +32,8 @@ Order is core → cli → standalone modules → agents, so a dependency is
 released before the consumers that pin it.
 
 Safety — the whole run is atomic at the pre-flight boundary:
-  1. EVERY repo is validated first (clean tree, on main, in sync with
-     origin, target tag free; service agents also: host can build every loader
+  1. EVERY repo is validated first (clean tree, main or detached PR checkout,
+     exactly at origin/main, target tag free; service agents also: host can build every loader
      platform and gh is available). If ANY repo fails, the run aborts
      before a single tag is pushed.
   2. Only once all repos pass does it publish, sequentially, stopping at
