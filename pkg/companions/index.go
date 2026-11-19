@@ -1,7 +1,7 @@
 // Package companions registers the companion index this CLI carries, so every
 // core call that names a companion image (CompanionImage, BuildSpecs, Images)
-// reads the CLI's choice. Import it for its side effect from every program
-// entry point.
+// reads the CLI's choice. The shared command package imports it for its side
+// effect, so both executable entry points register the same selection.
 package companions
 
 import (

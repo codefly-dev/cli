@@ -25,6 +25,9 @@ import (
 	"github.com/fatih/color"
 
 	"github.com/spf13/cobra"
+
+	// Both executable entry points import cmd; register their bundled selection here.
+	_ "github.com/codefly-dev/cli/pkg/companions"
 )
 
 // RootCmd represents the base command when called without any subcommands
