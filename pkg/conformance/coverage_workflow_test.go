@@ -184,7 +184,9 @@ func TestTestShardsRunEveryTestOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	module := exec.Command("go", "list", "-m")
+	// This module alone: under a go.work `go list -m` names every workspace
+	// module, and the prefix would be all of them joined.
+	module := exec.Command("go", "list", "-f", "{{.Module.Path}}", ".")
 	module.Dir = root
 	modulePath, err := module.Output()
 	if err != nil {

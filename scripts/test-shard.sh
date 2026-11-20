@@ -23,7 +23,10 @@ if ! [[ "$index" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] || ((index < 1 || index 
 fi
 
 cd "$(git rev-parse --show-toplevel)"
-module="$(go list -m)"
+# The module of this directory, not `go list -m`: under a go.work that links
+# sibling checkouts (scripts/bootstrap.sh writes one) that prints every
+# workspace module, and the package paths below would be built from all of them.
+module="$(go list -f '{{.Module.Path}}' .)"
 
 # One shard each: a package (relative to the module), and the -run pattern of
 # its share when it is split. A split package's patterns divide its top-level
