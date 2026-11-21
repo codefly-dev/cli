@@ -11,16 +11,16 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/authority/libraries/authority-client/go v0.2.1-0.20261118202554-e496c820ab86
-	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.2-0.20261118202554-e496c820ab86
-	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261118202554-e496c820ab86
-	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261118202554-e496c820ab86
-	github.com/codefly-dev/authority/libraries/hop/go v0.2.1-0.20261118202554-e496c820ab86
-	github.com/codefly-dev/authority/libraries/solutionhost/go v0.0.0-20261118202554-e496c820ab86
-	github.com/codefly-dev/core v0.19.35
+	github.com/codefly-dev/authority/libraries/authority-client/go v0.2.1-0.20261121111028-c3d7b090b1a9
+	github.com/codefly-dev/authority/libraries/authority-core/go v0.1.2-0.20261121111028-c3d7b090b1a9
+	github.com/codefly-dev/authority/libraries/delivery/go v0.0.0-20261121111028-c3d7b090b1a9
+	github.com/codefly-dev/authority/libraries/fixture-composition/go v0.0.0-20261121111028-c3d7b090b1a9
+	github.com/codefly-dev/authority/libraries/hop/go v0.2.1-0.20261121111028-c3d7b090b1a9
+	github.com/codefly-dev/authority/libraries/solutionhost/go v0.0.0-20261121111028-c3d7b090b1a9
+	github.com/codefly-dev/core v0.19.36-0.20261121094328-95a426c5096f
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
-	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261018052022-70dc7a546458
+	github.com/codefly-dev/sdk-go/workcontext v0.1.1-0.20261121101950-387a613100c4
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
