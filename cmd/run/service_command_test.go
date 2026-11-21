@@ -25,20 +25,18 @@ func TestRunServiceRejectsSingleRootFlagsWithSeveralRoots(t *testing.T) {
 		name        string
 		servicePath string
 		standAlone  bool
-		excludeRoot bool
 		want        string
 	}{
 		{name: "service path", servicePath: "services/backend", want: "--service-path"},
 		{name: "stand alone", standAlone: true, want: "--stand-alone"},
-		{name: "exclude root", excludeRoot: true, want: "--exclude-root"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateSingleRootFlags(roots, test.servicePath, test.standAlone, test.excludeRoot)
+			err := validateSingleRootFlags(roots, test.servicePath, test.standAlone)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validateSingleRootFlags(%v) = %v, want an error naming %s", roots, err, test.want)
 			}
 			// The same flags are untouched on a run that names one root.
-			if err := validateSingleRootFlags(roots[:1], test.servicePath, test.standAlone, test.excludeRoot); err != nil {
+			if err := validateSingleRootFlags(roots[:1], test.servicePath, test.standAlone); err != nil {
 				t.Fatalf("validateSingleRootFlags(one root) = %v, want nil", err)
 			}
 		})

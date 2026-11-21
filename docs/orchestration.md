@@ -98,8 +98,11 @@ consequences are worth knowing when changing this code:
 - Barriers that stop the playbook (`--load-only`, `--init-only`) wait for *every*
   root to reach them; stopping at the first would leave the others unstarted.
 
-`--stand-alone` and `--exclude-root` carve the origin out of its own graph, so
-the run command rejects them alongside more than one root.
+`--stand-alone` carves the origin out of its own graph, so the run command
+rejects it alongside more than one root. `--exclude-root` leaves out the origin
+alone, the first service named: the services named after it are still roots the
+run starts, which is how a dependency session (the SDK's `WithCoRoots`) starts a
+service its journey needs and nobody's closure reaches.
 
 ### Module closure
 

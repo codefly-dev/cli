@@ -318,8 +318,9 @@ on container-recovery scope, and `--stand-alone` cannot stand in for it (it skip
 the dependency *wiring* too, so a second solution has no host endpoints to
 resolve).
 
-`--service-path`, `--stand-alone` and `--exclude-root` each select or carve out a
-single service, so naming more than one root with any of them is rejected.
+`--service-path` and `--stand-alone` each select or carve out a single service,
+so naming more than one root with either is rejected. `--exclude-root` leaves
+out the first service named; the ones named after it still start.
 
 ```bash
 codefly run service api

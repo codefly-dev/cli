@@ -4875,7 +4875,7 @@ Flags:
       --cli-server                                Start CLI server
       --env string                                Workspace environment to run (default "local")
       --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
-      --exclude-root                              Exclude root service
+      --exclude-root                              Exclude root service (the first one named; services named after it still start)
       --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
       --fixture string                            Fixture override (defaults to the selected Codefly environment)
       --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)

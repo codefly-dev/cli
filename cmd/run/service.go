@@ -76,7 +76,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err := validateOpenDashboardFlag(openDashboard, withCLIServer); err != nil {
 		return err
 	}
-	if err := validateSingleRootFlags(args, servicePath, standAlone, excludeRoot); err != nil {
+	if err := validateSingleRootFlags(args, servicePath, standAlone); err != nil {
 		return err
 	}
 
@@ -721,10 +721,16 @@ func validateOpenDashboardFlag(open, cliServer bool) error {
 }
 
 // validateSingleRootFlags rejects the flags that only mean something for a run
-// with one root. --service-path IS the service selection, and --stand-alone and
-// --exclude-root each carve the origin out of its own graph — neither has a
-// reading that extends to a second root.
-func validateSingleRootFlags(args []string, servicePath string, standAlone, excludeRoot bool) error {
+// with one root. --service-path IS the service selection, and --stand-alone
+// carves the origin out of its own graph — neither has a reading that extends
+// to a second root.
+//
+// --exclude-root does: it leaves out the origin, the first service named, and
+// the services named after it are still roots the run starts beside what the
+// origin depends on. That is the run a dependency session asks for when the
+// journey it drives needs a service in nobody's closure (the SDK's
+// WithCoRoots): the caller stands where the origin would, and names the rest.
+func validateSingleRootFlags(args []string, servicePath string, standAlone bool) error {
 	if len(args) < 2 {
 		return nil
 	}
@@ -734,7 +740,6 @@ func validateSingleRootFlags(args []string, servicePath string, standAlone, excl
 	}{
 		{"--service-path", servicePath != ""},
 		{"--stand-alone", standAlone},
-		{"--exclude-root", excludeRoot},
 	} {
 		if flag.set {
 			return fmt.Errorf("%s runs a single service, but %d were named", flag.name, len(args))
@@ -1172,7 +1177,7 @@ func init() {
 	ServiceCmd.Flags().StringVar(&servicePath, "service-path", "", "Path to the service")
 	ServiceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
 	ServiceCmd.Flags().StringVar(&outputEnvService, "output-env-service", "", "Service whose runtime environment to export (module/service; defaults to the root service)")
-	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service")
+	ServiceCmd.Flags().BoolVar(&excludeRoot, "exclude-root", false, "Exclude root service (the first one named; services named after it still start)")
 	ServiceCmd.Flags().BoolVar(&initOnly, "init-only", false, "Initialize service only, i.e. without running it")
 	ServiceCmd.Flags().BoolVar(&loadOnly, "load-only", false, "LoadRequired service only, i.e. without running it")
 	ServiceCmd.Flags().StringVar(&environmentName, "env", orchestration.LocalEnvironmentName, "Workspace environment to run")
