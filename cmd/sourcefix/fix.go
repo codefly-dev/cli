@@ -57,34 +57,46 @@ type stagedFile struct {
 }
 
 func Run(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, options Options) (*Report, error) {
-	instance, err := services.Load(ctx, workspace, module, service)
+	client, _, err := LoadCode(ctx, workspace, module, service)
 	if err != nil {
-		return nil, fmt.Errorf("load service plugin: %w", err)
-	}
-	if err = instance.LoadRuntime(ctx, true); err != nil {
-		return nil, fmt.Errorf("load runtime contract: %w", err)
-	}
-	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
-	if err != nil {
-		return nil, fmt.Errorf("select local environment: %w", err)
-	}
-	environment, err := env.Proto()
-	if err != nil {
-		return nil, fmt.Errorf("encode local environment: %w", err)
-	}
-	instance.Runtime.Workspace = workspace
-	if _, err = instance.Runtime.Load(ctx, environment); err != nil {
-		return nil, fmt.Errorf("initialize source root: %w", err)
-	}
-	client, err := services.LoadCode(ctx, service)
-	if err != nil {
-		return nil, fmt.Errorf("load Code client: %w", err)
+		return nil, err
 	}
 	files, err := ResolveFiles(ctx, client, service, options.Files, options.Paths)
 	if err != nil {
 		return nil, err
 	}
 	return FixFiles(ctx, client, service.Name, files, options)
+}
+
+// LoadCode loads a service's plugin with its source root initialised and
+// returns the Code client every source operation goes through, beside the
+// loaded instance (its agent's advertised information included). It is the
+// one way a command reaches a service's source: nothing here parses a file.
+func LoadCode(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (Executor, *services.Instance, error) {
+	instance, err := services.Load(ctx, workspace, module, service)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load service plugin: %w", err)
+	}
+	if err = instance.LoadRuntime(ctx, true); err != nil {
+		return nil, nil, fmt.Errorf("load runtime contract: %w", err)
+	}
+	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("select local environment: %w", err)
+	}
+	environment, err := env.Proto()
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode local environment: %w", err)
+	}
+	instance.Runtime.Workspace = workspace
+	if _, err = instance.Runtime.Load(ctx, environment); err != nil {
+		return nil, nil, fmt.Errorf("initialize source root: %w", err)
+	}
+	client, err := services.LoadCode(ctx, service)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load Code client: %w", err)
+	}
+	return client, instance, nil
 }
 
 // ResolveFiles turns explicit files and directory scopes into a deterministic

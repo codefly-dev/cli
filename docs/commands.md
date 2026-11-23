@@ -1024,6 +1024,48 @@ Start — only there are the origin's endpoints and its dependencies' connection
 final — so Codefly refuses that combination rather than writing a file that
 silently omits them.
 
+### `codefly lint usage [name]`
+
+Check a service against the usage contracts of what it consumes.
+
+```bash
+codefly lint usage backend/api
+codefly lint usage backend/api --json
+```
+
+A service agent may publish a **usage contract** (`codefly/usage/v1`, read by
+core's `contracts/usage`): the rules for code that consumes the services it
+manages, each with a reason and what to do instead. `codefly lint usage`:
+
+1. gathers the contract of the service's own agent and of the agent of every
+   workspace service it declares under `service-dependencies`, each agent
+   asked once;
+2. asks the service's language plugin for its semantic index
+   (`Code.GetSemanticIndex`) — the CLI parses no source;
+3. reports every place a rule's `detect` clause matches, with the rule's
+   reason and its alternative.
+
+```
+store/open.go:12:9: error PG-OPEN-001 call: database/sql.Open
+  Open the database through postgres.Open, never a driver (codefly.dev/postgres:0.0.151)
+  why: A pool or connection opened with a driver carries no tenant or user identity ...
+  do:  Call postgres.Open with the read-only and the read-write connection ...
+```
+
+A finding of severity `error` fails the command; a `warn` is reported and
+does not. When the plugin could not inspect every file the report says
+`incomplete`, and an empty result is then not a clean bill.
+
+What it does not do yet:
+
+- It reads dependencies on **services**. A solution's consumed **modules**
+  are not read, and an interface-only dependency names no agent to ask.
+- A call through an import alias (`import pg "…/pgxpool"`) or of a name
+  imported on its own (`from psycopg import connect`) is missed, never
+  guessed: the index records calls as written.
+- There is no exception file, and `codefly lint service` does not run this
+  check.
+
 ### `codefly test solution`
 
 Test a solution as a unit from its root. It resolves the same `service-entry`
