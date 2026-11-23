@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -62,8 +64,12 @@ func envelopeWriter(gatewayURL string) *gitops.EnvelopeWriter {
 // readEnvelope is the first host call a delivery makes, wrapped as deliver
 // wraps it.
 func readEnvelope(gatewayURL string) func(context.Context) error {
+	return readEnvelopeWith(envelopeWriter(gatewayURL))
+}
+
+func readEnvelopeWith(writer *gitops.EnvelopeWriter) func(context.Context) error {
 	return func(ctx context.Context) error {
-		if _, _, err := envelopeWriter(gatewayURL).Current(ctx); err != nil {
+		if _, _, err := writer.Current(ctx); err != nil {
 			return fmt.Errorf("plan the module envelope: %w", err)
 		}
 		return nil
@@ -133,12 +139,16 @@ func serveComposition(t *testing.T, host compositionv1.CompositionServiceServer)
 // deliverTo delivers a module manifest through the composition interface at
 // target, as a delivery attempt does.
 func deliverTo(t *testing.T, target orchestration.GRPCTarget) func(context.Context) error {
+	return deliverWith(t, target.Dial)
+}
+
+func deliverWith(t *testing.T, dial func() (*grpc.ClientConn, error)) func(context.Context) error {
 	return func(ctx context.Context) error {
 		_, private, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 		signer, err := solutionhost.NewInMemorySigner("dev-test", private)
 		require.NoError(t, err)
-		conn, err := target.Dial()
+		conn, err := dial()
 		require.NoError(t, err)
 		defer func() { _ = conn.Close() }()
 		composition := gitops.NewCompositionDelivery(conn, signer, nil, nil, nil, nil, nil)
@@ -158,11 +168,22 @@ func deliverTo(t *testing.T, target orchestration.GRPCTarget) func(context.Conte
 // answers it once: the ones that say "not serving yet" are asked again, the
 // ones that say no are not.
 func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testing.T) {
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	refused := orchestration.GRPCTarget{Address: closed.Addr().String()}
-	refusedURL := "http://" + closed.Addr().String()
-	require.NoError(t, closed.Close())
+	// Inject a transport refusal for both clients. A released loopback
+	// port can be reused by another fixture before a subtest runs.
+	refusedDial := func(context.Context, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	}
+	refusedGRPC := deliverWith(t, func() (*grpc.ClientConn, error) {
+		return grpc.NewClient("passthrough:///gateway.test",
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(refusedDial))
+	})
+	refusedWriter := envelopeWriter("http://gateway.test")
+	refusedWriter.Client = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
+			return refusedDial(ctx, address)
+		},
+	}}
 	refusing := func(code codes.Code) func(context.Context) error {
 		return deliverTo(t, serveComposition(t, &refusingComposition{refusals: []codes.Code{code}}))
 	}
@@ -176,7 +197,7 @@ func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testin
 		{"the host is unavailable", refusing(codes.Unavailable), "code = Unavailable", true},
 		{"the host is out of time", refusing(codes.DeadlineExceeded), "code = DeadlineExceeded", true},
 		{"the host is out of capacity", refusing(codes.ResourceExhausted), "code = ResourceExhausted", true},
-		{"no answer: connection refused", deliverTo(t, refused), "code = Unavailable", true},
+		{"no answer: connection refused", refusedGRPC, "code = Unavailable", true},
 		{"the endpoint serves no composition interface", deliverTo(t, serveComposition(t, nil)), "code = Unimplemented", false},
 		{"an internal failure", refusing(codes.Internal), "code = Internal", false},
 		{"a manifest the host cannot read", refusing(codes.InvalidArgument), "code = InvalidArgument", false},
@@ -188,7 +209,7 @@ func TestANativeDeliveryRetriesExactlyTheRefusalsThatMeanNotServingYet(t *testin
 			_, err := envelopeWriter(answering(t, http.StatusConflict, "revision moved")).Ensure(ctx, func(uint64) ([]byte, error) { return []byte(`{}`), nil })
 			return err
 		}, "HTTP 409", true},
-		{"legacy HTTP: no answer: connection refused", readEnvelope(refusedURL), "connection refused", true},
+		{"legacy HTTP: no answer: connection refused", readEnvelopeWith(refusedWriter), "connection refused", true},
 		{"legacy HTTP: a 500 from the host's delivery endpoint", postManifestHTTP(t, answering(t, http.StatusInternalServerError, `{"error":"boom"}`)), "(500 Internal Server Error): boom", true},
 		{"legacy HTTP: a 404 from the host's delivery endpoint: a wrong endpoint", postManifestHTTP(t, answering(t, http.StatusNotFound, `{"error":"no such inbox"}`)), "(404 Not Found): no such inbox", false},
 		{"legacy HTTP: a 409 from the host's delivery endpoint: a different document", postManifestHTTP(t, answering(t, http.StatusConflict, `{"error":"different document"}`)), "(409 Conflict): different document", false},
