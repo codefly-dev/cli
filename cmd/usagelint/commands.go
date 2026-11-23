@@ -29,7 +29,10 @@ those contracts, asks the service's language plugin for its semantic index,
 and reports every place a rule's detect clause matches.
 
 A finding of severity error fails the command. A warning is reported and
-does not. A rule with no detect clause for the service's language applies as
+does not. The command also fails when the plugin left source unread, a file
+it could not inspect or a kind of place its analyzer does not project, and a
+rule could have matched there: the partial report is printed, and it is not
+a pass. A rule with no detect clause for the service's language applies as
 text only and cannot be reported here.
 
 What is not found: a call made through an import alias, or of a name imported
@@ -55,23 +58,50 @@ than guessed.`,
 			if err != nil {
 				return err
 			}
-			if machineReadable {
-				encoder := json.NewEncoder(os.Stdout)
-				encoder.SetIndent("", "  ")
-				if err := encoder.Encode(report); err != nil {
-					return err
-				}
-			} else {
-				Render(os.Stdout, report)
-			}
-			if report.Errors > 0 {
-				return violations{count: report.Errors, machineReadable: machineReadable}
-			}
-			return nil
+			return finish(os.Stdout, report, machineReadable)
 		},
 	}
 	command.Flags().BoolVar(&machineReadable, "json", false, "Emit the report as JSON")
 	return command
+}
+
+// finish writes the report and decides the command's status. The report is
+// always written first, a partial one included, so a failure still shows
+// what was found. The command then fails on a violation of severity error,
+// and on a check that could not vouch for the service: an index that left
+// source unread, beside a rule that could have matched in it, passes nothing.
+func finish(out io.Writer, report *Report, machineReadable bool) error {
+	if machineReadable {
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			return err
+		}
+	} else {
+		Render(out, report)
+	}
+	switch {
+	case report.Errors > 0:
+		return violations{count: report.Errors, machineReadable: machineReadable}
+	case report.Unverified():
+		return unverified{service: report.Service, gaps: len(report.Incomplete), machineReadable: machineReadable}
+	}
+	return nil
+}
+
+// unverified is the failure of a check that could not read everything a rule
+// might have matched in.
+type unverified struct {
+	service         string
+	gaps            int
+	machineReadable bool
+}
+
+func (u unverified) Error() string {
+	if u.machineReadable {
+		return ""
+	}
+	return fmt.Sprintf("%s could not be checked completely (%d gap(s) above); this is not a pass", u.service, u.gaps)
 }
 
 // violations is the failure of a check that found errors. With --json the
@@ -117,8 +147,8 @@ func Render(out io.Writer, report *Report) {
 		}
 	}
 	switch {
-	case len(report.Findings) == 0 && len(report.Incomplete) > 0:
-		fmt.Fprintf(out, "\n%s: nothing found, but not every source file could be inspected\n", report.Service)
+	case len(report.Incomplete) > 0:
+		fmt.Fprintf(out, "\n%s: %d error(s), %d warning(s) in what was read; not everything could be read\n", report.Service, report.Errors, report.Warnings)
 	case len(report.Findings) == 0:
 		fmt.Fprintf(out, "\n%s: no usage rule violated\n", report.Service)
 	default:

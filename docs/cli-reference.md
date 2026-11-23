@@ -3728,7 +3728,10 @@ those contracts, asks the service's language plugin for its semantic index,
 and reports every place a rule's detect clause matches.
 
 A finding of severity error fails the command. A warning is reported and
-does not. A rule with no detect clause for the service's language applies as
+does not. The command also fails when the plugin left source unread, a file
+it could not inspect or a kind of place its analyzer does not project, and a
+rule could have matched there: the partial report is printed, and it is not
+a pass. A rule with no detect clause for the service's language applies as
 text only and cannot be reported here.
 
 What is not found: a call made through an import alias, or of a name imported

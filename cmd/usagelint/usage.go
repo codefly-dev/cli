@@ -13,6 +13,7 @@ package usagelint
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/codefly-dev/cli/cmd/sourcefix"
@@ -61,12 +62,30 @@ type Report struct {
 	Service string `json:"service"`
 	// Owners are the contracts checked, in the order they were gathered.
 	Owners []Owner `json:"owners"`
-	// Incomplete is set when the plugin could not inspect every source file,
-	// so an empty Findings is not a clean bill.
+	// Incomplete says what the plugin could not read: a source file it failed
+	// to inspect, or a kind of place its analyzer does not project. While it
+	// is set, finding nothing is not a clean bill, and Unverified says
+	// whether that fails the check.
 	Incomplete []string  `json:"incomplete,omitempty"`
 	Findings   []Finding `json:"findings"`
 	Errors     int       `json:"errors"`
 	Warnings   int       `json:"warnings"`
+}
+
+// Unverified is whether the check could not vouch for the service: something
+// went unread, and a rule here has a detect clause that could have matched
+// in it. A service whose contracts detect nothing in its languages loses
+// nothing to an incomplete index, so it is not failed for one.
+func (report *Report) Unverified() bool {
+	if len(report.Incomplete) == 0 {
+		return false
+	}
+	for _, owner := range report.Owners {
+		if owner.Detectable > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Check matches every contract against one semantic index. A contract its
@@ -95,6 +114,13 @@ func Check(service string, sources []Source, index *basev0.SemanticIndex) (*Repo
 			}
 		}
 		report.Owners = append(report.Owners, owner)
+		// What this index left unread for this contract is the same sentence
+		// whichever owner asks, so it is reported once.
+		for _, gap := range contract.Unread(index) {
+			if !slices.Contains(report.Incomplete, gap) {
+				report.Incomplete = append(report.Incomplete, gap)
+			}
+		}
 		for _, found := range contract.Detect(index) {
 			rule := contract.Rule(found.RuleID)
 			report.Findings = append(report.Findings, Finding{

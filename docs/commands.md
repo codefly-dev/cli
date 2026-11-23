@@ -1053,8 +1053,16 @@ store/open.go:12:9: error PG-OPEN-001 call: database/sql.Open
 ```
 
 A finding of severity `error` fails the command; a `warn` is reported and
-does not. When the plugin could not inspect every file the report says
-`incomplete`, and an empty result is then not a clean bill.
+does not.
+
+The command also fails, with exit status 1, when the check is **incomplete**
+and a rule could have matched in what went unread. Two things make it so: a
+source file the plugin could not inspect, and a plugin whose analyzer does not
+project calls outside functions and methods (module top-level statements,
+package-level initializers), which is every plugin built before core recorded
+them. The partial report is printed first, findings included; it is not a pass.
+A service whose contracts detect nothing in its languages is not failed for an
+incomplete index.
 
 What it does not do yet:
 
