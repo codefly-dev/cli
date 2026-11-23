@@ -70,6 +70,8 @@ type Report struct {
 	Findings   []Finding `json:"findings"`
 	Errors     int       `json:"errors"`
 	Warnings   int       `json:"warnings"`
+
+	unknownLanguageCoverage bool
 }
 
 // Unverified is whether the check could not vouch for the service: something
@@ -77,6 +79,9 @@ type Report struct {
 // in it. A service whose contracts detect nothing in its languages loses
 // nothing to an incomplete index, so it is not failed for one.
 func (report *Report) Unverified() bool {
+	if report.unknownLanguageCoverage {
+		return true
+	}
 	if len(report.Incomplete) == 0 {
 		return false
 	}
@@ -93,10 +98,18 @@ func (report *Report) Unverified() bool {
 // cannot be read is not an empty one.
 func Check(service string, sources []Source, index *basev0.SemanticIndex) (*Report, error) {
 	report := &Report{Service: service, Owners: []Owner{}, Findings: []Finding{}}
+	languages := index.GetLanguages()
+	unknownLanguage := false
 	if index.GetState() != basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_COMPLETE {
+		unknownLanguage = len(languages) == 0
 		report.Incomplete = append(report.Incomplete, fmt.Sprintf("the semantic index is %s", index.GetState()))
 		for _, issue := range index.GetIssues() {
 			report.Incomplete = append(report.Incomplete, fmt.Sprintf("%s: %s", issue.GetPath(), issue.GetMessage()))
+			if !slices.ContainsFunc(index.GetFiles(), func(file *basev0.SemanticFile) bool {
+				return file.GetPath() == issue.GetPath() && file.GetLanguage() != ""
+			}) {
+				unknownLanguage = true
+			}
 		}
 	}
 	for _, source := range sources {
@@ -106,8 +119,12 @@ func Check(service string, sources []Source, index *basev0.SemanticIndex) (*Repo
 		}
 		owner := Owner{Owner: source.Owner, Through: source.Through, Rules: len(contract.Rules)}
 		for i := range contract.Rules {
-			for _, language := range index.GetLanguages() {
-				if contract.Rules[i].Detects(language) != nil {
+			rule := &contract.Rules[i]
+			if unknownLanguage && len(rule.Detect) > 0 {
+				report.unknownLanguageCoverage = true
+			}
+			for _, language := range languages {
+				if rule.Detects(language) != nil {
 					owner.Detectable++
 					break
 				}
