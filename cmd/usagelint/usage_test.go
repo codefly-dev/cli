@@ -32,8 +32,9 @@ func consumer(state basev0.SemanticIndexState) *basev0.SemanticIndex {
 		return &basev0.SemanticLocation{Path: path, StartLine: line, StartColumn: 9}
 	}
 	return &basev0.SemanticIndex{
-		State:     state,
-		Languages: []string{"go"},
+		State:              state,
+		FileCallsProjected: true,
+		Languages:          []string{"go"},
 		Files: []*basev0.SemanticFile{
 			{Path: "store/open.go", Language: "go", Imports: []string{"database/sql"}},
 			{Path: "store/clean.go", Language: "go", Imports: []string{"context"}},
@@ -114,7 +115,7 @@ func TestACleanServiceSaysSoAndAnUninspectedOneDoesNot(t *testing.T) {
 	rendered.Reset()
 	Render(&rendered, report)
 	if len(report.Incomplete) != 2 || strings.Contains(rendered.String(), "no usage rule violated") ||
-		!strings.Contains(rendered.String(), "not every source file could be inspected") ||
+		!strings.Contains(rendered.String(), "backend/api: 0 error(s), 0 warning(s) in what was read; not everything could be read") ||
 		!strings.Contains(rendered.String(), "store/broken.go: syntax error") {
 		t.Fatalf("an index that is not complete is not a clean bill: %+v\n%s", report, rendered.String())
 	}
@@ -142,5 +143,72 @@ func TestAnUnreadableContractFailsTheCheckNamingItsOwner(t *testing.T) {
 	_, err := Check("backend/api", sources, consumer(basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_COMPLETE))
 	if err == nil || !strings.Contains(err.Error(), "usage contract of codefly.dev/store:1.5.0") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// The command's status, case by case. The report is written in every one of
+// them, a partial report included.
+func TestTheCommandFailsOnAViolationAndOnAnIncompleteCheck(t *testing.T) {
+	contract := []Source{{Owner: "codefly.dev/store:1.5.0", Through: "its own agent", Document: advertised(t)}}
+	complete := basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_COMPLETE
+	degraded := basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_DEGRADED
+	clean := func(state basev0.SemanticIndexState) *basev0.SemanticIndex {
+		index := consumer(state)
+		index.Symbols = nil
+		return index
+	}
+	// An analyzer that does not project calls outside functions: the index
+	// is complete as far as it goes, and initializers went unread.
+	older := clean(complete)
+	older.FileCallsProjected = false
+	// A service in a language no clause of the contract names.
+	otherLanguage := clean(degraded)
+	otherLanguage.Languages = []string{"rust"}
+	otherLanguage.Files = []*basev0.SemanticFile{{Path: "src/lib.rs", Language: "rust"}}
+
+	for name, c := range map[string]struct {
+		sources []Source
+		index   *basev0.SemanticIndex
+		fails   string // "" passes
+		shows   string
+	}{
+		"clean and complete passes":                       {contract, clean(complete), "", "no usage rule violated"},
+		"an error fails":                                  {contract, consumer(complete), "1 usage rule violation(s)", "error STORE-CONN-001"},
+		"a file that could not be inspected fails":        {contract, clean(degraded), "could not be checked completely", "incomplete: the semantic index is"},
+		"an error in a partial index is reported as one":  {contract, consumer(degraded), "1 usage rule violation(s)", "error STORE-CONN-001"},
+		"initializers the analyzer did not project fail":  {contract, older, "could not be checked completely", "incomplete: calls outside functions and methods"},
+		"incomplete with nothing detectable there passes": {contract, otherLanguage, "", "0 checkable here"},
+		"incomplete with no contract at all passes":       {nil, clean(degraded), "", "no agent it consumes publishes a usage contract"},
+	} {
+		report, err := Check("backend/api", c.sources, c.index)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, machineReadable := range []bool{false, true} {
+			var out bytes.Buffer
+			status := finish(&out, report, machineReadable)
+			if out.Len() == 0 {
+				t.Errorf("%s: nothing was written before the status was decided", name)
+			}
+			switch {
+			case c.fails == "" && status != nil:
+				t.Errorf("%s: failed with %q, want a pass", name, status)
+			case c.fails != "" && status == nil:
+				t.Errorf("%s: passed, want a failure saying %q:\n%s", name, c.fails, out.String())
+			case c.fails != "" && !machineReadable && !strings.Contains(status.Error(), c.fails):
+				t.Errorf("%s: failed with %q, want %q", name, status, c.fails)
+			case c.fails != "" && machineReadable && status.Error() != "":
+				t.Errorf("%s: with --json the report is the message, got a second one: %q", name, status)
+			}
+			if !machineReadable && !strings.Contains(out.String(), c.shows) {
+				t.Errorf("%s: the output lacks %q:\n%s", name, c.shows, out.String())
+			}
+			if machineReadable {
+				var decoded Report
+				if err := json.Unmarshal(out.Bytes(), &decoded); err != nil || decoded.Service != "backend/api" {
+					t.Errorf("%s: stdout is not the report alone: %v\n%s", name, err, out.String())
+				}
+			}
+		}
 	}
 }
