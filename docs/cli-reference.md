@@ -5480,6 +5480,7 @@ Subcommands:
 - [`codefly sync library-dependencies`](#codefly-sync-library-dependencies)
 - [`codefly sync service`](#codefly-sync-service)
 - [`codefly sync solution-sdk`](#codefly-sync-solution-sdk)
+- [`codefly sync usage`](#codefly-sync-usage)
 
 ## `codefly sync library-dependencies`
 
@@ -5557,6 +5558,39 @@ Flags:
       --check                do not write; exit 1 if the library or service-dependencies are out of date
       --force                overwrite a library generated from a different version of a consumed contract
       --language strings     languages to generate: go,typescript,python
+```
+
+## `codefly sync usage`
+
+Write the usage rules of the agents a service consumes into its AGENTS.md
+
+```
+Write the usage rules of what a service consumes into its AGENTS.md.
+
+The service's own agent and the agent of every service it depends on may
+publish a usage contract. This command renders their rules, one line each,
+into a block of the service's AGENTS.md, between two markers. The block is
+regenerated on every run and never edited by hand; everything outside the
+markers is left as it is. When nothing the service consumes publishes a
+contract, the block is removed, and no file is created for it.
+
+A coding agent reads AGENTS.md without being asked, so this is how it learns
+a rule exists before it writes the code. The reason behind a rule and what to
+do instead are printed by 'codefly lint usage' where the rule is broken.
+
+With --check nothing is written and the command fails when the file is not
+current: the drift gate for CI.
+```
+
+```
+codefly sync usage [module/]service
+```
+
+Flags:
+
+```
+      --check   Write nothing and fail when the file is not current
+      --json    Emit the result as JSON
 ```
 
 ## `codefly terminal`

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/codefly-dev/cli/cmd/sync"
+	"github.com/codefly-dev/cli/cmd/usagelint"
 	"github.com/spf13/cobra"
 )
 
@@ -15,4 +16,5 @@ func init() {
 	SyncCmd.AddCommand(sync.ServiceCmd)
 	SyncCmd.AddCommand(sync.LibraryDependenciesCmd)
 	SyncCmd.AddCommand(sync.SolutionSDKCmd)
+	SyncCmd.AddCommand(usagelint.GuidanceCmd)
 }

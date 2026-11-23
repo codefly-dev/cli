@@ -155,3 +155,90 @@ func Render(out io.Writer, report *Report) {
 		fmt.Fprintf(out, "\n%s: %d error(s), %d warning(s)\n", report.Service, report.Errors, report.Warnings)
 	}
 }
+
+// GuidanceCmd writes the usage rules a service consumes into its AGENTS.md.
+var GuidanceCmd = newGuidanceCommand()
+
+func newGuidanceCommand() *cobra.Command {
+	var check, machineReadable bool
+	command := &cobra.Command{
+		Use:   "usage [module/]service",
+		Short: "Write the usage rules of the agents a service consumes into its AGENTS.md",
+		Long: `Write the usage rules of what a service consumes into its AGENTS.md.
+
+The service's own agent and the agent of every service it depends on may
+publish a usage contract. This command renders their rules, one line each,
+into a block of the service's AGENTS.md, between two markers. The block is
+regenerated on every run and never edited by hand; everything outside the
+markers is left as it is. When nothing the service consumes publishes a
+contract, the block is removed, and no file is created for it.
+
+A coding agent reads AGENTS.md without being asked, so this is how it learns
+a rule exists before it writes the code. The reason behind a rule and what to
+do instead are printed by 'codefly lint usage' where the rule is broken.
+
+With --check nothing is written and the command fails when the file is not
+current: the drift gate for CI.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ctx, done := common.NewContext()
+			defer done()
+			ctx, stop := common.SignalContext(ctx)
+			defer stop()
+			cli.Init()
+			if machineReadable {
+				defer cli.ProtectResultStream()()
+			}
+			defer services.ClearAgents()
+			workspace, module, service, err := common.LoadRequiredE(ctx, args)
+			if err != nil {
+				return err
+			}
+			result, err := Sync(ctx, workspace, module, service, check)
+			if err != nil {
+				return err
+			}
+			if machineReadable {
+				encoder := json.NewEncoder(os.Stdout)
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(result); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintln(os.Stdout, describe(result, check))
+			}
+			if check && result.Changed {
+				return stale{path: result.Path, machineReadable: machineReadable}
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&check, "check", false, "Write nothing and fail when the file is not current")
+	command.Flags().BoolVar(&machineReadable, "json", false, "Emit the result as JSON")
+	return command
+}
+
+func describe(result *Guidance, check bool) string {
+	switch {
+	case !result.Changed && result.Owners == 0:
+		return fmt.Sprintf("%s: no agent it consumes publishes a usage contract; nothing to write", result.Service)
+	case !result.Changed:
+		return fmt.Sprintf("%s: %s is current (%d owner(s))", result.Service, result.Path, result.Owners)
+	case check:
+		return fmt.Sprintf("%s: %s is not current; run `codefly sync usage`", result.Service, result.Path)
+	}
+	return fmt.Sprintf("%s: wrote the usage rules of %d owner(s) to %s", result.Service, result.Owners, result.Path)
+}
+
+// stale is the failure of --check on a file that is not current.
+type stale struct {
+	path            string
+	machineReadable bool
+}
+
+func (s stale) Error() string {
+	if s.machineReadable {
+		return ""
+	}
+	return fmt.Sprintf("%s is not current with the usage rules of what the service consumes", s.path)
+}
