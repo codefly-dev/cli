@@ -165,6 +165,11 @@ func TestTheCommandFailsOnAViolationAndOnAnIncompleteCheck(t *testing.T) {
 	otherLanguage := clean(degraded)
 	otherLanguage.Languages = []string{"rust"}
 	otherLanguage.Files = []*basev0.SemanticFile{{Path: "src/lib.rs", Language: "rust"}}
+	unknownLanguage := &basev0.SemanticIndex{State: degraded}
+	unreadFile := &basev0.SemanticIndex{
+		State: degraded, Languages: otherLanguage.Languages, Files: otherLanguage.Files,
+		Issues: []*basev0.SemanticIssue{{Path: "unread.go", Message: "file too large"}},
+	}
 
 	for name, c := range map[string]struct {
 		sources []Source
@@ -177,6 +182,8 @@ func TestTheCommandFailsOnAViolationAndOnAnIncompleteCheck(t *testing.T) {
 		"a file that could not be inspected fails":        {contract, clean(degraded), "could not be checked completely", "incomplete: the semantic index is"},
 		"an error in a partial index is reported as one":  {contract, consumer(degraded), "1 usage rule violation(s)", "error STORE-CONN-001"},
 		"initializers the analyzer did not project fail":  {contract, older, "could not be checked completely", "incomplete: calls outside functions and methods"},
+		"incomplete without language information fails":   {contract, unknownLanguage, "could not be checked completely", "incomplete: the semantic index is"},
+		"a missing file may be in a different language":   {contract, unreadFile, "could not be checked completely", "unread.go: file too large"},
 		"incomplete with nothing detectable there passes": {contract, otherLanguage, "", "0 checkable here"},
 		"incomplete with no contract at all passes":       {nil, clean(degraded), "", "no agent it consumes publishes a usage contract"},
 	} {

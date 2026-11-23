@@ -1061,8 +1061,9 @@ source file the plugin could not inspect, and a plugin whose analyzer does not
 project calls outside functions and methods (module top-level statements,
 package-level initializers), which is every plugin built before core recorded
 them. The partial report is printed first, findings included; it is not a pass.
-A service whose contracts detect nothing in its languages is not failed for an
-incomplete index.
+When the plugin cannot identify the language of unread source, any detect
+clause can make the check incomplete. A partial index with known languages
+can pass when none of its rules applies to those languages.
 
 What it does not do yet:
 
