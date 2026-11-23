@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -110,7 +111,13 @@ func nativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []uint1
 		if instance == nil || !isLoopbackHostname(instance.GetHostname()) {
 			continue
 		}
-		ports = append(ports, uint16(instance.GetPort()))
+		// A port outside the TCP range names nothing a process can bind, so
+		// there is nothing to hold; truncating it would hold a stranger's port.
+		port := instance.GetPort()
+		if port == 0 || port > math.MaxUint16 {
+			continue
+		}
+		ports = append(ports, uint16(port))
 	}
 	return ports
 }

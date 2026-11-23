@@ -87,6 +87,7 @@ func checkVendoredPackages(ctx context.Context, ws *resources.Workspace, scope s
 		if overlay != nil && overlay.Resolve[ref.Name] != nil && (resolution.Kind == resources.ResolutionLocalPath || resolution.Kind == resources.ResolutionWorktree) && ref.Source != "" {
 			// An explicit checkout overrides the committed pin. Without local
 			// revision evidence the archive can only be reported as uncomparable.
+			//nolint:gosec // git is invoked with a fixed subcommand; resolution.Dir is the resolved checkout's path, never a shell.
 			revision, _ := exec.CommandContext(ctx, "git", "-C", resolution.Dir, "rev-parse", "--verify", "HEAD").Output()
 			source.Version = strings.TrimSpace(string(revision))
 		}

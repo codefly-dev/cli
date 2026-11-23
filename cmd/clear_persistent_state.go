@@ -107,7 +107,7 @@ func humanAge(age time.Duration) string {
 	}
 }
 
-func (state persistentState) fields() []*wool.LogField {
+func (state *persistentState) fields() []*wool.LogField {
 	scope := state.Run.NamingScope
 	if scope == "" {
 		scope = "(none)"
