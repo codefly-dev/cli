@@ -43,7 +43,7 @@ func Block(sources []Source) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("usage contract of %s: %w", source.Owner, err)
 		}
-		fmt.Fprintf(&out, "\n### %s (%s)\n\n%s\n\n", source.Owner, source.Through, oneLine(contract.Summary))
+		fmt.Fprintf(&out, "\n### %s (%s)\n\n**Summary** %s\n\n", source.Owner, source.Through, oneLine(contract.Summary))
 		for i := range contract.Rules {
 			rule := &contract.Rules[i]
 			checked := ""
@@ -78,7 +78,7 @@ func oneLine(text string) string {
 // anything else is refused before a byte is changed, because replacing
 // between markers that do not pair deletes what a person wrote between them.
 func Apply(existing, block string) (string, error) {
-	begin, end, err := markers(existing)
+	begin, end, err := markers(existing, block != "")
 	if err != nil {
 		return "", err
 	}
@@ -96,11 +96,6 @@ func Apply(existing, block string) (string, error) {
 		return existing + "\n\n" + block, nil
 	}
 	before, after := existing[:begin.start], existing[end.end:]
-	if block == "" {
-		// Removing the block also removes the blank lines that set it apart.
-		after = strings.TrimLeft(after, "\n")
-		return strings.TrimRight(before, "\n") + trailing(before, after) + after, nil
-	}
 	return before + block + after, nil
 }
 
@@ -110,7 +105,7 @@ type span struct{ start, end int }
 // markers finds the block's two marker lines. It returns nil spans for a
 // file with no block, and an error for any file whose markers do not form
 // exactly one block.
-func markers(content string) (begin, end *span, err error) {
+func markers(content string, inserting bool) (begin, end *span, err error) {
 	var begins, ends []span
 	offset, fence := 0, ""
 	for _, line := range strings.SplitAfter(content, "\n") {
@@ -141,6 +136,9 @@ func markers(content string) (begin, end *span, err error) {
 	}
 	switch {
 	case len(begins) == 0 && len(ends) == 0:
+		if inserting && fence != "" {
+			return nil, nil, fmt.Errorf("%s ends inside a fenced code block; close the fence before syncing usage rules", GuidanceFile)
+		}
 		return nil, nil, nil
 	case len(begins) == 1 && len(ends) == 1 && begins[0].start < ends[0].start:
 		return &begins[0], &ends[0], nil
@@ -162,17 +160,6 @@ func fenceRun(text string) string {
 		return ""
 	}
 	return trimmed[:run]
-}
-
-// trailing is the line ending that follows what precedes a removed block.
-func trailing(before, after string) string {
-	switch {
-	case strings.TrimRight(before, "\n") == "":
-		return ""
-	case after == "":
-		return "\n"
-	}
-	return "\n\n"
 }
 
 // Guidance is the result of syncing one service's guidance file.

@@ -3223,8 +3223,9 @@ marker text quoted in a sentence or shown in an example is the service's own
 text. A file holds no marker, or one beginning followed by one end. Anything
 else — a beginning with no end, two beginnings, an end first — is refused
 before a byte is changed, because replacing between markers that do not pair
-would delete what a person wrote between them. Text from a contract is folded onto one line and cannot close the
-block or open a comment.
+would delete what a person wrote between them. Close any unfinished code fence
+before adding a generated block. The generator folds contract text onto one
+line and keeps summaries from opening a code fence.
 
 Not done yet: `codefly sync service` does not run this, and a stale block does
 not fail `codefly lint usage`.

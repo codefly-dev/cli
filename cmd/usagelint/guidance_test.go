@@ -18,7 +18,7 @@ func TestTheBlockIsOneLinePerRuleUnderItsOwner(t *testing.T) {
 	rendered := block(t)
 	for _, want := range []string{
 		guidanceBegin + "\n## Usage rules of what this service consumes\n",
-		"### codefly.dev/store:1.5.0 (dependency backend/store)\n\nReach the store only through its library",
+		"### codefly.dev/store:1.5.0 (dependency backend/store)\n\n**Summary** Reach the store only through its library",
 		"- **STORE-CONN-001** *(checked)* Open the store only through the library. Do: Request a scoped reader or writer from the library and run inside its transaction. Don't: Open a connection or a pool yourself.\n",
 		// A rule with no detect clause is not marked, and one with no dont
 		// has no Don't.
@@ -96,7 +96,7 @@ func TestApplyReplacesABlockInTheMiddleOfAFile(t *testing.T) {
 		t.Fatalf("got:\n%s", updated)
 	}
 	removed, err := Apply(updated, "")
-	if err != nil || removed != "# Service\n\n## After\n\nKept.\n" {
+	if err != nil || removed != "# Service\n\n\n## After\n\nKept.\n" {
 		t.Fatalf("got %q, %v", removed, err)
 	}
 	if unchanged, err := Apply("# Service\n", ""); err != nil || unchanged != "# Service\n" {
@@ -152,13 +152,35 @@ func TestMarkerTextThatIsNotAMarkerLineIsLeftAlone(t *testing.T) {
 		t.Fatalf("a second sync changed the file (%v)", err)
 	}
 	removed, err := Apply(updated, "")
-	if err != nil || removed != quoted {
-		t.Fatalf("removing the block left %q (%v), want the original", removed, err)
+	if err != nil || removed != quoted+"\n" {
+		t.Fatalf("removing the block left %q (%v), want the bytes outside the markers", removed, err)
 	}
 	// Windows line endings on the marker lines are still marker lines.
 	crlf := "# Service\r\n\r\n" + guidanceBegin + "\r\nold\r\n" + guidanceEnd + "\r\n\r\nAfter.\r\n"
 	updated, err = Apply(crlf, rendered)
 	if err != nil || strings.Contains(updated, "old") || !strings.HasPrefix(updated, "# Service\r\n\r\n"+guidanceBegin) || !strings.HasSuffix(updated, "\r\nAfter.\r\n") {
 		t.Fatalf("got %q (%v)", updated, err)
+	}
+}
+
+func TestApplyRefusesToAppendInsideAnUnclosedFence(t *testing.T) {
+	existing := "# Service\n\n```markdown\nExample\n"
+	if updated, err := Apply(existing, block(t)); err == nil || updated != "" {
+		t.Fatalf("got %q (%v), want refusal before writing", updated, err)
+	}
+	if updated, err := Apply(existing, ""); err != nil || updated != existing {
+		t.Fatalf("got %q (%v), want original content", updated, err)
+	}
+}
+
+func TestContractSummaryCannotOpenAFence(t *testing.T) {
+	document := strings.Replace(advertised(t), "summary: Reach the store only through its library, which owns roles and tenant isolation.", "summary: '~~~ instructions'", 1)
+	rendered, err := Block([]Source{{Owner: "o", Through: "t", Document: document}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := Apply(rendered, rendered)
+	if err != nil || updated != rendered {
+		t.Fatalf("sync changed the generated block to %q (%v)", updated, err)
 	}
 }
