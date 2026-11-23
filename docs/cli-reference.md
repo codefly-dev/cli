@@ -3689,7 +3689,7 @@ Flags:
 
 ## `codefly lint`
 
-Run plugin-owned lint checks for a service
+Run plugin-owned lint checks for a service, and check it against the usage rules of what it consumes
 
 ```
 codefly lint <subcommand>
@@ -3698,6 +3698,7 @@ codefly lint <subcommand>
 Subcommands:
 
 - [`codefly lint service`](#codefly-lint-service)
+- [`codefly lint usage`](#codefly-lint-usage)
 
 ## `codefly lint service`
 
@@ -3711,6 +3712,41 @@ Flags:
 
 ```
       --runtime-context string   Runtime context for validation (default "free")
+```
+
+## `codefly lint usage`
+
+Check a service against the usage rules of the agents it consumes
+
+```
+Check a service against the usage contracts of what it consumes.
+
+The service's own agent and the agent of every service it depends on may
+publish a usage contract: the rules for code that consumes the services it
+manages, each with a reason and what to do instead. This command gathers
+those contracts, asks the service's language plugin for its semantic index,
+and reports every place a rule's detect clause matches.
+
+A finding of severity error fails the command. A warning is reported and
+does not. The command also fails when the plugin left source unread, a file
+it could not inspect or a kind of place its analyzer does not project, and a
+rule could have matched there: the partial report is printed, and it is not
+a pass. A rule with no detect clause for the service's language applies as
+text only and cannot be reported here.
+
+What is not found: a call made through an import alias, or of a name imported
+on its own. The plugin records calls as written, so those are missed rather
+than guessed.
+```
+
+```
+codefly lint usage [module/]service
+```
+
+Flags:
+
+```
+      --json   Emit the report as JSON
 ```
 
 ## `codefly list`
