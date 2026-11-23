@@ -3216,8 +3216,14 @@ rule a linter can detect.
 Everything outside the markers is the service's own and is kept. The block is
 appended when the file has none, replaced in place when it has one, and removed
 when nothing the service consumes publishes a contract; no file is created just
-to say so. A file whose markers were damaged by hand is refused rather than
-guessed at. Text from a contract is folded onto one line and cannot close the
+to say so.
+
+A marker is a line that is exactly the marker, outside a fenced code block;
+marker text quoted in a sentence or shown in an example is the service's own
+text. A file holds no marker, or one beginning followed by one end. Anything
+else — a beginning with no end, two beginnings, an end first — is refused
+before a byte is changed, because replacing between markers that do not pair
+would delete what a person wrote between them. Text from a contract is folded onto one line and cannot close the
 block or open a comment.
 
 Not done yet: `codefly sync service` does not run this, and a stale block does

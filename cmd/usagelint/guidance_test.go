@@ -104,17 +104,61 @@ func TestApplyReplacesABlockInTheMiddleOfAFile(t *testing.T) {
 	}
 }
 
-// A file whose markers were damaged by hand is refused, never guessed at:
-// replacing from a lone beginning marker would delete the rest of the file.
-func TestApplyRefusesDamagedMarkers(t *testing.T) {
+// A file whose markers do not form exactly one block is refused before a
+// byte changes, never guessed at: replacing between markers that do not pair
+// deletes what a person wrote between them.
+func TestApplyRefusesMarkersThatDoNotFormOneBlock(t *testing.T) {
 	rendered := block(t)
+	own := "## The service's own section\n\nHandwritten instructions.\n"
 	for name, existing := range map[string]string{
-		"a beginning and no end":  "# Service\n\n" + guidanceBegin + "\nrules\n\n## The service's own section\n",
-		"an end and no beginning": "# Service\n\nrules\n" + guidanceEnd + "\n",
-		"two blocks":              rendered + "\n" + rendered,
+		"a beginning and no end":    "# Service\n\n" + guidanceBegin + "\nrules\n\n" + own,
+		"an end and no beginning":   "# Service\n\nrules\n" + guidanceEnd + "\n",
+		"two blocks":                rendered + "\n" + rendered,
+		"an end before a beginning": guidanceEnd + "\n" + own + guidanceBegin + "\n",
+		// The reviewed case: a stray beginning, a person's text, then a
+		// whole generated block. Pairing the first beginning with the only
+		// end would delete the text between them.
+		"handwritten text between two beginnings": "# Service\n\n" + guidanceBegin + "\n" + own + "\n" + rendered,
+		"two ends": rendered + own + guidanceEnd + "\n",
 	} {
-		if _, err := Apply(existing, rendered); err == nil {
-			t.Errorf("%s: applied without complaint", name)
+		for _, replacement := range []string{rendered, ""} {
+			updated, err := Apply(existing, replacement)
+			if err == nil {
+				t.Errorf("%s: applied without complaint:\n%s", name, updated)
+			}
+			if updated != "" {
+				t.Errorf("%s: a refusal returns nothing to write, got %q", name, updated)
+			}
 		}
+	}
+}
+
+// A marker is a whole line outside a fenced code block. Marker text quoted
+// in a sentence or shown in an example is the service's own text.
+func TestMarkerTextThatIsNotAMarkerLineIsLeftAlone(t *testing.T) {
+	rendered := block(t)
+	quoted := "# Service\n\nThe block starts with `" + guidanceBegin + "` and ends with " + guidanceEnd + " on its own line.\n\n" +
+		"```markdown\n" + guidanceBegin + "\nan example\n" + guidanceEnd + "\n```\n\n" +
+		"~~~~\n" + guidanceBegin + "\n```\nstill inside the tilde fence\n~~~~\n"
+	updated, err := Apply(quoted, rendered)
+	if err != nil {
+		t.Fatalf("quoted marker text is not a marker: %v", err)
+	}
+	if updated != quoted+"\n"+rendered {
+		t.Fatalf("the service's own text changed:\n%s", updated)
+	}
+	again, err := Apply(updated, rendered)
+	if err != nil || again != updated {
+		t.Fatalf("a second sync changed the file (%v)", err)
+	}
+	removed, err := Apply(updated, "")
+	if err != nil || removed != quoted {
+		t.Fatalf("removing the block left %q (%v), want the original", removed, err)
+	}
+	// Windows line endings on the marker lines are still marker lines.
+	crlf := "# Service\r\n\r\n" + guidanceBegin + "\r\nold\r\n" + guidanceEnd + "\r\n\r\nAfter.\r\n"
+	updated, err = Apply(crlf, rendered)
+	if err != nil || strings.Contains(updated, "old") || !strings.HasPrefix(updated, "# Service\r\n\r\n"+guidanceBegin) || !strings.HasSuffix(updated, "\r\nAfter.\r\n") {
+		t.Fatalf("got %q (%v)", updated, err)
 	}
 }

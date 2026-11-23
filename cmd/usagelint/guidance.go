@@ -72,12 +72,17 @@ func oneLine(text string) string {
 // Apply puts a block into a guidance file's content: in place of the block
 // already there, or at the end when there is none. An empty block removes
 // the one that is there. What lies outside the markers is kept byte for byte.
+//
+// A marker is a line that is exactly the marker, outside a fenced code
+// block. A file must hold none, or one beginning followed by one end;
+// anything else is refused before a byte is changed, because replacing
+// between markers that do not pair deletes what a person wrote between them.
 func Apply(existing, block string) (string, error) {
-	begin := strings.Index(existing, guidanceBegin)
-	if begin < 0 {
-		if strings.Contains(existing, guidanceEnd) {
-			return "", fmt.Errorf("%s has the end of a usage block and no beginning; restore or remove the marker", GuidanceFile)
-		}
+	begin, end, err := markers(existing)
+	if err != nil {
+		return "", err
+	}
+	if begin == nil {
 		switch {
 		case block == "":
 			return existing, nil
@@ -90,22 +95,73 @@ func Apply(existing, block string) (string, error) {
 		}
 		return existing + "\n\n" + block, nil
 	}
-	end := strings.Index(existing[begin:], guidanceEnd)
-	if end < 0 {
-		return "", fmt.Errorf("%s has the beginning of a usage block and no end; restore or remove the marker", GuidanceFile)
-	}
-	after := existing[begin+end+len(guidanceEnd):]
-	after = strings.TrimPrefix(after, "\n")
-	if strings.Contains(after, guidanceBegin) {
-		return "", fmt.Errorf("%s has more than one usage block", GuidanceFile)
-	}
-	before := existing[:begin]
+	before, after := existing[:begin.start], existing[end.end:]
 	if block == "" {
 		// Removing the block also removes the blank lines that set it apart.
 		after = strings.TrimLeft(after, "\n")
 		return strings.TrimRight(before, "\n") + trailing(before, after) + after, nil
 	}
 	return before + block + after, nil
+}
+
+// span is one line of a file by its byte offsets, line ending included.
+type span struct{ start, end int }
+
+// markers finds the block's two marker lines. It returns nil spans for a
+// file with no block, and an error for any file whose markers do not form
+// exactly one block.
+func markers(content string) (begin, end *span, err error) {
+	var begins, ends []span
+	offset, fence := 0, ""
+	for _, line := range strings.SplitAfter(content, "\n") {
+		at := span{offset, offset + len(line)}
+		offset += len(line)
+		text := strings.TrimRight(line, "\r\n")
+		// A fenced code block is text: a marker quoted in one, as an example,
+		// is not a marker. A fence closes on a run of the character that
+		// opened it, at least as long.
+		if run := fenceRun(text); run != "" {
+			switch {
+			case fence == "":
+				fence = run
+			case run[0] == fence[0] && len(run) >= len(fence) && strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(text), run[:1])) == "":
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" {
+			continue
+		}
+		switch text {
+		case guidanceBegin:
+			begins = append(begins, at)
+		case guidanceEnd:
+			ends = append(ends, at)
+		}
+	}
+	switch {
+	case len(begins) == 0 && len(ends) == 0:
+		return nil, nil, nil
+	case len(begins) == 1 && len(ends) == 1 && begins[0].start < ends[0].start:
+		return &begins[0], &ends[0], nil
+	case len(begins) == 1 && len(ends) == 1:
+		return nil, nil, fmt.Errorf("%s has the end of a usage block before its beginning; restore the markers or remove them", GuidanceFile)
+	}
+	return nil, nil, fmt.Errorf("%s has %d beginning and %d end marker(s) of a usage block; a file has one block or none, so restore the markers or remove them", GuidanceFile, len(begins), len(ends))
+}
+
+// fenceRun is the run of backticks or tildes that opens or closes a fenced
+// code block on this line, or "" when the line is no fence.
+func fenceRun(text string) string {
+	trimmed := strings.TrimLeft(text, " ")
+	if len(text)-len(trimmed) > 3 || len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return ""
+	}
+	run := len(trimmed) - len(strings.TrimLeft(trimmed, trimmed[:1]))
+	if run < 3 {
+		return ""
+	}
+	return trimmed[:run]
 }
 
 // trailing is the line ending that follows what precedes a removed block.
