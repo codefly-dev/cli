@@ -184,7 +184,7 @@ func Run(ctx context.Context, workspace *resources.Workspace, module *resources.
 	if err != nil {
 		return nil, fmt.Errorf("inspect service plugin: %w", err)
 	}
-	if err := contract.Check(info.GetContract()); err != nil {
+	if err = contract.Check(info.GetContract()); err != nil {
 		return nil, fmt.Errorf("admit service plugin: %w", err)
 	}
 	sources, err := gather(ctx, workspace, module, service, &selection, info)
