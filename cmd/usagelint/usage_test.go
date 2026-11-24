@@ -122,9 +122,12 @@ func TestACleanServiceSaysSoAndAnUninspectedOneDoesNot(t *testing.T) {
 }
 
 func TestNoContractIsSaidPlainly(t *testing.T) {
-	report, err := Check("backend/api", nil, consumer(basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_COMPLETE))
+	report, err := Check("backend/api", nil, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(report.Incomplete) != 0 {
+		t.Fatalf("a check with no contracts does not need an index: %+v", report)
 	}
 	var rendered bytes.Buffer
 	Render(&rendered, report)

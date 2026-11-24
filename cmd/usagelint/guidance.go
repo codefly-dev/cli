@@ -176,11 +176,18 @@ type Guidance struct {
 // Sync renders the usage rules that apply to a service into its AGENTS.md.
 // With check it writes nothing and reports whether the file is current.
 func Sync(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, check bool) (*Guidance, error) {
+	if !check {
+		for _, reference := range workspace.Modules {
+			if reference.Name == module.Name && reference.Source != "" {
+				return nil, fmt.Errorf("sync usage for %s/%s in the module's owning workspace, or use --check to inspect the pinned copy", module.Name, service.Name)
+			}
+		}
+	}
 	instance, err := services.Load(ctx, workspace, module, service)
 	if err != nil {
 		return nil, fmt.Errorf("load service plugin: %w", err)
 	}
-	sources, err := gather(ctx, workspace, module, service, instance)
+	sources, err := gather(ctx, workspace, module, service, service.Agent, instance.Info)
 	if err != nil {
 		return nil, err
 	}

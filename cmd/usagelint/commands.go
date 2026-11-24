@@ -50,7 +50,7 @@ than guessed.`,
 				defer cli.ProtectResultStream()()
 			}
 			defer services.ClearAgents()
-			workspace, module, service, err := common.LoadRequiredE(ctx, args)
+			workspace, module, service, err := common.LoadRequiredWithPinnedModulesE(ctx, args)
 			if err != nil {
 				return err
 			}
@@ -190,7 +190,7 @@ current: the drift gate for CI.`,
 				defer cli.ProtectResultStream()()
 			}
 			defer services.ClearAgents()
-			workspace, module, service, err := common.LoadRequiredE(ctx, args)
+			workspace, module, service, err := common.LoadRequiredWithPinnedModulesE(ctx, args)
 			if err != nil {
 				return err
 			}
