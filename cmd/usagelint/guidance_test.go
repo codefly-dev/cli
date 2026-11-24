@@ -3,7 +3,19 @@ package usagelint
 import (
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/core/resources"
 )
+
+func TestSyncRefusesToWriteIntoPinnedModule(t *testing.T) {
+	workspace := &resources.Workspace{Modules: []*resources.ModuleReference{
+		{Name: "app", Source: "example/app", Version: "1.0.0"},
+	}}
+	_, err := Sync(t.Context(), workspace, &resources.Module{Name: "app"}, &resources.Service{Name: "worker"}, false)
+	if err == nil || !strings.Contains(err.Error(), "in the module's owning workspace") {
+		t.Fatalf("got %v, want owning-workspace diagnostic", err)
+	}
+}
 
 func block(t *testing.T) string {
 	t.Helper()

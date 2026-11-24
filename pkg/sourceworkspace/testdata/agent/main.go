@@ -60,6 +60,10 @@ func (*discoveryBuilder) Load(context.Context, *builderv0.LoadRequest) (*builder
 }
 
 func main() {
+	if usage := os.Getenv("TEST_SOURCE_USAGE"); usage != "" {
+		agents.Serve(agents.PluginRegistration{Agent: &usageAgent{usage: usage}, Code: &usageCode{}})
+		return
+	}
 	if marker := os.Getenv("TEST_SOURCE_STARTED"); marker != "" {
 		if err := os.WriteFile(marker, []byte("started"), 0o600); err != nil {
 			panic(err)

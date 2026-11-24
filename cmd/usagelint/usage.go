@@ -16,9 +16,11 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/codefly-dev/cli/cmd/sourcefix"
+	"github.com/codefly-dev/core/agents/contract"
+	"github.com/codefly-dev/core/agents/manager"
 	usagecontract "github.com/codefly-dev/core/contracts/usage"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -98,6 +100,9 @@ func (report *Report) Unverified() bool {
 // cannot be read is not an empty one.
 func Check(service string, sources []Source, index *basev0.SemanticIndex) (*Report, error) {
 	report := &Report{Service: service, Owners: []Owner{}, Findings: []Finding{}}
+	if len(sources) == 0 {
+		return report, nil
+	}
 	languages := index.GetLanguages()
 	unknownLanguage := false
 	if index.GetState() != basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_COMPLETE {
@@ -163,14 +168,35 @@ func Check(service string, sources []Source, index *basev0.SemanticIndex) (*Repo
 
 // Run gathers the contracts that apply to a service and checks it.
 func Run(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*Report, error) {
-	client, instance, err := sourcefix.LoadCode(ctx, workspace, module, service)
+	if service == nil || service.Agent == nil {
+		return nil, fmt.Errorf("usage lint requires a service with an agent")
+	}
+	selection := *service.Agent
+	if _, err := manager.ResolveLatest(ctx, &selection); err != nil {
+		return nil, fmt.Errorf("resolve service plugin: %w", err)
+	}
+	conn, err := manager.Load(ctx, &selection, manager.WithWorkDir(service.Dir()), manager.WithoutSandbox(), manager.WithoutPrincipal())
+	if err != nil {
+		return nil, fmt.Errorf("load service plugin: %w", err)
+	}
+	defer conn.Close()
+	info, err := agentv0.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect service plugin: %w", err)
+	}
+	if err := contract.Check(info.GetContract()); err != nil {
+		return nil, fmt.Errorf("admit service plugin: %w", err)
+	}
+	sources, err := gather(ctx, workspace, module, service, &selection, info)
 	if err != nil {
 		return nil, err
 	}
-	sources, err := gather(ctx, workspace, module, service, instance)
-	if err != nil {
-		return nil, err
+	if len(sources) == 0 {
+		return Check(resources.WithUnique(service).Unique(), sources, nil)
 	}
+	// The Code endpoint resolves the declared source. Usage lint also applies
+	// to services whose runtime has no listener.
+	client := codev0.NewCodeClient(conn.GRPCConn())
 	response, err := client.Execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_GetSemanticIndex{GetSemanticIndex: &codev0.GetSemanticIndexRequest{}}})
 	if err != nil {
 		return nil, fmt.Errorf("semantic index of %s: %w", service.Name, err)
@@ -188,7 +214,7 @@ func Run(ctx context.Context, workspace *resources.Workspace, module *resources.
 // gather collects the usage contract of the service's own agent and of the
 // agent of every workspace service it declares a dependency on. An agent
 // advertising none contributes nothing. Each agent is asked once.
-func gather(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, own *services.Instance) ([]Source, error) {
+func gather(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, own *resources.Agent, info *agentv0.AgentInformation) ([]Source, error) {
 	var sources []Source
 	seen := map[string]bool{}
 	add := func(agent *resources.Agent, through, document string) {
@@ -198,11 +224,10 @@ func gather(ctx context.Context, workspace *resources.Workspace, module *resourc
 		seen[agent.Identifier()] = true
 		sources = append(sources, Source{Owner: agent.Identifier(), Through: through, Document: document})
 	}
-	add(service.Agent, "its own agent", own.Info.GetUsageContract())
+	add(own, "its own agent", info.GetUsageContract())
 	for _, dependency := range service.ServiceDependencies {
-		// An interface-only edge names no service of this workspace, so there
-		// is no agent here to ask.
-		if dependency.Name == "" {
+		// External and interface-only edges do not select a workspace agent.
+		if dependency.Name == "" || dependency.Kind == resources.DependencyKindExternal {
 			continue
 		}
 		owner := module

@@ -1039,9 +1039,10 @@ manages, each with a reason and what to do instead. `codefly lint usage`:
 
 1. gathers the contract of the service's own agent and of the agent of every
    workspace service it declares under `service-dependencies`, each agent
-   asked once;
+   asked once. External dependencies are provided outside the workspace;
 2. asks the service's language plugin for its semantic index
-   (`Code.GetSemanticIndex`) — the CLI parses no source;
+   (`Code.GetSemanticIndex`). Source inspection also works for services
+   without a runtime listener;
 3. reports every place a rule's `detect` clause matches, with the rule's
    reason and its alternative.
 
@@ -3218,6 +3219,9 @@ Everything outside the markers is the service's own and is kept. The block is
 appended when the file has none, replaced in place when it has one, and removed
 when nothing the service consumes publishes a contract; no file is created just
 to say so.
+
+Run sync in the module's owning workspace to write guidance. A composing
+workspace can inspect a pinned module with `--check`.
 
 A marker is a line that is exactly the marker, outside a fenced code block;
 marker text quoted in a sentence or shown in an example is the service's own
