@@ -323,9 +323,33 @@ func TestBindingGrantsReachTheSignedDocumentWithTheirAudience(t *testing.T) {
 	admin := doc.GetRoles()[0]
 	require.Len(t, admin.GetAudiences(), 1)
 	require.Equal(t, "documents", admin.GetAudiences()[0].GetAudience())
-	require.Len(t, admin.GetAudiences()[0].GetScopes(), 2)
+	// One scope per kind, its actions sorted.
+	require.Len(t, admin.GetAudiences()[0].GetScopes(), 1)
+	require.Equal(t, "documents.collection", admin.GetAudiences()[0].GetScopes()[0].GetResourceKind())
+	require.Equal(t, []string{"read", "write"}, admin.GetAudiences()[0].GetScopes()[0].GetActions())
 	for _, s := range admin.GetScopes() {
 		require.NotEqual(t, "documents.collection", s.GetResourceKind())
 	}
 	require.Empty(t, doc.GetRoles()[1].GetAudiences())
+}
+
+// A scope a role spells out on a kind another module serves reaches the signed
+// document addressed to the audience of the binding that carries it, exactly
+// as a bindings: grant does, and is no longer one of the role's scopes, which
+// the authority holds at every audience. The role's own kind stays in its
+// scopes, and what it grants on what the installation owns stays as declared.
+func TestSpelledOutScopesOnAnotherModulesKindReachTheSignedDocumentWithTheirAudience(t *testing.T) {
+	contract := strings.Replace(ownedContract, "      - {resource_kind: quill.page, actions: [read]}\n",
+		"      - {resource_kind: quill.page, actions: [read]}\n      - {resource_kind: documents.collection, actions: [read]}\n", 1)
+	require.NotEqual(t, ownedContract, contract)
+	doc := deliveredAuthorityDocument(t, writeContract(t, contract))
+	admin, user := doc.GetRoles()[0], doc.GetRoles()[1]
+	require.Empty(t, admin.GetAudiences())
+	requireRoles(t, []*compositionv1.RoleV1{admin, {
+		Name:   "user",
+		Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "quill.page", Actions: []string{"read"}}},
+		Audiences: []*compositionv1.RoleAudienceV1{{Audience: "documents",
+			Scopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read"}}}}},
+		InstallationOwnedScopes: []*authorityv1.WorkScopeV1{{ResourceKind: "documents.collection", Actions: []string{"read"}}},
+	}}, []*compositionv1.RoleV1{admin, user})
 }
