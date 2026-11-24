@@ -42,13 +42,15 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 		if flow.world != nil {
 			flow.world.containerRecoveryIdentity = flow.containerRecoveryIdentity
 		}
-		return flow.containerRecoveryScope, dockerrun.SetContainerRecoveryScope(flow.containerRecoveryScope)
+		return flow.containerRecoveryScope, flow.projectRunScope(flow.containerRecoveryScope)
 	}
-	scope, err := ContainerRecoveryScopeFor(flow.workspace, flow.Environment())
+	env := flow.Environment()
+	scope, err := ContainerRecoveryScopeFor(flow.workspace, env)
 	if err != nil {
 		return scope, err
 	}
-	if err = dockerrun.SetContainerRecoveryScope(scope); err != nil {
+	flow.containerStorageDisposable = env.Disposable && env.NamingScope != ""
+	if err = flow.projectRunScope(scope); err != nil {
 		return scope, err
 	}
 	// The identity agents echo back, captured from our own projection so that
@@ -62,6 +64,20 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 		flow.world.containerRecoveryIdentity = identity
 	}
 	return scope, nil
+}
+
+const disposableStorageScopeEnv = "CODEFLY_DISPOSABLE_STORAGE_SCOPE"
+
+// Bind storage ownership to the exact projection. Older agents ignore the
+// companion variable and retain the conservative recovery behavior.
+func (flow *Flow) projectRunScope(scope dockerrun.ContainerRecoveryScope) error {
+	if err := dockerrun.SetContainerRecoveryScope(scope); err != nil {
+		return err
+	}
+	if flow.containerStorageDisposable {
+		return os.Setenv(disposableStorageScopeEnv, os.Getenv(recoveryscope.EnvironmentVariable))
+	}
+	return os.Unsetenv(disposableStorageScopeEnv)
 }
 
 // ContainerRecoveryScopeFor resolves the container-recovery ownership identity

@@ -31,6 +31,12 @@ about whether an agent understands what it was handed. Two consumers matter:
   `GetAgentInformation`. `Runner.validateContainerRecovery` compares it against
   what the CLI projected and refuses `Init` when they differ.
 
+For a disposable run with a naming scope, the CLI also projects the same marker
+in `CODEFLY_DISPOSABLE_STORAGE_SCOPE`. A matching marker lets a rebuilt agent
+label its container's storage as disposable. The recovering CLI must also
+include the Core storage-cleanup change. Older combinations preserve storage
+when recovering a container after a crash.
+
 ## Versioned API adoption
 
 The CLI checks `AgentInformation.contract`, independently of the Core version

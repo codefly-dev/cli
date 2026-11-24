@@ -132,8 +132,9 @@ type Flow struct {
 	// containerRecoveryScope is this flow's projected container ownership and
 	// containerRecoveryIdentity the acknowledgement its agents echo back, both
 	// resolved once by ContainerRecoveryScope().
-	containerRecoveryScope    dockerrun.ContainerRecoveryScope
-	containerRecoveryIdentity string
+	containerRecoveryScope     dockerrun.ContainerRecoveryScope
+	containerStorageDisposable bool
+	containerRecoveryIdentity  string
 
 	runtimeContext string
 	// docker records whether the Docker engine is reachable and, for messaging,
