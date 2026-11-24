@@ -1309,6 +1309,32 @@ no runtime to stop; `Stop()` returns immediately for them.
 - **Partial failures:** Every manager is torn down during `Flow.Stop()`, including ones a partial `InitManagers()` created but never started. Errors are collected via `go-multierror` and returned together; a resource the teardown budget forced is additionally narrated through the flow's `OutputSink`, since it may still be running and some callers discard the returned error.
 - **Init failure:** If `Init` returns a non-READY status, the output manager marks the result as failing, triggering a pause and retry from the Load phase.
 
+## Shared run server preflight
+
+Some store agents run ONE server for a whole run and attach every service of
+that agent to it; the server is recorded on the run's directory by the agent
+that started it and read back by the others. Two versions of such an agent in
+one run are two readers of one record: service-postgres 0.0.150 and 0.0.152
+write it differently, so the second store to initialize refused the server the
+first one started (`held by pid N, which this run did not start`).
+
+`InitManagers` (and `Extend`) therefore refuses a run whose services would
+share a server at more than one version of its agent
+(`pkg/orchestration/shared_run_server.go`), before any agent is spawned, and
+once more when every `free` service has its concrete backend. The refusal names
+each service and its version, the server they share, and the line that
+converges them — an [`agent-overrides`](commands.md#moving-the-agent-version-of-composed-services)
+entry, or the same pin in each module. Services bound to a remote environment
+and services outside the run set are not judged.
+
+The agents concerned are the short `runServerAgents` list, by agent reference
+and by the runtime contexts in which they share: `codefly.dev/postgres` under
+`nix`. `codefly.dev/redis`, `codefly.dev/clickhouse` and
+`codefly.dev/object-storage` keep a server per service and are not listed; add
+an agent only when it shares one. `codefly doctor workspace` reports the same
+condition as the warning `shared_server_agent_versions`: it has no run to ask
+which services start together, or in which context.
+
 ## Validation capability preflight
 
 Lint, native compile and test inspect the origin agent's authoritative validation

@@ -2167,8 +2167,8 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.checkConfigurationReferences(ctx, required); err != nil {
 		return err
 	}
-	if err := flow.logRunPlan(ctx, required, remotes); err != nil {
-		return w.Wrapf(err, "cannot describe service run plan")
+	if err := flow.admitRunPlan(ctx, required, remotes); err != nil {
+		return err
 	}
 
 	// Register each manager the moment it is
@@ -2223,8 +2223,8 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// Now that every agent is loaded and advertises its SupportedBackends,
 	// finalize the Docker/nix decision per service — falling back where safe and
 	// stopping early where a service genuinely needs Docker.
-	if err := flow.resolveDockerFallback(ctx); err != nil {
-		return w.Wrap(err)
+	if err := flow.resolveBackends(ctx, required, remotes); err != nil {
+		return err
 	}
 	flow.publishRuntimeServices()
 	return nil

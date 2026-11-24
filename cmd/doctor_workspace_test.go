@@ -1716,3 +1716,38 @@ func TestDoctorWorkspaceWarnsOnAgentDevBuild(t *testing.T) {
 		requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: dir}), codeAgentDevBuild)
 	})
 }
+
+// Two stores that would share a run's one Postgres server, pinned at two
+// versions of its agent, are named with the line that converges them; one
+// version, or an override that makes it one, reports nothing.
+func TestDoctorWorkspaceWarnsOnTwoVersionsOfASharedServerAgent(t *testing.T) {
+	store := func(module, version string) string {
+		return "kind: service\nname: store\nversion: 0.0.0\nmodule: " + module + "\nagent:\n    kind: codefly:service\n    name: postgres\n    version: " + version + "\n    publisher: codefly.dev\n"
+	}
+	workspace := func(evaluationPin, overrides string) string {
+		return writeTestWorkspace(t, map[string]string{
+			"workspace.codefly.yaml":                                 "name: stores\nlayout: modules\nmodules:\n    - name: evaluation\n    - name: scenarios\n" + overrides,
+			"modules/evaluation/module.codefly.yaml":                 "kind: module\nname: evaluation\nservices:\n    - name: store\n",
+			"modules/evaluation/services/store/service.codefly.yaml": store("evaluation", evaluationPin),
+			"modules/scenarios/module.codefly.yaml":                  "kind: module\nname: scenarios\nservices:\n    - name: store\n",
+			"modules/scenarios/services/store/service.codefly.yaml":  store("scenarios", "0.0.152"),
+		})
+	}
+
+	report := runReadiness(t, workspaceReadinessOptions{dir: workspace("0.0.150", "")})
+	diag := requireCode(t, report, codeSharedServerAgentVersions, "warn")
+	for _, want := range []string{"evaluation/store runs codefly.dev/postgres 0.0.150", "scenarios/store runs codefly.dev/postgres 0.0.152", "one Postgres server"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Fatalf("message must contain %q: %q", want, diag.Message)
+		}
+	}
+	if !strings.Contains(diag.Remediation, "agent-overrides: {codefly.dev/postgres: 0.0.152}") {
+		t.Fatalf("remediation must give the override line: %q", diag.Remediation)
+	}
+	if report.Status != readinessStatusReady {
+		t.Fatalf("the doctor does not know the run or its runtime context, so it warns: %s", reportJSON(t, report))
+	}
+
+	requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: workspace("0.0.152", "")}), codeSharedServerAgentVersions)
+	requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: workspace("0.0.150", "agent-overrides:\n    codefly.dev/postgres: 0.0.152\n")}), codeSharedServerAgentVersions)
+}

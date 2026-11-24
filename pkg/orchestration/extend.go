@@ -304,6 +304,11 @@ func (flow *Flow) rebuildExtendedGraph(ctx context.Context) (map[string]*Remote,
 	if err = flow.checkConfigurationReferences(ctx, fresh); err != nil {
 		return nil, nil, err
 	}
+	// The admitted services join the run's shared servers: judged with the
+	// services already running, before any of them is spawned.
+	if err = flow.checkSharedRunServers(all, remotes); err != nil {
+		return nil, nil, err
+	}
 	// The live policy computes next actions from the graph the run now
 	// manages, or a hot reload of an admitted service would end the playbook
 	// on a service its graph does not know.
@@ -335,7 +340,11 @@ func (flow *Flow) spawnAdmitted(ctx context.Context, fresh []string, remotes map
 		manager.DoSetCallback(flow.playbook.Seed)
 		manager.DoSetFailureSink(flow.reportFailure)
 	}
-	if err := flow.resolveDockerFallback(ctx); err != nil {
+	running := make([]string, 0, len(flow.hub.all()))
+	for _, manager := range flow.hub.all() {
+		running = append(running, manager.Unique())
+	}
+	if err := flow.resolveBackends(ctx, running, remotes); err != nil {
 		return err
 	}
 	flow.publishRuntimeServices()

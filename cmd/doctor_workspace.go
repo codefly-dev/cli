@@ -66,6 +66,7 @@ const (
 	codeAgentOverrideActive        = "agent_override_active"
 	codeAgentOverrideInvalid       = "agent_override_invalid"
 	codeAgentDevBuild              = "agent_dev_build"
+	codeSharedServerAgentVersions  = "shared_server_agent_versions"
 	codeProtoNameCollision         = "proto_name_collision"
 	codeTimeout                    = "timeout"
 )
@@ -207,6 +208,7 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	}
 
 	checkDevAgents(scope, report)
+	checkSharedServerAgents(scope, report)
 	checkProtoNames(ctx, ws, scope, report)
 
 	checked, rootGroups, checkErr := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
@@ -1081,6 +1083,19 @@ func checkDevAgents(scope []*resources.Service, report *workspaceReadinessReport
 	}
 }
 
+// checkSharedServerAgents warns about services that would share one server of
+// a run at more than one version of its agent. It is the run's own judgement
+// (orchestration.SharedRunServerConflicts) made with no run to ask: which of
+// the services one run starts, and in which runtime context, is not known
+// here, so what a run in the sharing context refuses is a warning.
+func checkSharedServerAgents(scope []*resources.Service, report *workspaceReadinessReport) {
+	for _, conflict := range orchestration.SharedRunServerConflicts(scope, nil) {
+		report.add(codeSharedServerAgentVersions, "agent "+conflict.Agent, checkStatusWarn,
+			conflict.Message()+" (a run that starts them on that shared server is refused)",
+			conflict.Remediation())
+	}
+}
+
 func serviceUnique(svc *resources.Service) string {
 	if identity, err := svc.Identity(); err == nil {
 		return identity.Unique()
@@ -1857,7 +1872,7 @@ service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
 vendored_package_behind_pin, vendored_package_digest_mismatch,
 vendored_package_uncomparable, contract_catalog_unserved_method,
-agent_dev_build, runnable_binding_declined,
+agent_dev_build, shared_server_agent_versions, runnable_binding_declined,
 runnable_binding_decline_invalid, runnable_operations_unreadable,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
