@@ -316,3 +316,16 @@ func deliveredAuthorityDocument(t *testing.T, dir string) *compositionv1.Authori
 	require.NoError(t, proto.Unmarshal(stub.seen[0].GetAuthority().GetDocument(), &doc))
 	return &doc
 }
+
+func TestBindingGrantsReachTheSignedDocumentWithTheirAudience(t *testing.T) {
+	contract := strings.Replace(ownedContract, "  - name: admin\n", "  - name: admin\n    bindings: [{binding: collections, operation: invoke}]\n", 1)
+	doc := deliveredAuthorityDocument(t, writeContract(t, contract))
+	admin := doc.GetRoles()[0]
+	require.Len(t, admin.GetAudiences(), 1)
+	require.Equal(t, "documents", admin.GetAudiences()[0].GetAudience())
+	require.Len(t, admin.GetAudiences()[0].GetScopes(), 2)
+	for _, s := range admin.GetScopes() {
+		require.NotEqual(t, "documents.collection", s.GetResourceKind())
+	}
+	require.Empty(t, doc.GetRoles()[1].GetAudiences())
+}

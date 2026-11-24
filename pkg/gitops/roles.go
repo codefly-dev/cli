@@ -83,12 +83,16 @@ func Roles(dir string, resolve ContractResolver) ([]*compositionv1.RoleV1, error
 	}
 	var out []*compositionv1.RoleV1
 	for _, role := range document.Roles {
+		var audiences []*compositionv1.RoleAudienceV1
+		for _, entry := range role.Audiences {
+			audiences = append(audiences, &compositionv1.RoleAudienceV1{Audience: entry.Audience, Scopes: wireScopes(entry.Scopes)})
+		}
 		var through []*compositionv1.RoleThroughV1
 		for _, t := range role.Through {
 			through = append(through, &compositionv1.RoleThroughV1{Binding: t.Binding, Scopes: wireScopes(t.Scopes)})
 		}
 		out = append(out, &compositionv1.RoleV1{Name: role.Name, Scopes: wireScopes(role.Scopes),
-			InstallationOwnedScopes: wireScopes(role.InstallationOwnedScopes), Through: through})
+			InstallationOwnedScopes: wireScopes(role.InstallationOwnedScopes), Through: through, Audiences: audiences})
 	}
 	return out, nil
 }
