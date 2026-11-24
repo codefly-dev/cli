@@ -66,14 +66,21 @@ type Source struct {
 	Path string `yaml:"path,omitempty"`
 }
 
+type ManagedPostgresStore struct {
+	Service  string `yaml:"service"`
+	Database string `yaml:"database"`
+	Instance string `yaml:"instance"`
+}
+
 // Namespace is one module's namespace: what runs in it, the external reach it
 // is granted, and the presence carrier rendered for it.
 type Namespace struct {
-	Name      string     `yaml:"name"`
-	Module    string     `yaml:"module"`
-	Workloads []Workload `yaml:"workloads,omitempty"`
-	Egress    []Egress   `yaml:"egress,omitempty"`
-	Delivery  *Delivery  `yaml:"delivery,omitempty"`
+	ManagedPostgresStores *[]ManagedPostgresStore `yaml:"managed_postgres_stores,omitempty"`
+	Name                  string                  `yaml:"name"`
+	Module                string                  `yaml:"module"`
+	Workloads             []Workload              `yaml:"workloads,omitempty"`
+	Egress                []Egress                `yaml:"egress,omitempty"`
+	Delivery              *Delivery               `yaml:"delivery,omitempty"`
 }
 
 // Workload is one pod-producing object as rendered: its exact pod selector,
@@ -81,6 +88,7 @@ type Namespace struct {
 // image by digest, and — for a workload that serves traffic — the endpoints
 // it serves and who the composition says calls them.
 type Workload struct {
+	PostgresStores []string          `yaml:"postgres_stores,omitempty"`
 	Name           string            `yaml:"name"`
 	Kind           string            `yaml:"kind"`
 	Selector       map[string]string `yaml:"selector"`

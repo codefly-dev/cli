@@ -258,6 +258,9 @@ func decodeInventory(data []byte, label string) (Inventory, error) {
 	if !bytes.Equal(data, canonical) {
 		return Inventory{}, fmt.Errorf("%s inventory is not canonical", label)
 	}
+	if err := validateStoreInventory(&inventory); err != nil {
+		return Inventory{}, err
+	}
 	return inventory, nil
 }
 
@@ -288,7 +291,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		Module: inventory.Module, Unit: inventory.Unit,
 		renderRoot:         tree,
 		ModuleManifestPath: inventory.ModuleManifestPath,
-		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units, StoreInventoryComplete: inventory.StoreInventoryComplete,
 		MeshPath: inventory.MeshPath,
 		// The posture and the edges come from the record being verified, so
 		// the posture check runs against a tree whose environment block this
@@ -378,7 +381,7 @@ func ValidateServiceSnapshot(root string) error {
 		Module: inventory.Module, UnitNames: names,
 		renderRoot:         tree,
 		ModuleManifestPath: inventory.ModuleManifestPath,
-		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units, StoreInventoryComplete: inventory.StoreInventoryComplete,
 		// The mesh layer is one of the snapshot's applied roots, as the
 		// allow-list above already treats it: built without it, the overlay
 		// was validated as a directory nothing applies, so the policy that
@@ -469,7 +472,21 @@ func layerComponentNames() []string {
 	return []string{moduleResourcesComponent, moduleManifestDir, meshPostureDir}
 }
 
+func validateStoreInventory(inventory *Inventory) error {
+	for _, unit := range inventory.Units {
+		if store := unit.PostgresStore; store != nil && (!inventory.StoreInventoryComplete || !unit.Managed ||
+			unit.Module != inventory.Module || unit.Kind != UnitKindService || strings.TrimSpace(store.Database) == "" || len(store.Database) > 63 ||
+			strings.ContainsRune(store.Database, 0) || strings.TrimSpace(store.Instance) == "") {
+			return fmt.Errorf("invalid managed Postgres inventory for %s/%s", inventory.Module, unit.Name)
+		}
+	}
+	return nil
+}
+
 func validateInventoryUnits(inventory *Inventory) error {
+	if err := validateStoreInventory(inventory); err != nil {
+		return err
+	}
 	if inventory.Unit != "" {
 		if len(inventory.Units) != 0 {
 			return fmt.Errorf("standalone unit render inventory must not contain a module unit graph")
@@ -1713,11 +1730,12 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package, Pin: opts.Pin,
-		ModuleManifestPath: filepath.ToSlash(opts.ModuleManifestPath),
-		MeshPath:           filepath.ToSlash(opts.MeshPath),
-		MeshPosture:        opts.MeshPosture,
-		HostsDelivery:      opts.HostsDelivery || hostsDeliveryAPI(opts),
-		Units:              append([]InventoryUnit(nil), opts.Units...),
+		ModuleManifestPath:     filepath.ToSlash(opts.ModuleManifestPath),
+		MeshPath:               filepath.ToSlash(opts.MeshPath),
+		MeshPosture:            opts.MeshPosture,
+		HostsDelivery:          opts.HostsDelivery || hostsDeliveryAPI(opts),
+		StoreInventoryComplete: opts.StoreInventoryComplete,
+		Units:                  append([]InventoryUnit(nil), opts.Units...),
 	}
 	inventory.Delivery = opts.Delivered
 	inventory.MeshEdges = opts.MeshEdges

@@ -258,6 +258,7 @@ projected into any workload:
 | `managed-service` | `instance` | the entry's `instance-connection-name`, verbatim |
 | `managed-service` | `owner-principal` | with `auth-mode: external-identity`: the `service-identity` principal declared for the managed service itself, which its bootstrap Job logs in as |
 | `managed-service` | `runtime-principals` | with `auth-mode: external-identity`: the identities of the services of this render that depend on it at run time (their own `service-identity`, or the entry's `identity`), comma-separated and sorted |
+| `managed-service` | `read-only-principals` | optional comma-separated subset of the resolved runtime service account emails. These consumers receive only the store reader group. Selecting this option requires a Postgres agent supporting `external-identity-scoped`. |
 | `in-cluster-service` | — | the environment lists the service in `in-cluster-services` |
 
 The keys are the agent's spellings, not the entry's, because `auth-mode` and
@@ -583,3 +584,12 @@ carrier, and SDK-Go exposes raw and typed document accessors. This is separate
 from `service-config.values`, whose explicitly declared environment values
 remain strings. Render qualification does not establish live cloud identity,
 secret-store access or database connectivity.
+
+### Managed database inventory
+
+For managed PostgreSQL services, a module render records the logical
+`spec.database-name` and the environment's Cloud SQL
+`instance-connection-name`. The cell inventory carries these under the declaring
+namespace's `managed_postgres_stores`, keyed by qualified service name. A
+database-bound workload lists its runtime dependencies on those services in
+`postgres_stores`. Infrastructure provisions one logical database per store.
