@@ -13,9 +13,11 @@ package usagelint
 import (
 	"context"
 	"fmt"
+	"io"
 	"slices"
 	"sort"
 
+	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	usagecontract "github.com/codefly-dev/core/contracts/usage"
@@ -175,7 +177,18 @@ func Run(ctx context.Context, workspace *resources.Workspace, module *resources.
 	if _, err := manager.ResolveLatest(ctx, &selection); err != nil {
 		return nil, fmt.Errorf("resolve service plugin: %w", err)
 	}
-	conn, err := manager.Load(ctx, &selection, manager.WithWorkDir(service.Dir()), manager.WithoutSandbox(), manager.WithoutPrincipal())
+	logReader, logWriter := io.Pipe()
+	logDone := make(chan struct{})
+	defer func() {
+		_ = logWriter.Close()
+		<-logDone
+	}()
+	go func() {
+		defer close(logDone)
+		defer logReader.Close()
+		agents.GetLogHandler().ForwardLogs(logReader)
+	}()
+	conn, err := manager.Load(ctx, &selection, manager.WithWorkDir(service.Dir()), manager.WithLogWriter(logWriter), manager.WithoutSandbox(), manager.WithoutPrincipal())
 	if err != nil {
 		return nil, fmt.Errorf("load service plugin: %w", err)
 	}
