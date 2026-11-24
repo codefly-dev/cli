@@ -403,3 +403,23 @@ func TestBuilderModesRequireAgentContainerRecoveryAcknowledgement(t *testing.T) 
 		})
 	}
 }
+
+func TestDisposableStorageDeclarationFollowsTheResolvedRun(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	t.Setenv(recoveryscope.EnvironmentVariable, "")
+	t.Setenv(disposableStorageScopeEnv, "")
+	disposable, _ := newProjectionWorkspaceFlow(t, RunMode, false)
+	IsolateEnvironment(disposable.Environment())
+	_, err := disposable.ContainerRecoveryScope()
+	require.NoError(t, err)
+	marker := os.Getenv(recoveryscope.EnvironmentVariable)
+	require.NotEmpty(t, marker)
+	require.Equal(t, marker, os.Getenv(disposableStorageScopeEnv))
+	persistent, _ := newProjectionWorkspaceFlow(t, RunMode, false)
+	_, err = persistent.ContainerRecoveryScope()
+	require.NoError(t, err)
+	require.Empty(t, os.Getenv(disposableStorageScopeEnv))
+	_, err = disposable.ContainerRecoveryScope()
+	require.NoError(t, err)
+	require.Equal(t, marker, os.Getenv(disposableStorageScopeEnv))
+}

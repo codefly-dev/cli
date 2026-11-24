@@ -19,6 +19,7 @@ import (
 var surroundingRun = []string{
 	"CODEFLY_AGENT_TOKEN=bearer",
 	"CODEFLY_CONTAINER_RECOVERY_SCOPE=18671:v2:scope:namespace",
+	"CODEFLY_DISPOSABLE_STORAGE_SCOPE=18671:v2:scope:namespace",
 	"CODEFLY_PROCESS_GROUP_AUTH=secret",
 	"CODEFLY_RUN_WORKSPACE=/somewhere/else",
 	"CODEFLY__RUNTIME_CONTEXT=native",
