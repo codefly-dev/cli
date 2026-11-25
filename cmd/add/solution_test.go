@@ -200,7 +200,7 @@ func TestThePackagePublishesTheBackendAndNotTheShell(t *testing.T) {
 		t.Fatalf("published services = %+v, want only %s", packaged.Services, solutionEntryService)
 	}
 	// The contract ranges are derived from what core supports, never typed.
-	if packaged.Contracts[composition.ContractComposition] != ">=2.0.0 <3.0.0" {
+	if packaged.Contracts[composition.ContractComposition] != ">=1.0.0 <2.0.0" {
 		t.Fatalf("composition contract = %q, want the range derived from core's supported majors",
 			packaged.Contracts[composition.ContractComposition])
 	}

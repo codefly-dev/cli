@@ -94,9 +94,9 @@ contracts:
 `
 
 // unloadablePackageManifest is a real manifest at the real path that core
-// refuses: the schema is v1, not the required v2.
+// refuses because its schema major is unsupported.
 const unloadablePackageManifest = `kind: module-package
-schema: codefly/module-package/v1
+schema: codefly/module-package/v2
 id: legacy
 version: 1.0.0
 `
