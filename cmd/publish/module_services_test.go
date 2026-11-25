@@ -53,7 +53,7 @@ func moduleAgentRepo(t *testing.T, agentVersion string) (dir, origin string, fil
 		"modules/payments/module.codefly.yaml":                             "kind: module\nname: payments\nservices:\n    - name: api\n    - name: worker\n",
 		"modules/payments/services/api/service.codefly.yaml":               agentFirstServiceManifest,
 		"modules/payments/services/worker/service.codefly.yaml":            plainServiceManifest,
-		"modules/payments/module.package.codefly.yaml":                     "schema: codefly/module-package/v1\nkind: module-package\nid: acme/payments\nversion: 0.0.0\nminimum-codefly-version: \">=0.1.0\"\nartifact-roots:\n  - contracts\nservices:\n  - name: api\n  - name: worker\ncontracts:\n  composition: \">=2.0.0 <3.0.0\"\n",
+		"modules/payments/module.package.codefly.yaml":                     "schema: codefly/module-package/v1\nkind: module-package\nid: acme/payments\nversion: 0.0.0\nminimum-codefly-version: \">=0.1.0\"\nartifact-roots:\n  - contracts\nservices:\n  - name: api\n  - name: worker\ncontracts:\n  composition: \">=1.0.0 <2.0.0\"\n",
 		"qualification/modules/owners/services/owner/service.codefly.yaml": "name: owner\nversion: 0.0.0\n",
 	}
 	for rel, content := range files {

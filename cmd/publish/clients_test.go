@@ -99,7 +99,7 @@ id: codefly/starterkit
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"
 artifact-roots: [contracts/api]
-contracts: {composition: ">=2.0"}
+contracts: {composition: ">=1.0"}
 services:
   - name: accounts
     endpoints: [connect]

@@ -212,6 +212,6 @@ services:
         path: `+filepath.ToSlash(path)+`
         digest: sha256:`+hex.EncodeToString(sum[:])+`
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 `), 0o644))
 }

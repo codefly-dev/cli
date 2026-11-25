@@ -304,7 +304,7 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
   - services
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 services:
   - name: api
     endpoints: [http]
@@ -419,7 +419,7 @@ artifact-roots:
   - contracts
   - services
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 services:
   - name: api
     endpoints: [http]
@@ -556,7 +556,7 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
   - contracts/api
 contracts:
-  composition: ">=2.0"
+  composition: ">=1.0"
 services:
   - name: api
     endpoints:

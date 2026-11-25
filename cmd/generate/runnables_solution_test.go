@@ -309,7 +309,7 @@ artifact-roots:
   - contracts
   - services
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 services:
   - name: backend
     endpoints: [http]

@@ -266,7 +266,7 @@ services:
         path: contracts/accounts/grpc/contract.binpb
         digest: sha256:%x
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 `, sha256.Sum256(set)),
 	}
 	for rel, content := range files {

@@ -116,7 +116,7 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
   - contracts
 contracts:
-  composition: ">=2.0"
+  composition: ">=1.0"
 services: []
 `
 	if err := os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte(packageManifest), 0o644); err != nil {
@@ -448,7 +448,7 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
   - contracts
 contracts:
-  composition: ">=2.0"
+  composition: ">=1.0"
 services: []
 `
 	if err := os.WriteFile(filepath.Join(otherDir, "module.package.codefly.yaml"), []byte(packageManifest), 0o644); err != nil {
@@ -616,7 +616,7 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
   - contracts
 contracts:
-  composition: ">=2.0"
+  composition: ">=1.0"
 services: []
 `
 	if err := os.WriteFile(filepath.Join(hostDir, "module.package.codefly.yaml"), []byte(packageManifest), 0o644); err != nil {

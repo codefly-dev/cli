@@ -110,7 +110,7 @@ services:
           path: contracts/api/backend/http/openapi.json
           digest: sha256:`+hex.EncodeToString(sum[:])+`
 contracts:
-    composition: ">=2.0.0 <3.0.0"
+    composition: ">=1.0.0 <2.0.0"
 `)
 }
 
@@ -319,7 +319,7 @@ services:
     - name: web
       endpoints: [http]
 contracts:
-    composition: ">=2.0.0 <3.0.0"
+    composition: ">=1.0.0 <2.0.0"
 `)
 	report := Inspect("quill", dir)
 	if checkFor(t, report, CodePackagePublishesShell).Status != StatusWarn {
@@ -483,7 +483,7 @@ services:
     - name: backend
       endpoints: [http]
 contracts:
-    composition: ">=2.0.0 <3.0.0"
+    composition: ">=1.0.0 <2.0.0"
 `)
 	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeBackendContractMissing).Status != StatusFail {
@@ -511,7 +511,7 @@ services:
     - name: backend
       endpoints: [http]
 contracts:
-    composition: ">=2.0.0 <3.0.0"
+    composition: ">=1.0.0 <2.0.0"
 `)
 	report := Inspect("quill", dir)
 	if checkFor(t, report, CodeBackendContractMissing).Status != StatusFail {

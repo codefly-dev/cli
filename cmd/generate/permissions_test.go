@@ -197,7 +197,7 @@ artifact-roots:
   - services
 services:
 `+contract("api", "Read", "read")+contract("admin", "Approve", "approve")+contract("engine", "Recompute", "write")+`contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 `)
 	module, err := resources.LoadModuleFromDir(t.Context(), dir)
 	require.NoError(t, err)

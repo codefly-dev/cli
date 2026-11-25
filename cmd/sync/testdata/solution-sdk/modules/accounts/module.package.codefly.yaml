@@ -6,5 +6,5 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
     - contracts
 contracts:
-    composition: ">=2.0"
+    composition: ">=1.0"
 services: []

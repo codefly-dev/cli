@@ -164,7 +164,7 @@ minimum-codefly-version: ">=0.1.0"
 artifact-roots:
   - services
 contracts:
-  composition: ">=2.0 <3.0"
+  composition: ">=1.0 <2.0"
 `, corecomposition.PackageKind, corecomposition.PackageSchema, PackageID, version)
 	require.NoError(t, os.WriteFile(filepath.Join(root, corecomposition.PackageManifestFileName), []byte(manifest), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "services", "frontend.txt"), []byte(content), 0o600))

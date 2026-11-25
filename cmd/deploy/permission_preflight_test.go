@@ -42,7 +42,7 @@ services:
         path: contracts/api.binpb
         digest: sha256:%x
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 `, sha256.Sum256(descriptor)),
 		"modules/zulu/contracts/api.binpb": string(descriptor),
 		// Zulu holds every method it publishes to a policy wherever it is

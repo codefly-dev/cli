@@ -104,7 +104,7 @@ func newSelectionRegistry(t *testing.T) *selectionRegistry {
 
 func selectionManifest(id, version string) *core.PackageManifest {
 	return &core.PackageManifest{Kind: core.PackageKind, Schema: core.PackageSchema, ID: id, Version: version,
-		MinimumCodeflyVersion: ">=0.1.0", ArtifactRoots: []string{"runtime"}, Contracts: map[string]string{"composition": "^2.0.0"},
+		MinimumCodeflyVersion: ">=0.1.0", ArtifactRoots: []string{"runtime"}, Contracts: map[string]string{"composition": "^1.0.0"},
 		Provides: map[string]string{"interface": "1.0.0"}, RequiredQualifications: &[]string{}}
 }
 

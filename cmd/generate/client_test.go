@@ -751,7 +751,7 @@ minimum-codefly-version: ">=0.0.0"
 artifact-roots:
   - contracts/api
 contracts:
-  composition: ">=2.0"
+  composition: ">=1.0"
 services: []
 `
 	if err := os.WriteFile(filepath.Join(moduleDir, "module.package.codefly.yaml"), []byte(manifest), 0o644); err != nil {

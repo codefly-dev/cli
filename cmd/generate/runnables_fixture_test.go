@@ -224,7 +224,7 @@ func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, man
 	if manifestVersion != "" {
 		writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(
 			"kind: module-package\nschema: codefly/module-package/v1\nid: codefly/documents\nversion: "+manifestVersion+
-				"\nminimum-codefly-version: \">=0.1.0\"\ncontracts:\n  composition: \">=2.0 <3.0\"\nartifact-roots:\n  - contracts\nservices:\n  - name: runtime-worker\n    endpoints:\n      - grpc\n"))
+				"\nminimum-codefly-version: \">=0.1.0\"\ncontracts:\n  composition: \">=1.0 <2.0\"\nartifact-roots:\n  - contracts\nservices:\n  - name: runtime-worker\n    endpoints:\n      - grpc\n"))
 	}
 	return root, moduleDir
 }

@@ -95,7 +95,7 @@ services:
         path: contracts/api/api/grpc/contract.binpb
         digest: sha256:` + hex.EncodeToString(sum[:]) + `
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 `
 	if err := os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte(pkg), 0o644); err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ services:
         path: contracts/api/model/rest/openapi.json
         digest: sha256:` + hex.EncodeToString(sum[:]) + `
 contracts:
-  composition: ">=2.0.0 <3.0.0"
+  composition: ">=1.0.0 <2.0.0"
 `
 	if err := os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte(pkg), 0o644); err != nil {
 		t.Fatal(err)

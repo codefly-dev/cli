@@ -41,7 +41,7 @@ func rpcHopWorkspace(t *testing.T, services []string, foreign []string) *resourc
 		"modules/authority/services/hop/service.codefly.yaml": "name: hop\nversion: 0.0.0\nagent: {kind: runtime::service, name: go-grpc, version: 0.0.16, publisher: codefly.ai}\nworkspace-configuration-dependencies: [hop-routes]\n",
 	}
 	catalog := composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: "owner/owner", Version: "1.0.0"}
-	manifest := "schema: codefly/module-package/v1\nkind: module-package\nid: owner/owner\nversion: 1.0.0\nminimum-codefly-version: '>=0.3.32 <1.0.0'\nartifact-roots: [contracts, services]\ncontracts: {composition: '>=2.0.0 <3.0.0'}\nservices:\n"
+	manifest := "schema: codefly/module-package/v1\nkind: module-package\nid: owner/owner\nversion: 1.0.0\nminimum-codefly-version: '>=0.3.32 <1.0.0'\nartifact-roots: [contracts, services]\ncontracts: {composition: '>=1.0.0 <2.0.0'}\nservices:\n"
 	for _, service := range services {
 		pkg := service + ".v1"
 		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{

@@ -27,7 +27,7 @@ func hopRouteWorkspace(t *testing.T, visibility string) *resources.Workspace {
 		"modules/payments/services/worker/service.codefly.yaml": "name: worker\nversion: 0.0.0\nagent: {kind: runtime::service, name: go-grpc, version: 0.0.16, publisher: codefly.ai}\nworkspace-configuration-dependencies: [hop-routes]\n",
 	}
 	catalog := composition.APIContractCatalog{Schema: composition.APIContractCatalogSchema, Package: "owner/platform", Version: "1.0.0"}
-	manifest := "schema: codefly/module-package/v1\nkind: module-package\nid: owner/platform\nversion: 1.0.0\nminimum-codefly-version: '>=0.3.32 <1.0.0'\nartifact-roots: [contracts, services]\ncontracts: {composition: '>=2.0.0 <3.0.0'}\nservices:\n"
+	manifest := "schema: codefly/module-package/v1\nkind: module-package\nid: owner/platform\nversion: 1.0.0\nminimum-codefly-version: '>=0.3.32 <1.0.0'\nartifact-roots: [contracts, services]\ncontracts: {composition: '>=1.0.0 <2.0.0'}\nservices:\n"
 	for _, service := range []string{"first", "second"} {
 		path := "contracts/api/" + service + ".json"
 		doc := fmt.Sprintf(`{"openapi":"3.0.0","info":{"title":"%s","version":"1.0.0"},"paths":{"/%s":{"get":{"responses":{"200":{"description":"ok"}}}}}}`, service, service)

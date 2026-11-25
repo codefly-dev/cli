@@ -25,7 +25,7 @@ func releaseFixture(t *testing.T) (root, moduleDir string) {
 	endpoint := catalog.Endpoints[0]
 	writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(
 		"kind: module-package\nschema: codefly/module-package/v1\nid: codefly/documents\nversion: 0.1.0\n"+
-			"minimum-codefly-version: \">=0.1.0\"\ncontracts:\n  composition: \">=2.0 <3.0\"\nartifact-roots:\n  - contracts\n"+
+			"minimum-codefly-version: \">=0.1.0\"\ncontracts:\n  composition: \">=1.0 <2.0\"\nartifact-roots:\n  - contracts\n"+
 			"services:\n  - name: runtime-worker\n    endpoints: [grpc, connect]\n    api-contracts:\n"+
 			"      - endpoint: "+endpoint.Endpoint+"\n        kind: "+endpoint.Kind+"\n        package: "+endpoint.Package+
 			"\n        path: "+endpoint.Path+"\n        digest: "+endpoint.Digest+"\n"))

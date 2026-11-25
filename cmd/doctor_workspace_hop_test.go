@@ -32,7 +32,7 @@ func doctorHopWorkspace(t *testing.T) string {
 		"modules/records/services/api/service.codefly.yaml":         testServiceYAML("api") + "endpoints:\n - name: web\n   api: http\n   visibility: public\n   exposure: none\n",
 		"modules/records/" + contractPath:                           doc,
 		"modules/records/" + composition.APIContractCatalogFileName: string(catalog),
-		"modules/records/module.package.codefly.yaml":               "schema: codefly/module-package/v1\nkind: module-package\nid: owner/records\nversion: 1.0.0\nminimum-codefly-version: '>=0.3.32 <1.0.0'\nartifact-roots: [contracts, services]\ncontracts: {composition: '>=2.0.0 <3.0.0'}\nservices:\n - name: api\n   endpoints: [web]\n   api-contracts:\n    - endpoint: web\n      kind: openapi\n      package: api\n      path: " + contractPath + "\n      digest: " + digest + "\n",
+		"modules/records/module.package.codefly.yaml":               "schema: codefly/module-package/v1\nkind: module-package\nid: owner/records\nversion: 1.0.0\nminimum-codefly-version: '>=0.3.32 <1.0.0'\nartifact-roots: [contracts, services]\ncontracts: {composition: '>=1.0.0 <2.0.0'}\nservices:\n - name: api\n   endpoints: [web]\n   api-contracts:\n    - endpoint: web\n      kind: openapi\n      package: api\n      path: " + contractPath + "\n      digest: " + digest + "\n",
 		"modules/authority/module.codefly.yaml":                     "name: authority\nservices:\n - name: hop\n",
 		"modules/authority/services/hop/service.codefly.yaml":       testServiceYAML("hop", "hop-routes"),
 	})
