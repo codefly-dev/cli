@@ -4,8 +4,8 @@
 // authority's fixture (<module>/configurations/<profile>/fixture-composition.yaml):
 // a module the run stands in for, the installation of a solution and who is
 // seated on its roles. No fragment grants an organisation role anything
-// (schema v2 has no roles section; a fragment still stating one, or schema
-// v1, is refused by the authority's parser naming the fragment). The rules
+// (the schema, v1, has no roles section; a fragment stating one, or any other
+// schema, is refused by the authority's parser naming the fragment). The rules
 // of the document and of the merge are
 // the authority's (codefly-dev/authority libraries/fixture-composition): this
 // package finds the fragments and writes the result where a service that

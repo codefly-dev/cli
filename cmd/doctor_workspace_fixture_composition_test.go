@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const fixtureFragmentHead = "schema: codefly.dev/authority/fixture-composition/v2\n"
+const fixtureFragmentHead = "schema: codefly.dev/authority/fixture-composition/v1\n"
 
 // twoFragmentWorkspace composes two modules from OUTSIDE the workspace tree —
 // as a pinned module materializes, which is what platform-base does — each

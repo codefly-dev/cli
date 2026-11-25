@@ -300,10 +300,10 @@ describes a deployment.
 // The fixture's one cast: Alice, Acme's organisation admin, installs it and
 // owns the installation; Dana joins its admin team and Carol its user team;
 // Bob holds no role and is the person the page refuses. No organisation role
-// reaches the solution (schema v2 has no roles section).
+// reaches the solution (the schema has no roles section).
 func fixtureComposition(name string) string {
 	return fmt.Sprintf(`# %s's fragment of the local authority's fixture-composition document
-# (codefly-dev/authority libraries/fixture-composition, schema v2): what is
+# (codefly-dev/authority libraries/fixture-composition, schema v1): what is
 # this solution's own in the fixture of a run that composes it.
 #
 # `+"`codefly run`"+` merges this with every composed module's fragment into the
@@ -312,7 +312,7 @@ func fixtureComposition(name string) string {
 # is never restated here: the merge refuses it, naming both. The document
 # grants no organisation role anything: a person reaches this solution through
 # a role (admin, user) on its installation.
-schema: codefly.dev/authority/fixture-composition/v2
+schema: codefly.dev/authority/fixture-composition/v1
 installations:
   # WITHOUT THIS the authority refuses every capability at this solution —
   # "audience %q is not installed in this organization" — and the page can

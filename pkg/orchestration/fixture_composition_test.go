@@ -15,7 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
 )
 
-const fragmentHead = "schema: codefly.dev/authority/fixture-composition/v2\n"
+const fragmentHead = "schema: codefly.dev/authority/fixture-composition/v1\n"
 
 // fragmentWorkspace composes two modules from OUTSIDE the workspace tree, as a
 // pinned module materializes, each shipping a fixture-composition fragment —

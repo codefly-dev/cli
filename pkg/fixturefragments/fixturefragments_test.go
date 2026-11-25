@@ -17,7 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
 )
 
-const head = "schema: codefly.dev/authority/fixture-composition/v2\n"
+const head = "schema: codefly.dev/authority/fixture-composition/v1\n"
 
 // composition is a workspace composing the authority (whose local service
 // declares the group), a store and a chat module, and its own playground
@@ -121,32 +121,25 @@ func TestAConflictBetweenFragmentsNamesBoth(t *testing.T) {
 	require.Contains(t, err.Error(), "stand-in module model is stated by module chat (modules/chat/configurations/local/fixture-composition.yaml) and by module playground (modules/playground/configurations/local/fixture-composition.yaml)")
 }
 
-// A fragment still stating the retired schema, or granting an organisation
-// role a module's kinds, is refused by the authority's own sentence, naming
-// the fragment: it is never merged as one that grants nothing.
-func TestARetiredFragmentIsRefusedNamingItAndWhereReachIsStatedNow(t *testing.T) {
+// A fragment granting an organisation role a module's kinds is refused by the
+// authority's own sentence, naming the fragment: it is never merged as one
+// that grants nothing.
+func TestAFragmentWithARolesSectionIsRefusedNamingItAndWhereReachIsStatedNow(t *testing.T) {
 	const roles = `roles:
   - organization: acme
     name: viewer
     scopes:
       - {kind: documents, actions: [read]}
 `
-	for name, fragment := range map[string]string{
-		"schema v1":       "schema: " + fixturecomposition.RetiredSchema + "\n" + roles,
-		"a roles section": head + roles,
-	} {
-		t.Run(name, func(t *testing.T) {
-			workspace := composition(t, map[string]string{
-				"modules/store/configurations/local/" + fixturefragments.Group + ".yaml": fragment,
-			})
-			ctx := context.Background()
-			_, err := fixturefragments.Prepare(ctx, workspace, &environments.Environment{Name: "local"})
-			require.ErrorContains(t, err, "module store (modules/store/configurations/local/fixture-composition.yaml)")
-			require.ErrorContains(t, err, "seat each person who is to reach a module on a team of an installation that reaches it (installations: members), and remove the roles section")
-			_, err = fixturefragments.Merged(ctx, workspace, []string{"local"})
-			require.ErrorContains(t, err, "installations: members")
-		})
-	}
+	workspace := composition(t, map[string]string{
+		"modules/store/configurations/local/" + fixturefragments.Group + ".yaml": head + roles,
+	})
+	ctx := context.Background()
+	_, err := fixturefragments.Prepare(ctx, workspace, &environments.Environment{Name: "local"})
+	require.ErrorContains(t, err, "module store (modules/store/configurations/local/fixture-composition.yaml)")
+	require.ErrorContains(t, err, "seat each person who is to reach a module on a team of an installation that reaches it (installations: members), and remove the roles section")
+	_, err = fixturefragments.Merged(ctx, workspace, []string{"local"})
+	require.ErrorContains(t, err, "installations: members")
 }
 
 // A hand-written workspace document is never overwritten.

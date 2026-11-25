@@ -540,8 +540,8 @@ func TestTheLocalRunNamesTheEdge(t *testing.T) {
 // the fragment seats the fixture's one cast on the installation's own roles
 // (alice installs and owns, dana is admin, carol is user; bob is seated
 // nowhere and refused by name, "<person> holds no role on <solution>"). It is
-// schema v2, which the authority's parser reads back, and it grants no
-// organisation role anything: schema v1 and a roles section are refused.
+// schema v1, which the authority's parser reads back, and it grants no
+// organisation role anything: a roles section is refused.
 func TestTheInstallationAdmitsTheFixturesPeople(t *testing.T) {
 	fragment := fixtureComposition("notes")
 	doc, err := fixturecomposition.Decode([]byte(fragment))

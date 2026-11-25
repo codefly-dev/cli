@@ -19,7 +19,7 @@ import (
 // the configuration, and leaves a hand-written one as it stands.
 func TestARunMergesTheFixtureCompositionAndKeepsAHandWrittenOne(t *testing.T) {
 	dir := t.TempDir()
-	head := "schema: codefly.dev/authority/fixture-composition/v2\n"
+	head := "schema: codefly.dev/authority/fixture-composition/v1\n"
 	for name, content := range map[string]string{
 		"workspace.codefly.yaml":                                                 "name: playground\nlayout: modules\nmodules:\n  - name: authority\n  - name: store\nenvironments:\n  - name: local\n",
 		"modules/authority/module.codefly.yaml":                                  "kind: module\nname: authority\nservices:\n  - name: local\n",
