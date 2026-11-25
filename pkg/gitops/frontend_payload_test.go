@@ -29,7 +29,7 @@ func bundleModule(t *testing.T, artifacts string, headless bool) (*resources.Mod
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "services", "api"), 0o755))
 	files := map[string]string{
-		"module.package.codefly.yaml": "kind: module-package\nschema: codefly/module-package/v2\nid: example/shared\nversion: 1.4.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n" + artifacts,
+		"module.package.codefly.yaml": "kind: module-package\nschema: codefly/module-package/v1\nid: example/shared\nversion: 1.4.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n" + artifacts,
 	}
 	if !headless {
 		files["services/api/"+solutionrun.FrontendFileName] = "title: Shared page\norder: 4\nexposed_module: ./Page\nhost_contract: 1\n"

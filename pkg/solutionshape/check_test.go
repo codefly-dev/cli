@@ -93,7 +93,7 @@ func writePackagedRoutes(t *testing.T, dir, routes string) {
 	write(t, filepath.Join(dir, "contracts", "api", "backend", "http", "openapi.json"), routes)
 	sum := sha256.Sum256([]byte(routes))
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
@@ -300,7 +300,7 @@ func TestAMissingPackageFails(t *testing.T) {
 func TestPublishingTheShellWarnsRatherThanFails(t *testing.T) {
 	dir := conformingSolution(t)
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
@@ -473,7 +473,7 @@ func TestAPackageCarryingNoBackendContractFails(t *testing.T) {
 	}
 
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"
@@ -500,7 +500,7 @@ contracts:
 func TestNoPublishedContractIsNotReportedTwice(t *testing.T) {
 	dir := conformingSolution(t)
 	write(t, filepath.Join(dir, "module.package.codefly.yaml"), `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: northwind/quill
 version: 0.1.0
 minimum-codefly-version: ">=0.1.220 <1.0.0"

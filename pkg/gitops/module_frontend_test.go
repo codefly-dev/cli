@@ -20,7 +20,7 @@ func TestModuleFrontendReachesBothDeliveryPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, contents := range map[string]string{
-		"module.package.codefly.yaml":                  "kind: module-package\nschema: codefly/module-package/v2\nid: example/shared\nversion: 1.4.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n",
+		"module.package.codefly.yaml":                  "kind: module-package\nschema: codefly/module-package/v1\nid: example/shared\nversion: 1.4.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n",
 		"services/api/" + solutionrun.FrontendFileName: "title: Shared page\norder: 4\nexposed_module: ./Page\nhost_contract: 1\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
@@ -71,7 +71,7 @@ func TestAHeadlessSolutionReachesBothDeliveryPaths(t *testing.T) {
 	// The native delivery reads the package manifest before it reads the
 	// optional declaration.
 	for name, contents := range map[string]string{
-		"module.package.codefly.yaml": "kind: module-package\nschema: codefly/module-package/v2\nid: example/crm\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n",
+		"module.package.codefly.yaml": "kind: module-package\nschema: codefly/module-package/v1\nid: example/crm\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n",
 	} {
 		if err := os.WriteFile(filepath.Join(module.Dir(), name), []byte(contents), 0o600); err != nil {
 			t.Fatal(err)

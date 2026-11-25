@@ -13,7 +13,7 @@ import (
 )
 
 const runFixturePackageManifest = `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: starterkit
 version: 1.0.0
 minimum-codefly-version: ">=0.3.32"

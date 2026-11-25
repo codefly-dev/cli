@@ -505,6 +505,7 @@ func TestCIResultStorePublishesCompleteRecordsUnderConcurrency(t *testing.T) {
 			defer wait.Done()
 			record := &ciResultRecord{
 				Schema:         ciResultRecordSchema,
+				EvidenceFormat: ciResultEvidenceFormat,
 				IdentitySchema: cacheIdentitySchemaVersion,
 				Identity:       "sha256:shared",
 				Outcome:        ciResultOutcomePass,

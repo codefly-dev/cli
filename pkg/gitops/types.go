@@ -13,11 +13,9 @@ import (
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 8
-	// There is no prior schema a loader still accepts. Schema 8 delivers one
-	// module manifest per module (moduleManifestPath) where schema 7 delivered
-	// presence, authority and endpoint documents, which no host reads any
-	// more: a tree an older CLI rendered is rendered again, never read.
+	// SchemaVersion identifies the current render inventory, which owns a tree
+	// path and records the delivered module manifest when present.
+	SchemaVersion         = 1
 	EvidenceSchemaVersion = 1
 )
 

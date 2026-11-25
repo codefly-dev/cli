@@ -184,7 +184,7 @@ materialized first stays materialized (dependency cache, overlay, receipt and
 `.gitignore` entries), as after any command that reads composed modules.
 
 The generated `configurations/<profile>/runnable-bindings.env` carries Core's
-`codefly.runnable-prepared/v3` bindings: owner coordinates, the resolved JSON
+`codefly.runnable-prepared/v1` bindings: owner coordinates, the resolved JSON
 call target, bounded contract and digest, and concrete policy. Tool metadata
 survives preparation; absence remains `ErrNotATool`, and exposure grants no
 authority. A gRPC operation is called only on a Connect endpoint whose

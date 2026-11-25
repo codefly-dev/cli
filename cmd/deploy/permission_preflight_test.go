@@ -26,7 +26,7 @@ func TestCompositionRenderChecksLaterModuleBeforeFirstRender(t *testing.T) {
 		resources.WorkspaceConfigurationName: "name: preflight\nlayout: modules\nmodules:\n  - name: alpha\n  - name: zulu\nenvironments:\n  - name: staging\n",
 		"modules/alpha/module.codefly.yaml":  "kind: module\nname: alpha\n",
 		"modules/zulu/module.codefly.yaml":   "kind: module\nname: zulu\n",
-		"modules/zulu/module.package.codefly.yaml": fmt.Sprintf(`schema: codefly/module-package/v2
+		"modules/zulu/module.package.codefly.yaml": fmt.Sprintf(`schema: codefly/module-package/v1
 kind: module-package
 id: example/zulu
 version: 0.1.0

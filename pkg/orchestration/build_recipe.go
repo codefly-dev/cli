@@ -20,13 +20,8 @@ const (
 	buildRecipeSourceDir  = "builder"
 	buildRecipeArchiveDir = "build-recipes"
 	buildRecipeManifest   = "recipe.codefly.json"
-	// buildRecipeSchema is v2 because the manifest now carries the recipe build
-	// instructions (image, paths, target, platforms, and build-args) alongside
-	// the file digests. v1 recorded only the file digests, so a consumer had the
-	// vendored Dockerfile but not the build-args the image was built with — a
-	// FRONTEND_SKIN_RUNTIME=1 dropped from the durable recipe rebuilds a different
-	// image than the one that shipped.
-	buildRecipeSchema = "codefly.dev/build-recipe/v2"
+	// The current manifest records build instructions alongside file digests.
+	buildRecipeSchema = "codefly.dev/build-recipe/v1"
 )
 
 // BuildRecipe records which agent produced a service's build recipe, the exact
@@ -40,9 +35,8 @@ type BuildRecipe struct {
 	Version   string `json:"version"`
 	// Recipes carries the build instructions per image. It is absent for a legacy
 	// in-agent build (the agent built in-process and emitted no plan): such an
-	// archive is schema v2 but has only file digests, exactly like v1. A consumer
-	// gates on this field's presence, not on the schema version, to decide whether
-	// it can rebuild from the recipe rather than only inspect the vendored files.
+	// archive has only file digests. Consumers need this field to rebuild an
+	// image from the archived recipe.
 	Recipes []RecipeSpec      `json:"recipes,omitempty"`
 	Files   map[string]string `json:"files"`
 }

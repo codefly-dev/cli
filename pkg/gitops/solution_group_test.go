@@ -25,7 +25,7 @@ func nativeSolution(t *testing.T, name string) (*resources.Module, *resources.Se
 	t.Helper()
 	module := solutionModule(t, name, "api")
 	for file, contents := range map[string]string{
-		"module.package.codefly.yaml": "kind: module-package\nschema: codefly/module-package/v2\nid: example/" + name + "\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n",
+		"module.package.codefly.yaml": "kind: module-package\nschema: codefly/module-package/v1\nid: example/" + name + "\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n",
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), file), []byte(contents), 0o600))
 	}

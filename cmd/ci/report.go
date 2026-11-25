@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	reportSchemaVersion = 3
+	reportSchemaVersion = 1
 	reportFilename      = "report.json"
 
 	reportStatusPending   = "pending"

@@ -1228,13 +1228,13 @@ applier compiles that into default-deny `AuthorizationPolicy` objects. **The
 CLI never writes an AuthorizationPolicy.** What it writes is the data the
 applier compiles: every edge the composition declares, delivered with the
 rendered tree in the render record at the tree root, `.codefly-render.json`,
-under `meshEdges`, versioned by its own `schemaVersion` (2). Each module's
+under `meshEdges`, versioned by its own `schemaVersion` (1). Each module's
 tree carries the edges INTO that module's workloads; the applier reads every
 tree it applies.
 
 ```json
 "meshEdges": {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "trustDomain": "cluster.example",
   "gateway": "saas/auth-gateway",
   "edges": [
@@ -1268,10 +1268,10 @@ endpoint besides the hop, as the service's manifest proposed it and the
 environment co-declared it (below). The principals are already in the edge
 above; this says which of them is a waiver rather than the hop, so a reviewer
 or an applier reads the whole set of exceptions in a cell off the records it
-already reads. `schemaVersion` went to 2 with it, rather than the field being
-added quietly, because the MEANING of the edges changed: a manifest admission
-now takes the environment's co-signature, so a version-1 record's principals
-could include a waiver no operator accepted.
+already reads. The current schema always declares `admissions`, including
+when there are no waivers. A record from the original format lacks that field
+and may include a principal whose admission the environment did not co-sign.
+Render that tree again before applying its edges.
 
 The `gateway` reference is the composition's explicit host gateway. Each edge
 carries both `port` (the Service port) and `targetPort` (the resolved container

@@ -94,7 +94,7 @@ func TestValidateClientPackageRejectsArtifactAndVersionDrift(t *testing.T) {
 	require.NoError(t, os.WriteFile(contractPath, contract, 0o644))
 	digest := composition.APIContractDigest(contract)
 	manifest := fmt.Sprintf(`kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/starterkit
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"

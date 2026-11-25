@@ -19,6 +19,8 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
+const replayPlanSchema = "codefly.ci-replay/v1"
+
 type ReplayPlan struct {
 	Schema      string           `json:"schema"`
 	Candidate   string           `json:"candidate"`
@@ -74,7 +76,7 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 	if err != nil {
 		return nil, err
 	}
-	result := &ReplayPlan{Schema: "codefly.ci-replay/v3", Invocation: invocation, Tasks: []ReplayTask{}, Candidate: candidate, Content: content, Selection: plan}
+	result := &ReplayPlan{Schema: replayPlanSchema, Invocation: invocation, Tasks: []ReplayTask{}, Candidate: candidate, Content: content, Selection: plan}
 	result.Tasks, err = resolveReplayTasks(ctx, workspace, plan, invocation)
 	if err != nil {
 		return nil, err
@@ -336,7 +338,7 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if trailingErr := decoder.Decode(new(any)); trailingErr != io.EOF {
 		return nil, fmt.Errorf("CI replay plan must contain one JSON document")
 	}
-	if submitted.Schema != "codefly.ci-replay/v3" || submitted.Selection == nil {
+	if submitted.Schema != replayPlanSchema || submitted.Selection == nil {
 		return nil, fmt.Errorf("incompatible CI replay plan")
 	}
 	// Selection is recomputed from independently supplied bounds, never from the

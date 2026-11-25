@@ -77,7 +77,7 @@ func policyPackage(t *testing.T, tamper bool) string {
 		set = append(set, 0)
 	}
 	sum := sha256.Sum256(set)
-	pkg := `schema: codefly/module-package/v2
+	pkg := `schema: codefly/module-package/v1
 kind: module-package
 id: codefly/console
 version: 0.1.0
@@ -228,7 +228,7 @@ func routePackage(t *testing.T, document string) string {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(document))
-	pkg := `schema: codefly/module-package/v2
+	pkg := `schema: codefly/module-package/v1
 kind: module-package
 id: northwind/model
 version: 0.1.0

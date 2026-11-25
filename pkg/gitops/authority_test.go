@@ -73,7 +73,7 @@ destinations:
 // shopPackageManifest is the release module "shop" names, in the one shape a
 // reader accepts: a module manifest quotes its id and version.
 const shopPackageManifest = `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: acme/shop
 version: 1.2.0
 minimum-codefly-version: ">=0.0.0"

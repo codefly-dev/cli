@@ -80,7 +80,7 @@ func admissionLauncher(t *testing.T) (*launcher, *admissionPeer) {
 	workspace = composeModule(t, workspace, "beta")
 	for _, name := range []string{"alpha", "beta"} {
 		dir := filepath.Join(workspace.Dir(), "modules", name)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte("kind: module-package\nschema: codefly/module-package/v2\nid: example/"+name+"\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n"), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte("kind: module-package\nschema: codefly/module-package/v1\nid: example/"+name+"\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n"), 0600))
 		path := filepath.Join(dir, "services", "api", resources.ServiceConfigurationName)
 		body, err := os.ReadFile(path)
 		require.NoError(t, err)

@@ -300,7 +300,7 @@ func saveCommittedSolution(t *testing.T, ctx context.Context, artifact []byte) (
 	)
 	saveRunnablePublication(t, moduleDir, "releases", modulecontract.Destination{ID: "http", Service: "backend", Endpoint: "http", Kind: "module"})
 	writeFixtureFile(t, filepath.Join(moduleDir, "services", "backend", filepath.FromSlash(standards.OpenAPIPath)), artifact)
-	writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(`schema: codefly/module-package/v2
+	writeFixtureFile(t, filepath.Join(moduleDir, composition.PackageManifestFileName), []byte(`schema: codefly/module-package/v1
 kind: module-package
 id: northwind/releases
 version: 0.1.0

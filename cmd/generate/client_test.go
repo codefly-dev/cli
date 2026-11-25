@@ -744,7 +744,7 @@ func TestGenerateClientPackageSourceRequiresPinnedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/x
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"

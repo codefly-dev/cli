@@ -248,7 +248,7 @@ func composeSaasHost(t *testing.T, workspace *resources.Workspace, component str
 		filepath.Join("modules", "saas", "services", "accounts", "proto", "accounts.proto"):          source,
 		filepath.Join("modules", "saas", "contracts", "accounts", "grpc", "proto", "accounts.proto"): source,
 		filepath.Join("modules", "saas", "contracts", "accounts", "grpc", "contract.binpb"):          string(set),
-		filepath.Join("modules", "saas", "module.package.codefly.yaml"): fmt.Sprintf(`schema: codefly/module-package/v2
+		filepath.Join("modules", "saas", "module.package.codefly.yaml"): fmt.Sprintf(`schema: codefly/module-package/v1
 kind: module-package
 id: platform/saas
 version: 0.1.0

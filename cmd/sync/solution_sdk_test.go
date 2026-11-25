@@ -109,7 +109,7 @@ func writeHostModule(t *testing.T, dir string) {
 	}
 
 	packageManifest := `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/host
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"
@@ -441,7 +441,7 @@ func TestSyncSolutionSDKDiamond(t *testing.T) {
 		t.Fatal(err)
 	}
 	packageManifest := `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/other
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"
@@ -609,7 +609,7 @@ func TestSyncSolutionSDKEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	packageManifest := `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/host
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"

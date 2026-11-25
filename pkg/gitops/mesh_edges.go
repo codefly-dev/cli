@@ -107,16 +107,10 @@ import (
 // An endpoint nobody is declared to reach has no edge: default deny is what
 // the applier compiles, and the absence is the declaration.
 
-// MeshEdgesSchemaVersion versions the `meshEdges` record. A reader refuses a
-// version it does not know rather than compile edges it misreads.
-//
-// 2 adds `admissions`: every effective waiver of "only the hop", so an applier
-// and a reviewer read the whole waiver set off the record instead of reading
-// every module's manifests. The version is bumped rather than the field added
-// quietly because the MEANING of the edges changed with it — a manifest
-// admission now takes the environment's co-signature, so a version-1 record's
-// principals could include a waiver no operator accepted.
-const MeshEdgesSchemaVersion = 2
+// MeshEdgesSchemaVersion identifies the current edge record. Its admissions
+// field is always present so a consumer can distinguish the original format,
+// whose principals could include waivers the environment had not accepted.
+const MeshEdgesSchemaVersion = 1
 
 // gatewayWorkloadEndpoint is the name of the gateway's endpoint every composed
 // workload mints on, as the host declares it (`workload`, api http, internal).
@@ -140,7 +134,7 @@ type MeshEdges struct {
 	// principals; this says which of them is a waiver rather than the hop,
 	// so the whole waiver set is readable without opening a manifest. Sorted
 	// by service, endpoint then caller.
-	Admissions []MeshAdmission `json:"admissions,omitempty"`
+	Admissions []MeshAdmission `json:"admissions"`
 }
 
 // MeshAdmission is one effective admission: a caller a module's own manifest
@@ -791,7 +785,12 @@ func deriveMeshEdgesFrom(
 			return nil, err
 		}
 	}
-	record := &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: env.Host.TrustDomain, Gateway: env.Host.Gateway}
+	record := &MeshEdges{
+		SchemaVersion: MeshEdgesSchemaVersion,
+		TrustDomain:   env.Host.TrustDomain,
+		Gateway:       env.Host.Gateway,
+		Admissions:    []MeshAdmission{},
+	}
 	for _, service := range services {
 		if service == nil {
 			continue

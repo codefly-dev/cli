@@ -25,7 +25,7 @@ func nativeModule(t *testing.T, name string, page bool) (*resources.Module, []*r
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "services", "api"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte("kind: module-package\nschema: codefly/module-package/v2\nid: example/"+name+"\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte("kind: module-package\nschema: codefly/module-package/v1\nid: example/"+name+"\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n"), 0o600))
 	module := &resources.Module{Name: name}
 	if page {
 		module.ServiceEntry = "api"

@@ -212,10 +212,10 @@ agent:
   version: 0.0.1
   publisher: codefly.ai
 `,
-		// schema is deliberately v1, not the required v2, so LoadPackageManifest
-		// fails validation before RenderService ever reaches prepareSnapshotRegistry.
+		// An unknown schema makes LoadPackageManifest fail before RenderService
+		// reaches prepareSnapshotRegistry.
 		filepath.Join("modules", "web", "module.package.codefly.yaml"): `kind: module-package
-schema: codefly/module-package/v1
+schema: codefly/module-package/future
 id: codefly/web
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"

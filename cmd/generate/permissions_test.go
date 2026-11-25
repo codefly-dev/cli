@@ -187,7 +187,7 @@ foreign_methods:
         path: contracts/api/` + service + `/grpc/contract.binpb
         digest: sha256:` + hex.EncodeToString(sum[:]) + "\n"
 	}
-	write("module.package.codefly.yaml", `schema: codefly/module-package/v2
+	write("module.package.codefly.yaml", `schema: codefly/module-package/v1
 kind: module-package
 id: codefly/ledger
 version: 0.1.0

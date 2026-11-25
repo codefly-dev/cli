@@ -58,7 +58,7 @@ one environment, and write them as the workspace configuration group
 ` + RunnableBindingsGroup + `.
 
 For each derived operation the value is one JSON document
-(` + corerunnable.PreparedSchemaV3 + `):
+(` + corerunnable.PreparedSchema + `):
 
   operation        the owner coordinates, and the operation as the owner spells
                    it: /pkg.Service/Method, or "GET /path" for a route

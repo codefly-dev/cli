@@ -194,7 +194,7 @@ func writeCallee(t *testing.T, dir, name, endpoint, kind, pkg, file string, cont
 	require.NoError(t, os.WriteFile(filepath.Join(dir, path), contract, 0o644))
 	sum := sha256.Sum256(contract)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.ModuleConfigurationName), []byte("kind: module\nname: "+name+"\nservices: []\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte(`schema: codefly/module-package/v2
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte(`schema: codefly/module-package/v1
 kind: module-package
 id: acme/`+name+`
 version: 0.1.0

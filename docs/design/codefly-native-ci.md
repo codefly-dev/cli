@@ -375,7 +375,7 @@ changes. Ignored source files remain covered. Untracked outputs in the reserved
 `.codefly/ci` report directory are excluded; tracked files there remain inputs.
 Save the envelope and custom report outputs outside the source tree. Broken
 symlinks and special files are rejected. The replay schema is
-`codefly.ci-replay/v3`; earlier envelopes must be regenerated.
+`codefly.ci-replay/v1`; earlier envelopes must be regenerated.
 
 `codefly ci plan` is the stable inspection and automation boundary. Text output
 is for humans; JSON is versioned and machine-readable:
@@ -596,7 +596,7 @@ resolved from the workspace root, making the artifact location independent of
 the directory from which Codefly was invoked. Writes are atomic so a provider
 never uploads a partially serialized report.
 
-Report schema version 2 contains:
+Report schema version 1 contains:
 
 - the exact versioned affected-service plan and Codefly CLI version;
 - command, phase, and named-suite context;
@@ -634,10 +634,11 @@ Provider caches may transport Codefly-owned records, but must not construct
 cache keys themselves. Every verified reuse appears in the JSON report and
 identifies the execution it stands in for.
 
-### Cache identity schema v2
+### Cache identity schema v1
 
-Cache identity schema version 2 is emitted on every report task. Keys use
-canonical JSON inputs and are prefixed with `sha256:`. Directory digests bind
+Cache identity schema version 1 is emitted on every report task. Keys use
+a domain separator followed by canonical JSON inputs and are prefixed with
+`sha256:`. Directory digests bind
 relative paths, executable bits, symlink targets, and file bytes; Git-ignored
 files and known transient dependency/build directories are excluded. This means
 renames invalidate a key, while `node_modules`, `.next`, `.codefly`, incremental
@@ -723,7 +724,7 @@ without ever producing it.
 A task is reused only when every one of these holds; otherwise it executes
 normally and the report records why:
 
-- the identity is schema v2, complete, and carries no limitation;
+- the identity is schema v1, complete, and carries no limitation;
 - a record exists for exactly that identity, it was written against the current
   record schema, and its signature verifies. A record written against an older
   record schema is refused as incompatible rather than as forged: the signature

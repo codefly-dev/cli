@@ -297,8 +297,8 @@ func TestPinnedCoreMarkerResolutionsMatchTheRollout(t *testing.T) {
 		{"a released CLI projects nothing", "", ""},
 		{"the untagged generation, ambiguous trailing field", fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing), ""},
 		{"the untagged generation, exact scope alone", fmt.Sprintf("%d:%s", os.Getpid(), id), id + ":"},
-		{"neither this process nor its parent", fmt.Sprintf("%d:v2:%s:%s", unownedPID, id, trailing), ""},
-		{"this generation", fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace), id + ":" + namespace},
+		{"neither this process nor its parent", recoveryscope.Marker(unownedPID, id, trailing), ""},
+		{"this generation", recoveryscope.Marker(os.Getpid(), id, namespace), id + ":" + namespace},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(recoveryscope.EnvironmentVariable, tc.marker)
@@ -339,7 +339,7 @@ func TestFlowProjectsOverAnInheritedForeignMarker(t *testing.T) {
 			}
 			inherited := fmt.Sprintf("%d:%s:%s", os.Getpid(), id, trailing)
 			if tc.tagged {
-				inherited = fmt.Sprintf("%d:v2:%s:%s", os.Getpid(), id, namespace)
+				inherited = recoveryscope.Marker(os.Getpid(), id, namespace)
 			}
 			t.Setenv(recoveryscope.EnvironmentVariable, inherited)
 			foreign := recoveryscope.Acknowledgement()

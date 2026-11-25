@@ -296,7 +296,7 @@ func TestGenerateContractsNamesTheMissingArtifactRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(serviceDir, standards.OpenAPIPath), []byte(document), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `schema: codefly/module-package/v2
+	manifest := `schema: codefly/module-package/v1
 kind: module-package
 id: codefly/billing
 version: 0.1.0
@@ -410,7 +410,7 @@ func TestGenerateContractsPublishesAnHTTPEndpointsOpenAPIDocument(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(serviceDir, standards.OpenAPIPath), []byte(document), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `schema: codefly/module-package/v2
+	manifest := `schema: codefly/module-package/v1
 kind: module-package
 id: codefly/billing
 version: 0.1.0
@@ -549,7 +549,7 @@ func scaffoldGoGRPCFixture(t *testing.T) string {
 	}
 
 	manifest := `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/billing
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"

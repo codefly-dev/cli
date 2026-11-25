@@ -4717,7 +4717,7 @@ doctor as `runnable_binding_decline_invalid`. See
 Each binding becomes one key in the workspace configuration group
 `runnable-bindings`, at `configurations/<profile>/runnable-bindings.env`. The
 key is `<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters
-replaced by underscores. Its value is Core's `codefly.runnable-prepared/v3`
+replaced by underscores. Its value is Core's `codefly.runnable-prepared/v1`
 JSON: owner operation coordinates, resolved call address and Connect/REST
 route, bounded contract with its digest, and the concrete policy. No descriptor
 set is delivered. A gRPC owner is called only over a Connect endpoint whose

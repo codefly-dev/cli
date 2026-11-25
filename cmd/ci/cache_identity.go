@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	cacheIdentitySchemaVersion = 2
+	cacheIdentitySchemaVersion = 1
+	cacheIdentityDomain        = "codefly.ci-cache-identity/v1\x00"
 	cacheIdentityAlgorithm     = "sha256"
 	cacheStatusIdentityOnly    = "identity_only"
 	cacheStatusUnavailable     = "unavailable"
@@ -37,7 +38,7 @@ const (
 )
 
 // CacheIdentity is a content-addressed description of a CI task. Schema
-// version 2 binds every repository byte that is not attributed to an unrelated
+// version 1 binds every repository byte that is not attributed to an unrelated
 // resource, so a matching key cannot hide an undeclared input. Status is this
 // run's reuse outcome for the task; Stored is the separate question of whether
 // this run published its own result for a later one.
@@ -225,7 +226,7 @@ func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options Sch
 		identity.Limitations = append(identity.Limitations, fmt.Sprintf("encode cache inputs: %v", err))
 		return identity
 	}
-	identity.Key = "sha256:" + resources.Hash(payload)
+	identity.Key = "sha256:" + resources.Hash(append([]byte(cacheIdentityDomain), payload...))
 	identity.Limitations = sortedUnique(identity.Limitations)
 	return identity
 }
@@ -272,7 +273,7 @@ func (builder *ciCacheIdentityBuilder) workspaceIdentity(options ScheduleOptions
 		identity.Limitations = []string{fmt.Sprintf("encode cache inputs: %v", err)}
 		return identity
 	}
-	identity.Key = "sha256:" + resources.Hash(payload)
+	identity.Key = "sha256:" + resources.Hash(append([]byte(cacheIdentityDomain), payload...))
 	return identity
 }
 

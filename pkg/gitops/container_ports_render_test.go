@@ -317,7 +317,9 @@ func treeDigest(t *testing.T, root string) string {
 // tree to). The fixture declares no such row, so the stamp is the digest of an
 // empty declaration; the manifests are unchanged and the two cases below still
 // agree, which is the property this digest pins.
-const undeclaredFixtureDigest = "8bb67b42d7ab8a8a9a0c05ee0023ad273e5ef32278efe8a1b6a30808d7687df8"
+// The current inventory declares schemaVersion 1. Both render cases below
+// produce the same bytes, including the inventory.
+const undeclaredFixtureDigest = "057bb672dd6d1be8e6e60c095191e1b68723405dd485fcd564c53987e725e673"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

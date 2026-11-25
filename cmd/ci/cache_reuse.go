@@ -19,18 +19,14 @@ import (
 )
 
 const (
-	// ciResultRecordSchema names the exact signed byte layout of a record, not
-	// just its meaning. The signature covers a JSON encoding of every field,
-	// and encoding/json silently drops keys a reader's struct does not declare,
-	// so a reader that re-marshals a record written by a different shape
-	// recomputes a different MAC and reports an honest record as forged. Any
-	// change to ciResultRecord or the evidence it carries — including adding an
-	// additive, omitempty field — must therefore bump this constant, so the
-	// mismatch is refused as an incompatible schema instead of a failed
-	// signature. v2 adds the artifact subject to the evidence payload.
-	ciResultRecordSchema = "codefly.ci-result/v2"
-	ciResultOutcomePass  = "passed"
-	ciResultSignatureAlg = "hmac-sha256"
+	// ciResultRecordSchema names the current signed record schema. The
+	// evidence format identifies records whose artifacts carry subjects, even
+	// when a particular record carries no artifacts. Check it before verifying
+	// the MAC, which covers the exact JSON layout.
+	ciResultRecordSchema   = "codefly.ci-result/v1"
+	ciResultEvidenceFormat = "artifact-subjects"
+	ciResultOutcomePass    = "passed"
+	ciResultSignatureAlg   = "hmac-sha256"
 	// ciResultKeyVariable carries the signing key out of band. Only runs on a
 	// protected reference may hold it: a writer without it cannot publish a
 	// record any verifier will accept, whatever access it has to the backend.
@@ -64,6 +60,7 @@ func hasRunIdentity(run string) bool {
 // trust policy and the signing key, never the storage backend's cooperation.
 type ciResultRecord struct {
 	Schema         string           `json:"schema"`
+	EvidenceFormat string           `json:"evidence_format"`
 	IdentitySchema int              `json:"identity_schema_version"`
 	Identity       string           `json:"identity"`
 	Task           string           `json:"task"`
@@ -115,7 +112,7 @@ type ciResultStore struct {
 }
 
 func (store *ciResultStore) recordPath(identity string) string {
-	return filepath.Join(store.root, "records", hex.EncodeToString(sha256Sum([]byte(identity)))+".json")
+	return filepath.Join(store.root, "records", ciResultEvidenceFormat, hex.EncodeToString(sha256Sum([]byte(identity)))+".json")
 }
 
 func (store *ciResultStore) blobPath(digest string) (string, error) {
@@ -356,7 +353,7 @@ func (reuse *ciResultReuse) lookup(identity *CacheIdentity, phase string) ciReus
 		return missedReuse("no verified result was recorded for this identity")
 	}
 	switch {
-	case record.Schema != ciResultRecordSchema:
+	case record.Schema != ciResultRecordSchema || record.EvidenceFormat != ciResultEvidenceFormat:
 		return missedReuse("result record schema is incompatible")
 	case record.IdentitySchema != cacheIdentitySchemaVersion:
 		return missedReuse("result record was written against a different identity contract")
@@ -456,6 +453,7 @@ func (reuse *ciResultReuse) record(task *ReportTask) (*ciResultRecord, map[strin
 	}
 	record := &ciResultRecord{
 		Schema:         ciResultRecordSchema,
+		EvidenceFormat: ciResultEvidenceFormat,
 		IdentitySchema: task.Cache.SchemaVersion,
 		Identity:       task.Cache.Key,
 		Task:           task.ID,

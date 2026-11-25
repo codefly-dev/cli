@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -245,11 +246,11 @@ func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 	}
 }
 
-// TestLoadInventoryRefusesAnOlderSchema: a tree an older CLI rendered carries
+// TestLoadInventoryRefusesUnsupportedSchemas: a tree an older CLI rendered carries
 // no settled delivery record and no group digests; reading it would deliver
 // its documents unsettled and let a changed group through. The schema is
 // refused, with the number, rather than read as if nothing were missing.
-func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
+func TestLoadInventoryRefusesUnsupportedSchemas(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "owned")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
@@ -264,15 +265,20 @@ func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	downgraded := strings.Replace(string(data), `"schemaVersion": 8`, `"schemaVersion": 7`, 1)
-	if downgraded == string(data) {
+	unknown := strings.Replace(string(data), `"schemaVersion": 1`, `"schemaVersion": 7`, 1)
+	if unknown == string(data) {
 		t.Fatal("rendered inventory did not carry the current schema version")
 	}
-	if err := os.WriteFile(path, []byte(downgraded), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(unknown), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "schema 7") {
-		t.Fatalf("an older schema must be refused by number, got %v", err)
+		t.Fatalf("an unknown schema must be refused by number, got %v", err)
+	}
+	// The original schema also used number 1, but did not declare an owned path.
+	legacy := []byte(`{"schemaVersion":1,"module":"payments","environment":"production","files":[],"digest":"legacy"}`)
+	if _, err := decodeInventory(legacy, "legacy"); !errors.Is(err, ErrUnsupportedInventorySchema) {
+		t.Fatalf("the original inventory shape must be refused, got %v", err)
 	}
 }
 
@@ -286,7 +292,7 @@ func moduleWithPackageAndCatalog(t *testing.T, digest string) string {
 		t.Fatal(err)
 	}
 	manifest := `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: codefly/starterkit
 version: 0.1.0
 minimum-codefly-version: ">=0.0.0"

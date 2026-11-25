@@ -15,7 +15,7 @@ import (
 )
 
 const fixturePackageManifest = `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: starterkit
 version: 1.0.0
 minimum-codefly-version: ">=0.3.32"
@@ -41,7 +41,7 @@ fixtures:
 // rivalFixturePackageManifest declares the same fixture name as
 // fixturePackageManifest, under a different package id.
 const rivalFixturePackageManifest = `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: rival-starter
 version: 1.0.0
 minimum-codefly-version: ">=0.3.32"
@@ -63,7 +63,7 @@ fixtures:
 // unrelatedFixturePackageManifest declares a name nothing else declares, so a
 // collision elsewhere in the workspace must not affect resolving it.
 const unrelatedFixturePackageManifest = `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: staging-starter
 version: 1.0.0
 minimum-codefly-version: ">=0.3.32"
@@ -83,7 +83,7 @@ fixtures:
 `
 
 const fixturelessPackageManifest = `kind: module-package
-schema: codefly/module-package/v2
+schema: codefly/module-package/v1
 id: docs-site
 version: 1.0.0
 minimum-codefly-version: ">=0.3.0"

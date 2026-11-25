@@ -3422,7 +3422,7 @@ one environment, and write them as the workspace configuration group
 runnable-bindings.
 
 For each derived operation the value is one JSON document
-(codefly.runnable-prepared/v3):
+(codefly.runnable-prepared/v1):
 
   operation        the owner coordinates, and the operation as the owner spells
                    it: /pkg.Service/Method, or "GET /path" for a route

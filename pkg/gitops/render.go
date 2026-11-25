@@ -244,11 +244,22 @@ var ErrUnsupportedInventorySchema = errors.New("unsupported render inventory sch
 
 func decodeInventory(data []byte, label string) (Inventory, error) {
 	var inventory Inventory
-	if err := json.Unmarshal(data, &inventory); err != nil {
+	decoded := struct {
+		*Inventory
+		OwnedPath *string `json:"ownedPath"`
+	}{Inventory: &inventory}
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
 	if inventory.SchemaVersion != SchemaVersion {
 		return Inventory{}, fmt.Errorf("%w: %s inventory schema %d (this CLI reads %d)", ErrUnsupportedInventorySchema, label, inventory.SchemaVersion, SchemaVersion)
+	}
+	if decoded.OwnedPath == nil {
+		return Inventory{}, fmt.Errorf("%w: %s inventory does not declare its owned path", ErrUnsupportedInventorySchema, label)
+	}
+	inventory.OwnedPath = *decoded.OwnedPath
+	if inventory.MeshEdges != nil && inventory.MeshEdges.SchemaVersion != MeshEdgesSchemaVersion {
+		return Inventory{}, fmt.Errorf("%w: %s mesh edges schema %d (this CLI reads %d)", ErrUnsupportedInventorySchema, label, inventory.MeshEdges.SchemaVersion, MeshEdgesSchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
