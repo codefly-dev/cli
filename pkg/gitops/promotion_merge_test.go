@@ -30,8 +30,8 @@ type fakeDeliveryRepository struct {
 	// runs answers a check run by name, as (status, conclusion) per read: the
 	// last entry repeats once the reads pass the list.
 	runs map[string][][2]string
-	// statuses are the head's commit statuses, context → state.
-	statuses map[string]string
+	// statuses answers each commit status in order, repeating the final state.
+	statuses map[string][]string
 	// merged is set by the merge, with the method used.
 	merged      bool
 	method      string
@@ -79,7 +79,11 @@ func (f *fakeDeliveryRepository) serve(t *testing.T) {
 			fmt.Fprint(w, f.rules)
 		case r.Method == http.MethodGet && path == "/repos/owner/delivery/commits/"+mergeHead+"/status":
 			var statuses []string
-			for context, state := range f.statuses {
+			for context, states := range f.statuses {
+				state := states[0]
+				if len(states) > 1 {
+					f.statuses[context] = states[1:]
+				}
 				statuses = append(statuses, fmt.Sprintf(`{"context":%q,"state":%q}`, context, state))
 			}
 			fmt.Fprintf(w, `{"state":"pending","statuses":[%s]}`, strings.Join(statuses, ","))
@@ -175,15 +179,9 @@ func TestAPromotionWaitsForTheChecksItsBaseRequires(t *testing.T) {
 			"secret-scan":  {{"queued", ""}, {"in_progress", ""}, {"completed", "success"}},
 			"deploy-green": {{"completed", "failure"}},
 		},
-		statuses: map[string]string{"build": "pending"},
+		statuses: map[string][]string{"build": {"pending", "success"}},
 	}
 	repository.serve(t)
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		repository.mu.Lock()
-		repository.statuses["build"] = "success"
-		repository.mu.Unlock()
-	}()
 
 	result, said, err := mergeIt(t)
 	require.NoError(t, err)
