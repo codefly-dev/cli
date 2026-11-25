@@ -118,13 +118,19 @@ type launcher struct {
 	waiters   map[string]*deliveryWaiter
 }
 
+// loadDeveloperKey reads the developer key a run delivers with; a test hands
+// its own instead of the machine's keychain.
+var loadDeveloperKey = signing.LoadDeveloperKey
+
 var (
 	launcherMu     sync.Mutex
 	launcherActive *launcher
 )
 
 // attachLauncher wires the run as the composition's cluster when its
-// environment declares a host and the run is native. It is a no-op otherwise.
+// environment declares a host, on every backend: the host reads the same
+// federation keys and anchors whether its process starts on the machine, in a
+// nix shell or in a container. It is a no-op otherwise.
 func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
 	launcherMu.Lock()
 	defer launcherMu.Unlock()
@@ -132,7 +138,7 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 		launcherActive.close()
 		launcherActive = nil
 	}
-	cluster, err := newNativeLauncher(ctx, flow, workspace, env, runtimeContext, fixture)
+	cluster, err := newNativeLauncher(ctx, flow, workspace, env, fixture)
 	if err != nil {
 		return err
 	}
@@ -143,11 +149,11 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 // AttachNativeLauncher gives test entry points the same native authority
 // admission as run, with explicit configuration and flow-owned teardown.
 // Call after InitManagers determines whether this test starts any service.
-func AttachNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, selectedRuntime, fixture string) error {
+func AttachNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
 	if len(flow.LocalAuthorityServices()) == 0 {
 		return nil
 	}
-	_, err := newNativeLauncher(ctx, flow, workspace, env, selectedRuntime, fixture)
+	_, err := newNativeLauncher(ctx, flow, workspace, env, fixture)
 	return err
 }
 
@@ -161,8 +167,8 @@ func launcherStateDir(workspace, environment, scope string) string {
 	return filepath.Join(base, "scopes", fmt.Sprintf("%x", sha256.Sum256([]byte(scope))))
 }
 
-func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, selectedRuntime, fixture string) (*launcher, error) {
-	if env == nil || env.Host == nil || selectedRuntime == resources.RuntimeContextContainer {
+func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) (*launcher, error) {
+	if env == nil || env.Host == nil {
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("launcher")
@@ -173,9 +179,9 @@ func newNativeLauncher(ctx context.Context, flow *orchestration.Flow, workspace 
 	if err != nil {
 		return nil, err
 	}
-	signer, err := signing.LoadDeveloperKey()
+	signer, err := loadDeveloperKey()
 	if err != nil {
-		return nil, fmt.Errorf("a native run delivers with the developer key, and none is held: %w", err)
+		return nil, fmt.Errorf("a run of an environment with a host delivers with the developer key, and none is held: %w", err)
 	}
 	stateDir := launcherStateDir(workspace.Dir(), env.Name, env.NamingScope)
 	launcherIdentity, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, stateDir)

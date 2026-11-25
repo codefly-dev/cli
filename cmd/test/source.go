@@ -187,7 +187,7 @@ func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, req
 	if err != nil {
 		return nil, err
 	}
-	flow, err := orchestration.NewFlow(ctx, prepared.Workspace, prepared.Module, prepared.Service, env, orchestration.TestMode, run.NativeAuthorityPrerequisites(env, sourceRuntimeContext))
+	flow, err := orchestration.NewFlow(ctx, prepared.Workspace, prepared.Module, prepared.Service, env, orchestration.TestMode, run.NativeAuthorityPrerequisites(env))
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, req
 	if err := flow.InitManagers(ctx); err != nil {
 		return flow, err
 	}
-	if err := run.AttachNativeLauncher(ctx, flow, prepared.Workspace, env, sourceRuntimeContext, ""); err != nil {
+	if err := run.AttachNativeLauncher(ctx, flow, prepared.Workspace, env, ""); err != nil {
 		return flow, err
 	}
 	if err := flow.Load(ctx); err != nil {

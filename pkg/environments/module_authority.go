@@ -138,8 +138,8 @@ func ValidateHostComposition(ctx context.Context, workspace *resources.Workspace
 }
 
 // NativeHostFederation derives only the delivery host's public federation keys.
-// Registration secrets remain authored configuration. A container or cell render
-// does not use this native projection.
+// Registration secrets remain authored configuration. A run hands it on every
+// backend; a cell render does not use this projection.
 func NativeHostFederation(host *EnvironmentHost, service *resources.Service) (*basev0.Configuration, error) {
 	if host == nil || service == nil || !slices.Contains(service.WorkspaceConfigurationDependencies, FederationConfiguration) {
 		return nil, nil

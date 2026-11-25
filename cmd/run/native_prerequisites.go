@@ -11,12 +11,13 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-// NativeAuthorityPrerequisites orders native identity workloads after the host
-// that admits their signed manifests. It grants no endpoint or configuration
-// access; Core's runtime graph owns scheduling and cycle validation.
-func NativeAuthorityPrerequisites(env *environments.Environment, runtimeContext string) orchestration.FlowOption {
+// NativeAuthorityPrerequisites orders the run's identity workloads after the
+// host that admits their signed manifests, on every backend. It grants no
+// endpoint or configuration access; Core's runtime graph owns scheduling and
+// cycle validation.
+func NativeAuthorityPrerequisites(env *environments.Environment) orchestration.FlowOption {
 	var modules []string
-	if env == nil || env.Host == nil || runtimeContext == resources.RuntimeContextContainer {
+	if env == nil || env.Host == nil {
 		return orchestration.WithRuntimePrerequisites(nil, nil)
 	}
 	for _, ref := range []string{env.Host.Delivery, env.Host.Gateway} {

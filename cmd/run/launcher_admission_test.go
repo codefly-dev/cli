@@ -190,7 +190,7 @@ func TestNativeAuthorityOrdersHostWithoutAuthoredDependency(t *testing.T) {
 	service, err := module.LoadServiceFromName(t.Context(), "api")
 	require.NoError(t, err)
 	flow, err := orchestration.NewFlow(t.Context(), workspace, module, service, cluster.env, orchestration.RunMode,
-		orchestration.WithRunModuleClosure("alpha"), NativeAuthorityPrerequisites(cluster.env, resources.RuntimeContextNative))
+		orchestration.WithRunModuleClosure("alpha"), NativeAuthorityPrerequisites(cluster.env))
 	require.NoError(t, err)
 	run, err := flow.World().Dependencies.ForStage(resources.StageRun)
 	require.NoError(t, err)

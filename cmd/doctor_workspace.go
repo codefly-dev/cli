@@ -1204,13 +1204,13 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 				}
 			}
 		}
-		// Doctor has no selected runtime. Report native-only supply as a warning,
+		// Doctor selects no run. Report the run-only supply as a warning,
 		// and exempt no other service that also requires the authored group.
 		if byName[environments.FederationConfiguration] == nil && provided.Ambiguous[environments.FederationConfiguration] == nil &&
 			nativeFederationCoversScope(env, scope) {
 			required = slices.DeleteFunc(required, func(name string) bool { return name == environments.FederationConfiguration })
 			report.add("", "workspace configuration federation", checkStatusWarn,
-				"derived from host for the native delivery service; container runs and deployments still require authored federation values", "")
+				"derived from host for a run's delivery service; deployments still require authored federation values", "")
 		}
 		reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir, required, byName, own, report)
 		if len(composed) > 0 {

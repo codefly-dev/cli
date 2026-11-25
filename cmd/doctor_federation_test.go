@@ -30,7 +30,7 @@ func TestDoctorReportsNativeFederationWithoutRequestingAFile(t *testing.T) {
 			}
 			requireNoCode(t, report, codeConfigurationMissing)
 			requireNoCode(t, report, codeConfigurationDirMissing)
-			require.Contains(t, reportJSON(t, report), "container runs and deployments still require authored federation")
+			require.Contains(t, reportJSON(t, report), "deployments still require authored federation")
 		})
 	}
 }
