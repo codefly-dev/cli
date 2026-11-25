@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -103,7 +103,7 @@ func buildDerivedReport(workspace *resources.Workspace, derived *runnablespkg.De
 	}
 }
 
-func packageFieldReports(fields []*basev0.RunnableField) []runnableFieldReport {
+func packageFieldReports(fields []*basev1.RunnableField) []runnableFieldReport {
 	reports := make([]runnableFieldReport, 0, len(fields))
 	for _, field := range fields {
 		reports = append(reports, runnableFieldReport{
@@ -118,11 +118,11 @@ func packageFieldReports(fields []*basev0.RunnableField) []runnableFieldReport {
 	return reports
 }
 
-func packageItemReport(item *basev0.RunnableField) *runnableFieldReport {
+func packageItemReport(item *basev1.RunnableField) *runnableFieldReport {
 	if item == nil {
 		return nil
 	}
-	reports := packageFieldReports([]*basev0.RunnableField{item})
+	reports := packageFieldReports([]*basev1.RunnableField{item})
 	return &reports[0]
 }
 

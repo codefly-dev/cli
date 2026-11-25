@@ -13,7 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
@@ -99,7 +99,7 @@ func TestRebuiltCompanionAgentAcknowledgesNativeContainerRecovery(t *testing.T) 
 	require.NoError(t, err)
 
 	var headers metadata.MD
-	info, err := client.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{}, grpc.Header(&headers))
+	info, err := client.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{}, grpc.Header(&headers))
 	require.NoError(t, err)
 	require.NoError(t, contract.Check(info.GetContract(), contract.ContainerRecoveryScope))
 	acknowledgement := strings.Join(headers.Get(recoveryscope.Header), "")

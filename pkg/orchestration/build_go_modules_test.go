@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 
 	"github.com/codefly-dev/cli/pkg/redact"
 	"github.com/stretchr/testify/require"
@@ -224,7 +224,7 @@ func TestProxiesForResolvesRootsAgainstTheContext(t *testing.T) {
 	contextDir := t.TempDir()
 	goModule(t, filepath.Join(contextDir, "code"))
 	goModule(t, filepath.Join(contextDir, "tools"))
-	recipe := &builderv0.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{
+	recipe := &builderv1.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv1.GoModuleDownload{
 		{ModuleRoot: "code", ProxyContext: "gomodproxy"},
 		{ModuleRoot: "tools", ProxyContext: "toolsproxy"},
 	}}
@@ -234,12 +234,12 @@ func TestProxiesForResolvesRootsAgainstTheContext(t *testing.T) {
 	require.Equal(t, proxies["gomodproxy"], proxies["toolsproxy"], "the flow's module roots share one cache")
 	require.True(t, slices.ContainsFunc(calls, func(call goCall) bool { return call.dir == filepath.Join(contextDir, "tools") }))
 
-	none, err := prefetch.proxiesFor(context.Background(), contextDir, &builderv0.DockerBuildRecipe{Name: "plain"})
+	none, err := prefetch.proxiesFor(context.Background(), contextDir, &builderv1.DockerBuildRecipe{Name: "plain"})
 	require.NoError(t, err)
 	require.Nil(t, none)
 
 	calls = nil
-	_, err = prefetch.proxiesFor(context.Background(), contextDir, &builderv0.DockerBuildRecipe{Name: "escape", GoModuleDownloads: []*builderv0.GoModuleDownload{
+	_, err = prefetch.proxiesFor(context.Background(), contextDir, &builderv1.DockerBuildRecipe{Name: "escape", GoModuleDownloads: []*builderv1.GoModuleDownload{
 		{ModuleRoot: "../elsewhere", ProxyContext: "gomodproxy"},
 	}})
 	require.ErrorContains(t, err, "outside its build context")
@@ -258,11 +258,11 @@ func TestGoCommandOutputHasNoURLCredentials(t *testing.T) {
 // TestAGoModuleRecipeIsNotBuiltWithoutItsProxies pins the refusal that keeps a
 // declared download from silently falling back to a fetch inside the build.
 func TestAGoModuleRecipeIsNotBuiltWithoutItsProxies(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{{ModuleRoot: "code", ProxyContext: "gomodproxy"}}}
+	recipe := &builderv1.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv1.GoModuleDownload{{ModuleRoot: "code", ProxyContext: "gomodproxy"}}}
 	require.True(t, recipeMissesGoModuleProxies(recipe, nil))
 	require.True(t, recipeMissesGoModuleProxies(recipe, map[string]string{"other": "/p"}))
 	require.False(t, recipeMissesGoModuleProxies(recipe, map[string]string{"gomodproxy": "/p"}))
-	require.False(t, recipeMissesGoModuleProxies(&builderv0.DockerBuildRecipe{Name: "plain"}, nil))
+	require.False(t, recipeMissesGoModuleProxies(&builderv1.DockerBuildRecipe{Name: "plain"}, nil))
 }
 
 // TestPruneRemovesAToolchainTheGoToolWroteReadOnly pins the one tree

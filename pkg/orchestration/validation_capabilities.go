@@ -1,6 +1,6 @@
 package orchestration
 
-import agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+import agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 
 type ValidationOperation string
 
@@ -18,7 +18,7 @@ const (
 // ValidationOperationSupport returns whether an agent has an authoritative
 // validation contract and, when it does, whether the named operation is
 // supported. A missing contract remains the explicit legacy signal.
-func ValidationOperationSupport(info *agentv0.AgentInformation, operation ValidationOperation) (advertised, supported bool) {
+func ValidationOperationSupport(info *agentv1.AgentInformation, operation ValidationOperation) (advertised, supported bool) {
 	if info == nil || info.GetValidation() == nil {
 		return false, false
 	}
@@ -48,7 +48,7 @@ func ValidationOperationSupport(info *agentv0.AgentInformation, operation Valida
 // validationSupport distinguishes a legacy agent (no validation contract) from
 // an authoritative advertisement. Legacy agents retain compatibility probing;
 // once validation is present, the advertised support bit is binding.
-func validationSupport(info *agentv0.AgentInformation, action ActionType) (advertised, supported bool) {
+func validationSupport(info *agentv1.AgentInformation, action ActionType) (advertised, supported bool) {
 	switch action {
 	case RuntimeLint:
 		return ValidationOperationSupport(info, ValidationLint)

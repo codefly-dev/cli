@@ -16,11 +16,11 @@ import (
 	"github.com/codefly-dev/core/agents/services"
 	codecore "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/code/semantic"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -31,11 +31,11 @@ type peer struct {
 	root      string
 	code      *codecore.DefaultCodeServer
 	mu        sync.Mutex
-	identity  *basev0.ServiceIdentity
+	identity  *basev1.ServiceIdentity
 	listeners []net.Listener
-	load      *runtimev0.LoadStatus
-	init      *runtimev0.InitStatus
-	start     *runtimev0.StartStatus
+	load      *runtimev1.LoadStatus
+	init      *runtimev1.InitStatus
+	start     *runtimev1.StartStatus
 }
 
 func (p *peer) record(method string, request proto.Message) error {
@@ -61,11 +61,11 @@ func (p *peer) record(method string, request proto.Message) error {
 }
 
 type discovery struct {
-	agentv0.UnimplementedAgentServer
+	agentv1.UnimplementedAgentServer
 	p *peer
 }
 
-func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
+func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
 	if err := d.p.record("Agent.GetAgentInformation", req); err != nil {
 		return nil, err
 	}
@@ -81,44 +81,44 @@ func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv0.AgentI
 	case "future":
 		declaration.ProtocolVersion++
 	}
-	info := &agentv0.AgentInformation{Contract: declaration, Capabilities: []*agentv0.Capability{{Type: agentv0.Capability_RUNTIME}, {Type: agentv0.Capability_BUILDER}}}
+	info := &agentv1.AgentInformation{Contract: declaration, Capabilities: []*agentv1.Capability{{Type: agentv1.Capability_RUNTIME}, {Type: agentv1.Capability_BUILDER}}}
 	switch os.Getenv("CODEFLY_TEST_PEER_VALIDATION") {
 	case "unsupported":
-		info.Validation = &agentv0.ValidationCapabilities{}
+		info.Validation = &agentv1.ValidationCapabilities{}
 	case "supported", "dependencies", "stack":
-		dependencyMode := agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
+		dependencyMode := agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
 		switch os.Getenv("CODEFLY_TEST_PEER_VALIDATION") {
 		case "dependencies":
-			dependencyMode = agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES
+			dependencyMode = agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES
 		case "stack":
-			dependencyMode = agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK
+			dependencyMode = agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK
 		}
-		info.Validation = &agentv0.ValidationCapabilities{
-			Lint:    &agentv0.ValidationOperationCapability{Supported: true},
-			Compile: &agentv0.ValidationOperationCapability{Supported: true},
-			Test:    &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "unit", DefaultSuite: true, DependencyMode: dependencyMode}}},
+		info.Validation = &agentv1.ValidationCapabilities{
+			Lint:    &agentv1.ValidationOperationCapability{Supported: true},
+			Compile: &agentv1.ValidationOperationCapability{Supported: true},
+			Test:    &agentv1.TestValidationCapability{Supported: true, Suites: []*agentv1.TestSuiteCapability{{Name: "unit", DefaultSuite: true, DependencyMode: dependencyMode}}},
 		}
 	}
 	if os.Getenv("CODEFLY_TEST_PEER_IMAGES") == "1" && info.Validation != nil {
-		info.Validation.ArtifactBuild = &agentv0.ValidationOperationCapability{Supported: true}
+		info.Validation.ArtifactBuild = &agentv1.ValidationOperationCapability{Supported: true}
 	}
 	return info, nil
 }
 
-func (d *discovery) ListCommands(_ context.Context, req *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error) {
-	return &agentv0.ListCommandsResponse{}, d.p.record("Agent.ListCommands", req)
+func (d *discovery) ListCommands(_ context.Context, req *agentv1.ListCommandsRequest) (*agentv1.ListCommandsResponse, error) {
+	return &agentv1.ListCommandsResponse{}, d.p.record("Agent.ListCommands", req)
 }
 
-func (d *discovery) RunPluginCommand(_ context.Context, req *agentv0.RunPluginCommandRequest) (*agentv0.RunPluginCommandResponse, error) {
-	return &agentv0.RunPluginCommandResponse{}, d.p.record("Agent.RunCommand", req)
+func (d *discovery) RunPluginCommand(_ context.Context, req *agentv1.RunPluginCommandRequest) (*agentv1.RunPluginCommandResponse, error) {
+	return &agentv1.RunPluginCommandResponse{}, d.p.record("Agent.RunCommand", req)
 }
 
 type runtimePeer struct {
-	runtimev0.UnimplementedRuntimeServer
+	runtimev1.UnimplementedRuntimeServer
 	p *peer
 }
 
-func (p *peer) bindIdentity(ctx context.Context, identity *basev0.ServiceIdentity) (*resources.Service, error) {
+func (p *peer) bindIdentity(ctx context.Context, identity *basev1.ServiceIdentity) (*resources.Service, error) {
 	location := filepath.Join(identity.GetWorkspacePath(), identity.GetRelativeToWorkspace())
 	service, err := resources.LoadServiceFromDir(ctx, location)
 	if err != nil {
@@ -144,7 +144,7 @@ func (p *peer) bindIdentity(ctx context.Context, identity *basev0.ServiceIdentit
 	return service, nil
 }
 
-func (r *runtimePeer) Load(ctx context.Context, req *runtimev0.LoadRequest) (*runtimev0.LoadResponse, error) {
+func (r *runtimePeer) Load(ctx context.Context, req *runtimev1.LoadRequest) (*runtimev1.LoadResponse, error) {
 	service, err := r.p.bindIdentity(ctx, req.GetIdentity())
 	if err != nil {
 		return nil, err
@@ -159,12 +159,12 @@ func (r *runtimePeer) Load(ctx context.Context, req *runtimev0.LoadRequest) (*ru
 	}
 	r.p.mu.Lock()
 	defer r.p.mu.Unlock()
-	r.p.identity = proto.Clone(req.GetIdentity()).(*basev0.ServiceIdentity)
-	r.p.load = &runtimev0.LoadStatus{State: runtimev0.LoadStatus_READY}
-	return &runtimev0.LoadResponse{Status: r.p.load, Endpoints: endpoints}, nil
+	r.p.identity = proto.Clone(req.GetIdentity()).(*basev1.ServiceIdentity)
+	r.p.load = &runtimev1.LoadStatus{State: runtimev1.LoadStatus_READY}
+	return &runtimev1.LoadResponse{Status: r.p.load, Endpoints: endpoints}, nil
 }
 
-func (r *runtimePeer) Init(_ context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+func (r *runtimePeer) Init(_ context.Context, req *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
 	if err := r.p.record("Runtime.Init", req); err != nil {
 		return nil, err
 	}
@@ -173,8 +173,8 @@ func (r *runtimePeer) Init(_ context.Context, req *runtimev0.InitRequest) (*runt
 	}
 	r.p.mu.Lock()
 	defer r.p.mu.Unlock()
-	var mappings []*basev0.NetworkMapping
-	var configs []*basev0.Configuration
+	var mappings []*basev1.NetworkMapping
+	var configs []*basev1.Configuration
 	for _, proposed := range req.GetProposedNetworkMappings() {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -194,24 +194,24 @@ func (r *runtimePeer) Init(_ context.Context, req *runtimev0.InitRequest) (*runt
 			}
 		}()
 		port := uint16(listener.Addr().(*net.TCPAddr).Port)
-		mappings = append(mappings, &basev0.NetworkMapping{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{network.Native(endpoint, port)}})
-		configs = append(configs, &basev0.Configuration{Origin: identity, Infos: []*basev0.ConfigurationInformation{{Name: "runtime", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "connection", Value: "tcp://" + listener.Addr().String()}}}}})
+		mappings = append(mappings, &basev1.NetworkMapping{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{network.Native(endpoint, port)}})
+		configs = append(configs, &basev1.Configuration{Origin: identity, Infos: []*basev1.ConfigurationInformation{{Name: "runtime", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "connection", Value: "tcp://" + listener.Addr().String()}}}}})
 	}
-	r.p.init = &runtimev0.InitStatus{State: runtimev0.InitStatus_READY}
-	return &runtimev0.InitResponse{Status: r.p.init, NetworkMappings: mappings, RuntimeConfigurations: configs}, nil
+	r.p.init = &runtimev1.InitStatus{State: runtimev1.InitStatus_READY}
+	return &runtimev1.InitResponse{Status: r.p.init, NetworkMappings: mappings, RuntimeConfigurations: configs}, nil
 }
 
-func (r *runtimePeer) Start(_ context.Context, req *runtimev0.StartRequest) (*runtimev0.StartResponse, error) {
+func (r *runtimePeer) Start(_ context.Context, req *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
 	if err := r.p.record("Runtime.Start", req); err != nil {
 		return nil, err
 	}
 	r.p.mu.Lock()
 	defer r.p.mu.Unlock()
-	r.p.start = &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED, Generation: 1}
-	return &runtimev0.StartResponse{Status: r.p.start}, nil
+	r.p.start = &runtimev1.StartStatus{State: runtimev1.StartStatus_STARTED, Generation: 1}
+	return &runtimev1.StartResponse{Status: r.p.start}, nil
 }
 
-func (r *runtimePeer) Stop(_ context.Context, req *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+func (r *runtimePeer) Stop(_ context.Context, req *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
 	if err := r.p.record("Runtime.Stop", req); err != nil {
 		return nil, err
 	}
@@ -221,53 +221,53 @@ func (r *runtimePeer) Stop(_ context.Context, req *runtimev0.StopRequest) (*runt
 		_ = listener.Close()
 	}
 	r.p.listeners = nil
-	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+	return &runtimev1.StopResponse{Status: &runtimev1.StopStatus{State: runtimev1.StopStatus_SUCCESS}}, nil
 }
 
-func (r *runtimePeer) Destroy(_ context.Context, req *runtimev0.DestroyRequest) (*runtimev0.DestroyResponse, error) {
-	return &runtimev0.DestroyResponse{Status: &runtimev0.DestroyStatus{State: runtimev0.DestroyStatus_SUCCESS}}, r.p.record("Runtime.Destroy", req)
+func (r *runtimePeer) Destroy(_ context.Context, req *runtimev1.DestroyRequest) (*runtimev1.DestroyResponse, error) {
+	return &runtimev1.DestroyResponse{Status: &runtimev1.DestroyStatus{State: runtimev1.DestroyStatus_SUCCESS}}, r.p.record("Runtime.Destroy", req)
 }
 
-func (r *runtimePeer) Information(_ context.Context, _ *runtimev0.InformationRequest) (*runtimev0.InformationResponse, error) {
+func (r *runtimePeer) Information(_ context.Context, _ *runtimev1.InformationRequest) (*runtimev1.InformationResponse, error) {
 	r.p.mu.Lock()
 	defer r.p.mu.Unlock()
-	return &runtimev0.InformationResponse{LoadStatus: r.p.load, InitStatus: r.p.init, StartStatus: r.p.start}, nil
+	return &runtimev1.InformationResponse{LoadStatus: r.p.load, InitStatus: r.p.init, StartStatus: r.p.start}, nil
 }
 
-func (r *runtimePeer) Test(_ context.Context, req *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
+func (r *runtimePeer) Test(_ context.Context, req *runtimev1.TestRequest) (*runtimev1.TestResponse, error) {
 	if err := r.p.record("Runtime.Test", req); err != nil {
 		return nil, err
 	}
-	return &runtimev0.TestResponse{
-		Status: &runtimev0.TestStatus{State: runtimev0.TestStatus_SUCCESS},
-		Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_PASSED},
-		Counts: &runtimev0.TestCounts{Total: 1, Passed: 1},
-		Run:    &runtimev0.TestRun{Runner: "cli-protocol-test", RequestedSelection: req.GetSelection(), SelectionId: req.GetSelectionId()},
+	return &runtimev1.TestResponse{
+		Status: &runtimev1.TestStatus{State: runtimev1.TestStatus_SUCCESS},
+		Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED},
+		Counts: &runtimev1.TestCounts{Total: 1, Passed: 1},
+		Run:    &runtimev1.TestRun{Runner: "cli-protocol-test", RequestedSelection: req.GetSelection(), SelectionId: req.GetSelectionId()},
 	}, nil
 }
 
 type builderPeer struct {
-	builderv0.UnimplementedBuilderServer
+	builderv1.UnimplementedBuilderServer
 	p *peer
 }
 
-func (b *builderPeer) Load(ctx context.Context, req *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+func (b *builderPeer) Load(ctx context.Context, req *builderv1.LoadRequest) (*builderv1.LoadResponse, error) {
 	if _, err := b.p.bindIdentity(ctx, req.GetIdentity()); err != nil {
 		return nil, err
 	}
-	return &builderv0.LoadResponse{State: &builderv0.LoadStatus{State: builderv0.LoadStatus_READY}}, b.p.record("Builder.Load", req)
+	return &builderv1.LoadResponse{State: &builderv1.LoadStatus{State: builderv1.LoadStatus_READY}}, b.p.record("Builder.Load", req)
 }
 
-func (b *builderPeer) Configure(_ context.Context, req *builderv0.ConfigureRequest) (*builderv0.ConfigureResponse, error) {
-	return &builderv0.ConfigureResponse{State: &builderv0.ConfigureStatus{State: builderv0.ConfigureStatus_SUCCESS}, EffectiveYaml: "opaque: peer-response\n"}, b.p.record("Builder.Configure", req)
+func (b *builderPeer) Configure(_ context.Context, req *builderv1.ConfigureRequest) (*builderv1.ConfigureResponse, error) {
+	return &builderv1.ConfigureResponse{State: &builderv1.ConfigureStatus{State: builderv1.ConfigureStatus_SUCCESS}, EffectiveYaml: "opaque: peer-response\n"}, b.p.record("Builder.Configure", req)
 }
 
 type codePeer struct {
-	codev0.UnimplementedCodeServer
+	codev1.UnimplementedCodeServer
 	p *peer
 }
 
-func (c *codePeer) Execute(ctx context.Context, req *codev0.CodeRequest) (*codev0.CodeResponse, error) {
+func (c *codePeer) Execute(ctx context.Context, req *codev1.CodeRequest) (*codev1.CodeResponse, error) {
 	if err := c.p.record("Code.Execute", req); err != nil {
 		return nil, err
 	}
@@ -275,15 +275,15 @@ func (c *codePeer) Execute(ctx context.Context, req *codev0.CodeRequest) (*codev
 	defer c.p.mu.Unlock()
 	var name string
 	switch req.GetOperation().(type) {
-	case *codev0.CodeRequest_GetProjectInfo:
+	case *codev1.CodeRequest_GetProjectInfo:
 		name = "project"
-	case *codev0.CodeRequest_GetSemanticIndex:
+	case *codev1.CodeRequest_GetSemanticIndex:
 		name = "semantic"
 	}
 	if name != "" {
 		data, err := os.ReadFile(filepath.Join(c.p.root, ".protocol-test", name+".json"))
 		if err == nil {
-			response := &codev0.CodeResponse{}
+			response := &codev1.CodeResponse{}
 			return response, protojson.Unmarshal(data, response)
 		}
 		if !os.IsNotExist(err) {

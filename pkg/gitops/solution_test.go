@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	solutionv1 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution"
 	"google.golang.org/grpc"
@@ -23,7 +23,7 @@ import (
 // the requested destination. It records what the host asked it to do so the test
 // can assert the render pipeline drives the executor contract correctly.
 type fakeSolutionExecutor struct {
-	solutionv0.UnimplementedSolutionServer
+	solutionv1.UnimplementedSolutionServer
 	packageSource     string
 	renderArtifact    string
 	renderDestination string
@@ -31,16 +31,16 @@ type fakeSolutionExecutor struct {
 	environment       string
 }
 
-func (f *fakeSolutionExecutor) Package(_ context.Context, req *solutionv0.PackageRequest) (*solutionv0.PackageResponse, error) {
+func (f *fakeSolutionExecutor) Package(_ context.Context, req *solutionv1.PackageRequest) (*solutionv1.PackageResponse, error) {
 	f.packageSource = req.GetSource()
 	f.environment = req.GetContext().GetEnvironment()
-	return &solutionv0.PackageResponse{
+	return &solutionv1.PackageResponse{
 		Reference:      req.GetReference() + "@sha256:" + digestPlaceholder,
 		ArtifactDigest: "sha256:" + digestPlaceholder,
 	}, nil
 }
 
-func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv0.RenderRequest) (*solutionv0.RenderResponse, error) {
+func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv1.RenderRequest) (*solutionv1.RenderResponse, error) {
 	f.renderArtifact = req.GetArtifactReference()
 	f.renderDestination = req.GetDestination()
 	// A real executor cannot know the target namespace; the host supplies it.
@@ -65,16 +65,16 @@ func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv0.RenderR
 			return nil, err
 		}
 	}
-	return &solutionv0.RenderResponse{RenderedPaths: []string{"overlays/" + req.GetContext().GetEnvironment()}}, nil
+	return &solutionv1.RenderResponse{RenderedPaths: []string{"overlays/" + req.GetContext().GetEnvironment()}}, nil
 }
 
 const digestPlaceholder = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-func serveFakeSolutionExecutor(t *testing.T, server solutionv0.SolutionServer) solutionExecutor {
+func serveFakeSolutionExecutor(t *testing.T, server solutionv1.SolutionServer) solutionExecutor {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	grpcServer := grpc.NewServer()
-	solutionv0.RegisterSolutionServer(grpcServer, server)
+	solutionv1.RegisterSolutionServer(grpcServer, server)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
 
@@ -94,7 +94,7 @@ func serveFakeSolutionExecutor(t *testing.T, server solutionv0.SolutionServer) s
 // installFakeSolutionExecutor serves an in-process solution executor and routes
 // RenderSolution to it for the duration of the test, standing in for the
 // verified-artifact plugin so the render pipeline is exercised end to end.
-func installFakeSolutionExecutor(t *testing.T, server solutionv0.SolutionServer) {
+func installFakeSolutionExecutor(t *testing.T, server solutionv1.SolutionServer) {
 	t.Helper()
 	client := serveFakeSolutionExecutor(t, server)
 	previous := connectSolutionExecutor

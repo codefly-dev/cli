@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/architecture"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/tui"
@@ -32,7 +32,7 @@ type readinessStack struct {
 	store        *grpc.Server
 	admin        net.Listener
 	consoleCalls *atomic.Int64
-	mappings     map[string][]*basev0.NetworkMapping
+	mappings     map[string][]*basev1.NetworkMapping
 }
 
 func newReadinessStack(t *testing.T) *readinessStack {
@@ -68,7 +68,7 @@ func newReadinessStack(t *testing.T) *readinessStack {
 	}))
 	t.Cleanup(console.Close)
 
-	mappings := map[string][]*basev0.NetworkMapping{
+	mappings := map[string][]*basev1.NetworkMapping{
 		"data/store": {
 			testMapping("grpc", standards.GRPC, storeAddress),
 			testMapping("admin", standards.TCP, admin.Addr().String()),
@@ -111,25 +111,25 @@ func serveGRPC(t *testing.T, server *grpc.Server) string {
 // empty. Recorded mappings are built from what an agent returns over gRPC, and
 // nothing in the run path guarantees those fields survive that boundary — so
 // readiness must select endpoints without them.
-func testMapping(endpoint, api, address string) *basev0.NetworkMapping {
-	return &basev0.NetworkMapping{
-		Endpoint:  &basev0.Endpoint{Name: endpoint, Api: api},
-		Instances: []*basev0.NetworkInstance{nativeTestInstance(address)},
+func testMapping(endpoint, api, address string) *basev1.NetworkMapping {
+	return &basev1.NetworkMapping{
+		Endpoint:  &basev1.Endpoint{Name: endpoint, Api: api},
+		Instances: []*basev1.NetworkInstance{nativeTestInstance(address)},
 	}
 }
 
-func testHTTPMapping(endpoint, target string) *basev0.NetworkMapping {
+func testHTTPMapping(endpoint, target string) *basev1.NetworkMapping {
 	instance := nativeTestInstance("")
 	instance.Address = target
-	return &basev0.NetworkMapping{
-		Endpoint:  &basev0.Endpoint{Name: endpoint, Api: standards.HTTP},
-		Instances: []*basev0.NetworkInstance{instance},
+	return &basev1.NetworkMapping{
+		Endpoint:  &basev1.Endpoint{Name: endpoint, Api: standards.HTTP},
+		Instances: []*basev1.NetworkInstance{instance},
 	}
 }
 
-func nativeTestInstance(host string) *basev0.NetworkInstance {
-	return &basev0.NetworkInstance{
-		Access: &basev0.NetworkAccess{Kind: resources.NetworkAccessNative},
+func nativeTestInstance(host string) *basev1.NetworkInstance {
+	return &basev1.NetworkInstance{
+		Access: &basev1.NetworkAccess{Kind: resources.NetworkAccessNative},
 		Host:   host,
 	}
 }
@@ -322,9 +322,9 @@ func TestReadinessAcceptsHealthServerWithoutStatusForCheckedService(t *testing.T
 	// for, so Check answers NotFound. The server answered: it publishes nothing
 	// to gate on, which is the transport-only capability — treating NotFound as
 	// a failure would strand it as permanently unready.
-	stack.mappings["data/store"][0].Endpoint.ApiDetails = resources.ToGrpcAPI(&basev0.GrpcAPI{
+	stack.mappings["data/store"][0].Endpoint.ApiDetails = resources.ToGrpcAPI(&basev1.GrpcAPI{
 		Package: "acme.v1",
-		Rpcs:    []*basev0.RPC{{ServiceName: "Store", Name: "Get"}},
+		Rpcs:    []*basev1.RPC{{ServiceName: "Store", Name: "Get"}},
 	})
 	require.Nil(t, stack.flow.Readiness(ctx))
 
@@ -340,9 +340,9 @@ func TestReadinessChecksDeclaredGRPCServices(t *testing.T) {
 	ctx := context.Background()
 
 	mapping := stack.mappings["data/store"][0]
-	mapping.Endpoint.ApiDetails = resources.ToGrpcAPI(&basev0.GrpcAPI{
+	mapping.Endpoint.ApiDetails = resources.ToGrpcAPI(&basev1.GrpcAPI{
 		Package: "acme.v1",
-		Rpcs:    []*basev0.RPC{{ServiceName: "Store", Name: "Get"}},
+		Rpcs:    []*basev1.RPC{{ServiceName: "Store", Name: "Get"}},
 	})
 	stack.health.SetServingStatus("acme.v1.Store", healthv1.HealthCheckResponse_NOT_SERVING)
 
@@ -366,7 +366,7 @@ func TestReadinessUsesDeclaredTransportSecurity(t *testing.T) {
 	// for gRPC, so sniffing one would silently probe every secured endpoint in
 	// plaintext instead.
 	mapping := stack.mappings["data/store"][0]
-	mapping.Endpoint.ApiDetails = resources.ToGrpcAPI(&basev0.GrpcAPI{Secured: true})
+	mapping.Endpoint.ApiDetails = resources.ToGrpcAPI(&basev1.GrpcAPI{Secured: true})
 	requirement := endpointRequirement("data/store", mapping)
 	require.True(t, requirement.secure)
 

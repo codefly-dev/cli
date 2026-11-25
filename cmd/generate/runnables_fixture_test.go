@@ -9,8 +9,8 @@ import (
 
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -67,22 +67,22 @@ func descriptorMessage(name string, fields ...*descriptorpb.FieldDescriptorProto
 
 // conformingOperation is the policy document-store installs for its text
 // operation, written as the option the method carries.
-func conformingOperation() *runnablev0.Operation {
-	return &runnablev0.Operation{
+func conformingOperation() *runnablev1.Operation {
+	return &runnablev1.Operation{
 		AttemptTimeout: durationpb.New(10 * time.Second),
 		TotalTimeout:   durationpb.New(time.Minute),
 		MaxAttempts:    1,
 		Backoff:        durationpb.New(time.Second),
 		RetryableCodes: []string{"UNAVAILABLE"},
 		Audience:       "documents.ingestion",
-		InvokeScopes:   []*basev0.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"ingest", "read"}}},
-		LookupScopes:   []*basev0.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"read"}}},
+		InvokeScopes:   []*basev1.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"ingest", "read"}}},
+		LookupScopes:   []*basev1.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"read"}}},
 		LookupMethod:   "/documents.ingest.v1.IngestionService/LookupText",
-		Completion:     basev0.RunnableExecution_COMPLETION_CALL,
+		Completion:     basev1.RunnableExecution_COMPLETION_CALL,
 	}
 }
 
-func markedMethod(name, input, output string, declared *runnablev0.Operation) *descriptorpb.MethodDescriptorProto {
+func markedMethod(name, input, output string, declared *runnablev1.Operation) *descriptorpb.MethodDescriptorProto {
 	method := &descriptorpb.MethodDescriptorProto{
 		Name:       googleproto.String(name),
 		InputType:  googleproto.String(input),
@@ -90,7 +90,7 @@ func markedMethod(name, input, output string, declared *runnablev0.Operation) *d
 	}
 	if declared != nil {
 		method.Options = &descriptorpb.MethodOptions{}
-		googleproto.SetExtension(method.Options, runnablev0.E_Operation, declared)
+		googleproto.SetExtension(method.Options, runnablev1.E_Operation, declared)
 	}
 	return method
 }
@@ -98,7 +98,7 @@ func markedMethod(name, input, output string, declared *runnablev0.Operation) *d
 // ingestionFile mirrors module-document-store's published ingestion schema,
 // whose hand-written Runnable package is the oracle this derivation has to
 // reproduce. extra methods are appended to the service as given.
-func ingestionFile(declared *runnablev0.Operation, extra ...*descriptorpb.MethodDescriptorProto) *descriptorpb.FileDescriptorProto {
+func ingestionFile(declared *runnablev1.Operation, extra ...*descriptorpb.MethodDescriptorProto) *descriptorpb.FileDescriptorProto {
 	methods := []*descriptorpb.MethodDescriptorProto{
 		markedMethod("ApplyText", ".documents.ingest.v1.ApplyTextRequest", ".documents.ingest.v1.ApplyTextResponse", declared),
 		// LookupText is the receipt method ApplyText's policy names. It is
@@ -110,7 +110,7 @@ func ingestionFile(declared *runnablev0.Operation, extra ...*descriptorpb.Method
 		Name:       googleproto.String("documents/ingest/v1/ingestion.proto"),
 		Package:    googleproto.String(ingestPackage),
 		Syntax:     googleproto.String("proto3"),
-		Dependency: []string{"codefly/runnable/v0/options.proto"},
+		Dependency: []string{"codefly/runnable/v1/options.proto"},
 		MessageType: []*descriptorpb.DescriptorProto{
 			descriptorMessage("ApplyTextRequest",
 				stringField("origin", 1),

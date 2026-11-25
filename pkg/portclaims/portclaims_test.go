@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/stretchr/testify/require"
 )
 
-var storeEndpoint = &basev0.Endpoint{Name: "tcp", Api: "tcp", Module: "saas", Service: "store"}
+var storeEndpoint = &basev1.Endpoint{Name: "tcp", Api: "tcp", Module: "saas", Service: "store"}
 
 // collidingScopes finds two naming scopes whose derived port for the store's
 // endpoint is the same — what happened to two agents' runs on one Mac.
@@ -77,7 +77,7 @@ func TestTwoScopesThatDeriveOnePortClaimDisjointPorts(t *testing.T) {
 func TestAHeldPortIsSkipped(t *testing.T) {
 	ctx := context.Background()
 	candidates := Candidates(ctx, "platform-base", "records", "records", "pc153-gate",
-		&basev0.Endpoint{Name: "connect", Api: "connect"}, network.PortModeHost)
+		&basev1.Endpoint{Name: "connect", Api: "connect"}, network.PortModeHost)
 	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(candidates[0]))))
 	if err == nil {
 		defer listener.Close()
@@ -139,7 +139,7 @@ func TestAStoppedRunsClaimBlocksUntilItLapses(t *testing.T) {
 // bindings) read a run's claim, so they agree with the run that moved.
 func TestNativeForReadsTheRunsClaim(t *testing.T) {
 	ctx := context.Background()
-	endpoint := &basev0.Endpoint{Name: "tcp", Api: "tcp"}
+	endpoint := &basev1.Endpoint{Name: "tcp", Api: "tcp"}
 	derived := network.NativeFor(ctx, "ws", "saas", "store", "gate", endpoint)
 	l := testLedger(t, 100)
 	l.held = func(port uint16) bool { return uint32(port) == derived.Port }
@@ -217,7 +217,7 @@ func TestANilLedgerClaimsNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, moved)
 	require.Equal(t, uint16(20000), port)
-	endpoint := &basev0.Endpoint{Name: "tcp", Api: "tcp"}
+	endpoint := &basev1.Endpoint{Name: "tcp", Api: "tcp"}
 	require.Equal(t, network.NativeFor(context.Background(), "ws", "saas", "store", "gate", endpoint).Address,
 		l.NativeFor(context.Background(), "ws", "saas", "store", "gate", endpoint).Address)
 }

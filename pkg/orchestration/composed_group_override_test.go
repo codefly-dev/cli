@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func writeComposedWorkspaceFile(t *testing.T, root, rel, content string) {
 }
 
 // groupKeys is the keys of one group of a read, in declaration order.
-func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string {
+func groupKeys(infos []*basev1.ConfigurationInformation, group string) []string {
 	for _, info := range infos {
 		if info.GetName() != group {
 			continue
@@ -120,12 +120,12 @@ func TestAPartialRootOverrideOverlaysAComposedModuleGroupPerKey(t *testing.T) {
 	// (1) the module's keys survive an override that does not mention them.
 	require.Equal(t, []string{"CONFIG_DIR", "CONFIG_FILE", "CONFIG_MODE"}, groupKeys(provided.Infos, "app-config"),
 		"the root's value is overlaid onto the module's group, not substituted for it")
-	dir, err := resources.GetConfigurationValue(ctx, &basev0.Configuration{
+	dir, err := resources.GetConfigurationValue(ctx, &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace, Infos: provided.Infos,
 	}, "app-config", "CONFIG_DIR")
 	require.NoError(t, err)
 	require.Equal(t, "/etc/app", dir, "a key the root does not supply keeps the module's default")
-	file, err := resources.GetConfigurationValue(ctx, &basev0.Configuration{
+	file, err := resources.GetConfigurationValue(ctx, &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace, Infos: provided.Infos,
 	}, "app-config", "CONFIG_FILE")
 	require.NoError(t, err)

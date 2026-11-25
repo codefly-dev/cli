@@ -74,7 +74,7 @@ func testStopIdentityRefusal(t *testing.T, agentShape bool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	path := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "authenticated-v2", fmt.Sprintf("%d.pgid", pid))
+	path := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "workspace-authenticated-v1", fmt.Sprintf("%d.pgid", pid))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -85,7 +85,7 @@ func (session *SelectionSession) verifiedDeploymentInputs(ctx context.Context, r
 			return core.DeploymentInputs{}, nil, err
 		}
 		directories = append(directories, directory)
-		var receipt basev0.ArtifactExecutionReceipt
+		var receipt basev1.ArtifactExecutionReceipt
 		if err = protojson.Unmarshal(input.Receipt, &receipt); err != nil {
 			return core.DeploymentInputs{}, nil, fmt.Errorf("decode execution receipt: %w", err)
 		}

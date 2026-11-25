@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/tui"
 	"github.com/stretchr/testify/require"
 )
@@ -31,19 +31,19 @@ func (observer *testStartObserver) emitState(_ string, state tui.ServiceState, _
 func TestRuntimeTestPolicyObservesOnlyCompletedProcessStarts(t *testing.T) {
 	for _, scenario := range []struct {
 		name    string
-		mode    agentv0.TestDependencyMode
+		mode    agentv1.TestDependencyMode
 		service string
 		output  *OutputProperty
 		err     error
 		calls   int
 		running bool
 	}{
-		{"dependency", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, "host/api", OnInit(), nil, 1, true},
-		{"target barrier", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, "app/api", OnInit(), nil, 0, false},
-		{"full stack target", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", OnInit(), nil, 1, true},
-		{"failed", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", nil, errors.New("refused"), 1, false},
-		{"cancelled", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", nil, nil, 1, false},
-		{"waiting", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", Pause(), nil, 1, false},
+		{"dependency", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, "host/api", OnInit(), nil, 1, true},
+		{"target barrier", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, "app/api", OnInit(), nil, 0, false},
+		{"full stack target", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", OnInit(), nil, 1, true},
+		{"failed", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", nil, errors.New("refused"), 1, false},
+		{"cancelled", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", nil, nil, 1, false},
+		{"waiting", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, "app/api", Pause(), nil, 1, false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			observer := &testStartObserver{output: scenario.output, err: scenario.err}

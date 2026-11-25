@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 
 	"github.com/codefly-dev/cli/pkg/redact"
 )
@@ -169,7 +169,7 @@ func removeTree(root string) error {
 // proxiesFor fetches every download a recipe declares and returns the proxy to
 // supply under each declared build-context name. contextDir is the recipe's
 // resolved build context, which module roots are relative to.
-func (p *goModulePrefetch) proxiesFor(ctx context.Context, contextDir string, recipe *builderv0.DockerBuildRecipe) (map[string]string, error) {
+func (p *goModulePrefetch) proxiesFor(ctx context.Context, contextDir string, recipe *builderv1.DockerBuildRecipe) (map[string]string, error) {
 	downloads := recipe.GetGoModuleDownloads()
 	if len(downloads) == 0 {
 		return nil, nil
@@ -192,7 +192,7 @@ func (p *goModulePrefetch) proxiesFor(ctx context.Context, contextDir string, re
 
 // recipeMissesGoModuleProxies reports whether a recipe declares a Go module
 // download that has no fetched proxy under its build-context name.
-func recipeMissesGoModuleProxies(recipe *builderv0.DockerBuildRecipe, proxies map[string]string) bool {
+func recipeMissesGoModuleProxies(recipe *builderv1.DockerBuildRecipe, proxies map[string]string) bool {
 	for _, download := range recipe.GetGoModuleDownloads() {
 		if _, ok := proxies[download.GetProxyContext()]; !ok {
 			return true

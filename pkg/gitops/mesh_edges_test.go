@@ -68,8 +68,8 @@ environments:
 		"modules/quill/services/backend/" + resources.ServiceConfigurationName: service("backend",
 			"endpoints:\n  - name: http\n    api: http\n    visibility: internal\n"),
 		"modules/quill/services/backend/" + solutionrun.FrontendFileName: "title: Quill\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n",
-		"modules/quill/solution.codefly.yaml": `schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+		"modules/quill/solution.codefly.yaml": `schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 agent:
   kind: codefly:solution
   publisher: codefly.dev

@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -16,8 +16,8 @@ func TestSourceJSONSeparatesRealProcessDiagnostics(t *testing.T) {
 		payload   string
 		response  proto.Message
 	}{
-		{"Builder.Package", `{"state":{"state":"SUCCESS"}}`, &builderv0.PackageResponse{}},
-		{"Builder.Audit", `{"state":{"state":"CLEAN"}}`, &builderv0.AuditResponse{}},
+		{"Builder.Package", `{"state":{"state":"SUCCESS"}}`, &builderv1.PackageResponse{}},
+		{"Builder.Audit", `{"state":{"state":"CLEAN"}}`, &builderv1.AuditResponse{}},
 	} {
 		t.Run(test.operation, func(t *testing.T) {
 			// Exercise the process pipes, including diagnostics before and after
@@ -32,7 +32,7 @@ func TestSourceJSONSeparatesRealProcessDiagnostics(t *testing.T) {
 func TestSourceJSONPreservesFailureAndStrictResponseValidation(t *testing.T) {
 	t.Run("nonzero exit with valid response", func(t *testing.T) {
 		command := exec.Command("sh", "-c", `printf '{"state":{"state":"SUCCESS"}}\n'; printf 'download failed\n' >&2; exit 9`)
-		err := runAgentSourceJSON(command, "Builder.Package", &builderv0.PackageResponse{})
+		err := runAgentSourceJSON(command, "Builder.Package", &builderv1.PackageResponse{})
 		var exitError *exec.ExitError
 		require.True(t, errors.As(err, &exitError))
 		require.Equal(t, 9, exitError.ExitCode())
@@ -45,7 +45,7 @@ func TestSourceJSONPreservesFailureAndStrictResponseValidation(t *testing.T) {
 	} {
 		t.Run(payload, func(t *testing.T) {
 			command := exec.Command("sh", "-c", `printf '%s\n' "$1"; printf 'retained diagnostic\n' >&2`, "source-json", payload)
-			err := runAgentSourceJSON(command, "Builder.Package", &builderv0.PackageResponse{})
+			err := runAgentSourceJSON(command, "Builder.Package", &builderv1.PackageResponse{})
 			require.ErrorContains(t, err, "decode Builder.Package response")
 			require.ErrorContains(t, err, "retained diagnostic")
 		})

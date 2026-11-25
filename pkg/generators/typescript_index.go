@@ -57,7 +57,7 @@ func (m typeScriptModule) specifier(fromDir string) string {
 // exist depends on the contracts generated — so it is rewritten on every run.
 //
 // Protobuf keeps names unique within a package, not across the dependency
-// graph (codefly.base.v0 and saas.accounts.v1 may both declare Settings), so a
+// graph (codefly.base.v1 and saas.accounts.v1 may both declare Settings), so a
 // barrel of plain `export *` lines is ambiguous (TS2308). The shape:
 //   - every facade is re-exported flat, under the name its plugin gave it;
 //   - every proto package is one namespace named from the package

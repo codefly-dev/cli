@@ -13,14 +13,14 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/workingrender"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"gopkg.in/yaml.v3"
 )
 
 type Manager interface {
-	Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error
+	Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv1.DeploymentOutput) error
 }
 
 type DeploymentOutputRequirement interface {
@@ -110,37 +110,37 @@ func (r *evidenceRecorder) renderedTrees() []RenderedTreeEvidence {
 
 func GetKubernetesDeployment(
 	ctx context.Context,
-	dockerBuildContext *builderv0.DockerBuildContext,
+	dockerBuildContext *builderv1.DockerBuildContext,
 	workspace *resources.Workspace,
 	module *resources.Module,
 	service *resources.Service,
 	env *environments.Environment,
 	namespace string,
-	profile builderv0.KubernetesOutputProfile,
-	secretReferences map[string]*builderv0.KubernetesSecretKeyReference,
-) (*builderv0.Deployment, error) {
+	profile builderv1.KubernetesOutputProfile,
+	secretReferences map[string]*builderv1.KubernetesSecretKeyReference,
+) (*builderv1.Deployment, error) {
 	if err := workingrender.Prepare(workspace.Dir(), env.Name); err != nil {
 		return nil, err
 	}
-	return &builderv0.Deployment{
-		Kind: &builderv0.Deployment_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeployment{
+	return &builderv1.Deployment{
+		Kind: &builderv1.Deployment_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeployment{
 				BuildContext:       dockerBuildContext,
 				Namespace:          namespace,
 				Destination:        KustomizeDir(ctx, workspace, module, service, env),
 				Profile:            profile,
 				SecretReferences:   secretReferences,
-				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+				ValidateServerSide: profile == builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 			},
 		},
 	}, nil
 }
 
-func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile {
+func KubernetesOutputProfile(manager Manager) builderv1.KubernetesOutputProfile {
 	if _, directLocalApply := manager.(*LocalApplyManager); directLocalApply {
-		return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
+		return builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
 	}
-	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
+	return builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 }
 
 // NewLocalApplyManager binds a direct apply to an exact local k3d target and to
@@ -239,14 +239,14 @@ func (l *LocalApplyManager) observe(
 	return observeErr
 }
 
-func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
+func (l *LocalApplyManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv1.DeploymentOutput) error {
 	if err := selectionguard.RejectUnboundExecution(l.Workspace.Dir(), module.Dir()); err != nil {
 		return err
 	}
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
-	case *builderv0.DeploymentOutput_Kubernetes:
-		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
+	case *builderv1.DeploymentOutput_Kubernetes:
+		if v.Kubernetes.Kind == builderv1.KubernetesDeploymentOutput_KUSTOMIZE {
 			if err := VerifyLocalK3dTargetUnchanged(ctx, l.Env, &l.target); err != nil {
 				return w.Wrapf(err, "cannot verify Kubernetes target before image import")
 			}
@@ -408,11 +408,11 @@ func NewRenderManager(workspace *resources.Workspace, env *environments.Environm
 	}
 }
 
-func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
+func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv1.DeploymentOutput) error {
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
-	case *builderv0.DeploymentOutput_Kubernetes:
-		if v.Kubernetes.Kind != builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
+	case *builderv1.DeploymentOutput_Kubernetes:
+		if v.Kubernetes.Kind != builderv1.KubernetesDeploymentOutput_KUSTOMIZE {
 			return nil
 		}
 		tree := KustomizeDir(ctx, r.Workspace, module, service, r.Env)

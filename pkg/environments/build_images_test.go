@@ -1,7 +1,7 @@
 package environments
 
 import (
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
@@ -9,7 +9,7 @@ import (
 
 func TestBuildImagesSelectionPrecedenceAndNoMutation(t *testing.T) {
 	ref := "docker.io/library/alpine@sha256:" + strings.Repeat("a", 64)
-	declared := []*builderv0.BuildImageInput{{Role: "runtime", Reference: ref, Variant: "alpine3.23-musl"}, {Role: "builder", Reference: ref, Variant: "go1.27"}}
+	declared := []*builderv1.BuildImageInput{{Role: "runtime", Reference: ref, Variant: "alpine3.23-musl"}, {Role: "builder", Reference: ref, Variant: "go1.27"}}
 	typeRef := "registry.example/type/alpine@sha256:" + strings.Repeat("b", 64)
 	serviceRef := "registry.example/service/alpine@sha256:" + strings.Repeat("c", 64)
 	policy := &BuildImages{Registries: map[string]string{"docker.io": "registry.example/public"}, Types: map[string]map[string]BuildImage{"codefly.dev/unknown-agent": {"runtime": {Reference: typeRef, Variant: "alpine3.23-musl"}}}, Services: map[string]map[string]BuildImage{"module/api": {"runtime": {Reference: serviceRef, Variant: "alpine3.23-musl"}}}}

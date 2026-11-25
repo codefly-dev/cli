@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -74,8 +74,8 @@ import (
 // referencedProducerMappings).
 func (world *World) workspaceConfigurationsFor(
 	ctx context.Context, service *resources.Service,
-	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
-) ([]*basev0.Configuration, error) {
+	dependencyMappings []*basev1.NetworkMapping, access *basev1.NetworkAccess,
+) ([]*basev1.Configuration, error) {
 	declared := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
 	for _, dependency := range service.WorkspaceConfigurationDependencies {
 		// Run, CI and deployment peers share this resolver. Only the render
@@ -177,7 +177,7 @@ func (world *World) workspaceConfigurationsFor(
 	// can receive federation entirely from its host block. An authored or
 	// ambiguous federation group still goes through normal resolution, including
 	// secret and endpoint validation. No other required group becomes optional.
-	var owned []*basev0.Configuration
+	var owned []*basev1.Configuration
 	if world.RenderOwnedGroups != nil {
 		owned, err = world.RenderOwnedGroups(ctx, world.withoutExcludedGroups(service))
 		if err != nil {
@@ -343,7 +343,7 @@ func (world *World) withheldRootCredentials(declared, effective []string) withhe
 // credentials", shared by the resolution and by the plan gate. Two readings
 // would be two answers to "what does this service receive", and the gate's
 // answer decides whether a plan is refused.
-func credentialsOf(infos []*basev0.ConfigurationInformation, groups map[string]bool) withheldCredentials {
+func credentialsOf(infos []*basev1.ConfigurationInformation, groups map[string]bool) withheldCredentials {
 	out := withheldCredentials{values: map[string]bool{}, groups: map[string]bool{}}
 	if len(groups) == 0 {
 		return out
@@ -372,12 +372,12 @@ func credentialsOf(infos []*basev0.ConfigurationInformation, groups map[string]b
 // service's resolution, and a value removed in place would be removed for the
 // consumer that declared the group too. nil means the whole configuration is
 // withheld.
-func (w withheldCredentials) without(ctx context.Context, conf *basev0.Configuration, consumer string) *basev0.Configuration {
+func (w withheldCredentials) without(ctx context.Context, conf *basev1.Configuration, consumer string) *basev1.Configuration {
 	if !w.any() {
 		return conf
 	}
 	removed := false
-	infos := make([]*basev0.ConfigurationInformation, 0, len(conf.GetInfos()))
+	infos := make([]*basev1.ConfigurationInformation, 0, len(conf.GetInfos()))
 	for _, info := range conf.GetInfos() {
 		if w.groups[info.GetName()] {
 			removed = true
@@ -387,7 +387,7 @@ func (w withheldCredentials) without(ctx context.Context, conf *basev0.Configura
 				wool.Field("remedy", "declare the group in workspace-configuration-dependencies to receive it"))
 			continue
 		}
-		values := make([]*basev0.ConfigurationValue, 0, len(info.GetConfigurationValues()))
+		values := make([]*basev1.ConfigurationValue, 0, len(info.GetConfigurationValues()))
 		for _, value := range info.GetConfigurationValues() {
 			if !w.values[info.GetName()+"/"+value.GetKey()] {
 				values = append(values, value)
@@ -408,7 +408,7 @@ func (w withheldCredentials) without(ctx context.Context, conf *basev0.Configura
 			removed = true
 			continue
 		}
-		infos = append(infos, &basev0.ConfigurationInformation{
+		infos = append(infos, &basev1.ConfigurationInformation{
 			Name:                info.GetName(),
 			Data:                info.GetData(),
 			ConfigurationValues: values,
@@ -420,30 +420,30 @@ func (w withheldCredentials) without(ctx context.Context, conf *basev0.Configura
 	if len(infos) == 0 {
 		return nil
 	}
-	return &basev0.Configuration{Origin: conf.GetOrigin(), Infos: infos}
+	return &basev1.Configuration{Origin: conf.GetOrigin(), Infos: infos}
 }
 
 // received returns the information blocks as this service receives them, for
 // the checks that must judge only what it gets: the withheld blocks dropped and
 // the withheld values removed. The blocks are rebuilt, never edited — they are
 // the loader's own.
-func (w withheldCredentials) received(infos []*basev0.ConfigurationInformation) []*basev0.ConfigurationInformation {
+func (w withheldCredentials) received(infos []*basev1.ConfigurationInformation) []*basev1.ConfigurationInformation {
 	if !w.any() {
 		return infos
 	}
-	out := make([]*basev0.ConfigurationInformation, 0, len(infos))
+	out := make([]*basev1.ConfigurationInformation, 0, len(infos))
 	for _, info := range infos {
 		if w.groups[info.GetName()] {
 			continue
 		}
-		values := make([]*basev0.ConfigurationValue, 0, len(info.GetConfigurationValues()))
+		values := make([]*basev1.ConfigurationValue, 0, len(info.GetConfigurationValues()))
 		for _, value := range info.GetConfigurationValues() {
 			if w.values[info.GetName()+"/"+value.GetKey()] {
 				continue
 			}
 			values = append(values, value)
 		}
-		out = append(out, &basev0.ConfigurationInformation{
+		out = append(out, &basev1.ConfigurationInformation{
 			Name:                info.GetName(),
 			Data:                info.GetData(),
 			ConfigurationValues: values,
@@ -484,15 +484,15 @@ func (w withheldCredentials) skips(referencing map[string][]string) map[string]b
 // secretKeyRef and `deploy secrets` would plan a store entry for: an explicit
 // Secret flag, or a credential-named key. See restrictedRenderRejects, which
 // mirrors core's own guard and keys off the same marker list.
-func isCredentialValue(value *basev0.ConfigurationValue) bool {
+func isCredentialValue(value *basev1.ConfigurationValue) bool {
 	return value.GetSecret() || resources.IsSensitiveKey(value.GetKey())
 }
 
 // workspaceConfigurationInfos flattens a loader's configurations into the
 // information blocks core's reference check reads. Every workspace
 // configuration carries its group name on each Info.
-func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.ConfigurationInformation {
-	var out []*basev0.ConfigurationInformation
+func workspaceConfigurationInfos(confs []*basev1.Configuration) []*basev1.ConfigurationInformation {
+	var out []*basev1.ConfigurationInformation
 	for _, conf := range confs {
 		if conf.GetOrigin() != resources.ConfigurationWorkspace {
 			continue
@@ -825,7 +825,7 @@ func (world *World) requireRootGroupSource(declared []string) error {
 // mappings nobody bound for it. Shipping the group anyway is shipping the
 // omission: a value silently absent from a deployed workload. Refuse instead,
 // naming the group and the cause.
-func (world *World) requireKnownRootGroup(conf *basev0.Configuration, effective []string) error {
+func (world *World) requireKnownRootGroup(conf *basev1.Configuration, effective []string) error {
 	for _, info := range conf.Infos {
 		if slices.Contains(effective, info.Name) {
 			continue
@@ -896,7 +896,7 @@ func (world *World) referencingWorkspaceConfigurationValues(groups []string) map
 //     under --temporary-ports, where no address exists before the producer
 //     initializes and nothing orders a root group's reference.
 func (world *World) refuseDroppedWorkspaceConfigurationValues(
-	ctx context.Context, service *resources.Service, groups []string, delivered []*basev0.Configuration,
+	ctx context.Context, service *resources.Service, groups []string, delivered []*basev1.Configuration,
 	withheld map[string]bool,
 ) error {
 	if world == nil || len(groups) == 0 {
@@ -1068,8 +1068,8 @@ func consumerLabel(service *resources.Service) string {
 // the run mints for this run (a per-run credential digest), so a stale
 // declaration must not win and leave the run's two halves unable to match.
 func (world *World) applyWorkspaceConfigurationValues(
-	resolved []*basev0.Configuration, dependencies []string,
-) []*basev0.Configuration {
+	resolved []*basev1.Configuration, dependencies []string,
+) []*basev1.Configuration {
 	if len(world.workspaceConfigurationValues) == 0 {
 		return resolved
 	}
@@ -1087,8 +1087,8 @@ func (world *World) applyWorkspaceConfigurationValues(
 // group (and the workspace-origin configuration carrying it) when the
 // composition declared none.
 func upsertWorkspaceConfigurationValues(
-	resolved []*basev0.Configuration, group string, values map[string]string,
-) []*basev0.Configuration {
+	resolved []*basev1.Configuration, group string, values map[string]string,
+) []*basev1.Configuration {
 	for _, conf := range resolved {
 		if conf.Origin != resources.ConfigurationWorkspace {
 			continue
@@ -1101,15 +1101,15 @@ func upsertWorkspaceConfigurationValues(
 			return resolved
 		}
 	}
-	info := &basev0.ConfigurationInformation{Name: group}
+	info := &basev1.ConfigurationInformation{Name: group}
 	setConfigurationValues(info, values)
-	return append(resolved, &basev0.Configuration{
+	return append(resolved, &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos:  []*basev0.ConfigurationInformation{info},
+		Infos:  []*basev1.ConfigurationInformation{info},
 	})
 }
 
-func setConfigurationValues(info *basev0.ConfigurationInformation, values map[string]string) {
+func setConfigurationValues(info *basev1.ConfigurationInformation, values map[string]string) {
 	for _, key := range slices.Sorted(maps.Keys(values)) {
 		replaced := false
 		for _, existing := range info.ConfigurationValues {
@@ -1121,7 +1121,7 @@ func setConfigurationValues(info *basev0.ConfigurationInformation, values map[st
 		}
 		if !replaced {
 			info.ConfigurationValues = append(info.ConfigurationValues,
-				&basev0.ConfigurationValue{Key: key, Value: values[key]})
+				&basev1.ConfigurationValue{Key: key, Value: values[key]})
 		}
 	}
 }
@@ -1130,7 +1130,7 @@ func setConfigurationValues(info *basev0.ConfigurationInformation, values map[st
 // workspace configuration is already present in seen (all Infos of a workspace
 // configuration share one name), i.e. the configuration was already emitted via
 // the declared-dependency set.
-func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen map[string]bool) bool {
+func (world *World) workspaceConfigurationSeen(conf *basev1.Configuration, seen map[string]bool) bool {
 	for _, info := range conf.Infos {
 		if seen[info.Name] {
 			return true
@@ -1144,7 +1144,7 @@ func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen 
 // render-owned or declared-only. Workspace configurations carry their name on
 // each Info (the Configuration.Origin is always "workspace"), and every Info
 // in a given configuration shares that name.
-func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
+func (world *World) workspaceConfigurationExcluded(conf *basev1.Configuration) bool {
 	for _, info := range conf.Infos {
 		if world.excludedWorkspaceConfigurations[info.Name] || environments.RenderOwnedWorkspaceConfiguration(info.Name) ||
 			environments.DeclaredOnlyWorkspaceConfiguration(info.Name) {
@@ -1158,8 +1158,8 @@ func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) b
 // the addresses matching its runtime context. The run path's only entry point
 // into the resolution above.
 func (runner *Runner) workspaceConfigurations(
-	ctx context.Context, dependencyMappings []*basev0.NetworkMapping, runtimeContext *basev0.RuntimeContext,
-) ([]*basev0.Configuration, error) {
+	ctx context.Context, dependencyMappings []*basev1.NetworkMapping, runtimeContext *basev1.RuntimeContext,
+) ([]*basev1.Configuration, error) {
 	return runner.world.workspaceConfigurationsFor(ctx, runner.instance.Service,
 		dependencyMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
 }
@@ -1169,8 +1169,8 @@ func (runner *Runner) workspaceConfigurations(
 // reference serve. The render path's only entry point into the resolution above:
 // the set is the same one the run resolves, and only the address family differs.
 func (b *Builder) workspaceConfigurations(
-	ctx context.Context, dependencyMappings []*basev0.NetworkMapping,
-) ([]*basev0.Configuration, error) {
+	ctx context.Context, dependencyMappings []*basev1.NetworkMapping,
+) ([]*basev1.Configuration, error) {
 	return b.world.workspaceConfigurationsFor(ctx, b.instance.Service,
 		dependencyMappings, resources.NewContainerNetworkAccess())
 }
@@ -1179,7 +1179,7 @@ func (b *Builder) workspaceConfigurations(
 // declared hosts from the environment's egress block, HOSTS empty when the
 // environment declares none for it. Nil for a service that does not declare
 // the group.
-func (world *World) egressGroup(service *resources.Service) (*basev0.Configuration, error) {
+func (world *World) egressGroup(service *resources.Service) (*basev1.Configuration, error) {
 	if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.EgressConfiguration) {
 		return nil, nil
 	}

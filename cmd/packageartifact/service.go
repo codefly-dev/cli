@@ -12,7 +12,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -62,14 +62,14 @@ var ServiceCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("resolve package output: %w", err)
 		}
-		request := &builderv0.PackageRequest{
+		request := &builderv1.PackageRequest{
 			Targets:         parsedTargets,
 			OutputDirectory: absoluteOutput,
 			ArtifactName:    artifactName,
 			IncludeSbom:     includeSBOM,
 		}
 		if publisher != "" || subjectName != "" || subjectVersion != "" {
-			request.Subject = &builderv0.PackageSubject{Publisher: publisher, Name: subjectName, Version: subjectVersion}
+			request.Subject = &builderv1.PackageSubject{Publisher: publisher, Name: subjectName, Version: subjectVersion}
 		}
 		response, err := PackageService(ctx, workspace, module, service, request)
 		if err != nil {
@@ -95,7 +95,7 @@ var ServiceCmd = &cobra.Command{
 }
 
 // PackageService invokes the loaded resource's typed Builder.Package RPC.
-func PackageService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *builderv0.PackageRequest) (*builderv0.PackageResponse, error) {
+func PackageService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *builderv1.PackageRequest) (*builderv1.PackageResponse, error) {
 	w := wool.Get(ctx).In("packageService", wool.NameField(service.Name))
 	instance, err := services.Load(ctx, workspace, module, service)
 	if err != nil {
@@ -117,28 +117,28 @@ func PackageService(ctx context.Context, workspace *resources.Workspace, module 
 	if response == nil || response.GetState() == nil {
 		return nil, w.NewError("Builder.Package returned no status")
 	}
-	if response.GetState().GetState() != builderv0.PackageStatus_SUCCESS {
+	if response.GetState().GetState() != builderv1.PackageStatus_SUCCESS {
 		return nil, w.NewError("portable source packaging failed: %s", response.GetState().GetMessage())
 	}
 	return response, nil
 }
 
-func parsePackageTargets(values []string) ([]*builderv0.PackageTarget, error) {
-	identities := make(map[string]*builderv0.PackageTarget, len(values))
+func parsePackageTargets(values []string) ([]*builderv1.PackageTarget, error) {
+	identities := make(map[string]*builderv1.PackageTarget, len(values))
 	for _, value := range values {
 		parts := strings.Split(strings.TrimSpace(value), "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return nil, fmt.Errorf("invalid package target %q (use os/architecture)", value)
 		}
 		identity := parts[0] + "/" + parts[1]
-		identities[identity] = &builderv0.PackageTarget{Os: parts[0], Architecture: parts[1]}
+		identities[identity] = &builderv1.PackageTarget{Os: parts[0], Architecture: parts[1]}
 	}
 	keys := make([]string, 0, len(identities))
 	for identity := range identities {
 		keys = append(keys, identity)
 	}
 	sort.Strings(keys)
-	result := make([]*builderv0.PackageTarget, 0, len(keys))
+	result := make([]*builderv1.PackageTarget, 0, len(keys))
 	for _, identity := range keys {
 		result = append(result, identities[identity])
 	}

@@ -21,7 +21,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
 )
@@ -93,7 +93,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("codefly endpoint: cannot evaluate endpoint %q readiness: %w", ep.Name, err)
 			}
-			if result.Outcome != basev0.ProbeOutcome_PROBE_OUTCOME_PASSED {
+			if result.Outcome != basev1.ProbeOutcome_PROBE_OUTCOME_PASSED {
 				return fmt.Errorf("codefly endpoint: endpoint %q is not ready at %s: %s: %s", ep.Name, resolved.HostPort, result.Predicate, result.Message)
 			}
 		}

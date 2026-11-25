@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
+	providerv1 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v1"
 	"github.com/codefly-dev/core/network/urlguard"
 	"github.com/codefly-dev/core/provider/broker"
 	"github.com/codefly-dev/core/provider/canonical"
@@ -36,7 +36,7 @@ type brokerHarness struct {
 	manifest *manifest.Manifest
 	vault    *credentials.Vault
 	sink     *recordingSink
-	admitted *providerv0.AdmittedOrigin
+	admitted *providerv1.AdmittedOrigin
 }
 
 func newBrokerHarness(t *testing.T) *brokerHarness {
@@ -49,12 +49,12 @@ func newBrokerHarness(t *testing.T) *brokerHarness {
 	m, err := manifest.Load(raw)
 	require.NoError(t, err)
 
-	admitted := &providerv0.AdmittedOrigin{
+	admitted := &providerv1.AdmittedOrigin{
 		OriginRuleId:        "api",
 		Scheme:              "http",
 		Host:                "localhost",
 		Port:                8080,
-		PrivateNetworkClass: providerv0.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_LOOPBACK,
+		PrivateNetworkClass: providerv1.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_LOOPBACK,
 	}
 	digest, err := canonical.AdmittedOriginDigest(admitted)
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func (h *brokerHarness) origin() urlguard.Origin {
 	return urlguard.Origin{Scheme: "http", Host: "localhost", Port: 8080}
 }
 
-func (h *brokerHarness) session(t *testing.T, action *providerv0.PlanAction, readOnly bool, opts ...func(*broker.Config)) *broker.Session {
+func (h *brokerHarness) session(t *testing.T, action *providerv1.PlanAction, readOnly bool, opts ...func(*broker.Config)) *broker.Session {
 	t.Helper()
 	cfg := broker.Config{
 		Manifest:    h.manifest,
@@ -89,7 +89,7 @@ func (h *brokerHarness) session(t *testing.T, action *providerv0.PlanAction, rea
 	return session
 }
 
-func (h *brokerHarness) mint(t *testing.T, planned *providerv0.PlannedRequest, method providerv0.HTTPMethod) *providerv0.CredentialHandle {
+func (h *brokerHarness) mint(t *testing.T, planned *providerv1.PlannedRequest, method providerv1.HTTPMethod) *providerv1.CredentialHandle {
 	t.Helper()
 	handle, err := h.vault.Mint(poisonCredential, credentials.Scope{
 		Principal:      "user",
@@ -99,7 +99,7 @@ func (h *brokerHarness) mint(t *testing.T, planned *providerv0.PlannedRequest, m
 		PlanID:         "plan1",
 		ActionID:       "a1",
 		RequestDigest:  planned.GetRequestDigest(),
-		Purpose:        providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT,
+		Purpose:        providerv1.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT,
 		Origin:         h.origin(),
 		Method:         method,
 		Injection:      credentials.Injection{Kind: credentials.InjectBearer},
@@ -110,18 +110,18 @@ func (h *brokerHarness) mint(t *testing.T, planned *providerv0.PlannedRequest, m
 	return handle
 }
 
-func (h *brokerHarness) execute(handle *providerv0.CredentialHandle, planned *providerv0.PlannedRequest) *providerv0.ExecuteRequestRequest {
-	return &providerv0.ExecuteRequestRequest{
-		Context: &providerv0.ProviderContext{
-			Offline:     &providerv0.OfflineProviderContext{Binding: bindingAddress()},
-			Credentials: []*providerv0.CredentialHandle{handle},
+func (h *brokerHarness) execute(handle *providerv1.CredentialHandle, planned *providerv1.PlannedRequest) *providerv1.ExecuteRequestRequest {
+	return &providerv1.ExecuteRequestRequest{
+		Context: &providerv1.ProviderContext{
+			Offline:     &providerv1.OfflineProviderContext{Binding: bindingAddress()},
+			Credentials: []*providerv1.CredentialHandle{handle},
 			Operation:   operation(),
 			Budget:      budget(),
 		},
 		RequestId:         "req-1",
 		Request:           planned,
 		Origin:            h.admitted,
-		CredentialHandles: []*providerv0.CredentialHandle{handle},
+		CredentialHandles: []*providerv1.CredentialHandle{handle},
 	}
 }
 
@@ -134,11 +134,11 @@ func TestBrokerCreateCapturesSecretAndForwardsSafe(t *testing.T) {
 	create := h.createRequest(t)
 	session := h.session(t, createAction(t, create), false)
 
-	handle := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	response, err := session.Execute(context.Background(), h.execute(handle, create))
 	require.NoError(t, err)
 
-	require.Equal(t, providerv0.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
+	require.Equal(t, providerv1.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
 	require.Equal(t, uint32(http.StatusOK), response.GetStatusCode())
 
 	// The response secret was captured, not forwarded; metadata.internal is
@@ -171,7 +171,7 @@ func TestBrokerReadOnlyContextRejectsMutationWithoutEffect(t *testing.T) {
 	create := h.createRequest(t)
 	session := h.session(t, createAction(t, create), true)
 
-	handle := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	_, err := session.Execute(context.Background(), h.execute(handle, create))
 	require.ErrorContains(t, err, "read-only")
 
@@ -185,17 +185,17 @@ func TestBrokerBudgetExhaustionStopsBeforeNetwork(t *testing.T) {
 	h := newBrokerHarness(t)
 	create := h.createRequest(t)
 	session := h.session(t, createAction(t, create), false, func(cfg *broker.Config) {
-		cfg.Budget = &providerv0.RequestBudget{RequestCount: 1, RequestBytes: 8192, ResponseBytes: 65536}
+		cfg.Budget = &providerv1.RequestBudget{RequestCount: 1, RequestBytes: 8192, ResponseBytes: 65536}
 	})
 
-	handle := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	_, err := session.Execute(context.Background(), h.execute(handle, create))
 	require.NoError(t, err)
 	require.Equal(t, 1, h.fixture.RequestCount())
 
 	// The vault handle was single-use; the budget is what we assert on, so a fresh
 	// handle isolates the budget check from credential exhaustion.
-	handle2 := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle2 := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	_, err = session.Execute(context.Background(), h.execute(handle2, create))
 	require.ErrorContains(t, err, "budget")
 	require.Equal(t, 1, h.fixture.RequestCount(), "the over-budget request never reaches the network")
@@ -211,7 +211,7 @@ func TestBrokerCassetteReplayServesWithoutNetwork(t *testing.T) {
 
 	recorder := cassette.New(cassette.ModeRecord, "1.0.0")
 	recordSession := h.session(t, action, false, func(cfg *broker.Config) { cfg.Cassette = recorder })
-	handle := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	live, err := recordSession.Execute(context.Background(), h.execute(handle, create))
 	require.NoError(t, err)
 
@@ -226,7 +226,7 @@ func TestBrokerCassetteReplayServesWithoutNetwork(t *testing.T) {
 		cfg.Cassette = replayer
 		cfg.ClientFor = failingClientFor(t)
 	})
-	handle2 := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle2 := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	replayed, err := replaySession.Execute(context.Background(), h.execute(handle2, create))
 	require.NoError(t, err)
 
@@ -249,11 +249,11 @@ func TestBrokerObserveCapturesReadPathSecret(t *testing.T) {
 	// id matches the retrieved resource, mirroring the core broker test recipe.
 	session := h.session(t, createAction(t, observe), false)
 
-	handle := h.mint(t, observe, providerv0.HTTPMethod_HTTP_METHOD_GET)
+	handle := h.mint(t, observe, providerv1.HTTPMethod_HTTP_METHOD_GET)
 	response, err := session.Execute(context.Background(), h.execute(handle, observe))
 	require.NoError(t, err)
 
-	require.Equal(t, providerv0.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
+	require.Equal(t, providerv1.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
 	require.Equal(t, uint32(http.StatusOK), response.GetStatusCode())
 
 	require.Equal(t, []string{PoisonSecret}, h.sink.stored)
@@ -280,11 +280,11 @@ func TestBrokerDeleteRemovesOwnedResource(t *testing.T) {
 	del := h.deleteRequest(t, seeded)
 	session := h.session(t, deleteAction(t, seeded, del), false)
 
-	handle := h.mint(t, del, providerv0.HTTPMethod_HTTP_METHOD_DELETE)
+	handle := h.mint(t, del, providerv1.HTTPMethod_HTTP_METHOD_DELETE)
 	response, err := session.Execute(context.Background(), h.execute(handle, del))
 	require.NoError(t, err)
 
-	require.Equal(t, providerv0.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
+	require.Equal(t, providerv1.DeliveryState_DELIVERY_STATE_RESPONSE_RECEIVED, response.GetDelivery())
 	require.Equal(t, uint32(http.StatusOK), response.GetStatusCode())
 
 	require.Len(t, response.GetForwarded(), 1)
@@ -295,15 +295,15 @@ func TestBrokerDeleteRemovesOwnedResource(t *testing.T) {
 	require.Equal(t, 1, h.fixture.RequestCount())
 }
 
-func (h *brokerHarness) createRequest(t *testing.T) *providerv0.PlannedRequest {
+func (h *brokerHarness) createRequest(t *testing.T) *providerv1.PlannedRequest {
 	t.Helper()
-	request := &providerv0.PlannedRequest{
+	request := &providerv1.PlannedRequest{
 		RequestDescriptorId:     "account.create",
 		RequestDescriptorDigest: descriptorDigest(t, h.manifest, "account.create"),
-		Method:                  providerv0.HTTPMethod_HTTP_METHOD_POST,
+		Method:                  providerv1.HTTPMethod_HTTP_METHOD_POST,
 		AdmittedOriginDigest:    h.admitted.GetAdmissionDigest(),
-		Body:                    map[string]*providerv0.PublicValue{"name": pubString(brokerRemoteID)},
-		CredentialPurposes:      []providerv0.CredentialPurpose{providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
+		Body:                    map[string]*providerv1.PublicValue{"name": pubString(brokerRemoteID)},
+		CredentialPurposes:      []providerv1.CredentialPurpose{providerv1.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
 		ResponsePolicyDigest:    fakeDigest("account-response-policy"),
 		IdempotencyKey:          "idem-1",
 	}
@@ -312,30 +312,30 @@ func (h *brokerHarness) createRequest(t *testing.T) *providerv0.PlannedRequest {
 	return bound
 }
 
-func createAction(t *testing.T, requests ...*providerv0.PlannedRequest) *providerv0.PlanAction {
+func createAction(t *testing.T, requests ...*providerv1.PlannedRequest) *providerv1.PlanAction {
 	t.Helper()
-	action := &providerv0.PlanAction{
+	action := &providerv1.PlanAction{
 		ActionId:            "a1",
 		Position:            0,
-		Type:                providerv0.ActionType_ACTION_TYPE_CREATE,
+		Type:                providerv1.ActionType_ACTION_TYPE_CREATE,
 		ResourceType:        "account",
 		ProspectiveRemoteId: brokerRemoteID,
-		Ownership:           providerv0.Ownership_OWNERSHIP_OWNED,
+		Ownership:           providerv1.Ownership_OWNERSHIP_OWNED,
 		Requests:            requests,
 	}
 	require.NoError(t, canonical.ValidatePlanAction(action))
 	return action
 }
 
-func (h *brokerHarness) observeRequest(t *testing.T, accountID string) *providerv0.PlannedRequest {
+func (h *brokerHarness) observeRequest(t *testing.T, accountID string) *providerv1.PlannedRequest {
 	t.Helper()
-	request := &providerv0.PlannedRequest{
+	request := &providerv1.PlannedRequest{
 		RequestDescriptorId:     "account.observe",
 		RequestDescriptorDigest: descriptorDigest(t, h.manifest, "account.observe"),
-		Method:                  providerv0.HTTPMethod_HTTP_METHOD_GET,
+		Method:                  providerv1.HTTPMethod_HTTP_METHOD_GET,
 		AdmittedOriginDigest:    h.admitted.GetAdmissionDigest(),
-		PathParameters:          map[string]*providerv0.PublicValue{"account_id": pubString(accountID)},
-		CredentialPurposes:      []providerv0.CredentialPurpose{providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
+		PathParameters:          map[string]*providerv1.PublicValue{"account_id": pubString(accountID)},
+		CredentialPurposes:      []providerv1.CredentialPurpose{providerv1.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
 		ResponsePolicyDigest:    fakeDigest("account-response-policy"),
 	}
 	bound, err := canonical.BindPlannedRequestDigest(request)
@@ -343,15 +343,15 @@ func (h *brokerHarness) observeRequest(t *testing.T, accountID string) *provider
 	return bound
 }
 
-func (h *brokerHarness) deleteRequest(t *testing.T, accountID string) *providerv0.PlannedRequest {
+func (h *brokerHarness) deleteRequest(t *testing.T, accountID string) *providerv1.PlannedRequest {
 	t.Helper()
-	request := &providerv0.PlannedRequest{
+	request := &providerv1.PlannedRequest{
 		RequestDescriptorId:     "account.delete",
 		RequestDescriptorDigest: descriptorDigest(t, h.manifest, "account.delete"),
-		Method:                  providerv0.HTTPMethod_HTTP_METHOD_DELETE,
+		Method:                  providerv1.HTTPMethod_HTTP_METHOD_DELETE,
 		AdmittedOriginDigest:    h.admitted.GetAdmissionDigest(),
-		PathParameters:          map[string]*providerv0.PublicValue{"account_id": pubString(accountID)},
-		CredentialPurposes:      []providerv0.CredentialPurpose{providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
+		PathParameters:          map[string]*providerv1.PublicValue{"account_id": pubString(accountID)},
+		CredentialPurposes:      []providerv1.CredentialPurpose{providerv1.CredentialPurpose_CREDENTIAL_PURPOSE_MANAGEMENT},
 		ResponsePolicyDigest:    fakeDigest("deleted-response-policy"),
 		IdempotencyKey:          "idem-1",
 	}
@@ -360,15 +360,15 @@ func (h *brokerHarness) deleteRequest(t *testing.T, accountID string) *providerv
 	return bound
 }
 
-func deleteAction(t *testing.T, remoteID string, requests ...*providerv0.PlannedRequest) *providerv0.PlanAction {
+func deleteAction(t *testing.T, remoteID string, requests ...*providerv1.PlannedRequest) *providerv1.PlanAction {
 	t.Helper()
-	action := &providerv0.PlanAction{
+	action := &providerv1.PlanAction{
 		ActionId:       "a1",
 		Position:       0,
-		Type:           providerv0.ActionType_ACTION_TYPE_DELETE,
+		Type:           providerv1.ActionType_ACTION_TYPE_DELETE,
 		ResourceType:   "account",
-		RemoteIdentity: &providerv0.RemoteIdentity{Provider: "conformance", ResourceType: "account", RemoteId: remoteID},
-		Ownership:      providerv0.Ownership_OWNERSHIP_OWNED,
+		RemoteIdentity: &providerv1.RemoteIdentity{Provider: "conformance", ResourceType: "account", RemoteId: remoteID},
+		Ownership:      providerv1.Ownership_OWNERSHIP_OWNED,
 		Requests:       requests,
 	}
 	require.NoError(t, canonical.ValidatePlanAction(action))
@@ -390,7 +390,7 @@ func TestResponsePolicyCapturesReadArraySecrets(t *testing.T) {
 		Fields: []responsepolicy.Field{
 			{Selector: manifest.Selector{Version: "v1", Path: "$.data[*].id"}, Disposition: manifest.ResponseForwardSafe},
 			{Selector: manifest.Selector{Version: "v1", Path: "$.data[*].public"}, Disposition: manifest.ResponseForwardSafe},
-			{Selector: manifest.Selector{Version: "v1", Path: "$.data[*].secret"}, Disposition: manifest.ResponseCaptureToSink, Purpose: providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_RUNTIME, SinkKey: "account-secret"},
+			{Selector: manifest.Selector{Version: "v1", Path: "$.data[*].secret"}, Disposition: manifest.ResponseCaptureToSink, Purpose: providerv1.CredentialPurpose_CREDENTIAL_PURPOSE_RUNTIME, SinkKey: "account-secret"},
 		},
 		Limits: responsepolicy.DefaultLimits(),
 	}
@@ -406,8 +406,8 @@ func TestResponsePolicyCapturesReadArraySecrets(t *testing.T) {
 
 // --- shared host-side wiring, mirroring the core broker test recipe ---
 
-func pubString(value string) *providerv0.PublicValue {
-	return &providerv0.PublicValue{Kind: &providerv0.PublicValue_StringValue{StringValue: value}}
+func pubString(value string) *providerv1.PublicValue {
+	return &providerv1.PublicValue{Kind: &providerv1.PublicValue_StringValue{StringValue: value}}
 }
 
 func fakeDigest(seed string) string {
@@ -428,32 +428,32 @@ func descriptorDigest(t *testing.T, m *manifest.Manifest, id string) string {
 	return ""
 }
 
-func bindingAddress() *providerv0.BindingAddress {
-	return &providerv0.BindingAddress{WorkspaceId: "ws", EnvironmentId: "env", BindingId: "bind"}
+func bindingAddress() *providerv1.BindingAddress {
+	return &providerv1.BindingAddress{WorkspaceId: "ws", EnvironmentId: "env", BindingId: "bind"}
 }
 
-func operation() *providerv0.OperationIdentity {
-	return &providerv0.OperationIdentity{OperationId: "op1", AttemptId: "att1", ActionId: "a1", PlanId: "plan1"}
+func operation() *providerv1.OperationIdentity {
+	return &providerv1.OperationIdentity{OperationId: "op1", AttemptId: "att1", ActionId: "a1", PlanId: "plan1"}
 }
 
-func budget() *providerv0.RequestBudget {
-	return &providerv0.RequestBudget{RequestCount: 4, RequestBytes: 8192, ResponseBytes: 65536}
+func budget() *providerv1.RequestBudget {
+	return &providerv1.RequestBudget{RequestCount: 4, RequestBytes: 8192, ResponseBytes: 65536}
 }
 
-func checkpoint(id, idempotencyKey string) *providerv0.ActionCheckpoint {
-	return &providerv0.ActionCheckpoint{
+func checkpoint(id, idempotencyKey string) *providerv1.ActionCheckpoint {
+	return &providerv1.ActionCheckpoint{
 		CheckpointId:   id,
 		Operation:      operation(),
-		Delivery:       providerv0.DeliveryState_DELIVERY_STATE_NOT_SENT,
+		Delivery:       providerv1.DeliveryState_DELIVERY_STATE_NOT_SENT,
 		IdempotencyKey: idempotencyKey,
 	}
 }
 
 type fakeCheckpointer struct {
-	cp *providerv0.ActionCheckpoint
+	cp *providerv1.ActionCheckpoint
 }
 
-func (c *fakeCheckpointer) Latest(context.Context, *providerv0.OperationIdentity) (*providerv0.ActionCheckpoint, error) {
+func (c *fakeCheckpointer) Latest(context.Context, *providerv1.OperationIdentity) (*providerv1.ActionCheckpoint, error) {
 	return c.cp, nil
 }
 
@@ -461,9 +461,9 @@ type recordingSink struct {
 	stored []string
 }
 
-func (s *recordingSink) Put(_ context.Context, target responsepolicy.SinkTarget, secret string) (*providerv0.OpaqueReference, error) {
+func (s *recordingSink) Put(_ context.Context, target responsepolicy.SinkTarget, secret string) (*providerv1.OpaqueReference, error) {
 	s.stored = append(s.stored, secret)
-	return &providerv0.OpaqueReference{Reference: "capture://" + target.Key, Purpose: target.Purpose}, nil
+	return &providerv1.OpaqueReference{Reference: "capture://" + target.Key, Purpose: target.Purpose}, nil
 }
 
 // dialClientFor dials the fixture regardless of the request URL, exercising the
@@ -497,7 +497,7 @@ func failingClientFor(t *testing.T) func(urlguard.Origin, urlguard.Resolution) *
 	}
 }
 
-func forwardedBySelector(response *providerv0.ExecuteRequestResponse) map[string]string {
+func forwardedBySelector(response *providerv1.ExecuteRequestResponse) map[string]string {
 	out := make(map[string]string, len(response.GetForwarded()))
 	for _, field := range response.GetForwarded() {
 		out[field.GetSelector()] = field.GetValue().GetStringValue()

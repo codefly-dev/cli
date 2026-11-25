@@ -8,9 +8,9 @@ import (
 
 	"github.com/codefly-dev/core/services"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -53,7 +53,7 @@ type IManager interface {
 
 	// RunnerTestResponse returns the structured response from the last Test
 	// RPC dispatched by this manager's runner, or nil if untested.
-	RunnerTestResponse() *runtimev0.TestResponse
+	RunnerTestResponse() *runtimev1.TestResponse
 
 	DoSetCallback(seed func(ctx context.Context, action Action) error)
 	// DoSetFailureSink registers a callback that the Runner.Follow loop
@@ -102,7 +102,7 @@ func (manager *Manager) BuilderDoDeploy(ctx context.Context) (*OutputProperty, e
 	return manager.Builder.Deploy(ctx)
 }
 
-func (manager *Manager) BuilderSyncResponse() *builderv0.SyncResponse {
+func (manager *Manager) BuilderSyncResponse() *builderv1.SyncResponse {
 	if manager.Builder == nil {
 		return nil
 	}
@@ -116,14 +116,14 @@ func (manager *Manager) BuilderSyncSkipped() bool {
 	return manager.Builder.SyncSkipped()
 }
 
-func (manager *Manager) BuilderDeploymentOutput() *builderv0.DeploymentOutput {
+func (manager *Manager) BuilderDeploymentOutput() *builderv1.DeploymentOutput {
 	if manager.Builder == nil {
 		return nil
 	}
 	return manager.Builder.DeploymentOutput()
 }
 
-func (manager *Manager) BuilderDeployedConfiguration() *basev0.Configuration {
+func (manager *Manager) BuilderDeployedConfiguration() *basev1.Configuration {
 	if manager.Builder == nil {
 		return nil
 	}
@@ -144,7 +144,7 @@ func (manager *Manager) BuilderImageDigest() string {
 	return manager.Builder.ImageDigest()
 }
 
-func (manager *Manager) BuilderImageEvidence() []*builderv0.ImageSBOM {
+func (manager *Manager) BuilderImageEvidence() []*builderv1.ImageSBOM {
 	if manager.Builder == nil {
 		return nil
 	}
@@ -183,7 +183,7 @@ func (manager *Manager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, e
 	return manager.Runner.Destroy(ctx)
 }
 
-func (manager *Manager) RunnerTestResponse() *runtimev0.TestResponse {
+func (manager *Manager) RunnerTestResponse() *runtimev1.TestResponse {
 	if manager.Runner == nil {
 		return nil
 	}
@@ -376,7 +376,7 @@ func (n NoOpManager) RunnerDoDestroy(_ context.Context) (*OutputProperty, error)
 	return nil, nil
 }
 
-func (n NoOpManager) RunnerTestResponse() *runtimev0.TestResponse {
+func (n NoOpManager) RunnerTestResponse() *runtimev1.TestResponse {
 	return nil
 }
 

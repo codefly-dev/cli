@@ -10,7 +10,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/sdk"
 	"github.com/codefly-dev/core/wool"
@@ -33,14 +33,14 @@ func NewDeploymentManager(_ context.Context, workspace *resources.Workspace, env
 	return &DeploymentManager{workspace: workspace, env: env}
 }
 
-func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv0.DeploymentOutput) error {
+func (d *DeploymentManager) Handle(ctx context.Context, service *resources.Service, module *resources.Module, deploy *builderv1.DeploymentOutput) error {
 	if err := selectionguard.RejectUnboundExecution(d.workspace.Dir(), module.Dir()); err != nil {
 		return err
 	}
 	w := wool.Get(ctx).In("Builder")
 	switch v := deploy.Kind.(type) {
-	case *builderv0.DeploymentOutput_Kubernetes:
-		if v.Kubernetes.Kind == builderv0.KubernetesDeploymentOutput_KUSTOMIZE {
+	case *builderv1.DeploymentOutput_Kubernetes:
+		if v.Kubernetes.Kind == builderv1.KubernetesDeploymentOutput_KUSTOMIZE {
 			d.deployments = append(d.deployments, Deployment{
 				Service:    service,
 				OutputPath: deployments.KustomizeDir(ctx, d.workspace, module, service, d.env),

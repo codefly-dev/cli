@@ -3,7 +3,7 @@ package builder
 import (
 	"context"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -18,15 +18,15 @@ func SetRepository(repo string) {
 // tags it with the service's version, so an image belongs to the module that owns
 // the code, never to the workspace that composed it: the same module release
 // composed by two workspaces, or delivered to two environments, is one image.
-func DockerBuildContext(_ context.Context, _ *resources.Workspace) (*builderv0.DockerBuildContext, error) {
-	return &builderv0.DockerBuildContext{
+func DockerBuildContext(_ context.Context, _ *resources.Workspace) (*builderv1.DockerBuildContext, error) {
+	return &builderv1.DockerBuildContext{
 		DockerRepository: repository,
 	}, nil
 }
 
-func BuildContextFromDocker(dockerContext *builderv0.DockerBuildContext) *builderv0.BuildContext {
-	return &builderv0.BuildContext{
-		Kind: &builderv0.BuildContext_DockerBuildContext{
+func BuildContextFromDocker(dockerContext *builderv1.DockerBuildContext) *builderv1.BuildContext {
+	return &builderv1.BuildContext{
+		Kind: &builderv1.BuildContext_DockerBuildContext{
 			DockerBuildContext: dockerContext,
 		},
 	}

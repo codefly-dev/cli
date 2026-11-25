@@ -19,8 +19,8 @@ import (
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/shared"
@@ -49,8 +49,8 @@ A method that declares its authority policy (authority.hop.v1.policy) is an
 operation with nothing added: a policy requiring only "read" derives a
 read-only tool that is safe to re-run and carries no receipt; anything else
 derives a mutation resolved by its effect receipt through the SDK's generic
-lookup. The codefly.runnable.v0.operation option overrides those defaults, and
-codefly.runnable.v0.exclude keeps a method from every agent. The message
+lookup. The codefly.runnable.v1.operation option overrides those defaults, and
+codefly.runnable.v1.exclude keeps a method from every agent. The message
 descriptors say what the contract is, by their proto3 JSON. Nothing is written
 twice.
 
@@ -220,7 +220,7 @@ func (d *derivation) report() {
 		case !operation.explicit:
 			origin = "default"
 			defaults = appendOnce(defaults, entry.Method)
-			if operation.effect == runnablev0.ToolExposure_EFFECT_MUTATION.String() {
+			if operation.effect == runnablev1.ToolExposure_EFFECT_MUTATION.String() {
 				mutations = appendOnce(mutations, entry.Method)
 			}
 		}
@@ -239,7 +239,7 @@ func (d *derivation) report() {
 	cli.Info("runnables: %d method(s) derived by default from their authority policy, %d of them mutations: %s",
 		len(defaults), len(mutations), strings.Join(mutations, ", "))
 	cli.Info("runnables: every operation is a tool, offered only to callers whose grants cover its binding; " +
-		"a method no agent may ever call declares `option (codefly.runnable.v0.exclude) = true;`")
+		"a method no agent may ever call declares `option (codefly.runnable.v1.exclude) = true;`")
 }
 
 // deriveRunnables walks every protobuf contract the module published and
@@ -296,7 +296,7 @@ func deriveRunnablesIn(ctx context.Context, workspaceName, workspaceDir string, 
 		return endpoints[i].Endpoint < endpoints[j].Endpoint
 	})
 
-	agents := map[string]*basev0.Agent{}
+	agents := map[string]*basev1.Agent{}
 	for i := range endpoints {
 		endpoint := &endpoints[i]
 		derive := deriveEndpoint
@@ -330,7 +330,7 @@ func deriveRunnablesIn(ctx context.Context, workspaceName, workspaceDir string, 
 // ownerAgent returns the service agent a derived package records. A method an
 // owner already publishes is built by the owner's own builder, so the package
 // names that agent rather than a runnable one.
-func ownerAgent(ctx context.Context, module *resources.Module, serviceName string) (*basev0.Agent, error) {
+func ownerAgent(ctx context.Context, module *resources.Module, serviceName string) (*basev1.Agent, error) {
 	service, err := module.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
 		return nil, fmt.Errorf("cannot load service %s: %w", serviceName, err)
@@ -354,7 +354,7 @@ func ownerAgent(ctx context.Context, module *resources.Module, serviceName strin
 }
 
 // deriveEndpoint derives every marked method one endpoint publishes.
-func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractEndpoint, agent *basev0.Agent, derived *derivation) error {
+func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractEndpoint, agent *basev1.Agent, derived *derivation) error {
 	contract := filepath.Join(module.Dir(), filepath.FromSlash(endpoint.Path))
 	data, err := os.ReadFile(contract) //nolint:gosec // the path comes from the module's own contract catalog
 	if err != nil {
@@ -413,7 +413,7 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 // it serves — through the same writers a method goes through, so a route and a
 // method land in one tree, one index and one binding key space. Routes are
 // walked in path then method order, so the index is a function of the document.
-func deriveOpenAPIEndpoint(module *resources.Module, endpoint *composition.APIContractEndpoint, agent *basev0.Agent, derived *derivation) error {
+func deriveOpenAPIEndpoint(module *resources.Module, endpoint *composition.APIContractEndpoint, agent *basev1.Agent, derived *derivation) error {
 	contract := filepath.Join(module.Dir(), filepath.FromSlash(endpoint.Path))
 	document, err := os.ReadFile(contract) //nolint:gosec // the path comes from the module's own contract catalog
 	if err != nil {
@@ -558,7 +558,7 @@ func (d *derivation) audience() string {
 // record writes one derived operation into the tree and the index. The
 // publication principal is independent of the producer checkout's module name;
 // an explicitly declared operation must agree, never be silently rewritten.
-func (d *derivation) record(endpoint *composition.APIContractEndpoint, name string, pkg *basev0.RunnablePackage, spec *corerunnable.OperationSpec, origin derivedOperation) error {
+func (d *derivation) record(endpoint *composition.APIContractEndpoint, name string, pkg *basev1.RunnablePackage, spec *corerunnable.OperationSpec, origin derivedOperation) error {
 	// An unreadable or malformed contract is never absence. A module that
 	// authored one and got it wrong must be told so, whatever the operation —
 	// turning a schema skew, a bad field or a dangling link into "no module

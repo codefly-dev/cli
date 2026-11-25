@@ -13,10 +13,10 @@ import (
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	solutionv1 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution"
 	"google.golang.org/grpc"
@@ -99,18 +99,18 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		}
 		defer release()
 
-		artifact := &solutionv0.SolutionArtifact{
+		artifact := &solutionv1.SolutionArtifact{
 			Publisher: req.Agent.Publisher,
 			Name:      req.Agent.Name,
 			Version:   req.Agent.Version,
 		}
-		solutionContext := &solutionv0.SolutionContext{
+		solutionContext := &solutionv1.SolutionContext{
 			Workspace:   req.Workspace.Name,
 			Environment: env.Name,
 			Artifact:    artifact,
 		}
 
-		packaged, err := executor.Package(ctx, solution.CeilingPublish(), &solutionv0.PackageRequest{
+		packaged, err := executor.Package(ctx, solution.CeilingPublish(), &solutionv1.PackageRequest{
 			Context:   solutionContext,
 			Source:    req.Source,
 			Reference: req.Reference,
@@ -123,7 +123,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		}
 		artifact.ArtifactDigest = packaged.GetArtifactDigest()
 
-		rendered, err := executor.Render(ctx, solution.CeilingRender(), &solutionv0.RenderRequest{
+		rendered, err := executor.Render(ctx, solution.CeilingRender(), &solutionv1.RenderRequest{
 			Context:           solutionContext,
 			ArtifactReference: packaged.GetReference(),
 			Destination:       filepath.Join(stage, solutionUnitDir, req.Name),
@@ -212,8 +212,8 @@ func solutionRenderValues(values map[string]string, namespace string) map[string
 // RenderSolution drives. It is an interface so a test can inject a client backed
 // by an in-process executor without spawning a verified-artifact plugin.
 type solutionExecutor interface {
-	Package(context.Context, solution.Ceiling, *solutionv0.PackageRequest, ...grpc.CallOption) (*solutionv0.PackageResponse, error)
-	Render(context.Context, solution.Ceiling, *solutionv0.RenderRequest, ...grpc.CallOption) (*solutionv0.RenderResponse, error)
+	Package(context.Context, solution.Ceiling, *solutionv1.PackageRequest, ...grpc.CallOption) (*solutionv1.PackageResponse, error)
+	Render(context.Context, solution.Ceiling, *solutionv1.RenderRequest, ...grpc.CallOption) (*solutionv1.RenderResponse, error)
 }
 
 // ErrSolutionExecutorUnavailable marks a render that never reached an executor:
@@ -251,7 +251,7 @@ var connectSolutionExecutor = func(ctx context.Context, workDir string, agent *r
 }
 
 func admittedSolutionExecutor(ctx context.Context, conn *manager.AgentConn) (solutionExecutor, error) {
-	info, err := agentv0.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	info, err := agentv1.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	if err != nil {
 		return nil, err
 	}
@@ -261,10 +261,10 @@ func admittedSolutionExecutor(ctx context.Context, conn *manager.AgentConn) (sol
 	return solution.NewClient(conn.GRPCConn()), nil
 }
 
-func solutionDiagnostics(phase, name string, diagnostics []*basev0.FailureDiagnostic) error {
+func solutionDiagnostics(phase, name string, diagnostics []*basev1.FailureDiagnostic) error {
 	var failures []string
 	for _, diagnostic := range diagnostics {
-		if diagnostic.GetSeverity() == basev0.FailureDiagnostic_ERROR {
+		if diagnostic.GetSeverity() == basev1.FailureDiagnostic_ERROR {
 			failures = append(failures, diagnostic.GetMessage())
 		}
 	}
@@ -281,12 +281,12 @@ func solutionDiagnostics(phase, name string, diagnostics []*basev0.FailureDiagno
 // validation stays NOT_RUN because the CLI runs only the static ruleset.
 func solutionRenderAttestation() *InventoryKubernetesOutput {
 	return &InventoryKubernetesOutput{
-		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
+		Kind:            builderv1.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: coreservices.KubernetesManifestContractVersion,
 		Validation: &InventoryKubernetesValidation{
-			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
-			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
+			StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
 			Restricted:           true,
 			Violations:           []string{},
 		},

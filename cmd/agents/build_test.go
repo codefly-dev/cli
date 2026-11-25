@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -371,11 +371,11 @@ func TestBuildAllAgentsRequiresDiscoveredAgent(t *testing.T) {
 
 func TestApplyAgentAuditPolicyGatesOnlyActionableFindings(t *testing.T) {
 	agent := agentYAML{Name: "test", Version: "0.0.1"}
-	response := &builderv0.AuditResponse{
+	response := &builderv1.AuditResponse{
 		Tool: "plugin-scanner",
-		Findings: []*builderv0.AuditFinding{
-			{Id: "FIXED", Severity: builderv0.AuditFinding_HIGH, FixedVersion: "v1.2.3"},
-			{Id: "UNPATCHED", Severity: builderv0.AuditFinding_CRITICAL},
+		Findings: []*builderv1.AuditFinding{
+			{Id: "FIXED", Severity: builderv1.AuditFinding_HIGH, FixedVersion: "v1.2.3"},
+			{Id: "UNPATCHED", Severity: builderv1.AuditFinding_CRITICAL},
 		},
 	}
 	if err := applyAgentAuditPolicy(t.TempDir(), &agent, response, false); err != nil {

@@ -59,7 +59,7 @@ func writeTypeScriptFixture(t *testing.T, langDir string, files map[string]strin
 // only in where the underscore sits (a_b.v1, a.b_v1).
 func collidingTypeScriptLibrary() map[string]string {
 	return map[string]string{
-		"gen/codefly/base/v0/work_context_pb.ts":   protoModule("codefly/base/v0/work_context.proto", "codefly.base.v0", "WorkContextV1", "Settings", "enum State"),
+		"gen/codefly/base/v1/work_context_pb.ts":   protoModule("codefly/base/v1/work_context.proto", "codefly.base.v1", "WorkContextV1", "Settings", "enum State"),
 		"gen/host/authority/v1/work_context_pb.ts": protoModule("host/authority/v1/work_context.proto", "host.authority.v1", "WorkContextV1", "enum State", "AuthorityService"),
 		"gen/saas/accounts/v1/installations_pb.ts": protoModule("saas/accounts/v1/installations.proto", "saas.accounts.v1", "Installation", "Settings"),
 		"gen/saas/accounts/v1/audit_pb.ts":         protoModule("saas/accounts/v1/audit.proto", "saas.accounts.v1", "AuditEvent", "AuditService"),
@@ -108,9 +108,9 @@ func TestTypeScriptIndexNamespacesPackagesAndKeepsUniqueNamesFlat(t *testing.T) 
 		`export * from "./gen/api_pb.js";`,
 		`export * from "./gen/saas/accounts/v1/audit_pb.js";`,
 		`export * from "./gen/rootless_pb.js";`,
-		"//   Settings: codefly_base_v0_pb.Settings, saas_accounts_v1_pb.Settings\n",
-		"//   State: codefly_base_v0_pb.State, host_authority_v1_pb.State\n",
-		"//   WorkContextV1: codefly_base_v0_pb.WorkContextV1, host_authority_v1_pb.WorkContextV1\n",
+		"//   Settings: codefly_base_v1_pb.Settings, saas_accounts_v1_pb.Settings\n",
+		"//   State: codefly_base_v1_pb.State, host_authority_v1_pb.State\n",
+		"//   WorkContextV1: codefly_base_v1_pb.WorkContextV1, host_authority_v1_pb.WorkContextV1\n",
 		// A file with a colliding name keeps the rest flat, each type-only
 		// name marked so isolatedModules emits no value import for it.
 		"export {\n  AuthorityService,\n  file_host_authority_v1_work_context,\n} from \"./gen/host/authority/v1/work_context_pb.js\";\n",
@@ -167,7 +167,7 @@ func TestTypeScriptIndexCompiles(t *testing.T) {
   InstallationSchema,
   type Rootless,
   AuthorityService,
-  codefly_base_v0_pb,
+  codefly_base_v1_pb,
   host_authority_v1_pb,
   saas_accounts_v1_pb,
   a__b_v1_pb,
@@ -179,10 +179,10 @@ export const values = [DirectoryService, AuditService, InstallationSchema, Autho
 export const employee: Employee = { $typeName: "api.Employee", value: "" };
 export const installation: Installation = { $typeName: "saas.accounts.v1.Installation", value: "" };
 export const rootless: Rootless = { $typeName: ".Rootless", value: "" };
-export const base: codefly_base_v0_pb.WorkContextV1 = { $typeName: "codefly.base.v0.WorkContextV1", value: "" };
+export const base: codefly_base_v1_pb.WorkContextV1 = { $typeName: "codefly.base.v1.WorkContextV1", value: "" };
 export const host: host_authority_v1_pb.WorkContextV1 = { $typeName: "host.authority.v1.WorkContextV1", value: "" };
 export const settings: saas_accounts_v1_pb.Settings = { $typeName: "saas.accounts.v1.Settings", value: "" };
-export const states = [codefly_base_v0_pb.State.UNSPECIFIED, host_authority_v1_pb.State.UNSPECIFIED];
+export const states = [codefly_base_v1_pb.State.UNSPECIFIED, host_authority_v1_pb.State.UNSPECIFIED];
 `
 	if out, err := compileTypeScript(t, tsc, langDir, consumer); err != nil {
 		t.Fatalf("the generated library does not compile for its consumer: %v\n%s\nindex.ts:\n%s", err, out, readFile(t, filepath.Join(langDir, "src", "index.ts")))

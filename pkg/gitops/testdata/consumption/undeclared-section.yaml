@@ -1,7 +1,7 @@
 # A composed solution carrying a top-level section this core does not model:
 # Load refuses it (unknown field), and it asks for no authority.
-schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 sources:
     - provider: git
       repo: example/handbook

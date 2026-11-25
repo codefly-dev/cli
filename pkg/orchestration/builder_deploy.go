@@ -13,8 +13,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"google.golang.org/protobuf/proto"
@@ -59,8 +59,8 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
-	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
-	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
+	var secretReferences map[string]*builderv1.KubernetesSecretKeyReference
+	if profile == builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		conf, dependenciesConfigurations, secretReferences, err = b.promotableConfigurations(ctx, conf, dependenciesConfigurations)
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot prepare promotable configuration")
@@ -124,7 +124,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
-	resp, err := b.deployRequest(ctx, &builderv0.DeploymentRequest{
+	resp, err := b.deployRequest(ctx, &builderv1.DeploymentRequest{
 		Environment:                 env,
 		Deployment:                  deploy,
 		Configuration:               conf,
@@ -136,7 +136,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot deploy service instance")
 	}
 
-	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
+	if resp.State != nil && resp.State.State != builderv1.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
 	if validateErr := validateDeploymentOutput(
@@ -180,7 +180,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 }
 
 // deployRequest is the final handoff for every orchestration deployment.
-func (b *Builder) deployRequest(ctx context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+func (b *Builder) deployRequest(ctx context.Context, request *builderv1.DeploymentRequest) (*builderv1.DeploymentResponse, error) {
 	provenance, err := deployments.CompositionProvenance(b.world.Workspace)
 	if err != nil {
 		return nil, err
@@ -218,8 +218,8 @@ func (b *Builder) deployRequest(ctx context.Context, request *builderv0.Deployme
 //
 // Mappings that need a mirror are cloned, so the input slice's instances are
 // never mutated.
-func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
-	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+func withContainerReachableAsPublic(ctx context.Context, mappings []*basev1.NetworkMapping) []*basev1.NetworkMapping {
+	out := make([]*basev1.NetworkMapping, 0, len(mappings))
 	for _, mapping := range mappings {
 		if mapping == nil {
 			out = append(out, mapping)
@@ -247,7 +247,7 @@ func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.Netw
 // them (Deploy), for a consumer deployed before it. A deployed address is a pure
 // function of the producer's identity and namespace, so it holds whether or not
 // this operation deploys that producer.
-func (world *World) remoteProducerMappings(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+func (world *World) remoteProducerMappings(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev1.Endpoint) ([]*basev1.NetworkMapping, error) {
 	if world.RemoteNetworkManager == nil {
 		return nil, nil
 	}
@@ -296,7 +296,7 @@ type NamespaceProbe func(ctx context.Context, kubeconfig, kubeContext, namespace
 func resolveClusterValidation(
 	ctx context.Context,
 	world *World,
-	profile builderv0.KubernetesOutputProfile,
+	profile builderv1.KubernetesOutputProfile,
 	namespace string,
 ) (clusterValidation, error) {
 	// Only the restricted portable profile is ever validated against a
@@ -304,7 +304,7 @@ func resolveClusterValidation(
 	// name, as core's OutputProfile.Restricted reads it: the deleted
 	// PROMOTABLE_GITOPS_V1 the old helper also accepted is a reserved number
 	// now, refused by core's decoder before any render.
-	if world == nil || !world.ValidateCluster || profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
+	if world == nil || !world.ValidateCluster || profile != builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		return clusterValidation{}, nil
 	}
 	kubeconfig, contextName, err := kubernetesValidationTarget(ctx, world.Env)
@@ -390,9 +390,9 @@ func kubernetesValidationTarget(ctx context.Context, environment *environments.E
 // never a value.
 func (b *Builder) promotableConfigurations(
 	ctx context.Context,
-	conf *basev0.Configuration,
-	dependencies []*basev0.Configuration,
-) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	conf *basev1.Configuration,
+	dependencies []*basev1.Configuration,
+) (*basev1.Configuration, []*basev1.Configuration, map[string]*builderv1.KubernetesSecretKeyReference, error) {
 	secretName := "secret-" + b.instance.Service.Name
 	conf = withEnvironmentDeclaredSecrets(ctx, conf, b.instance.Identity, b.world.Env)
 	conf, dependencies, secretReferences, err := promotableDeploymentConfigurations(conf, dependencies, secretName)
@@ -410,7 +410,7 @@ func (b *Builder) promotableConfigurations(
 // clusterValidation resolves the server-side validation target for the
 // render and says, on the log and the output sink, why an opted-in validation
 // cannot run when it cannot.
-func (b *Builder) clusterValidation(ctx context.Context, w *wool.Wool, profile builderv0.KubernetesOutputProfile, namespace string) (clusterValidation, error) {
+func (b *Builder) clusterValidation(ctx context.Context, w *wool.Wool, profile builderv1.KubernetesOutputProfile, namespace string) (clusterValidation, error) {
 	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
 	if err != nil {
 		return clusterValidation{}, err
@@ -440,30 +440,30 @@ func (b *Builder) deployingAgent() *resources.Agent {
 	return nil
 }
 
-func kubernetesOutputProfile(world *World) builderv0.KubernetesOutputProfile {
-	if world.KubernetesOutputProfile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED {
+func kubernetesOutputProfile(world *World) builderv1.KubernetesOutputProfile {
+	if world.KubernetesOutputProfile != builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED {
 		return world.KubernetesOutputProfile
 	}
 	return deployments.KubernetesOutputProfile(world.RemoteManager)
 }
 
 func promotableDeploymentConfigurations(
-	configuration *basev0.Configuration,
-	dependencies []*basev0.Configuration,
+	configuration *basev1.Configuration,
+	dependencies []*basev1.Configuration,
 	secretName string,
-) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
-	if misplaced := misplacedSecretKeys(append([]*basev0.Configuration{configuration}, dependencies...)); len(misplaced) > 0 {
+) (*basev1.Configuration, []*basev1.Configuration, map[string]*builderv1.KubernetesSecretKeyReference, error) {
+	if misplaced := misplacedSecretKeys(append([]*basev1.Configuration{configuration}, dependencies...)); len(misplaced) > 0 {
 		return nil, nil, nil, fmt.Errorf(
 			"restricted rendering rejects credential-named keys carrying a plaintext value; declare each as a secret (secretKeyRef) instead of inline config: %s",
 			strings.Join(misplaced, ", "),
 		)
 	}
-	references := map[string]*builderv0.KubernetesSecretKeyReference{}
+	references := map[string]*builderv1.KubernetesSecretKeyReference{}
 	own, err := promotableConfiguration(configuration, secretName, references)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	safeDependencies := make([]*basev0.Configuration, 0, len(dependencies))
+	safeDependencies := make([]*basev1.Configuration, 0, len(dependencies))
 	for _, dependency := range dependencies {
 		safe, err := promotableConfiguration(dependency, secretName, references)
 		if err != nil {
@@ -492,16 +492,16 @@ func promotableDeploymentConfigurations(
 // so the manager's configuration is never widened for anyone else.
 func withEnvironmentDeclaredSecrets(
 	ctx context.Context,
-	configuration *basev0.Configuration,
+	configuration *basev1.Configuration,
 	identity *resources.ServiceIdentity,
 	env *environments.Environment,
-) *basev0.Configuration {
+) *basev1.Configuration {
 	if env == nil || env.ServiceSecrets == nil || identity == nil {
 		return configuration
 	}
 	w := wool.Get(ctx).In("Builder.withEnvironmentDeclaredSecrets")
 	unique := identity.Unique()
-	var declared *basev0.Configuration
+	var declared *basev1.Configuration
 	for index := range env.ServiceSecrets.Generate {
 		generator := &env.ServiceSecrets.Generate[index]
 		if generator.Scope != environments.SecretGeneratorScopeService || !slices.Contains(generator.Services, unique) {
@@ -514,13 +514,13 @@ func withEnvironmentDeclaredSecrets(
 				continue
 			}
 			if declared == nil {
-				declared = &basev0.Configuration{Origin: unique}
+				declared = &basev1.Configuration{Origin: unique}
 				if configuration != nil {
 					declared = proto.CloneOf(configuration)
 				}
 			}
 			info := configurationInformationNamed(declared, generator.Configuration)
-			info.ConfigurationValues = append(info.ConfigurationValues, &basev0.ConfigurationValue{Key: key, Secret: true})
+			info.ConfigurationValues = append(info.ConfigurationValues, &basev1.ConfigurationValue{Key: key, Secret: true})
 			w.Info("secret key declared by the environment's service-secrets.generate, not by the service's own configuration; rendering its reference",
 				wool.Field("service", unique), wool.Field("configuration", generator.Configuration), wool.Field("key", key))
 		}
@@ -533,7 +533,7 @@ func withEnvironmentDeclaredSecrets(
 
 // declaresConfigurationKey reports whether the configuration carries key in the
 // named group, matched the way core matches configuration names and keys.
-func declaresConfigurationKey(configuration *basev0.Configuration, group, key string) bool {
+func declaresConfigurationKey(configuration *basev1.Configuration, group, key string) bool {
 	for _, info := range configuration.GetInfos() {
 		if !resources.Match(info.GetName(), group) {
 			continue
@@ -549,13 +549,13 @@ func declaresConfigurationKey(configuration *basev0.Configuration, group, key st
 
 // configurationInformationNamed returns the configuration's group of that name,
 // appending an empty one when it has none.
-func configurationInformationNamed(configuration *basev0.Configuration, name string) *basev0.ConfigurationInformation {
+func configurationInformationNamed(configuration *basev1.Configuration, name string) *basev1.ConfigurationInformation {
 	for _, info := range configuration.GetInfos() {
 		if resources.Match(info.GetName(), name) {
 			return info
 		}
 	}
-	info := &basev0.ConfigurationInformation{Name: name}
+	info := &basev1.ConfigurationInformation{Name: name}
 	configuration.Infos = append(configuration.Infos, info)
 	return info
 }
@@ -569,7 +569,7 @@ func configurationInformationNamed(configuration *basev0.Configuration, name str
 // shape. The Secret clause never decides a misplacement (Secret values promote to
 // references first, below) but is kept so the predicate is a faithful standalone
 // mirror rather than one narrowed to its current caller.
-func restrictedRenderRejects(value *basev0.ConfigurationValue) bool {
+func restrictedRenderRejects(value *basev1.ConfigurationValue) bool {
 	return value.GetValue() != "" && (value.GetSecret() || resources.IsSensitiveKey(value.GetKey()))
 }
 
@@ -580,7 +580,7 @@ func restrictedRenderRejects(value *basev0.ConfigurationValue) bool {
 // Each entry names the key, the configuration scope it came from (so a value
 // exposed by a dependency, not authored in a local *.env file, is still
 // traceable), and the *.secret.env convention that resolves it.
-func misplacedSecretKeys(configurations []*basev0.Configuration) []string {
+func misplacedSecretKeys(configurations []*basev1.Configuration) []string {
 	var misplaced []string
 	for _, configuration := range configurations {
 		scope := configuration.GetOrigin()
@@ -629,7 +629,7 @@ var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_
 // endpoint keys, which restricted render handles as a misplacement error rather
 // than silently promoting a plaintext value into a secretKeyRef whose backing
 // secret was never seeded.
-func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
+func promotesToDeploymentSecret(value *basev1.ConfigurationValue) bool {
 	if value.GetSecret() {
 		return true
 	}
@@ -665,10 +665,10 @@ func isSecretEndpointKey(key string) bool {
 }
 
 func promotableConfiguration(
-	configuration *basev0.Configuration,
+	configuration *basev1.Configuration,
 	secretName string,
-	references map[string]*builderv0.KubernetesSecretKeyReference,
-) (*basev0.Configuration, error) {
+	references map[string]*builderv1.KubernetesSecretKeyReference,
+) (*basev1.Configuration, error) {
 	if configuration == nil {
 		return nil, nil
 	}
@@ -685,11 +685,11 @@ func promotableConfiguration(
 				info.ConfigurationValues = append(info.ConfigurationValues, proto.CloneOf(sourceValue))
 				continue
 			}
-			secretConfiguration := &basev0.Configuration{
+			secretConfiguration := &basev1.Configuration{
 				Origin: configuration.GetOrigin(),
-				Infos: []*basev0.ConfigurationInformation{{
+				Infos: []*basev1.ConfigurationInformation{{
 					Name: sourceInfo.GetName(),
-					ConfigurationValues: []*basev0.ConfigurationValue{{
+					ConfigurationValues: []*basev1.ConfigurationValue{{
 						Key: sourceValue.GetKey(), Secret: true,
 					}},
 				}},
@@ -704,7 +704,7 @@ func promotableConfiguration(
 				return nil, fmt.Errorf("secret configuration %q/%q has no environment identity", sourceInfo.GetName(), sourceValue.GetKey())
 			}
 			key := environmentVariables[0].Key
-			references[key] = &builderv0.KubernetesSecretKeyReference{Name: secretName, Key: key}
+			references[key] = &builderv1.KubernetesSecretKeyReference{Name: secretName, Key: key}
 		}
 		if len(info.GetConfigurationValues()) > 0 || info.GetData() != nil {
 			safe.Infos = append(safe.Infos, info)
@@ -714,8 +714,8 @@ func promotableConfiguration(
 }
 
 func validateKubernetesDeploymentOutput(
-	requested builderv0.KubernetesOutputProfile,
-	output *builderv0.DeploymentOutput,
+	requested builderv1.KubernetesOutputProfile,
+	output *builderv1.DeploymentOutput,
 	validationContext string,
 ) error {
 	kubernetes := output.GetKubernetes()
@@ -731,9 +731,9 @@ func validateKubernetesDeploymentOutput(
 	// added to the enum later — was accepted on the strength of the plugin
 	// echoing back the profile it was asked for.
 	switch requested {
-	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1:
+	case builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1:
 		// Checked below.
-	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1:
+	case builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1:
 		// A direct apply into a local cluster produces no promotable artifact
 		// and nothing persists it, so there is no restricted-rendering
 		// property to attest. The exemption follows the validated operation
@@ -759,11 +759,11 @@ func validateKubernetesDeploymentOutput(
 	// security property, never a delivery decision". The security property is
 	// what this gate is actually asserting.
 	if !validation.GetRestricted() ||
-		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
+		validation.GetStaticValidation() != builderv1.KubernetesManifestValidation_STATUS_PASSED {
 		return fmt.Errorf("plugin did not return a successfully validated restricted Kubernetes output")
 	}
 	if validationContext != "" {
-		if validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
+		if validation.GetServerSideValidation() != builderv1.KubernetesManifestValidation_STATUS_PASSED {
 			return fmt.Errorf("plugin did not pass server-side Kubernetes validation")
 		}
 		if validation.GetValidatedContext() != validationContext {
@@ -779,8 +779,8 @@ func validateKubernetesDeploymentOutput(
 
 func validateDeploymentOutput(
 	manager deployments.Manager,
-	requested builderv0.KubernetesOutputProfile,
-	output *builderv0.DeploymentOutput,
+	requested builderv1.KubernetesOutputProfile,
+	output *builderv1.DeploymentOutput,
 	validationContext string,
 ) error {
 	if output == nil {

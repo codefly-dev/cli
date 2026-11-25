@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 )
@@ -172,7 +172,7 @@ func (p *planeImpl) Build(ctx context.Context, req BuildRequest) (BuildResult, e
 // TestMode playbook stops after the origin's Test RPC — then reads the origin
 // test response, exactly like `codefly test service`.
 func (p *planeImpl) Test(ctx context.Context, req *TestRequest) (CheckResult, error) {
-	testRequest := &runtimev0.TestRequest{Suite: req.Suite}
+	testRequest := &runtimev1.TestRequest{Suite: req.Suite}
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
 	}

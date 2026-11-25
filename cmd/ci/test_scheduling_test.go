@@ -9,26 +9,26 @@ import (
 	"testing"
 	"time"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
-func stubTestInspection(t *testing.T, info *agentv0.AgentInformation, err error) {
+func stubTestInspection(t *testing.T, info *agentv1.AgentInformation, err error) {
 	t.Helper()
 	previous := inspectTestAgent
 	t.Cleanup(func() { inspectTestAgent = previous })
-	inspectTestAgent = func(_ context.Context, agent *resources.Agent) (*resources.Agent, *agentv0.AgentInformation, error) {
+	inspectTestAgent = func(_ context.Context, agent *resources.Agent) (*resources.Agent, *agentv1.AgentInformation, error) {
 		return agent, info, err
 	}
 }
 
-func schedulingTestInfo() *agentv0.AgentInformation {
-	return &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-		Test: &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{
-			{Name: "unit", DefaultSuite: true, DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE},
-			{Name: "integration", DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES},
-			{Name: "e2e", DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK},
+func schedulingTestInfo() *agentv1.AgentInformation {
+	return &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+		Test: &agentv1.TestValidationCapability{Supported: true, Suites: []*agentv1.TestSuiteCapability{
+			{Name: "unit", DefaultSuite: true, DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE},
+			{Name: "integration", DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES},
+			{Name: "e2e", DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK},
 		}},
 	}}
 }
@@ -143,7 +143,7 @@ func TestCITestReuseDoesNotInspectOrFailOnInspection(t *testing.T) {
 	require.Equal(t, 1, cold.executed)
 
 	var inspected atomic.Int32
-	inspectTestAgent = func(context.Context, *resources.Agent) (*resources.Agent, *agentv0.AgentInformation, error) {
+	inspectTestAgent = func(context.Context, *resources.Agent) (*resources.Agent, *agentv1.AgentInformation, error) {
 		inspected.Add(1)
 		return nil, nil, errors.New("agent cannot be started")
 	}

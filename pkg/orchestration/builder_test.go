@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -14,11 +14,11 @@ func TestBuildResultKindAssertionIsSafeForNonDockerResults(t *testing.T) {
 	if got := dockerBuildResult(nil); got != nil {
 		t.Fatalf("nil result returned %#v", got)
 	}
-	if got := dockerBuildResult(&builderv0.BuildResult{}); got != nil {
+	if got := dockerBuildResult(&builderv1.BuildResult{}); got != nil {
 		t.Fatalf("empty result returned %#v", got)
 	}
-	want := &builderv0.DockerBuildResult{Images: []string{"example:test"}}
-	result := &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildResult{DockerBuildResult: want}}
+	want := &builderv1.DockerBuildResult{Images: []string{"example:test"}}
+	result := &builderv1.BuildResult{Kind: &builderv1.BuildResult_DockerBuildResult{DockerBuildResult: want}}
 	if got := dockerBuildResult(result); got != want {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
@@ -41,11 +41,11 @@ func TestCheckImageArchitectureRejectsNonDeploymentArch(t *testing.T) {
 }
 
 func TestPromotableDeploymentConfigurationsReplaceSecretBytesWithTypedReferences(t *testing.T) {
-	configuration := &basev0.Configuration{
+	configuration := &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "authentication",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "issuer", Value: "https://auth.example.com"},
 				{Key: "client-secret", Value: "must-not-pass", Secret: true},
 				{Key: "api-token", Value: "also-must-not-pass"},
@@ -87,11 +87,11 @@ func TestPromotableDeploymentConfigurationsReplaceSecretBytesWithTypedReferences
 }
 
 func TestPromotableDeploymentConfigurationsRejectStructuredSecretBytes(t *testing.T) {
-	_, _, _, err := promotableDeploymentConfigurations(&basev0.Configuration{
+	_, _, _, err := promotableDeploymentConfigurations(&basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "certificate",
-			Data: &basev0.ConfigurationData{
+			Data: &basev1.ConfigurationData{
 				Secret: true, Content: []byte("must-not-pass"),
 			},
 		}},
@@ -102,11 +102,11 @@ func TestPromotableDeploymentConfigurationsRejectStructuredSecretBytes(t *testin
 }
 
 func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T) {
-	requested := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
-	output := &builderv0.DeploymentOutput{
-		Kind: &builderv0.DeploymentOutput_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeploymentOutput{
-				Profile: builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+	requested := builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
+	output := &builderv1.DeploymentOutput{
+		Kind: &builderv1.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeploymentOutput{
+				Profile: builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 			},
 		},
 	}
@@ -116,9 +116,9 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 	}
 	output.GetKubernetes().Profile = requested
 	output.GetKubernetes().ContractVersion = coreservices.KubernetesManifestContractVersion
-	output.GetKubernetes().Validation = &builderv0.KubernetesManifestValidation{
-		StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
-		ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
+	output.GetKubernetes().Validation = &builderv1.KubernetesManifestValidation{
+		StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED,
+		ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_PASSED,
 		Restricted:           true,
 	}
 	if err := validateKubernetesDeploymentOutput(requested, output, ""); err != nil {
@@ -143,13 +143,13 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 // not being one of the two profiles this CLI requests.
 func TestValidateKubernetesDeploymentOutputRefusesAProfileTheCLIDoesNotRequest(t *testing.T) {
 	// PROMOTABLE_GITOPS_V1's number, which the schema reserves now.
-	deprecated := builderv0.KubernetesOutputProfile(2)
-	if !builderv0.KubernetesOutputProfile(0).Descriptor().ReservedRanges().Has(protoreflect.EnumNumber(deprecated)) {
+	deprecated := builderv1.KubernetesOutputProfile(2)
+	if !builderv1.KubernetesOutputProfile(0).Descriptor().ReservedRanges().Has(protoreflect.EnumNumber(deprecated)) {
 		t.Fatalf("profile number %d is not reserved by the schema; the case must name a deleted value", deprecated)
 	}
-	output := &builderv0.DeploymentOutput{
-		Kind: &builderv0.DeploymentOutput_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeploymentOutput{Profile: deprecated},
+	output := &builderv1.DeploymentOutput{
+		Kind: &builderv1.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeploymentOutput{Profile: deprecated},
 		},
 	}
 	err := validateKubernetesDeploymentOutput(deprecated, output, "")
@@ -162,10 +162,10 @@ func TestValidateKubernetesDeploymentOutputRefusesAProfileTheCLIDoesNotRequest(t
 
 	// The local-apply exemption is BY NAME, and it stands: a direct apply
 	// produces no promotable artifact and nothing persists it.
-	local := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
-	localOutput := &builderv0.DeploymentOutput{
-		Kind: &builderv0.DeploymentOutput_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeploymentOutput{Profile: local},
+	local := builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
+	localOutput := &builderv1.DeploymentOutput{
+		Kind: &builderv1.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeploymentOutput{Profile: local},
 		},
 	}
 	if err := validateKubernetesDeploymentOutput(local, localOutput, ""); err != nil {

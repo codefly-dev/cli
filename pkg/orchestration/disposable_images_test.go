@@ -11,8 +11,8 @@ import (
 
 	coreservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -74,14 +74,14 @@ func TestDisposableImagesAdmitSelectedRuntimeClosure(t *testing.T) {
 // Uses a real loopback recipe peer. No Docker CLI reaches an engine: every
 // invocation runs installDockerStub's isolated executable.
 type disposableRecipePeer struct {
-	sbomRequests chan *builderv0.SBOMRequest
+	sbomRequests chan *builderv1.SBOMRequest
 	imageCachePeer
 	multiple bool
 	unknown  bool
 	calls    atomic.Int32
 }
 
-func (p *disposableRecipePeer) Build(ctx context.Context, req *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (p *disposableRecipePeer) Build(ctx context.Context, req *builderv1.BuildRequest) (*builderv1.BuildResponse, error) {
 	p.calls.Add(1)
 	response, err := p.imageCachePeer.Build(ctx, req)
 	if err != nil {
@@ -103,7 +103,7 @@ func (p *disposableRecipePeer) Build(ctx context.Context, req *builderv0.BuildRe
 	if err != nil {
 		return nil, err
 	}
-	response.Result = &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}}
+	response.Result = &builderv1.BuildResult{Kind: &builderv1.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}}
 	return response, nil
 }
 
@@ -112,11 +112,11 @@ func disposableBuilder(t *testing.T, p *disposableRecipePeer) (*Builder, *imageC
 	h := newImageCacheHarness(t, false, true)
 	b := localRuntimeBuilder(t, h)
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, p)
+	builderv1.RegisterBuilderServer(server, p)
 	conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	b.instance.Builder = &services.BuilderInstance{Instance: b.instance, Builder: &coreservices.BuilderAgent{BuilderClient: builderv0.NewBuilderClient(conn)}}
+	b.instance.Builder = &services.BuilderInstance{Instance: b.instance, Builder: &coreservices.BuilderAgent{BuilderClient: builderv1.NewBuilderClient(conn)}}
 	(&Flow{world: b.world}).WithDisposableImages()
 	return b, h
 }
@@ -130,7 +130,7 @@ func TestDisposableImagesRejectPublicationBeforeRPCAndRecheck(t *testing.T) {
 				if kind == "push" {
 					b.world.Push = true
 				} else {
-					b.world.BuildCache = &builderv0.BuildCacheOptions{Exports: []string{"example.test/cache"}}
+					b.world.BuildCache = &builderv1.BuildCacheOptions{Exports: []string{"example.test/cache"}}
 				}
 			}
 			reject()
@@ -158,7 +158,7 @@ func TestDisposableImagesRejectMultiRecipeBeforePrefetchAndProvision(t *testing.
 	p := &disposableRecipePeer{imageCachePeer: imageCachePeer{goModules: true}, multiple: true}
 	b, h := disposableBuilder(t, p)
 	b.world.BuildxBuilder = ""
-	b.world.BuildCache = &builderv0.BuildCacheOptions{Backend: "registry", Scope: "test", Imports: []string{"example.test/cache"}}
+	b.world.BuildCache = &builderv1.BuildCacheOptions{Backend: "registry", Scope: "test", Imports: []string{"example.test/cache"}}
 	prefetch := newGoModulePrefetch()
 	var calls []goCall
 	prefetch.run = recordingGo(&calls, nil)
@@ -169,7 +169,7 @@ func TestDisposableImagesRejectMultiRecipeBeforePrefetchAndProvision(t *testing.
 	require.Empty(t, calls)
 	require.NoFileExists(t, filepath.Join(h.docker.dir, "calls"))
 	output := t.TempDir()
-	response, err := p.Build(t.Context(), &builderv0.BuildRequest{OutputDirectory: output})
+	response, err := p.Build(t.Context(), &builderv1.BuildRequest{OutputDirectory: output})
 	require.NoError(t, err)
 	err = b.buildFromPlan(t.Context(), output, response.GetResult().GetDockerBuildPlan(), nil, nil)
 	require.ErrorContains(t, err, "has 2 recipes")
@@ -193,7 +193,7 @@ func TestDisposableImagesRefuseUnknownIdentityInPlanAndBuild(t *testing.T) {
 	}
 }
 
-func executeDisposablePlan(t *testing.T, b *Builder) *builderv0.DockerBuildPlan {
+func executeDisposablePlan(t *testing.T, b *Builder) *builderv1.DockerBuildPlan {
 	t.Helper()
 	_, err := b.Plan(t.Context())
 	require.NoError(t, err)
@@ -214,7 +214,7 @@ func TestDisposableImagesProjectionCacheAndActualSubjects(t *testing.T) {
 	image := first.Recipes[0].Image
 	require.Contains(t, image, "codefly-local/disposable/")
 	require.Equal(t, 1, h.docker.calls(t, "build"))
-	assertSubject := func(plan *builderv0.DockerBuildPlan) {
+	assertSubject := func(plan *builderv1.DockerBuildPlan) {
 		subjects, err := producedSubjects(b.instance.Unique(), plan, false, b.resolvedImages)
 		require.NoError(t, err)
 		require.Len(t, subjects, 1)
@@ -284,7 +284,7 @@ func TestDisposableRuntimeImagesKeepCanonicalHandoffAndMutationRefusal(t *testin
 	// A second service in the same World cannot choose the origin destination.
 	b, err := NewBuilder(t.Context(), &services.Instance{Identity: &resources.ServiceIdentity{Module: "other", Name: "dependency"}}, runner.world)
 	require.NoError(t, err)
-	projection := b.scopedRecipe(&builderv0.DockerBuildRecipe{Name: "app", Image: "example.test/app:v1"})
+	projection := b.scopedRecipe(&builderv1.DockerBuildRecipe{Name: "app", Image: "example.test/app:v1"})
 	require.NotContains(t, stub.buildArgs(t)[0], "-t "+projection.Image)
 	h := newImageCacheHarness(t, false, true)
 	local := localRuntimeBuilder(t, h)
@@ -298,7 +298,7 @@ func TestDisposableRuntimeImagesKeepCanonicalHandoffAndMutationRefusal(t *testin
 func TestDisposableImagesProvisionReadOnlyCacheOnlyAfterAdmission(t *testing.T) {
 	b, h := disposableBuilder(t, &disposableRecipePeer{})
 	b.world.BuildxBuilder = ""
-	b.world.BuildCache = &builderv0.BuildCacheOptions{Backend: "registry", Scope: "fixture", Imports: []string{"example.test/cache"}}
+	b.world.BuildCache = &builderv1.BuildCacheOptions{Backend: "registry", Scope: "fixture", Imports: []string{"example.test/cache"}}
 	// Extend the isolated fake only; no real Docker executable is invoked.
 	path := filepath.Join(h.docker.dir, "docker")
 	script, err := os.ReadFile(path)
@@ -388,22 +388,22 @@ func TestDisposableRuntimePolicyReachesOriginAndDependencyInEveryMode(t *testing
 	}
 }
 
-func (p *disposableRecipePeer) SBOM(_ context.Context, request *builderv0.SBOMRequest) (*builderv0.SBOMResponse, error) {
+func (p *disposableRecipePeer) SBOM(_ context.Context, request *builderv1.SBOMRequest) (*builderv1.SBOMResponse, error) {
 	if p.sbomRequests != nil {
 		p.sbomRequests <- proto.CloneOf(request)
 	}
-	response := &builderv0.SBOMResponse{State: &builderv0.SBOMStatus{State: builderv0.SBOMStatus_COMPLETE}, Scope: builderv0.SBOMScope_SBOM_SCOPE_IMAGE}
+	response := &builderv1.SBOMResponse{State: &builderv1.SBOMStatus{State: builderv1.SBOMStatus_COMPLETE}, Scope: builderv1.SBOMScope_SBOM_SCOPE_IMAGE}
 	for _, subject := range request.Subjects {
-		response.Images = append(response.Images, &builderv0.ImageSBOM{Digest: subject.Digest, Platform: subject.Platform, Subjects: []*builderv0.ImageSubject{proto.CloneOf(subject)}, Bom: &agentv0.Bom{Components: []*agentv0.Component{{Name: "test-only-inventory"}}}, Tool: "test-peer", Sha256: "test-only-checksum"})
+		response.Images = append(response.Images, &builderv1.ImageSBOM{Digest: subject.Digest, Platform: subject.Platform, Subjects: []*builderv1.ImageSubject{proto.CloneOf(subject)}, Bom: &agentv1.Bom{Components: []*agentv1.Component{{Name: "test-only-inventory"}}}, Tool: "test-peer", Sha256: "test-only-checksum"})
 	}
 	return response, nil
 }
 
 func TestDisposableImagesActualSBOMRequestFreshAndReused(t *testing.T) {
-	peer := &disposableRecipePeer{sbomRequests: make(chan *builderv0.SBOMRequest, 2)}
+	peer := &disposableRecipePeer{sbomRequests: make(chan *builderv1.SBOMRequest, 2)}
 	b, h := disposableBuilder(t, peer)
 	b.world.CollectImageSBOM = true
-	var previous *builderv0.ImageSubject
+	var previous *builderv1.ImageSubject
 	for i := 0; i < 2; i++ {
 		_, err := b.Plan(t.Context())
 		require.NoError(t, err)

@@ -170,8 +170,8 @@ func writeSolutionManifest(t *testing.T, wsDir, versionConstraint string, servic
 		services = []string{"AuditService"}
 	}
 	m := &manifest.Manifest{
-		SchemaVersion:   manifest.SchemaVersionV0,
-		ProtocolVersion: manifest.ProtocolVersionV0,
+		SchemaVersion:   manifest.SchemaVersionV1,
+		ProtocolVersion: manifest.ProtocolVersionV1,
 		Agent: resources.Agent{
 			Kind:      resources.SolutionAgent,
 			Publisher: "test",
@@ -478,8 +478,8 @@ services: []
 	}
 
 	m := &manifest.Manifest{
-		SchemaVersion:   manifest.SchemaVersionV0,
-		ProtocolVersion: manifest.ProtocolVersionV0,
+		SchemaVersion:   manifest.SchemaVersionV1,
+		ProtocolVersion: manifest.ProtocolVersionV1,
 		Agent: resources.Agent{
 			Kind:      resources.SolutionAgent,
 			Publisher: "test",

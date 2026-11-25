@@ -13,7 +13,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -117,7 +117,7 @@ func TestAdmissionRecordRejectsTamperedRecordsAndEffectiveInputs(t *testing.T) {
 	require.ErrorContains(t, err, "required functional qualification")
 	files.Qualifications = []core.SignedQualification{qualification}
 
-	var receipt basev0.ArtifactExecutionReceipt
+	var receipt basev1.ArtifactExecutionReceipt
 	require.NoError(t, protojson.Unmarshal(files.Executions[0].Receipt, &receipt))
 	path := filepath.Join(files.Executions[0].Directory, receipt.Outputs[0].Path)
 	before, err := os.ReadFile(path)

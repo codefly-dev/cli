@@ -32,7 +32,7 @@ import (
 	runfixture "github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -413,8 +413,8 @@ func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string
 // renderOwnedGroups projects the authority a cell's render would project for
 // a service that declares module-authority: its mesh principal, the host's
 // audiences and the internal token the gateway verifies.
-func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
-	var out []*basev0.Configuration
+func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resources.Service) ([]*basev1.Configuration, error) {
+	var out []*basev1.Configuration
 	// The delivery host turns its surface on from its federation keys, which
 	// a cell's composition declares for the environment and this run derives
 	// from the host block: handed last, so they settle over what the host's
@@ -444,13 +444,13 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 	if err != nil {
 		return nil, err
 	}
-	authority := &basev0.ConfigurationInformation{Name: environments.ModuleAuthorityConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
+	authority := &basev1.ConfigurationInformation{Name: environments.ModuleAuthorityConfiguration, ConfigurationValues: []*basev1.ConfigurationValue{
 		{Key: "PRINCIPAL", Value: identity.Workload(cluster.env.Host.TrustDomain).Unique()},
 		{Key: "AUDIENCE", Value: cluster.env.Host.ModuleAudience},
 		{Key: "PROJECTION_AUDIENCE", Value: cluster.env.Host.Audience},
 		{Key: "INTERNAL_TOKEN", Value: token, Secret: true},
 	}}
-	return append(out, &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{authority}}), nil
+	return append(out, &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{authority}}), nil
 }
 
 // artifactCacheGroup is the artifact-cache group a native run hands a service
@@ -458,15 +458,15 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 // the read-only source a host's native bundle adapter reads a frontend bundle
 // from by the digest the manifest names. A cell's render projects nothing for
 // the group, so the value exists in a local run alone.
-func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
+func artifactCacheGroup(workspaceDir string) (*basev1.Configuration, error) {
 	// Created here, since the host opens the root read-only when it starts,
 	// before the first bundle is retained in it.
 	root, err := composition.EnsureArtifactCacheDir(workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("prepare the artifact cache of %s: %w", workspaceDir, err)
 	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: environments.ArtifactCacheConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{{Key: environments.ArtifactCacheRootKey, Value: root}},
+	return &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+		Name: environments.ArtifactCacheConfiguration, ConfigurationValues: []*basev1.ConfigurationValue{{Key: environments.ArtifactCacheRootKey, Value: root}},
 	}}}, nil
 }
 

@@ -23,8 +23,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/failures"
-	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	civ1 "github.com/codefly-dev/core/generated/go/codefly/ci/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -228,7 +228,7 @@ type agentCIOptions struct {
 }
 
 type agentCIState struct {
-	report       *civ0.AgentCIReport
+	report       *civ1.AgentCIReport
 	started      time.Time
 	manifest     agentYAML
 	build        *agentBuildResult
@@ -243,15 +243,15 @@ type agentCIState struct {
 	conformanceApplicable bool
 }
 
-func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIReport, error) {
+func runAgentCI(ctx context.Context, options agentCIOptions) (*civ1.AgentCIReport, error) {
 	started := time.Now().UTC()
 	state := &agentCIState{
 		started:               started,
 		conformanceApplicable: true,
-		report: &civ0.AgentCIReport{
+		report: &civ1.AgentCIReport{
 			SchemaVersion: uint32(agentCIReportSchemaVersion),
 			Command:       "codefly agent ci",
-			Options: &civ0.AgentCIOptions{
+			Options: &civ1.AgentCIOptions{
 				NativeOnly:         options.nativeOnly,
 				AuditEnabled:       !options.skipAudit,
 				FailOnVuln:         options.failOnVuln,
@@ -259,8 +259,8 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			},
 			Status:    statusRunning,
 			StartedAt: started.Format(time.RFC3339Nano),
-			Summary:   &civ0.AgentCISummary{},
-			Stages: []*civ0.AgentCIStage{
+			Summary:   &civ1.AgentCISummary{},
+			Stages: []*civ1.AgentCIStage{
 				{Name: stageManifest, Status: statusPending},
 				{Name: stageSource, Status: statusPending},
 				{Name: stageBuild, Status: statusPending},
@@ -298,7 +298,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			return manifestErr
 		}
 		state.manifest = manifest
-		state.report.Agent = &civ0.AgentCIIdentity{Publisher: manifest.Publisher, Kind: manifest.Kind, Name: manifest.Name, Version: manifest.Version}
+		state.report.Agent = &civ1.AgentCIIdentity{Publisher: manifest.Publisher, Kind: manifest.Kind, Name: manifest.Name, Version: manifest.Version}
 		state.before, err = snapshotAgentWorktree(ctx, options.dir)
 		return err
 	}); err != nil {
@@ -338,7 +338,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		if state.manifest.Kind != serviceAgentKind {
 			return nil
 		}
-		var info *agentv0.AgentInformation
+		var info *agentv1.AgentInformation
 		err := withLocalAgentResolution(func() (err error) {
 			info, err = loadBuiltAgentInformation(ctx, &state.manifest)
 			return err
@@ -346,7 +346,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		if err != nil {
 			return err
 		}
-		if conformanceMode(&state.manifest) == conformanceModeGeneratedService && !agentAdvertisesCapability(info, agentv0.Capability_BUILDER) {
+		if conformanceMode(&state.manifest) == conformanceModeGeneratedService && !agentAdvertisesCapability(info, agentv1.Capability_BUILDER) {
 			state.conformanceApplicable = false
 			state.report.Options.ConformanceEnabled = false
 		}
@@ -428,7 +428,7 @@ func withLocalAgentResolution(action func() error) error {
 // a real agent process/gRPC boundary, not manifest inference: an unreadable
 // embedded guide or malformed advertisement fails qualification before
 // conformance routing can make a false assumption.
-func loadBuiltAgentInformation(ctx context.Context, manifest *agentYAML) (*agentv0.AgentInformation, error) {
+func loadBuiltAgentInformation(ctx context.Context, manifest *agentYAML) (*agentv1.AgentInformation, error) {
 	agent := &resources.Agent{
 		Kind:      resources.ServiceAgent,
 		Publisher: manifest.Publisher,
@@ -439,14 +439,14 @@ func loadBuiltAgentInformation(ctx context.Context, manifest *agentYAML) (*agent
 	if err != nil {
 		return nil, fmt.Errorf("load built agent capability advertisement: %w", err)
 	}
-	info, err := loaded.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	info, err := loaded.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("read built agent capability advertisement: %w", err)
 	}
 	return info, nil
 }
 
-func agentAdvertisesCapability(info *agentv0.AgentInformation, capability agentv0.Capability_Type) bool {
+func agentAdvertisesCapability(info *agentv1.AgentInformation, capability agentv1.Capability_Type) bool {
 	if info == nil {
 		return false
 	}
@@ -507,7 +507,7 @@ func (state *agentCIState) skipStage(name string) {
 	}
 }
 
-func (state *agentCIState) stage(name string) *civ0.AgentCIStage {
+func (state *agentCIState) stage(name string) *civ1.AgentCIStage {
 	for _, stage := range state.report.Stages {
 		if stage.GetName() == name {
 			return stage
@@ -516,7 +516,7 @@ func (state *agentCIState) stage(name string) *civ0.AgentCIStage {
 	return nil
 }
 
-func finalizeAgentCI(state *agentCIState, runErr error) *civ0.AgentCIReport {
+func finalizeAgentCI(state *agentCIState, runErr error) *civ1.AgentCIReport {
 	for _, stage := range state.report.Stages {
 		if stage.GetStatus() == statusPending || stage.GetStatus() == statusRunning {
 			stage.Status = statusSkipped
@@ -552,7 +552,7 @@ func finalizeAgentCI(state *agentCIState, runErr error) *civ0.AgentCIReport {
 	return state.report
 }
 
-func marshalAgentCIReport(report *civ0.AgentCIReport) ([]byte, error) {
+func marshalAgentCIReport(report *civ1.AgentCIReport) ([]byte, error) {
 	payload, err := (protojson.MarshalOptions{
 		Indent:            "  ",
 		UseProtoNames:     true,
@@ -1163,7 +1163,7 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 			if err != nil {
 				return err
 			}
-			state.report.Artifacts = append(state.report.Artifacts, &civ0.AgentCIArtifact{
+			state.report.Artifacts = append(state.report.Artifacts, &civ1.AgentCIArtifact{
 				Kind:   artifact.kind,
 				Path:   filepath.ToSlash(relative),
 				Sha256: "sha256:" + digest,

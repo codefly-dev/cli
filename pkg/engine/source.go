@@ -7,7 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	codecore "github.com/codefly-dev/core/code"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
 )
 
 // Source is Codefly's language-neutral behavior for a rooted source tree.
@@ -19,7 +19,7 @@ type Source struct {
 }
 
 // ExecuteCode executes a language-neutral Code request.
-func (s *Source) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
+func (s *Source) ExecuteCode(ctx context.Context, request *codev1.CodeRequest) (*codev1.CodeResponse, error) {
 	if s == nil {
 		return nil, fmt.Errorf("source behavior is closed")
 	}
@@ -37,7 +37,7 @@ func (s *Source) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (
 // Extraction needs a real parser: a scanner cannot tell a syntax error from a
 // complete file, and reporting a partial inventory as whole is the failure the
 // inspection exists to prevent.
-func (s *Source) SourceImports(ctx context.Context, language string) ([]*codev0.SourceFileInfo, error) {
+func (s *Source) SourceImports(ctx context.Context, language string) ([]*codev1.SourceFileInfo, error) {
 	if s == nil {
 		return nil, fmt.Errorf("source behavior is closed")
 	}

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
 )
 
 // TestNewSourceExecutesLanguageNeutralOperation locks the newSource contract:
@@ -28,8 +28,8 @@ func TestNewSourceExecutesLanguageNeutralOperation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = source.Close() })
 
-	response, err := source.ExecuteCode(context.Background(), &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ListFiles{ListFiles: &codev0.ListFilesRequest{}},
+	response, err := source.ExecuteCode(context.Background(), &codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_ListFiles{ListFiles: &codev1.ListFilesRequest{}},
 	})
 	if err != nil {
 		t.Fatalf("ListFiles execute: %v", err)

@@ -109,13 +109,13 @@ service-dependencies:
 
 ### Proto Definitions
 
-**proto/codefly/base/v0/library.proto**
+**proto/codefly/base/v1/library.proto**
 ```protobuf
 syntax = "proto3";
 
-package codefly.base.v0;
+package codefly.base.v1;
 
-option go_package = "github.com/codefly-dev/core/generated/go/codefly/base/v0";
+option go_package = "github.com/codefly-dev/core/generated/go/codefly/base/v1";
 
 message Library {
     string name = 1;
@@ -152,16 +152,16 @@ message LibraryIdentity {
 }
 ```
 
-**proto/codefly/actions/v0/library.proto**
+**proto/codefly/actions/v1/library.proto**
 ```protobuf
 syntax = "proto3";
 
-package codefly.actions.v0;
+package codefly.actions.v1;
 
-option go_package = "github.com/codefly-dev/core/generated/go/codefly/actions/v0";
+option go_package = "github.com/codefly-dev/core/generated/go/codefly/actions/v1";
 
-import "codefly/base/v0/library.proto";
-import "codefly/base/v0/agent.proto";
+import "codefly/base/v1/library.proto";
+import "codefly/base/v1/agent.proto";
 
 message AddLibrary {
     string kind = 1;

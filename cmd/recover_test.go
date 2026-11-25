@@ -18,7 +18,7 @@ func recoveryReceipt(t *testing.T) (base.ProcessGroupRecoveryExpectation, []byte
 	t.Helper()
 	member := base.ProcessIdentity{PID: 12345, PGID: 12345, BootID: "test-boot", StartID: 101, Executable: "/fixture/service"}
 	expected := base.ProcessGroupRecoveryExpectation{
-		Namespace: "authenticated-v2", RecordSHA256: strings.Repeat("a", 64), PGID: member.PGID,
+		Namespace: "workspace-authenticated-v1", RecordSHA256: strings.Repeat("a", 64), PGID: member.PGID,
 		Leader: member, Owner: base.ProcessIdentity{PID: 12344, BootID: "test-boot", StartID: 100, Executable: "/fixture/owner"},
 		Members: []base.ProcessIdentity{member},
 	}

@@ -11,7 +11,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/artifactexecution"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/runners/base"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -122,7 +122,7 @@ func TestInvokeRenderPropagatesShutdownFailureAndDiscardsReceipt(t *testing.T) {
 	for _, protocol := range []string{artifactexecution.BuilderRender, artifactexecution.SolutionRender} {
 		for _, mode := range []string{"success", "wrong-receipt", "canceled"} {
 			t.Run(protocol+"/"+mode, func(t *testing.T) {
-				var request basev0.ArtifactExecution
+				var request basev1.ArtifactExecution
 				for _, encoded := range prepared {
 					require.NoError(t, protojson.Unmarshal(encoded, &request))
 					if request.Protocol == protocol {
@@ -146,7 +146,7 @@ func TestInvokeRenderPropagatesShutdownFailureAndDiscardsReceipt(t *testing.T) {
 				opts = append(opts, manager.WithEnv("RENDER_TEST_CONTROL="+control, "RENDER_TEST_MODE="+mode))
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
-				var receipt *basev0.ArtifactExecutionReceipt
+				var receipt *basev1.ArtifactExecutionReceipt
 				var runErr error
 				done := make(chan struct{})
 				go func() {

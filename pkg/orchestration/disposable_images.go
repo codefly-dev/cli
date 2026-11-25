@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/core/architecture"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 )
@@ -94,7 +94,7 @@ func CheckDisposableImageBuildPrerequisites(ctx context.Context, dependencies *a
 	return nil
 }
 
-func (b *Builder) checkDisposableImagePlan(plan *builderv0.DockerBuildPlan) error {
+func (b *Builder) checkDisposableImagePlan(plan *builderv1.DockerBuildPlan) error {
 	if err := b.world.checkDisposableImagePolicy(); err != nil {
 		return err
 	}
@@ -107,9 +107,9 @@ func (b *Builder) checkDisposableImagePlan(plan *builderv0.DockerBuildPlan) erro
 // scopedRecipe retains one execution projection before identity is computed.
 // The digest below only makes a name-safe service/recipe discriminator; it is
 // not an input identity or an ownership receipt.
-func (b *Builder) scopedRecipe(recipe *builderv0.DockerBuildRecipe) *builderv0.DockerBuildRecipe {
+func (b *Builder) scopedRecipe(recipe *builderv1.DockerBuildRecipe) *builderv1.DockerBuildRecipe {
 	if b.executionRecipes == nil {
-		b.executionRecipes = map[string]*builderv0.DockerBuildRecipe{}
+		b.executionRecipes = map[string]*builderv1.DockerBuildRecipe{}
 	}
 	if existing := b.executionRecipes[recipe.GetName()]; existing != nil {
 		return existing
@@ -121,7 +121,7 @@ func (b *Builder) scopedRecipe(recipe *builderv0.DockerBuildRecipe) *builderv0.D
 	return execution
 }
 
-func (b *Builder) imageEvidencePlan(plan *builderv0.DockerBuildPlan) *builderv0.DockerBuildPlan {
+func (b *Builder) imageEvidencePlan(plan *builderv1.DockerBuildPlan) *builderv1.DockerBuildPlan {
 	if plan == nil || b.world.disposableImageScope == "" {
 		return plan
 	}
@@ -148,7 +148,7 @@ func (b *Builder) checkDisposableImageIdentity(identity imageIdentity, cause err
 	return nil
 }
 
-func (b *Builder) imageForExecution(recipe *builderv0.DockerBuildRecipe, identity imageIdentity, identityErr error) (*builderv0.DockerBuildRecipe, string, error) {
+func (b *Builder) imageForExecution(recipe *builderv1.DockerBuildRecipe, identity imageIdentity, identityErr error) (*builderv1.DockerBuildRecipe, string, error) {
 	if b.world.disposableImageScope != "" {
 		return recipe, recipe.GetImage(), nil
 	}
@@ -164,11 +164,11 @@ func (b *Builder) imageForExecution(recipe *builderv0.DockerBuildRecipe, identit
 	return execution, name, nil
 }
 
-func (b *Builder) cacheImageReferenceMismatch(entry *imageCacheEntry, recipe *builderv0.DockerBuildRecipe) bool {
+func (b *Builder) cacheImageReferenceMismatch(entry *imageCacheEntry, recipe *builderv1.DockerBuildRecipe) bool {
 	return (b.localRuntime || b.world.disposableImageScope != "") && entry.Image != recipe.GetImage()
 }
 
-func (b *Builder) checkDisposableImageDecision(recipe *builderv0.DockerBuildRecipe, reuse *imageReuse) error {
+func (b *Builder) checkDisposableImageDecision(recipe *builderv1.DockerBuildRecipe, reuse *imageReuse) error {
 	if b.world.disposableImageScope == "" {
 		return nil
 	}

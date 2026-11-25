@@ -10,7 +10,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/agents/services/audit"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -199,7 +199,7 @@ func RunGoAudit(ctx context.Context, dir string, staleDays int, failOnVuln bool)
 	// OSV id recurs many times. Dedupe by id (keeping the first trace) so
 	// counts and output reflect distinct vulnerabilities — matching the
 	// per-"Vulnerability #N" granularity of the old bash script.
-	var actionable, unpatched, suppressedHits []*builderv0.AuditFinding
+	var actionable, unpatched, suppressedHits []*builderv1.AuditFinding
 	seen := make(map[string]struct{}, len(res.Findings))
 	for _, f := range res.Findings {
 		if _, dup := seen[f.Id]; dup {

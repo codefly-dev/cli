@@ -17,8 +17,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/timings"
 	"github.com/codefly-dev/cli/pkg/workingrender"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -428,14 +428,14 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 // learned: each one's deployment output, self endpoints, deployed
 // configuration with its declared secret keys, and in-cluster ports.
 type renderedRoots struct {
-	outputs       map[string]*builderv0.DeploymentOutput
+	outputs       map[string]*builderv1.DeploymentOutput
 	selfEndpoints map[string]map[string]string
 	hostRoutes    map[string]map[string]string
 	// endpointCarriers are the in-cluster addresses of this module's
 	// endpoints the host routes, keyed as the gateway reads them: what its
 	// module manifest's endpoints carry.
 	endpointCarriers map[string]string
-	deployed         map[string]*basev0.Configuration
+	deployed         map[string]*basev1.Configuration
 	secretKeys       map[string][]string
 	inClusterPorts   map[string]map[string]uint32
 }
@@ -443,11 +443,11 @@ type renderedRoots struct {
 // renderRoots renders every root service through its agent into the stage.
 func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Service, stage string) (*renderedRoots, error) {
 	rendered := &renderedRoots{
-		outputs:          make(map[string]*builderv0.DeploymentOutput),
+		outputs:          make(map[string]*builderv1.DeploymentOutput),
 		selfEndpoints:    make(map[string]map[string]string),
 		hostRoutes:       make(map[string]map[string]string),
 		endpointCarriers: map[string]string{},
-		deployed:         make(map[string]*basev0.Configuration),
+		deployed:         make(map[string]*basev1.Configuration),
 		secretKeys:       make(map[string][]string),
 		inClusterPorts:   make(map[string]map[string]uint32),
 	}
@@ -465,7 +465,7 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 			renderBuild{validateCluster: r.build.validateCluster, rebuild: r.build.rebuild},
 			r.sink,
 			destinations,
-			func(outputs map[string]*builderv0.DeploymentOutput) {
+			func(outputs map[string]*builderv1.DeploymentOutput) {
 				for unique, output := range outputs {
 					rendered.outputs[unique] = output
 				}
@@ -481,7 +481,7 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 					rendered.hostRoutes[unique] = variables
 				}
 			},
-			func(configurations map[string]*basev0.Configuration, keys map[string][]string) {
+			func(configurations map[string]*basev1.Configuration, keys map[string][]string) {
 				for unique, configuration := range configurations {
 					rendered.deployed[unique] = configuration
 				}
@@ -749,7 +749,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
 		var hostRoutes map[string]map[string]string
-		var deployed map[string]*basev0.Configuration
+		var deployed map[string]*basev1.Configuration
 		var secretKeys map[string][]string
 		var inClusterPorts map[string]map[string]uint32
 		if err := serviceFlow(
@@ -765,7 +765,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			func(services map[string]*resources.Service) { graph = services },
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
 			func(rendered map[string]map[string]string) { hostRoutes = rendered },
-			func(rendered map[string]*basev0.Configuration, keys map[string][]string) {
+			func(rendered map[string]*basev1.Configuration, keys map[string][]string) {
 				deployed, secretKeys = rendered, keys
 			},
 			func(rendered map[string]map[string]uint32) { inClusterPorts = rendered },
@@ -934,11 +934,11 @@ func renderServiceFlow(
 	build renderBuild,
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
-	record func(map[string]*builderv0.DeploymentOutput),
+	record func(map[string]*builderv1.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 	recordSelfEndpoints func(map[string]map[string]string),
 	recordHostRoutes func(map[string]map[string]string),
-	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
+	recordConfigurations func(map[string]*basev1.Configuration, map[string][]string),
 	recordInClusterPorts func(map[string]map[string]uint32),
 	recordEndpointCarriers func(map[string]string),
 ) (result error) {
@@ -1002,7 +1002,7 @@ func (gitOpsDeploymentOutputManager) Handle(
 	context.Context,
 	*resources.Service,
 	*resources.Module,
-	*builderv0.DeploymentOutput,
+	*builderv1.DeploymentOutput,
 ) error {
 	return nil
 }

@@ -7,17 +7,17 @@ import (
 
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/contract"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 type discoveryAgent struct {
-	agentv0.UnimplementedAgentServer
+	agentv1.UnimplementedAgentServer
 }
 
-func (*discoveryAgent) GetAgentInformation(context.Context, *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
+func (*discoveryAgent) GetAgentInformation(context.Context, *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
 	advertised := contract.Current()
 	switch os.Getenv("TEST_SOURCE_CONTRACT") {
 	case "future":
@@ -27,36 +27,36 @@ func (*discoveryAgent) GetAgentInformation(context.Context, *agentv0.AgentInform
 	case "unavailable":
 		return nil, status.Error(codes.Unavailable, "discovery unavailable")
 	}
-	var capabilities []*agentv0.Capability
+	var capabilities []*agentv1.Capability
 	if os.Getenv("TEST_SOURCE_NO_BUILDER") == "" {
-		capabilities = []*agentv0.Capability{{Type: agentv0.Capability_BUILDER}}
+		capabilities = []*agentv1.Capability{{Type: agentv1.Capability_BUILDER}}
 	}
-	validation := &agentv0.ValidationCapabilities{
-		SourcePackage: &agentv0.ValidationOperationCapability{Supported: true},
+	validation := &agentv1.ValidationCapabilities{
+		SourcePackage: &agentv1.ValidationOperationCapability{Supported: true},
 	}
 	if os.Getenv("TEST_SOURCE_CI_RECORD") != "" {
-		capabilities = append(capabilities, &agentv0.Capability{Type: agentv0.Capability_RUNTIME})
-		validation.Test = &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "source", DefaultSuite: true, DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}}}
+		capabilities = append(capabilities, &agentv1.Capability{Type: agentv1.Capability_RUNTIME})
+		validation.Test = &agentv1.TestValidationCapability{Supported: true, Suites: []*agentv1.TestSuiteCapability{{Name: "source", DefaultSuite: true, DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}}}
 	}
-	return &agentv0.AgentInformation{
+	return &agentv1.AgentInformation{
 		Capabilities: capabilities,
 		Contract:     advertised,
-		Languages:    []*agentv0.Language{{Type: agentv0.Language_GO}},
+		Languages:    []*agentv1.Language{{Type: agentv1.Language_GO}},
 		Validation:   validation,
 	}, nil
 }
 
 type discoveryBuilder struct {
-	builderv0.UnimplementedBuilderServer
+	builderv1.UnimplementedBuilderServer
 }
 
-func (*discoveryBuilder) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+func (*discoveryBuilder) Load(context.Context, *builderv1.LoadRequest) (*builderv1.LoadResponse, error) {
 	if marker := os.Getenv("TEST_SOURCE_BUILDER_LOADED"); marker != "" {
 		if err := os.WriteFile(marker, []byte("loaded"), 0o600); err != nil {
 			return nil, err
 		}
 	}
-	return &builderv0.LoadResponse{State: &builderv0.LoadStatus{State: builderv0.LoadStatus_READY}}, nil
+	return &builderv1.LoadResponse{State: &builderv1.LoadStatus{State: builderv1.LoadStatus_READY}}, nil
 }
 
 func main() {

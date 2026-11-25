@@ -13,7 +13,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -120,7 +120,7 @@ func (stub *dockerStub) editDuringBuild(t *testing.T, path, content string) {
 // on every call, so a key that moves between two builds moved because something
 // in the workspace moved, not because the agent re-rendered differently.
 type imageCachePeer struct {
-	builderv0.UnimplementedBuilderServer
+	builderv1.UnimplementedBuilderServer
 	// goModules makes the recipe declare its Go module graph for prefetching.
 	goModules bool
 	// image is the recipe's image; empty means example.test/app:v1.
@@ -131,11 +131,11 @@ type imageCachePeer struct {
 	gitCommit  string
 }
 
-func (*imageCachePeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
-	return &builderv0.BuildCapabilitiesResponse{BuildxSelection: true}, nil
+func (*imageCachePeer) BuildCapabilities(context.Context, *builderv1.BuildCapabilitiesRequest) (*builderv1.BuildCapabilitiesResponse, error) {
+	return &builderv1.BuildCapabilitiesResponse{BuildxSelection: true}, nil
 }
 
-func (peer *imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (peer *imageCachePeer) Build(_ context.Context, request *builderv1.BuildRequest) (*builderv1.BuildResponse, error) {
 	output := request.GetOutputDirectory()
 	if err := os.MkdirAll(output, 0o755); err != nil {
 		return nil, err
@@ -150,22 +150,22 @@ func (peer *imageCachePeer) Build(_ context.Context, request *builderv0.BuildReq
 	}
 	var options []coreservices.RecipeOption
 	if peer.goModules {
-		options = append(options, coreservices.WithGoModuleDownloads(&builderv0.GoModuleDownload{ModuleRoot: "code", ProxyContext: "gomodproxy"}))
+		options = append(options, coreservices.WithGoModuleDownloads(&builderv1.GoModuleDownload{ModuleRoot: "code", ProxyContext: "gomodproxy"}))
 	}
 	if peer.gitSources {
 		commit := peer.gitCommit
 		if commit == "" {
 			commit = commitOne
 		}
-		options = append(options, coreservices.WithGitSourceDownloads(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commit, MirrorContext: "gitsources"}))
+		options = append(options, coreservices.WithGitSourceDownloads(&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commit, MirrorContext: "gitsources"}))
 	}
 	plan, err := coreservices.SingleImageBuildPlan(output, peer.imageName(), coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"}, options...)
 	if err != nil {
 		return nil, err
 	}
-	return &builderv0.BuildResponse{
-		State:  &builderv0.BuildStatus{State: builderv0.BuildStatus_SUCCESS},
-		Result: &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}},
+	return &builderv1.BuildResponse{
+		State:  &builderv1.BuildStatus{State: builderv1.BuildStatus_SUCCESS},
+		Result: &builderv1.BuildResult{Kind: &builderv1.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}},
 	}, nil
 }
 
@@ -199,7 +199,7 @@ func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHa
 	stub := installDockerStub(t, registryServes)
 	server := grpc.NewServer()
 	peer := &imageCachePeer{}
-	builderv0.RegisterBuilderServer(server, peer)
+	builderv1.RegisterBuilderServer(server, peer)
 	conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
@@ -211,7 +211,7 @@ func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHa
 		peer:         peer,
 		workspaceDir: workspaceDir,
 		serviceDir:   serviceDir,
-		client:       &coreservices.BuilderAgent{BuilderClient: builderv0.NewBuilderClient(conn)},
+		client:       &coreservices.BuilderAgent{BuilderClient: builderv1.NewBuilderClient(conn)},
 		push:         push,
 	}
 	harness.write(t, filepath.Join(serviceDir, "service.codefly.yaml"),
@@ -477,7 +477,7 @@ func TestAnUpToDateImageFetchesNoGitSources(t *testing.T) {
 // placeholder whether or not its path exists yet, so the key a build recorded
 // over fetched paths is the key a later plan phase computes before fetching.
 func TestPlaceholderProxiesNormalizeLikeFetchedPaths(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{
+	recipe := &builderv1.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv1.GoModuleDownload{
 		{ModuleRoot: "code", ProxyContext: "gomodproxy"},
 		{ModuleRoot: "lib", ProxyContext: "libproxy"},
 	}}
@@ -494,7 +494,7 @@ func TestPlaceholderProxiesNormalizeLikeFetchedPaths(t *testing.T) {
 	}
 	require.Equal(t, normalized(fetched), normalized(placeholders))
 	require.Contains(t, normalized(placeholders), "gomodproxy="+proxyPlaceholder)
-	require.Nil(t, placeholderProxies(&builderv0.DockerBuildRecipe{Name: "plain"}))
+	require.Nil(t, placeholderProxies(&builderv1.DockerBuildRecipe{Name: "plain"}))
 }
 
 func TestNormalizedBuildxArgsBindsTheBuildAndNotWhereItRan(t *testing.T) {
@@ -582,7 +582,7 @@ func (fixture *identityFixture) write(t *testing.T, relative, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
-func (fixture *identityFixture) key(t *testing.T, emitted []string, options ...func(*builderv0.DockerBuildRecipe)) string {
+func (fixture *identityFixture) key(t *testing.T, emitted []string, options ...func(*builderv1.DockerBuildRecipe)) string {
 	t.Helper()
 	plan, err := coreservices.SingleImageBuildPlan(fixture.output, "example.test/app:v1", []string{"linux/amd64"}, emitted)
 	require.NoError(t, err)
@@ -608,8 +608,8 @@ func TestDeclaredGoModuleManifestsAreBoundThroughAnIgnorePolicyThatExcludesThem(
 	require.NoError(t, os.WriteFile(filepath.Join(fixture.output, "dockerignore"), []byte("code/go.mod\ncode/go.sum\n"), 0o644))
 	fixture.write(t, "code/go.mod", "module example.test/api\n\ngo 1.25\n")
 	fixture.write(t, "code/go.sum", "example.test/dep v1.0.0 h1:AAAA=\n")
-	declared := func(recipe *builderv0.DockerBuildRecipe) {
-		recipe.GoModuleDownloads = []*builderv0.GoModuleDownload{{ModuleRoot: "code", ProxyContext: "proxy"}}
+	declared := func(recipe *builderv1.DockerBuildRecipe) {
+		recipe.GoModuleDownloads = []*builderv1.GoModuleDownload{{ModuleRoot: "code", ProxyContext: "proxy"}}
 	}
 	emitted := []string{"Dockerfile", "dockerignore"}
 
@@ -631,7 +631,7 @@ func TestDeclaredGoModuleRootOutsideTheContextRefusesToCache(t *testing.T) {
 	plan, err := coreservices.SingleImageBuildPlan(fixture.output, "example.test/app:v1", []string{"linux/amd64"}, []string{"Dockerfile"})
 	require.NoError(t, err)
 	recipe := plan.GetRecipes()[0]
-	recipe.GoModuleDownloads = []*builderv0.GoModuleDownload{{ModuleRoot: "../elsewhere", ProxyContext: "proxy"}}
+	recipe.GoModuleDownloads = []*builderv1.GoModuleDownload{{ModuleRoot: "../elsewhere", ProxyContext: "proxy"}}
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
 	_, err = imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil, nil)
 	require.ErrorContains(t, err, "outside its build context")
@@ -738,7 +738,7 @@ func TestTreeScopeAssembledContextIsHashedAsTheContext(t *testing.T) {
 
 	// What the agent does on every Build: copy the replaced sibling in beside its
 	// Dockerfile and claim the whole destination.
-	assemble := func(t *testing.T) (*builderv0.DockerBuildPlan, imageBuildScope) {
+	assemble := func(t *testing.T) (*builderv1.DockerBuildPlan, imageBuildScope) {
 		t.Helper()
 		require.NoError(t, os.RemoveAll(output))
 		require.NoError(t, os.MkdirAll(filepath.Join(output, "vendor", "tasks"), 0o755))
@@ -746,13 +746,13 @@ func TestTreeScopeAssembledContextIsHashedAsTheContext(t *testing.T) {
 		payload, err := os.ReadFile(filepath.Join(shared, "task.go"))
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(output, "vendor", "tasks", "task.go"), payload, 0o644))
-		recipe := &builderv0.DockerBuildRecipe{
+		recipe := &builderv1.DockerBuildRecipe{
 			Name: "app", Dockerfile: "Dockerfile", Context: ".",
 			Image: "example.test/app:v1", Platforms: []string{"linux/amd64"},
 		}
-		plan, err := coreservices.BuildDockerBuildPlan(output, []*builderv0.DockerBuildRecipe{recipe})
+		plan, err := coreservices.BuildDockerBuildPlan(output, []*builderv1.DockerBuildRecipe{recipe})
 		require.NoError(t, err)
-		require.Equal(t, builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, plan.GetScope())
+		require.Equal(t, builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, plan.GetScope())
 		contextRoot := recipeContextRoot(service, output, plan)
 		require.Equal(t, output, contextRoot, "an assembled tree is the context, not the service directory")
 		return plan, imageBuildScope{OutputDir: output, ContextDir: resolvedDir(t.Context(), contextRoot), WorkspaceDir: root}
@@ -820,7 +820,7 @@ func TestMaterializedServiceKeepsAStableIdentity(t *testing.T) {
 // never stand in for the other's.
 func TestTwoRecipesOfOnePlanGetDistinctIdentities(t *testing.T) {
 	fixture := newIdentityFixture(t, "FROM scratch\nCOPY code /app\n", "Dockerfile")
-	recipes := []*builderv0.DockerBuildRecipe{
+	recipes := []*builderv1.DockerBuildRecipe{
 		{Name: "api", Dockerfile: "Dockerfile", Context: ".", Image: "example.test/api:v1", Platforms: []string{"linux/amd64"}, Target: "api"},
 		{Name: "worker", Dockerfile: "Dockerfile", Context: ".", Image: "example.test/worker:v1", Platforms: []string{"linux/amd64"}, Target: "worker"},
 	}

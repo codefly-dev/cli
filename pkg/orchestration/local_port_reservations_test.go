@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/portclaims"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
-func proposedMappings(t *testing.T, world *World, endpoint *basev0.Endpoint) ([]*basev0.NetworkMapping, uint16) {
+func proposedMappings(t *testing.T, world *World, endpoint *basev1.Endpoint) ([]*basev1.NetworkMapping, uint16) {
 	t.Helper()
 	mappings, err := world.localNetworkMappings(context.Background(),
-		&resources.ServiceIdentity{Module: "saas", Name: "store"}, []*basev0.Endpoint{endpoint}, resources.NewRuntimeContextNative())
+		&resources.ServiceIdentity{Module: "saas", Name: "store"}, []*basev1.Endpoint{endpoint}, resources.NewRuntimeContextNative())
 	require.NoError(t, err)
 	native := resources.FilterNetworkInstance(context.Background(), mappings[0].GetInstances(), resources.NewNativeNetworkAccess())
 	require.NotNil(t, native)

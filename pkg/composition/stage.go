@@ -16,10 +16,10 @@ import (
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	solutionv1 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/solution"
@@ -255,9 +255,9 @@ const renderShutdownTimeout = 10 * time.Second
 // roles. Read those once from the session's owning composition, never an
 // executor's cache or caller-authored request JSON.
 func (session *SelectionSession) bindRenderProvenance(ctx context.Context, requests []renderInput) error {
-	var provenance *builderv0.CompositionProvenance
+	var provenance *builderv1.CompositionProvenance
 	for _, input := range requests {
-		request, ok := input.request.(*builderv0.DeploymentRequest)
+		request, ok := input.request.(*builderv1.DeploymentRequest)
 		if !ok {
 			continue
 		}
@@ -276,14 +276,14 @@ func (session *SelectionSession) bindRenderProvenance(ctx context.Context, reque
 	return nil
 }
 
-func invokeRender(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev0.ArtifactExecutionReceipt, renderErr error) {
+func invokeRender(ctx context.Context, path string, execution *basev1.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev1.ArtifactExecutionReceipt, renderErr error) {
 	if execution == nil || (execution.Protocol != artifactexecution.BuilderRender && execution.Protocol != artifactexecution.SolutionRender) {
 		return nil, errors.New("unsupported render protocol")
 	}
 	return invokeArtifactExecution(ctx, path, execution, payload, directory, opts)
 }
 
-func invokeArtifactExecution(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev0.ArtifactExecutionReceipt, renderErr error) {
+func invokeArtifactExecution(ctx context.Context, path string, execution *basev1.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev1.ArtifactExecutionReceipt, renderErr error) {
 	conn, err := manager.LoadArtifact(ctx, path, execution, opts...)
 	if err != nil {
 		return nil, err
@@ -304,7 +304,7 @@ func invokeArtifactExecution(ctx context.Context, path string, execution *basev0
 	}()
 	switch execution.Protocol {
 	case artifactexecution.BuilderBuild:
-		request, ok := proto.Clone(payload).(*builderv0.BuildRequest)
+		request, ok := proto.Clone(payload).(*builderv1.BuildRequest)
 		if !ok {
 			return nil, errors.New("builder build payload type mismatch")
 		}
@@ -317,14 +317,14 @@ func invokeArtifactExecution(ctx context.Context, path string, execution *basev0
 		}
 		return response.Execution, nil
 	case artifactexecution.BuilderRender:
-		request, ok := proto.Clone(payload).(*builderv0.DeploymentRequest)
+		request, ok := proto.Clone(payload).(*builderv1.DeploymentRequest)
 		if !ok {
 			return nil, errors.New("builder render payload type mismatch")
 		}
 		if request.CompositionProvenance == nil {
 			return nil, errors.New("builder render requires host-owned composition provenance")
 		}
-		info, err := agentv0.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+		info, err := agentv1.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 		if err != nil {
 			return nil, fmt.Errorf("inspect builder composition provenance capability: %w", err)
 		}
@@ -341,19 +341,19 @@ func invokeArtifactExecution(ctx context.Context, path string, execution *basev0
 		return response.Execution, nil
 	case artifactexecution.SolutionRender:
 		client := solution.NewClient(conn.GRPCConn())
-		info, inspectErr := client.GetSolutionInformation(ctx, solution.CeilingInspect(), &solutionv0.GetSolutionInformationRequest{Artifact: &solutionv0.SolutionArtifact{ArtifactDigest: conn.ArtifactDigest()}})
+		info, inspectErr := client.GetSolutionInformation(ctx, solution.CeilingInspect(), &solutionv1.GetSolutionInformationRequest{Artifact: &solutionv1.SolutionArtifact{ArtifactDigest: conn.ArtifactDigest()}})
 		if inspectErr != nil {
 			return nil, errors.New("selected solution identity inspection failed")
 		}
 		if info.GetArtifact().GetArtifactDigest() != conn.ArtifactDigest() {
 			return nil, errors.New("solution returned a different executor identity")
 		}
-		request, ok := proto.Clone(payload).(*solutionv0.RenderRequest)
+		request, ok := proto.Clone(payload).(*solutionv1.RenderRequest)
 		if !ok {
 			return nil, errors.New("solution render payload type mismatch")
 		}
 		if request.Context == nil {
-			request.Context = &solutionv0.SolutionContext{}
+			request.Context = &solutionv1.SolutionContext{}
 		}
 		request.Context.Artifact = info.Artifact
 		request.Execution, request.Destination = execution, directory

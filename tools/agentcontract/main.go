@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/agents/contract"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -72,7 +72,7 @@ func publishedReleases(directory string) func() (map[string]bool, error) {
 	}
 }
 
-func releaseNotes(current, previous *agentv0.AgentContract, previousTag string) string {
+func releaseNotes(current, previous *agentv1.AgentContract, previousTag string) string {
 	lines := []string{
 		"## CLI-agent compatibility", "",
 		fmt.Sprintf("Lifecycle protocol: **%d**. Startup protocol: **%d**.", current.ProtocolVersion, current.StartupProtocolVersion),
@@ -118,7 +118,7 @@ func generate(directory, tag, output string) error {
 	if err != nil {
 		return err
 	}
-	var previousRequirements *agentv0.AgentContract
+	var previousRequirements *agentv1.AgentContract
 	if previous != "" {
 		introduced, lookupErr := command(directory, "git", "ls-tree", "--name-only", previous, "--", "tools/agentcontract/main.go")
 		if lookupErr != nil {
@@ -129,7 +129,7 @@ func generate(directory, tag, output string) error {
 			if downloadErr != nil {
 				return fmt.Errorf("read previous CLI contract: %w", downloadErr)
 			}
-			previousRequirements = &agentv0.AgentContract{}
+			previousRequirements = &agentv1.AgentContract{}
 			if err = protojson.Unmarshal(asset, previousRequirements); err != nil {
 				return err
 			}
@@ -176,7 +176,7 @@ func validateManifest(manifest []byte) error {
 	if err != nil {
 		return err
 	}
-	var compiled agentv0.AgentContract
+	var compiled agentv1.AgentContract
 	if err := protojson.Unmarshal(data, &compiled); err != nil {
 		return err
 	}

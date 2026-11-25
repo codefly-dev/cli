@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +46,7 @@ func apiReferenceWorkspace(t *testing.T) *resources.Workspace {
 // the order given, exactly as a producer's Init does. It is how both shapes
 // below control what the resolution walks: a mapping's order and its instances
 // come from the agent, not from the manifest.
-func recordMappings(t *testing.T, world *World, module, name string, mappings ...*basev0.NetworkMapping) {
+func recordMappings(t *testing.T, world *World, module, name string, mappings ...*basev1.NetworkMapping) {
 	t.Helper()
 	ctx := context.Background()
 	service, err := loadService(ctx, t, world.Workspace, module, name)
@@ -58,25 +58,25 @@ func recordMappings(t *testing.T, world *World, module, name string, mappings ..
 // is the producer's declaration (the CLI's proposal keeps the manifest's
 // endpoint), so a public one states its exposure — none, as nothing here has
 // an address reachable from outside the workspace.
-func endpointMapping(module, service, name, api, visibility string, instances ...*basev0.NetworkInstance) *basev0.NetworkMapping {
+func endpointMapping(module, service, name, api, visibility string, instances ...*basev1.NetworkInstance) *basev1.NetworkMapping {
 	exposure := ""
 	if visibility == string(resources.VisibilityPublic) {
 		exposure = resources.ExposureNone
 	}
-	return &basev0.NetworkMapping{
-		Endpoint: &basev0.Endpoint{
+	return &basev1.NetworkMapping{
+		Endpoint: &basev1.Endpoint{
 			Module: module, Service: service, Name: name, Api: api, Visibility: visibility, Exposure: exposure,
 		},
 		Instances: instances,
 	}
 }
 
-func nativeInstance(address string) *basev0.NetworkInstance {
-	return &basev0.NetworkInstance{Access: resources.NewNativeNetworkAccess(), Address: address}
+func nativeInstance(address string) *basev1.NetworkInstance {
+	return &basev1.NetworkInstance{Access: resources.NewNativeNetworkAccess(), Address: address}
 }
 
-func containerInstance(address string) *basev0.NetworkInstance {
-	return &basev0.NetworkInstance{Access: resources.NewContainerNetworkAccess(), Address: address}
+func containerInstance(address string) *basev1.NetworkInstance {
+	return &basev1.NetworkInstance{Access: resources.NewContainerNetworkAccess(), Address: address}
 }
 
 // An API-name reference in a composition-root group does not hand a consumer an
@@ -320,7 +320,7 @@ func TestTheProducersManifestDecidesVisibilityNotThePublishedMapping(t *testing.
 
 	// And directly, so the filter is exercised rather than only the check: the
 	// mapping claims public, the manifest says private, and nothing is bound.
-	mappings := []*basev0.NetworkMapping{
+	mappings := []*basev1.NetworkMapping{
 		endpointMapping("platform", "authority", "admin", "rest", "public", nativeInstance("http://localhost:4444")),
 	}
 	visible, err := world.exportableTo(ctx, service, mappings)
@@ -346,9 +346,9 @@ func TestAMappingWithNoEndpointNameIsNotBound(t *testing.T) {
 	})
 
 	// Nameless, API-only, and the address is the private endpoint's.
-	mappings := []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Module: "platform", Service: "authority", Api: "rest"},
-		Instances: []*basev0.NetworkInstance{nativeInstance(adminAddress)},
+	mappings := []*basev1.NetworkMapping{{
+		Endpoint:  &basev1.Endpoint{Module: "platform", Service: "authority", Api: "rest"},
+		Instances: []*basev1.NetworkInstance{nativeInstance(adminAddress)},
 	}}
 	visible, err := world.exportableTo(ctx, service, mappings)
 	require.NoError(t, err)
@@ -357,9 +357,9 @@ func TestAMappingWithNoEndpointNameIsNotBound(t *testing.T) {
 
 	// And a mapping whose API contradicts the manifest endpoint of that name is
 	// not bound either: the two fields would describe different endpoints.
-	inconsistent := []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Module: "platform", Service: "authority", Name: "api", Api: "grpc"},
-		Instances: []*basev0.NetworkInstance{nativeInstance(adminAddress)},
+	inconsistent := []*basev1.NetworkMapping{{
+		Endpoint:  &basev1.Endpoint{Module: "platform", Service: "authority", Name: "api", Api: "grpc"},
+		Instances: []*basev1.NetworkInstance{nativeInstance(adminAddress)},
 	}}
 	visible, err = world.exportableTo(ctx, service, inconsistent)
 	require.NoError(t, err)
@@ -367,9 +367,9 @@ func TestAMappingWithNoEndpointNameIsNotBound(t *testing.T) {
 
 	// The named, consistent mapping for the same endpoint is bound, so this is
 	// about identity and not about rejecting the producer.
-	named := []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Module: "platform", Service: "authority", Name: "api", Api: "rest"},
-		Instances: []*basev0.NetworkInstance{nativeInstance("http://localhost:1111")},
+	named := []*basev1.NetworkMapping{{
+		Endpoint:  &basev1.Endpoint{Module: "platform", Service: "authority", Name: "api", Api: "rest"},
+		Instances: []*basev1.NetworkInstance{nativeInstance("http://localhost:1111")},
 	}}
 	visible, err = world.exportableTo(ctx, service, named)
 	require.NoError(t, err)
@@ -573,13 +573,13 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 	// compositions for a value silently addressing the wrong endpoint.
 	for _, shape := range []struct {
 		name     string
-		mappings []*basev0.NetworkMapping
+		mappings []*basev1.NetworkMapping
 	}{
-		{"the sibling is published first", []*basev0.NetworkMapping{
+		{"the sibling is published first", []*basev1.NetworkMapping{
 			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
 			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
 		}},
-		{"the named endpoint has no instance for this access", []*basev0.NetworkMapping{
+		{"the named endpoint has no instance for this access", []*basev1.NetworkMapping{
 			endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
 			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
 		}},
@@ -825,7 +825,7 @@ func TestTwoReferencesIntoOneProducerEachResolveToTheEndpointTheyName(t *testing
 		"secondary-address=${endpoint:platform/authority/admin}\n"
 
 	// The mapping order that makes the wrong answer win: `admin` first.
-	reversed := []*basev0.NetworkMapping{
+	reversed := []*basev1.NetworkMapping{
 		endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
 		endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
 	}
@@ -1389,7 +1389,7 @@ func TestNoOrderingLetsASiblingAnswerAReferenceThatNamedAnother(t *testing.T) {
 			world, worker := referenceValidityWorld(t, twoSiblingWorkspace(t, values, order.siblings),
 				func(world *World) {
 					world.Mode = RunMode
-					mappings := map[string]*basev0.NetworkMapping{
+					mappings := map[string]*basev1.NetworkMapping{
 						// The endpoint the first reference names has no address
 						// for a native consumer.
 						"grpc": endpointMapping("platform", "authority", "grpc", "grpc", "public",
@@ -1401,7 +1401,7 @@ func TestNoOrderingLetsASiblingAnswerAReferenceThatNamedAnother(t *testing.T) {
 						"metrics": endpointMapping("platform", "authority", "metrics", "grpc", "public",
 							nativeInstance("http://localhost:3333")),
 					}
-					recorded := []*basev0.NetworkMapping{mappings["grpc"]}
+					recorded := []*basev1.NetworkMapping{mappings["grpc"]}
 					for _, name := range order.siblings {
 						recorded = append(recorded, mappings[name])
 					}

@@ -14,7 +14,7 @@ import (
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -103,7 +103,7 @@ func preparedGrants(provided *configurations.WorkspaceConfigurations) ([]prepare
 
 // kindScopes keeps each scope's kind and actions and drops its resource ids,
 // merging scopes over one kind, sorted by kind and action.
-func kindScopes(scopes []*basev0.WorkScopeV1) []preparedScope {
+func kindScopes(scopes []*basev1.WorkScopeV1) []preparedScope {
 	byKind := map[string][]string{}
 	for _, scope := range scopes {
 		kind := scope.GetResourceKind()

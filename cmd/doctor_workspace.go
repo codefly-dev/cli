@@ -24,7 +24,7 @@ import (
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/provider/configuration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
@@ -1105,7 +1105,7 @@ func serviceUnique(svc *resources.Service) string {
 
 type scopedConfiguration struct {
 	origin string // "workspace", "module <name>", or the service unique
-	info   *basev0.ConfigurationInformation
+	info   *basev1.ConfigurationInformation
 }
 
 // checkConfigurationSources discovers the configurations the environment
@@ -1265,7 +1265,7 @@ func nativeFederationCoversScope(env *environments.Environment, scope []*resourc
 // hold; a module-shipped group is satisfied without it, exactly as in a run,
 // and an optional group's absence is judged with the group
 // (checkRequiredWorkspaceConfiguration).
-func reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir string, required []string, byName map[string]*basev0.ConfigurationInformation, own []*basev0.ConfigurationInformation, report *workspaceReadinessReport) {
+func reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir string, required []string, byName map[string]*basev1.ConfigurationInformation, own []*basev1.ConfigurationInformation, report *workspaceReadinessReport) {
 	var unprovided, optional []string
 	for _, name := range required {
 		if _, ok := byName[name]; ok {
@@ -1301,7 +1301,7 @@ func reportWorkspaceConfigurationDirectory(wsCfgDir, relCfgDir string, required 
 type workspaceGroupSources struct {
 	relCfgDir string
 	provided  *configurations.WorkspaceConfigurations
-	byName    map[string]*basev0.ConfigurationInformation
+	byName    map[string]*basev1.ConfigurationInformation
 	declared  map[string]bool
 }
 
@@ -1355,7 +1355,7 @@ func checkRequiredWorkspaceConfiguration(ctx context.Context, ws *resources.Work
 // A selected binding the group does not hold fails, naming the generation
 // that writes it. It reports whether it judged the group; a group that holds
 // every selected binding must also match the generator's prepared values.
-func checkRunnableBindingsGroup(ctx context.Context, ws *resources.Workspace, env *environments.Environment, name string, info *basev0.ConfigurationInformation, relCfgDir, requiredBy string, report *workspaceReadinessReport) bool {
+func checkRunnableBindingsGroup(ctx context.Context, ws *resources.Workspace, env *environments.Environment, name string, info *basev1.ConfigurationInformation, relCfgDir, requiredBy string, report *workspaceReadinessReport) bool {
 	selection, err := generate.SelectRunnableBindings(ctx, ws, env)
 	if err != nil {
 		report.add(codeRunnableOperationsUnreadable, "workspace configuration "+name, checkStatusFail,
@@ -1473,8 +1473,8 @@ func loadWorkspaceConfigurations(ctx context.Context, ws *resources.Workspace, e
 // the module's group, which stays the module's (its delivery scoped to the
 // services that declared it), so the file is listed as the workspace's own
 // and the group as composed.
-func classifyProvidedConfigurations(provided *configurations.WorkspaceConfigurations, declared map[string]bool) (byName map[string]*basev0.ConfigurationInformation, own, composed []*basev0.ConfigurationInformation) {
-	byName = make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
+func classifyProvidedConfigurations(provided *configurations.WorkspaceConfigurations, declared map[string]bool) (byName map[string]*basev1.ConfigurationInformation, own, composed []*basev1.ConfigurationInformation) {
+	byName = make(map[string]*basev1.ConfigurationInformation, len(provided.Infos))
 	for _, info := range provided.Infos {
 		byName[info.Name] = info
 		_, fromModule := provided.ComposedBy[info.Name]
@@ -1525,7 +1525,7 @@ func workspaceConfigurationOrigin(name string, composedBy map[string]string) str
 }
 
 // providedNames lists composed configurations with the module shipping each.
-func providedNames(infos []*basev0.ConfigurationInformation, composedBy map[string]string) string {
+func providedNames(infos []*basev1.ConfigurationInformation, composedBy map[string]string) string {
 	names := make([]string, 0, len(infos))
 	for _, info := range infos {
 		names = append(names, fmt.Sprintf("%s (%s)", info.Name, composedBy[info.Name]))
@@ -1536,7 +1536,7 @@ func providedNames(infos []*basev0.ConfigurationInformation, composedBy map[stri
 // loadConfigurationDir reads one configurations/<env> directory read-only.
 // A missing directory returns (nil, true) — absence is judged by the caller.
 // Parse failures are reported and return ok=false.
-func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report *workspaceReadinessReport) ([]*basev0.ConfigurationInformation, bool) {
+func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report *workspaceReadinessReport) ([]*basev1.ConfigurationInformation, bool) {
 	if !dirExists(dir) {
 		return nil, true
 	}
@@ -1560,7 +1560,7 @@ func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report
 
 // reportDuplicateKeys flags a key one configuration defines more than once
 // across its files.
-func reportDuplicateKeys(info *basev0.ConfigurationInformation, label, relDir string, report *workspaceReadinessReport) {
+func reportDuplicateKeys(info *basev1.ConfigurationInformation, label, relDir string, report *workspaceReadinessReport) {
 	seen := make(map[string]bool)
 	for _, value := range info.ConfigurationValues {
 		if seen[value.Key] {
@@ -1714,7 +1714,7 @@ func unknownReferenceScheme(value string) (string, bool) {
 // secretDataStrings extracts the string leaves of a structured secret blob
 // (*.secret.yaml / *.secret.json) in deterministic order, mirroring the
 // values core would attempt to resolve at Load() time.
-func secretDataStrings(data *basev0.ConfigurationData) ([]string, error) {
+func secretDataStrings(data *basev1.ConfigurationData) ([]string, error) {
 	var node any
 	switch data.Kind {
 	case "yaml", "yml":
@@ -1775,7 +1775,7 @@ func otherEnvironmentDirs(configurationsDir, except string) []string {
 	return out
 }
 
-func infoNames(infos []*basev0.ConfigurationInformation) string {
+func infoNames(infos []*basev1.ConfigurationInformation) string {
 	names := make([]string, 0, len(infos))
 	for _, info := range infos {
 		names = append(names, info.Name)

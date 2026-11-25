@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 )
@@ -32,7 +32,7 @@ const (
 type WorkspaceConfigurationReader struct {
 	*configurations.ConfigurationInformationLocalReader
 	workspace *resources.Workspace
-	combined  []*basev0.Configuration
+	combined  []*basev1.Configuration
 	snapshot  string
 	frozen    bool
 }
@@ -53,7 +53,7 @@ func NewWorkspaceConfigurationReader(ctx context.Context, workspace *resources.W
 	return &WorkspaceConfigurationReader{ConfigurationInformationLocalReader: reader, workspace: workspace}, nil
 }
 
-func (r *WorkspaceConfigurationReader) Configurations() []*basev0.Configuration { return r.combined }
+func (r *WorkspaceConfigurationReader) Configurations() []*basev1.Configuration { return r.combined }
 
 func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.Environment) error {
 	if err := r.ConfigurationInformationLocalReader.Load(ctx, env); err != nil {
@@ -63,7 +63,7 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 	// Core retains module provenance even when root values overlay that group.
 	// Invocation overrides can mark a whole group root-owned, so judge the
 	// pre-invocation provenance too: a module cannot supply operator tool offers.
-	if slices.ContainsFunc(workspaceConfigurationInfos(configs), func(info *basev0.ConfigurationInformation) bool { return info.GetName() == runnables.OfferedToolsGroup }) {
+	if slices.ContainsFunc(workspaceConfigurationInfos(configs), func(info *basev1.ConfigurationInformation) bool { return info.GetName() == runnables.OfferedToolsGroup }) {
 		provided, err := configurations.ReadWorkspaceConfigurations(ctx, r.workspace, env, ModuleArtifactResolverFor(r.workspace))
 		if err != nil {
 			return err
@@ -119,11 +119,11 @@ func (r *WorkspaceConfigurationReader) Load(ctx context.Context, env *resources.
 			}
 			replacement := proto.CloneOf(config)
 			var bound bool
-			replacement.Infos = slices.DeleteFunc(replacement.Infos, func(info *basev0.ConfigurationInformation) bool {
+			replacement.Infos = slices.DeleteFunc(replacement.Infos, func(info *basev1.ConfigurationInformation) bool {
 				if info.GetName() != fixturefragments.Group {
 					return false
 				}
-				bound = bound || slices.ContainsFunc(info.GetConfigurationValues(), func(value *basev0.ConfigurationValue) bool {
+				bound = bound || slices.ContainsFunc(info.GetConfigurationValues(), func(value *basev1.ConfigurationValue) bool {
 					return value.GetResolvedModuleArtifact() != nil || value.GetModuleArtifact() != nil
 				})
 				return true
@@ -143,7 +143,7 @@ func routingRestartRequired(reason string) error {
 	return fmt.Errorf("published hop routes changed: stop and restart this Codefly run to adopt them; incremental refresh cannot replace its routing snapshot (%s)", reason)
 }
 
-func hopRoutingSnapshot(config *basev0.Configuration) string {
+func hopRoutingSnapshot(config *basev1.Configuration) string {
 	if config == nil {
 		return ""
 	}
@@ -159,11 +159,11 @@ func hopRoutingSnapshot(config *basev0.Configuration) string {
 	return ""
 }
 
-func hopRoutingSnapshotOf(infos []*basev0.ConfigurationInformation) string {
-	return hopRoutingSnapshot(&basev0.Configuration{Infos: infos})
+func hopRoutingSnapshotOf(infos []*basev1.ConfigurationInformation) string {
+	return hopRoutingSnapshot(&basev1.Configuration{Infos: infos})
 }
 
-func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, configs []*basev0.Configuration) (*basev0.Configuration, error) {
+func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, configs []*basev1.Configuration) (*basev1.Configuration, error) {
 	var listed string
 	for _, info := range workspaceConfigurationInfos(configs) {
 		if info.GetName() == hopRoutesGroup {
@@ -226,14 +226,14 @@ func generatedHopRoutes(ctx context.Context, workspace *resources.Workspace, con
 	if err != nil {
 		return nil, err
 	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{Name: hopRoutesGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: hopRoutesKey, Value: string(raw)}}}}}, nil
+	return &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{Name: hopRoutesGroup, ConfigurationValues: []*basev1.ConfigurationValue{{Key: hopRoutesKey, Value: string(raw)}}}}}, nil
 }
 
 // emptyHopRoutes is the hop-routes group holding no route: what a service
 // declaring the group receives where the composition names no module for it.
-func emptyHopRoutes() *basev0.Configuration {
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: hopRoutesGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: hopRoutesKey, Value: ""}},
+func emptyHopRoutes() *basev1.Configuration {
+	return &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+		Name: hopRoutesGroup, ConfigurationValues: []*basev1.ConfigurationValue{{Key: hopRoutesKey, Value: ""}},
 	}}}
 }
 
@@ -451,7 +451,7 @@ func (flow *Flow) CheckRoutingSnapshot(ctx context.Context, workspace *resources
 // hop routing to a squatter. A process that binds a loopback address on the
 // same port after that probe, or a routed service that crashes or is withdrawn
 // mid-run, is not covered.
-func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.NetworkMapping) error {
+func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev1.NetworkMapping) error {
 	routes, err := routing.DecodeRouting(raw)
 	if err != nil {
 		return err
@@ -462,7 +462,7 @@ func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.Network
 	for i := range routes.Endpoints {
 		route := &routes.Endpoints[i]
 		unique := route.Audience + "/" + route.Service
-		var selected *basev0.NetworkMapping
+		var selected *basev1.NetworkMapping
 		for _, mapping := range resolved {
 			e := mapping.GetEndpoint()
 			if e.GetModule()+"/"+e.GetService() == unique && e.GetName() == route.Endpoint {
@@ -503,7 +503,7 @@ func (s *StateManager) freezeHopAddresses(raw string, resolved []*basev0.Network
 type frozenRoute struct {
 	owner   string
 	hash    string
-	mapping *basev0.NetworkMapping
+	mapping *basev1.NetworkMapping
 }
 
 // checkFrozenRoutes refuses mappings for unique that drop or move an address a
@@ -513,7 +513,7 @@ type frozenRoute struct {
 // was proposed, and that address is derived from the workspace, the service
 // and the naming scope: a restart derives it again and is refused the same
 // way, so the refusal says what does help instead of asking for one.
-func (s *StateManager) checkFrozenRoutes(unique string, mappings []*basev0.NetworkMapping) error {
+func (s *StateManager) checkFrozenRoutes(unique string, mappings []*basev1.NetworkMapping) error {
 	_, initialized := s.networkMappings[unique]
 	for key, frozen := range s.routingMappings {
 		if frozen.owner != unique || carriesMapping(mappings, key, frozen.hash) {
@@ -539,7 +539,7 @@ func proposedAddressRefused(key, routed, unique, offered string) error {
 
 // carriesMapping reports whether mappings hold the endpoint key, and hold it
 // only at the mapping hashed as hash.
-func carriesMapping(mappings []*basev0.NetworkMapping, key, hash string) bool {
+func carriesMapping(mappings []*basev1.NetworkMapping, key, hash string) bool {
 	found := false
 	for _, mapping := range mappings {
 		if resources.EndpointDestination(mapping.GetEndpoint()) != key {
@@ -554,8 +554,8 @@ func carriesMapping(mappings []*basev0.NetworkMapping, key, hash string) bool {
 }
 
 // addressesOf spells where mappings reach the endpoint key.
-func addressesOf(mappings []*basev0.NetworkMapping, key string) string {
-	var matching []*basev0.NetworkMapping
+func addressesOf(mappings []*basev1.NetworkMapping, key string) string {
+	var matching []*basev1.NetworkMapping
 	for _, mapping := range mappings {
 		if resources.EndpointDestination(mapping.GetEndpoint()) == key {
 			matching = append(matching, mapping)
@@ -568,7 +568,7 @@ func addressesOf(mappings []*basev0.NetworkMapping, key string) string {
 }
 
 // mappingAddresses spells each instance of mappings as its access and address.
-func mappingAddresses(mappings ...*basev0.NetworkMapping) string {
+func mappingAddresses(mappings ...*basev1.NetworkMapping) string {
 	var parts []string
 	for _, mapping := range mappings {
 		for _, instance := range mapping.GetInstances() {
@@ -581,7 +581,7 @@ func mappingAddresses(mappings ...*basev0.NetworkMapping) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
-func (world *World) freezeDeliveredHopAddresses(configs []*basev0.Configuration, mappings []*basev0.NetworkMapping) error {
+func (world *World) freezeDeliveredHopAddresses(configs []*basev1.Configuration, mappings []*basev1.NetworkMapping) error {
 	if world.Mode != RunMode || world.SharedState == nil {
 		return nil
 	}

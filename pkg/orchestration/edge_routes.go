@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -77,7 +77,7 @@ type edgeModuleRoutes struct {
 // behind the hop: Core's reader refuses a declared group that resolves to
 // nothing, and an edge handed no document knows it runs under a CLI that
 // generates none.
-func generatedEdgeRoutes(ctx context.Context, workspace *resources.Workspace, configs []*basev0.Configuration) (*basev0.Configuration, error) {
+func generatedEdgeRoutes(ctx context.Context, workspace *resources.Workspace, configs []*basev1.Configuration) (*basev1.Configuration, error) {
 	var mounted, fronted string
 	for _, info := range workspaceConfigurationInfos(configs) {
 		if info.GetName() == edgeRoutesGroup {
@@ -129,8 +129,8 @@ func generatedEdgeRoutes(ctx context.Context, workspace *resources.Workspace, co
 	if err != nil {
 		return nil, err
 	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: edgeRoutesGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: edgeRoutesKey, Value: string(raw)}},
+	return &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+		Name: edgeRoutesGroup, ConfigurationValues: []*basev1.ConfigurationValue{{Key: edgeRoutesKey, Value: string(raw)}},
 	}}}, nil
 }
 

@@ -10,8 +10,8 @@ import (
 
 	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	solutionv1 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -45,9 +45,9 @@ func decodeRenderInputs(inputs []RenderInput) ([]renderInput, error) {
 		var request proto.Message
 		switch input.Protocol {
 		case artifactexecution.BuilderRender:
-			request = &builderv0.DeploymentRequest{}
+			request = &builderv1.DeploymentRequest{}
 		case artifactexecution.SolutionRender:
-			request = &solutionv0.RenderRequest{}
+			request = &solutionv1.RenderRequest{}
 		default:
 			return nil, errors.New("render request protocol is unsupported")
 		}
@@ -56,11 +56,11 @@ func decodeRenderInputs(inputs []RenderInput) ([]renderInput, error) {
 			return nil, errors.New("invalid render request protobuf JSON")
 		}
 		switch value := request.(type) {
-		case *builderv0.DeploymentRequest:
+		case *builderv1.DeploymentRequest:
 			if value.Execution != nil || value.OutputDirectory != "" || value.CompositionProvenance != nil {
 				return nil, errors.New("render execution, staging directory and composition provenance are host-owned")
 			}
-		case *solutionv0.RenderRequest:
+		case *solutionv1.RenderRequest:
 			if value.Execution != nil || value.Destination != "" || value.ArtifactReference != "" || value.Context.GetArtifact() != nil {
 				return nil, errors.New("solution execution, artifact identity and destination are host-owned")
 			}

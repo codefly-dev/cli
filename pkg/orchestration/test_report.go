@@ -5,13 +5,13 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/testrun"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 )
 
 // testCounts returns (total, passed, failed, skipped, errored), preferring the
 // structured counts tree and falling back to the legacy flat fields so this
 // works against agents that have not yet migrated to the structured schema.
-func testCounts(resp *runtimev0.TestResponse) (total, passed, failed, skipped, errored int32) {
+func testCounts(resp *runtimev1.TestResponse) (total, passed, failed, skipped, errored int32) {
 	if resp == nil {
 		return
 	}
@@ -26,7 +26,7 @@ func testCounts(resp *runtimev0.TestResponse) (total, passed, failed, skipped, e
 
 // summarizeTestResponse renders a single-line summary suitable for an error
 // message: "3 failed, 1 errored, 42 passed (46 total)".
-func summarizeTestResponse(resp *runtimev0.TestResponse) string {
+func summarizeTestResponse(resp *runtimev1.TestResponse) string {
 	total, passed, failed, skipped, errored := testCounts(resp)
 	var parts []string
 	if failed > 0 {
@@ -66,7 +66,7 @@ func summarizeTestResponse(resp *runtimev0.TestResponse) string {
 // run. Prefers the structured result, falls back to the legacy status, and is
 // conservative: a nil/unknown response is treated as NOT succeeded so a missing
 // result can never be mistaken for a pass.
-func TestSucceeded(resp *runtimev0.TestResponse) bool {
+func TestSucceeded(resp *runtimev1.TestResponse) bool {
 	if resp == nil {
 		return false
 	}
@@ -74,13 +74,13 @@ func TestSucceeded(resp *runtimev0.TestResponse) bool {
 	// UNKNOWN or absent outcome is NOT inferred from counts: "no failures
 	// recorded" is what a run that never started also looks like, and treating
 	// that as success is how a broken test run reports green.
-	return resp.GetResult().GetState() == runtimev0.TestRunResult_PASSED
+	return resp.GetResult().GetState() == runtimev1.TestRunResult_PASSED
 }
 
 // RenderTestReport produces a human-readable multi-line report from a
 // structured TestResponse: a headline count line plus, for failing runs, each
 // failed/errored case with its location, failure message, and captured output.
-func RenderTestReport(resp *runtimev0.TestResponse) string {
+func RenderTestReport(resp *runtimev1.TestResponse) string {
 	if resp == nil {
 		return "no test result was returned by the agent"
 	}
@@ -106,7 +106,7 @@ func RenderTestReport(resp *runtimev0.TestResponse) string {
 
 // failingCaseLines walks the (possibly nested) suite tree and renders each
 // failed/errored case. prefix accumulates the suite path for readability.
-func failingCaseLines(suites []*runtimev0.TestSuite, prefix string) []string {
+func failingCaseLines(suites []*runtimev1.TestSuite, prefix string) []string {
 	var out []string
 	for _, suite := range suites {
 		path := suite.GetName()
@@ -115,8 +115,8 @@ func failingCaseLines(suites []*runtimev0.TestSuite, prefix string) []string {
 		}
 		for _, c := range suite.GetCases() {
 			state := c.GetState()
-			if state != runtimev0.TestCaseState_TEST_CASE_STATE_FAILED &&
-				state != runtimev0.TestCaseState_TEST_CASE_STATE_ERRORED {
+			if state != runtimev1.TestCaseState_TEST_CASE_STATE_FAILED &&
+				state != runtimev1.TestCaseState_TEST_CASE_STATE_ERRORED {
 				continue
 			}
 			name := c.GetFullName()
@@ -171,6 +171,6 @@ func indent(s, pad string) string {
 // so the call sites read the same, but the rule is shared with the gateway's
 // response builder and the code-unit aggregator: three copies of "did it
 // pass?" is how two of them came to disagree.
-func refuseUnlessTestRunPassed(resp *runtimev0.TestResponse, unique string) error {
+func refuseUnlessTestRunPassed(resp *runtimev1.TestResponse, unique string) error {
 	return testrun.RefuseUnlessPassed(resp, unique, summarizeTestResponse)
 }

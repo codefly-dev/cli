@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,9 +69,9 @@ func TestPrivateModuleBuildxArgsPassGoPrivateAndTheProxies(t *testing.T) {
 // positional context — for both a plain and a cached build.
 func TestCachedBuildxArgsKeepPrivateModuleFlagsBeforeTheContext(t *testing.T) {
 	private := privateModuleBuild{GoPrivate: "github.com/example-org/*"}.withProxies(map[string]string{"gomodproxy": "/prefetch/0/cache/download"})
-	recipe := &builderv0.DockerBuildRecipe{Image: "repo/app:v1", Platforms: []string{"linux/amd64"}, BuildArgs: map[string]string{"VERSION": "1"}}
+	recipe := &builderv1.DockerBuildRecipe{Image: "repo/app:v1", Platforms: []string{"linux/amd64"}, BuildArgs: map[string]string{"VERSION": "1"}}
 
-	for _, cache := range []*builderv0.BuildCacheOptions{nil, {Backend: "registry", Scope: "s", Imports: []string{"ghcr.io/org/cache"}}} {
+	for _, cache := range []*builderv1.BuildCacheOptions{nil, {Backend: "registry", Scope: "s", Imports: []string{"ghcr.io/org/cache"}}} {
 		args, err := cachedBuildxArgs(recipe, "/svc/builder/Dockerfile", "/svc", false, false, "", "", cache, private)
 		require.NoError(t, err)
 		require.Equal(t, "/svc", args[len(args)-1])

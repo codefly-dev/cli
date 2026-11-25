@@ -14,7 +14,7 @@ import (
 	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 // gitSourcePrefetch fetches the locked git commits a flow's recipes declare
@@ -123,7 +123,7 @@ func (p *gitSourcePrefetch) fetch(ctx context.Context, repository, commit string
 
 // mirrorsFor fetches every git source a recipe declares and returns the
 // directory to supply under each declared mirror context.
-func (p *gitSourcePrefetch) mirrorsFor(ctx context.Context, recipe *builderv0.DockerBuildRecipe) (map[string]string, error) {
+func (p *gitSourcePrefetch) mirrorsFor(ctx context.Context, recipe *builderv1.DockerBuildRecipe) (map[string]string, error) {
 	downloads := recipe.GetGitSourceDownloads()
 	if len(downloads) == 0 {
 		return nil, nil
@@ -141,7 +141,7 @@ func (p *gitSourcePrefetch) mirrorsFor(ctx context.Context, recipe *builderv0.Do
 
 // recipeMissesGitSourceMirrors reports whether a recipe declares a git source
 // that has no fetched mirror under its build-context name.
-func recipeMissesGitSourceMirrors(recipe *builderv0.DockerBuildRecipe, contexts map[string]string) bool {
+func recipeMissesGitSourceMirrors(recipe *builderv1.DockerBuildRecipe, contexts map[string]string) bool {
 	for _, download := range recipe.GetGitSourceDownloads() {
 		if _, ok := contexts[download.GetMirrorContext()]; !ok {
 			return true

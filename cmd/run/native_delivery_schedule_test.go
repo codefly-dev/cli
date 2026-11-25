@@ -23,7 +23,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
@@ -291,7 +291,7 @@ type fakeLauncherFlow struct {
 	attemptedBeforeHostReady bool
 }
 
-func (f *fakeLauncherFlow) WorkspaceConfigurationsFor(context.Context, *resources.Service) ([]*basev0.Configuration, error) {
+func (f *fakeLauncherFlow) WorkspaceConfigurationsFor(context.Context, *resources.Service) ([]*basev1.Configuration, error) {
 	return nil, nil
 }
 
@@ -325,10 +325,10 @@ func (f *fakeLauncherFlow) ServiceRuntimeContext(string) string {
 	}
 	return resources.RuntimeContextNative
 }
-func (f *fakeLauncherFlow) EndpointCarriers(context.Context, string, *basev0.NetworkAccess) (map[string]string, error) {
+func (f *fakeLauncherFlow) EndpointCarriers(context.Context, string, *basev1.NetworkAccess) (map[string]string, error) {
 	return nil, errors.New("no endpoints in this test")
 }
-func (f *fakeLauncherFlow) ReadyEndpointCarriers(context.Context, string, *basev0.NetworkAccess, []string) (map[string]string, error) {
+func (f *fakeLauncherFlow) ReadyEndpointCarriers(context.Context, string, *basev1.NetworkAccess, []string) (map[string]string, error) {
 	return nil, errors.New("no endpoints in this test")
 }
 func (f *fakeLauncherFlow) LocalAuthorityServices() []string { return []string{"model/api"} }

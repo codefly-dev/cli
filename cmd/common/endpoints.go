@@ -11,7 +11,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/portclaims"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	corereadiness "github.com/codefly-dev/core/readiness"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
@@ -102,7 +102,7 @@ func ResolveNative(ctx context.Context, workspace, module, service, namingScope 
 }
 
 // CheckEndpointReadiness evaluates the producer's declared readiness predicate against its resolved address.
-func CheckEndpointReadiness(ctx context.Context, module, service string, ep *resources.Endpoint, address string) (*basev0.ProbeResult, error) {
+func CheckEndpointReadiness(ctx context.Context, module, service string, ep *resources.Endpoint, address string) (*basev1.ProbeResult, error) {
 	endpoint, err := endpointProto(module, service, ep, ep.API)
 	if err != nil {
 		return nil, err
@@ -119,7 +119,7 @@ func CheckEndpointReadiness(ctx context.Context, module, service string, ep *res
 	return corereadiness.Check(ctx, requirement, corereadiness.Target{Address: address}), nil
 }
 
-func endpointProto(module, service string, ep *resources.Endpoint, api string) (*basev0.Endpoint, error) {
+func endpointProto(module, service string, ep *resources.Endpoint, api string) (*basev1.Endpoint, error) {
 	declaration := *ep
 	declaration.API = api
 	declaration.Module = module

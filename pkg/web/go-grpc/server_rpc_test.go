@@ -15,7 +15,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
-	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
+	observabilityv1 "github.com/codefly-dev/core/generated/go/codefly/observability/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -49,7 +49,7 @@ func loadGraphWorkspace(t *testing.T) *resources.Workspace {
 	return ws
 }
 
-func nodeType(resp *observabilityv0.GraphResponse, id string) (observabilityv0.GraphNode_Type, bool) {
+func nodeType(resp *observabilityv1.GraphResponse, id string) (observabilityv1.GraphNode_Type, bool) {
 	for _, n := range resp.Nodes {
 		if n.Id == id {
 			return n.Type, true
@@ -58,7 +58,7 @@ func nodeType(resp *observabilityv0.GraphResponse, id string) (observabilityv0.G
 	return 0, false
 }
 
-func hasEdge(resp *observabilityv0.GraphResponse, from, to string) bool {
+func hasEdge(resp *observabilityv1.GraphResponse, from, to string) bool {
 	for _, e := range resp.Edges {
 		if e.From == from && e.To == to {
 			return true
@@ -81,13 +81,13 @@ func TestServiceDependencyGraphFromWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if typ, ok := nodeType(resp, "backend"); !ok || typ != observabilityv0.GraphNode_MODULE {
+	if typ, ok := nodeType(resp, "backend"); !ok || typ != observabilityv1.GraphNode_MODULE {
 		t.Fatalf("expected MODULE node %q, got type=%v ok=%v", "backend", typ, ok)
 	}
-	if typ, ok := nodeType(resp, "backend/api"); !ok || typ != observabilityv0.GraphNode_SERVICE {
+	if typ, ok := nodeType(resp, "backend/api"); !ok || typ != observabilityv1.GraphNode_SERVICE {
 		t.Fatalf("expected SERVICE node %q, got type=%v ok=%v", "backend/api", typ, ok)
 	}
-	if typ, ok := nodeType(resp, "backend/store"); !ok || typ != observabilityv0.GraphNode_SERVICE {
+	if typ, ok := nodeType(resp, "backend/store"); !ok || typ != observabilityv1.GraphNode_SERVICE {
 		t.Fatalf("expected SERVICE node %q, got type=%v ok=%v", "backend/store", typ, ok)
 	}
 
@@ -140,11 +140,11 @@ func TestInventoryUsesServerWorkspaceNotCwd(t *testing.T) {
 	}
 }
 
-func logAt(at time.Time, message string) *observabilityv0.Log {
-	return &observabilityv0.Log{At: timestamppb.New(at), Message: message}
+func logAt(at time.Time, message string) *observabilityv1.Log {
+	return &observabilityv1.Log{At: timestamppb.New(at), Message: message}
 }
 
-func messages(logs []*observabilityv0.Log) []string {
+func messages(logs []*observabilityv1.Log) []string {
 	var out []string
 	for _, l := range logs {
 		out = append(out, l.Message)
@@ -184,7 +184,7 @@ func TestLogHistoryRoundTrip(t *testing.T) {
 		t.Fatalf("ActiveLogHistory(nil) = %v, want %v", got, want)
 	}
 
-	resp, err = server.ActiveLogHistory(context.Background(), &observabilityv0.LogRequest{From: timestamppb.New(t0.Add(time.Second))})
+	resp, err = server.ActiveLogHistory(context.Background(), &observabilityv1.LogRequest{From: timestamppb.New(t0.Add(time.Second))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,10 +270,10 @@ type fakeLogsServer struct {
 	ctx context.Context
 
 	mu  sync.Mutex
-	got []*observabilityv0.Log
+	got []*observabilityv1.Log
 }
 
-func (f *fakeLogsServer) Send(entry *observabilityv0.Log) error {
+func (f *fakeLogsServer) Send(entry *observabilityv1.Log) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.got = append(f.got, entry)
@@ -287,10 +287,10 @@ func (f *fakeLogsServer) SetTrailer(metadata.MD)       {}
 func (f *fakeLogsServer) SendMsg(m any) error          { return nil }
 func (f *fakeLogsServer) RecvMsg(m any) error          { return nil }
 
-func (f *fakeLogsServer) snapshot() []*observabilityv0.Log {
+func (f *fakeLogsServer) snapshot() []*observabilityv1.Log {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]*observabilityv0.Log, len(f.got))
+	out := make([]*observabilityv1.Log, len(f.got))
 	copy(out, f.got)
 	return out
 }

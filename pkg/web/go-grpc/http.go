@@ -10,7 +10,7 @@ import (
 	"time"
 
 	connectcors "connectrpc.com/cors"
-	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
+	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v1/cliv1connect"
 	"github.com/codefly-dev/golor"
 	"github.com/rs/cors"
 )
@@ -109,7 +109,7 @@ func (s *HTTPServer) handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	// Connect endpoint for the browser dashboard (Connect-ES) — the CLI service
-	// over the Connect / gRPC-Web protocols at /codefly.cli.v0.CLI/. This is the
+	// over the Connect / gRPC-Web protocols at /codefly.cli.v1.CLI/. This is the
 	// ONLY API the dashboard uses; it fully replaces the old grpc-gateway REST
 	// endpoint (/api/), which has been removed.
 	if s.impl != nil {

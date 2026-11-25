@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -76,8 +76,8 @@ func TestRecordBuildRecipePersistsAgentDeclaredBuildArgs(t *testing.T) {
 	}
 	service := serviceWithRecipe(t, "0.3.5", recipe)
 
-	plan := &builderv0.DockerBuildPlan{
-		Recipes: []*builderv0.DockerBuildRecipe{{
+	plan := &builderv1.DockerBuildPlan{
+		Recipes: []*builderv1.DockerBuildRecipe{{
 			Name:         "app",
 			Image:        "repo/app:v1",
 			Dockerfile:   "Dockerfile",
@@ -116,8 +116,8 @@ func TestRecordBuildRecipeRedactsSensitiveBuildArgs(t *testing.T) {
 	service := serviceWithRecipe(t, "0.3.5", recipe)
 
 	secret := "npm_s3cr3t-value"
-	plan := &builderv0.DockerBuildPlan{
-		Recipes: []*builderv0.DockerBuildRecipe{{
+	plan := &builderv1.DockerBuildPlan{
+		Recipes: []*builderv1.DockerBuildRecipe{{
 			Name:       "app",
 			Image:      "repo/app:v1",
 			Dockerfile: "Dockerfile",

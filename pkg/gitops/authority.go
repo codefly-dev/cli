@@ -17,7 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/wool"
@@ -157,7 +157,7 @@ func resolveContract(ctx context.Context, workspace *resources.Workspace, env *e
 		}
 		return modulecontract.Load(callee.Dir())
 	}
-	var infos []*basev0.ConfigurationInformation
+	var infos []*basev1.ConfigurationInformation
 	if provided != nil {
 		infos = provided.Infos
 	}

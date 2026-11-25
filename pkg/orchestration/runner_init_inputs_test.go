@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/agents/contract"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -39,7 +39,7 @@ func TestInitDeliversAcceptedDependencyAddressesWithoutStartingConsumer(t *testi
 	require.NoError(t, err)
 	instance := &services.Instance{
 		Workspace: world.Workspace, Module: producer.instance.Module, Service: service, Identity: identity,
-		Info: &agentv0.AgentInformation{},
+		Info: &agentv1.AgentInformation{},
 	}
 	instance.Runtime = &services.RuntimeInstance{Instance: instance, Runtime: startRealAgent(t, realAgentInputs)}
 	consumer, err := NewRunner(ctx, instance, world)
@@ -47,10 +47,10 @@ func TestInitDeliversAcceptedDependencyAddressesWithoutStartingConsumer(t *testi
 	consumer.runtimeContext = resources.RuntimeContextNative
 	consumer.endpoints, err = service.LoadEndpoints(ctx)
 	require.NoError(t, err)
-	consumer.WithTestRequest(&runtimev0.TestRequest{})
+	consumer.WithTestRequest(&runtimev1.TestRequest{})
 	_, err = consumer.Init(ctx)
 	require.ErrorContains(t, err, contract.RuntimeInitDependencyMappings)
-	instance.Info.Contract = &agentv0.AgentContract{Capabilities: []string{contract.RuntimeInitDependencyMappings}}
+	instance.Info.Contract = &agentv1.AgentContract{Capabilities: []string{contract.RuntimeInitDependencyMappings}}
 	_, err = consumer.Init(ctx)
 	require.NoError(t, err)
 	configuration, err := world.ConfigurationManager.GetSharedServiceConfiguration(ctx, "web/frontend")

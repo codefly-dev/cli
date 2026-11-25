@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	coreaudit "github.com/codefly-dev/core/agents/services/audit"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -27,7 +27,7 @@ var (
 // The artifact is named by the digest and platform actually scanned, which is
 // the scan identity: identical digests deduplicate onto one file while each
 // service's own task still records its association to it.
-func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace, evidence []*builderv0.ImageSBOM) error {
+func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace, evidence []*builderv1.ImageSBOM) error {
 	// Everything is encoded before anything is written, so a document that fails
 	// to encode cannot leave the earlier images of the same build stranded in the
 	// output directory as evidence of a run that failed.
@@ -59,7 +59,7 @@ func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace
 	return nil
 }
 
-func imageEvidenceFilename(image *builderv0.ImageSBOM) string {
+func imageEvidenceFilename(image *builderv1.ImageSBOM) string {
 	name := safeCIArtifactName(strings.TrimPrefix(image.GetDigest(), "sha256:"))
 	if platform := image.GetPlatform(); platform != "" {
 		name += "--" + safeCIArtifactName(platform)
@@ -67,7 +67,7 @@ func imageEvidenceFilename(image *builderv0.ImageSBOM) string {
 	return name + ".cdx.json"
 }
 
-func imageEvidenceAssociations(image *builderv0.ImageSBOM) []ImageAssociation {
+func imageEvidenceAssociations(image *builderv1.ImageSBOM) []ImageAssociation {
 	associations := make([]ImageAssociation, 0, len(image.GetSubjects()))
 	for _, subject := range image.GetSubjects() {
 		associations = append(associations, ImageAssociation{
@@ -93,7 +93,7 @@ func runAuditService(ctx context.Context, workspace *resources.Workspace, module
 	if err != nil {
 		return w.Wrap(err)
 	}
-	response, auditErr := coreaudit.AuditWithTrivyDatabaseRecovery(ctx, &builderv0.AuditRequest{
+	response, auditErr := coreaudit.AuditWithTrivyDatabaseRecovery(ctx, &builderv1.AuditRequest{
 		IncludeOutdated:        ciAuditIncludeOutdated,
 		IncludeDevDependencies: ciAuditIncludeDev,
 		FailOnVuln:             ciAuditFailOnVuln,
@@ -123,7 +123,7 @@ func runSBOMService(ctx context.Context, workspace *resources.Workspace, module 
 	if err != nil {
 		return w.Wrap(err)
 	}
-	response, err := instance.Builder.SBOM(ctx, &builderv0.SBOMRequest{IncludeDevDependencies: ciSBOMIncludeDev})
+	response, err := instance.Builder.SBOM(ctx, &builderv1.SBOMRequest{IncludeDevDependencies: ciSBOMIncludeDev})
 	if err != nil {
 		return w.Wrapf(err, "generate SBOM")
 	}
@@ -169,7 +169,7 @@ func loadCIBuilder(ctx context.Context, workspace *resources.Workspace, module *
 	return instance, nil
 }
 
-func summarizeAuditResponse(response *builderv0.AuditResponse) ReportAudit {
+func summarizeAuditResponse(response *builderv1.AuditResponse) ReportAudit {
 	summary := ReportAudit{}
 	if response == nil {
 		return summary
@@ -183,25 +183,25 @@ func summarizeAuditResponse(response *builderv0.AuditResponse) ReportAudit {
 	summary.Outdated = len(response.GetOutdated())
 	for _, finding := range response.GetFindings() {
 		switch finding.GetSeverity() {
-		case builderv0.AuditFinding_LOW:
+		case builderv1.AuditFinding_LOW:
 			summary.Low++
-		case builderv0.AuditFinding_MEDIUM:
+		case builderv1.AuditFinding_MEDIUM:
 			summary.Medium++
-		case builderv0.AuditFinding_HIGH:
+		case builderv1.AuditFinding_HIGH:
 			summary.High++
-		case builderv0.AuditFinding_CRITICAL:
+		case builderv1.AuditFinding_CRITICAL:
 			summary.Critical++
 		}
 	}
 	return summary
 }
 
-func auditHasHighSeverity(response *builderv0.AuditResponse) bool {
+func auditHasHighSeverity(response *builderv1.AuditResponse) bool {
 	if response == nil {
 		return false
 	}
 	for _, finding := range response.GetFindings() {
-		if finding.GetSeverity() >= builderv0.AuditFinding_HIGH {
+		if finding.GetSeverity() >= builderv1.AuditFinding_HIGH {
 			return true
 		}
 	}

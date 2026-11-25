@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/module"
 	modzip "golang.org/x/mod/zip"
@@ -117,10 +117,10 @@ func TestAGoModuleBuildNeedsNoCredentialWithThePrefetchedProxy(t *testing.T) {
 	t.Setenv("GOPRIVATE", "")
 	prefetch := newGoModulePrefetch()
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
-	recipe := &builderv0.DockerBuildRecipe{
+	recipe := &builderv1.DockerBuildRecipe{
 		Name: "app", Dockerfile: "Dockerfile", Context: ".", Image: "codefly-go-module-prefetch-test:latest",
 		Platforms:         []string{"linux/" + goArch(t)},
-		GoModuleDownloads: []*builderv0.GoModuleDownload{{ModuleRoot: "code", ProxyContext: "gomodproxy"}},
+		GoModuleDownloads: []*builderv1.GoModuleDownload{{ModuleRoot: "code", ProxyContext: "gomodproxy"}},
 	}
 	proxies, err := prefetch.proxiesFor(ctx, contextDir, recipe)
 	require.NoError(t, err)
@@ -346,8 +346,8 @@ func TestTwoServicesPinningOneRepositoryFetchWithoutGitMaintainingTheCache(t *te
 
 	prefetch := newGoModulePrefetch()
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
-	proxies, err := prefetch.proxiesFor(ctx, contextDir, &builderv0.DockerBuildRecipe{
-		Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{
+	proxies, err := prefetch.proxiesFor(ctx, contextDir, &builderv1.DockerBuildRecipe{
+		Name: "app", GoModuleDownloads: []*builderv1.GoModuleDownload{
 			{ModuleRoot: "one", ProxyContext: "oneproxy"},
 			{ModuleRoot: "other", ProxyContext: "otherproxy"},
 		},

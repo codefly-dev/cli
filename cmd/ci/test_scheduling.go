@@ -6,7 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 )
@@ -24,7 +24,7 @@ type testOwnershipKey struct{}
 // unresolvable or unstartable.
 func prepareTestTasks(ctx context.Context, workspace *resources.Workspace, tasks []ciScheduledTask, suite string, reporter *Reporter, ids []string) {
 	type inspection struct {
-		info *agentv0.AgentInformation
+		info *agentv1.AgentInformation
 		err  error
 	}
 	inspected := map[string]inspection{}
@@ -56,7 +56,7 @@ func prepareTestTasks(ctx context.Context, workspace *resources.Workspace, tasks
 		}
 		mode, err := orchestration.TestDependencyMode(probe.info, testRequestForSuite(suite, false))
 		task.preparationErr = err
-		if err == nil && mode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+		if err == nil && mode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 			task.resources = []string{task.planned.Service}
 			if reporter != nil {
 				reporter.setTaskResources(ids[i], task.resources)

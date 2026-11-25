@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/portclaims"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -67,7 +67,7 @@ func (c *localPortClaims) settle(destination string) {
 // configurations reference each other's endpoints then resolve: each derives
 // the other's address before either initializes, and each Init proposes the
 // address the other was given.
-func (world *World) localNetworkMappings(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint, runtimeContext *basev0.RuntimeContext) ([]*basev0.NetworkMapping, error) {
+func (world *World) localNetworkMappings(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev1.Endpoint, runtimeContext *basev1.RuntimeContext) ([]*basev1.NetworkMapping, error) {
 	if world.temporaryPorts {
 		world.ports.mu.Lock()
 		defer world.ports.mu.Unlock()
@@ -101,7 +101,7 @@ func (world *World) localNetworkMappings(ctx context.Context, identity *resource
 // A ledger that cannot be used leaves the derived ports in place for the rest
 // of the run: the claim only prevents a collision the first-Init port guard
 // still reports.
-func (world *World) claimLocalPorts(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint, runtimeContext *basev0.RuntimeContext) {
+func (world *World) claimLocalPorts(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev1.Endpoint, runtimeContext *basev1.RuntimeContext) {
 	claims := &world.ports
 	if claims.ledger == nil || claims.failed || world.temporaryPorts || world.LocalNetworkManager == nil || world.Workspace == nil || world.Env == nil {
 		return

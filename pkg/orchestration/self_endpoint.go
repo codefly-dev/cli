@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -26,7 +26,7 @@ import (
 //
 // Core carries this from v0.5.6 (codefly-dev/core#640); until that release the
 // CLI pins the pull request's commit.
-func SelfEndpointEnvironmentVariables(ctx context.Context, mappings []*basev0.NetworkMapping, networkAccess *basev0.NetworkAccess) map[string]string {
+func SelfEndpointEnvironmentVariables(ctx context.Context, mappings []*basev1.NetworkMapping, networkAccess *basev1.NetworkAccess) map[string]string {
 	manager := resources.NewEnvironmentVariableManager()
 	if err := manager.AddSelfEndpoints(ctx, mappings, networkAccess); err != nil {
 		return nil

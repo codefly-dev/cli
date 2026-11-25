@@ -7,7 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -23,7 +23,7 @@ func runSyncDriftService(ctx context.Context, workspace *resources.Workspace, mo
 		return w.Wrapf(err, "create sync drift flow")
 	}
 	flow.WithOutputSink(cli.NewOutputSink())
-	flow.WithSyncRequest(&builderv0.SyncRequest{DryRun: true})
+	flow.WithSyncRequest(&builderv1.SyncRequest{DryRun: true})
 	if err := flow.InitManagers(ctx); err != nil {
 		return stopFlowAfterError(flow, w.Wrapf(err, "initialize sync drift managers"))
 	}

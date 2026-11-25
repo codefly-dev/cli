@@ -18,7 +18,7 @@ import (
 // credential, a documents module it calls on a person's behalf, and a chat
 // module it does not.
 const consumingSolution = `schema_version: codefly.solution-manifest/v1
-protocol_version: codefly.solution/v0
+protocol_version: codefly.solution/v1
 agent:
   publisher: codefly.dev
   kind: codefly:solution

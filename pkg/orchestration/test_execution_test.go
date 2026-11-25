@@ -5,23 +5,23 @@ import (
 	"strings"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 )
 
-func testInformation(suites ...*agentv0.TestSuiteCapability) *agentv0.AgentInformation {
-	return &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-		Test: &agentv0.TestValidationCapability{Supported: true, Suites: suites},
+func testInformation(suites ...*agentv1.TestSuiteCapability) *agentv1.AgentInformation {
+	return &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+		Test: &agentv1.TestValidationCapability{Supported: true, Suites: suites},
 	}}
 }
 
 func TestResolveTestExecutionLegacyPreservesRequestAndUsesNoDependencies(t *testing.T) {
-	original := &runtimev0.TestRequest{Suite: "custom", Filters: []string{"Auth"}}
-	execution, err := resolveTestExecution(&agentv0.AgentInformation{}, original)
+	original := &runtimev1.TestRequest{Suite: "custom", Filters: []string{"Auth"}}
+	execution, err := resolveTestExecution(&agentv1.AgentInformation{}, original)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if execution.DependencyMode != agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+	if execution.DependencyMode != agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 		t.Fatalf("dependency mode = %s, want NONE", execution.DependencyMode)
 	}
 	if !execution.legacy || execution.Request.GetSuite() != "custom" {
@@ -35,14 +35,14 @@ func TestResolveTestExecutionLegacyPreservesRequestAndUsesNoDependencies(t *test
 
 func TestResolveTestExecutionSelectsAdvertisedDefaultAndExplicitSuite(t *testing.T) {
 	info := testInformation(
-		&agentv0.TestSuiteCapability{
+		&agentv1.TestSuiteCapability{
 			Name:           "unit",
-			DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+			DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
 			DefaultSuite:   true,
 		},
-		&agentv0.TestSuiteCapability{
+		&agentv1.TestSuiteCapability{
 			Name:           "integration",
-			DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES,
+			DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES,
 		},
 	)
 
@@ -50,35 +50,35 @@ func TestResolveTestExecutionSelectsAdvertisedDefaultAndExplicitSuite(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defaultExecution.Request.GetSuite() != "unit" || defaultExecution.DependencyMode != agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+	if defaultExecution.Request.GetSuite() != "unit" || defaultExecution.DependencyMode != agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 		t.Fatalf("default execution = %#v", defaultExecution)
 	}
 
-	explicitExecution, err := resolveTestExecution(info, &runtimev0.TestRequest{Suite: "integration"})
+	explicitExecution, err := resolveTestExecution(info, &runtimev1.TestRequest{Suite: "integration"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if explicitExecution.DependencyMode != agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES {
+	if explicitExecution.DependencyMode != agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES {
 		t.Fatalf("explicit dependency mode = %s", explicitExecution.DependencyMode)
 	}
 }
 
 func TestResolveTestExecutionRejectsInvalidAuthoritativeContracts(t *testing.T) {
-	valid := &agentv0.TestSuiteCapability{
+	valid := &agentv1.TestSuiteCapability{
 		Name:           "unit",
-		DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+		DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
 		DefaultSuite:   true,
 	}
 	tests := []struct {
 		name    string
-		info    *agentv0.AgentInformation
-		request *runtimev0.TestRequest
+		info    *agentv1.AgentInformation
+		request *runtimev1.TestRequest
 		want    string
 	}{
-		{name: "unsupported suite", info: testInformation(valid), request: &runtimev0.TestRequest{Suite: "e2e"}, want: "not advertised"},
-		{name: "no default", info: testInformation(&agentv0.TestSuiteCapability{Name: "unit", DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}), want: "does not advertise a default"},
+		{name: "unsupported suite", info: testInformation(valid), request: &runtimev1.TestRequest{Suite: "e2e"}, want: "not advertised"},
+		{name: "no default", info: testInformation(&agentv1.TestSuiteCapability{Name: "unit", DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}), want: "does not advertise a default"},
 		{name: "multiple defaults", info: testInformation(valid, valid), want: "multiple default"},
-		{name: "unspecified mode", info: testInformation(&agentv0.TestSuiteCapability{Name: "unit", DefaultSuite: true}), want: "incomplete dependency mode"},
+		{name: "unspecified mode", info: testInformation(&agentv1.TestSuiteCapability{Name: "unit", DefaultSuite: true}), want: "incomplete dependency mode"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,7 +102,7 @@ func (executor *recordingTestExecutor) GetExecutor(_ context.Context, action Act
 func TestRuntimeTestPolicyUsesTargetStartAsDependencyBarrier(t *testing.T) {
 	origin := "app/frontend"
 	recorder := &recordingTestExecutor{}
-	policy, err := NewRuntimeTestPolicy(context.Background(), nil, recorder, origin, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES)
+	policy, err := NewRuntimeTestPolicy(context.Background(), nil, recorder, origin, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestRuntimeTestPolicyUsesTargetStartAsDependencyBarrier(t *testing.T) {
 func TestRuntimeTestPolicyStartsTargetForStackSuite(t *testing.T) {
 	origin := "app/frontend"
 	recorder := &recordingTestExecutor{}
-	policy, err := NewRuntimeTestPolicy(context.Background(), nil, recorder, origin, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
+	policy, err := NewRuntimeTestPolicy(context.Background(), nil, recorder, origin, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestRuntimeTestPolicyStartsTargetForStackSuite(t *testing.T) {
 }
 
 func TestRuntimeTestPolicyRejectsUnspecifiedDependencyMode(t *testing.T) {
-	if _, err := NewRuntimeTestPolicy(context.Background(), nil, &recordingTestExecutor{}, "app/frontend", agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_UNSPECIFIED); err == nil {
+	if _, err := NewRuntimeTestPolicy(context.Background(), nil, &recordingTestExecutor{}, "app/frontend", agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_UNSPECIFIED); err == nil {
 		t.Fatal("unspecified dependency mode was accepted")
 	}
 }

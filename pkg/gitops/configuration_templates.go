@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 )
@@ -27,7 +27,7 @@ import (
 type deliveredTemplate struct {
 	// producer is the module/service unique of the service that declared it.
 	producer string
-	template *basev0.ConfigurationValueTemplate
+	template *basev1.ConfigurationValueTemplate
 	// fetchable are the secret keys the producer's own ExternalSecret reads
 	// from the store under the producer's own scope. A reference outside this
 	// set names a key the store holds nowhere: the producer's plain values
@@ -49,7 +49,7 @@ type renderTemplates map[string]deliveredTemplate
 // only come from the same producer, and they must agree.
 func collectRenderTemplates(
 	into renderTemplates,
-	configurations map[string]*basev0.Configuration,
+	configurations map[string]*basev1.Configuration,
 	secretKeys map[string][]string,
 ) error {
 	uniques := make([]string, 0, len(configurations))
@@ -133,9 +133,9 @@ func externalSecretTemplateExpression(delivered deliveredTemplate) (string, []st
 		}
 		primitives = append(primitives, primitive)
 		switch reference.GetEscape() {
-		case basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_NONE:
+		case basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_NONE:
 			expression.WriteString("{{ ." + primitive + " }}")
-		case basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO:
+		case basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO:
 			expression.WriteString("{{ ." + primitive + ` | urlquery | replace "+" "%20" }}`)
 		default:
 			return "", nil, fmt.Errorf("secret key %s: escape %s has no External Secrets translation", primitive, reference.GetEscape())
@@ -212,7 +212,7 @@ func producerPrimitiveRemote(
 // ExternalSecret would never sync. Core refuses the same shape at evaluation:
 // EvaluateConfigurationValueTemplate looks the reference up among the
 // producer's values, and an assembled one carries no value to find.
-func refusesNestedAssembly(configuration *basev0.Configuration, value *basev0.ConfigurationValue) error {
+func refusesNestedAssembly(configuration *basev1.Configuration, value *basev1.ConfigurationValue) error {
 	for _, segment := range value.GetTemplate().GetSegments() {
 		reference := segment.GetReference()
 		if reference == nil {
@@ -234,7 +234,7 @@ func refusesNestedAssembly(configuration *basev0.Configuration, value *basev0.Co
 	return nil
 }
 
-func referencesASecret(template *basev0.ConfigurationValueTemplate) bool {
+func referencesASecret(template *basev1.ConfigurationValueTemplate) bool {
 	for _, segment := range template.GetSegments() {
 		if segment.GetReference() != nil {
 			return true

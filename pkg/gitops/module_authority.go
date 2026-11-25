@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -63,9 +63,9 @@ func moduleAuthorityInjection(service *resources.Service, env *environments.Envi
 	if scope.Module == "" || scope.Namespace == "" {
 		return serviceInjection{}, fmt.Errorf("module-authority service %s has no resolved namespace, so its mesh principal cannot be named", unique)
 	}
-	configuration := &basev0.Configuration{Origin: resources.ConfigurationWorkspace}
+	configuration := &basev1.Configuration{Origin: resources.ConfigurationWorkspace}
 	carrier := func(group, key string, secret bool) string {
-		return resources.ConfigurationValueEnvironmentKey(configuration, group, &basev0.ConfigurationValue{Key: key, Secret: secret})
+		return resources.ConfigurationValueEnvironmentKey(configuration, group, &basev1.ConfigurationValue{Key: key, Secret: secret})
 	}
 	public := map[string]string{}
 	for key, value := range map[string]string{

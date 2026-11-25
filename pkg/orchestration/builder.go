@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/builder"
@@ -24,7 +24,7 @@ import (
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
 	"github.com/codefly-dev/core/services"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -35,7 +35,7 @@ type Builder struct {
 	instance *services.Instance
 
 	// API
-	endpoints []*basev0.Endpoint
+	endpoints []*basev1.Endpoint
 
 	world *World
 
@@ -45,18 +45,18 @@ type Builder struct {
 	outputPropertyForSync  *BuilderSyncManager
 
 	imageDigest   string
-	imageBindings []*builderv0.BuildImageInput
+	imageBindings []*builderv1.BuildImageInput
 
 	// localRuntime builds a recipe for this machine's container engine, keeping
 	// generated files out of authored services and naming the image by its inputs.
 	localRuntime bool
 	// localRuntimeBuilt is the recipe a local runtime build ran, as built: named
 	// by its inputs and narrowed to the engine's platform (recipeAsBuilt).
-	localRuntimeBuilt *builderv0.DockerBuildRecipe
+	localRuntimeBuilt *builderv1.DockerBuildRecipe
 	// Detached scoped execution projections; producer plans remain unchanged.
-	executionRecipes map[string]*builderv0.DockerBuildRecipe
+	executionRecipes map[string]*builderv1.DockerBuildRecipe
 
-	imageEvidence  []*builderv0.ImageSBOM
+	imageEvidence  []*builderv1.ImageSBOM
 	resolvedImages []coresbom.ResolvedImage
 
 	// planned is the recipe the agent emitted in the plan phase, with its Go
@@ -64,12 +64,12 @@ type Builder struct {
 	// it. See Plan.
 	planned *plannedBuild
 
-	syncResponse     *builderv0.SyncResponse
+	syncResponse     *builderv1.SyncResponse
 	syncSkipped      bool
-	deploymentOutput *builderv0.DeploymentOutput
+	deploymentOutput *builderv1.DeploymentOutput
 	// deployedConfiguration is the configuration the service's Deploy exposed
 	// to its consumers, as the builder returned it.
-	deployedConfiguration *basev0.Configuration
+	deployedConfiguration *basev1.Configuration
 	// deployedSecretKeys are the secret keys the service's own promotable
 	// deployment reads from secret-<service> — the exact key set its own
 	// ExternalSecret fetches from the store under its own scope.
@@ -92,13 +92,13 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 	return b, nil
 }
 
-func (b *Builder) DeploymentOutput() *builderv0.DeploymentOutput {
+func (b *Builder) DeploymentOutput() *builderv1.DeploymentOutput {
 	return b.deploymentOutput
 }
 
 // DeployedConfiguration returns the configuration the service's Deploy exposed
 // to its consumers, or nil before a Deploy.
-func (b *Builder) DeployedConfiguration() *basev0.Configuration {
+func (b *Builder) DeployedConfiguration() *basev1.Configuration {
 	return b.deployedConfiguration
 }
 
@@ -119,7 +119,7 @@ func (b *Builder) ImageDigest() string {
 
 // ImageEvidence returns the digest-bound image SBOMs this builder collected, or
 // nil when the flow did not ask for them.
-func (b *Builder) ImageEvidence() []*builderv0.ImageSBOM {
+func (b *Builder) ImageEvidence() []*builderv1.ImageSBOM {
 	return b.imageEvidence
 }
 
@@ -175,7 +175,7 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get depednencies")
 	}
 
-	resp, err := b.instance.Builder.Init(ctx, &builderv0.InitRequest{
+	resp, err := b.instance.Builder.Init(ctx, &builderv1.InitRequest{
 		DependenciesEndpoints: dependenciesEndpoints,
 	})
 	if err != nil {
@@ -194,7 +194,7 @@ func (b *Builder) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot call init")
 	}
 
-	if resp.State != nil && resp.State.State != builderv0.InitStatus_SUCCESS {
+	if resp.State != nil && resp.State.State != builderv1.InitStatus_SUCCESS {
 		return nil, w.NewError("service instance is not ready")
 	}
 
@@ -216,7 +216,7 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 
 	request := b.world.SyncRequest
 	if request == nil {
-		request = &builderv0.SyncRequest{}
+		request = &builderv1.SyncRequest{}
 	}
 	if request.GetDryRun() {
 		advertised, supported := ValidationOperationSupport(b.instance.Info, ValidationSync)
@@ -237,7 +237,7 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	if resp == nil || resp.State == nil {
 		return nil, w.NewError("cannot sync %s: agent returned no status", b.instance.Unique())
 	}
-	if resp.State.State != builderv0.SyncStatus_SUCCESS {
+	if resp.State.State != builderv1.SyncStatus_SUCCESS {
 		message := statusDiagnostic(resp.State.Message, "agent reported sync failure")
 		return nil, w.NewError("cannot sync %s: %s", b.instance.Unique(), message)
 	}
@@ -255,7 +255,7 @@ func (b *Builder) Sync(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (b *Builder) SyncResponse() *builderv0.SyncResponse {
+func (b *Builder) SyncResponse() *builderv1.SyncResponse {
 	return b.syncResponse
 }
 
@@ -265,7 +265,7 @@ func (b *Builder) SyncSkipped() bool {
 	return b.syncSkipped
 }
 
-func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuildContext, error) {
+func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv1.DockerBuildContext, error) {
 	if err := b.world.checkDisposableImagePolicy(); err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func (b *Builder) buildRecipeRoot() (string, error) {
 type plannedBuild struct {
 	recipeRoot string
 	outputDir  string
-	response   *builderv0.BuildResponse
+	response   *builderv1.BuildResponse
 	// prefetched maps a recipe name to its prefetched Go module proxies and git
 	// source mirrors, keyed by the build-context name the recipe declares.
 	prefetched map[string]map[string]string
@@ -367,7 +367,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create build recipe directory %s", outputDir)
 	}
 
-	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{
+	resp, err := b.instance.Builder.Build(ctx, &builderv1.BuildRequest{
 		BuildContext:    builder.BuildContextFromDocker(dockerContext),
 		OutputDirectory: outputDir,
 	})
@@ -379,7 +379,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(fmt.Errorf("builder returned nil response without error"), "gRPC contract violation")
 	}
 
-	if resp.State != nil && resp.State.State != builderv0.BuildStatus_SUCCESS {
+	if resp.State != nil && resp.State.State != builderv1.BuildStatus_SUCCESS {
 		return nil, w.NewError("call to build failed")
 	}
 
@@ -615,11 +615,11 @@ func checkImageArchitecture(image, architecture string) error {
 	return nil
 }
 
-func dockerBuildResult(result *builderv0.BuildResult) *builderv0.DockerBuildResult {
+func dockerBuildResult(result *builderv1.BuildResult) *builderv1.DockerBuildResult {
 	if result == nil {
 		return nil
 	}
-	kind, ok := result.Kind.(*builderv0.BuildResult_DockerBuildResult)
+	kind, ok := result.Kind.(*builderv1.BuildResult_DockerBuildResult)
 	if !ok {
 		return nil
 	}

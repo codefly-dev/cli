@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliv1 "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +14,7 @@ import (
 func TestTerminalServer_OpenAndList(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{
+	resp, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{
 		Rows: 24,
 		Cols: 80,
 	})
@@ -24,38 +24,38 @@ func TestTerminalServer_OpenAndList(t *testing.T) {
 	assert.NotEmpty(t, resp.WorkingDir)
 
 	// List should return the session
-	listResp, err := srv.List(context.Background(), &cliv0.ListTerminalsRequest{})
+	listResp, err := srv.List(context.Background(), &cliv1.ListTerminalsRequest{})
 	require.NoError(t, err)
 	require.Len(t, listResp.Terminals, 1)
 	assert.Equal(t, resp.SessionId, listResp.Terminals[0].SessionId)
 
 	// Cleanup
-	_, err = srv.Close(context.Background(), &cliv0.CloseTerminalRequest{SessionId: resp.SessionId})
+	_, err = srv.Close(context.Background(), &cliv1.CloseTerminalRequest{SessionId: resp.SessionId})
 	require.NoError(t, err)
 }
 
 func TestTerminalServer_Close(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{})
+	resp, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{})
 	require.NoError(t, err)
 
-	_, err = srv.Close(context.Background(), &cliv0.CloseTerminalRequest{SessionId: resp.SessionId})
+	_, err = srv.Close(context.Background(), &cliv1.CloseTerminalRequest{SessionId: resp.SessionId})
 	require.NoError(t, err)
 
 	// List should be empty
-	listResp, err := srv.List(context.Background(), &cliv0.ListTerminalsRequest{})
+	listResp, err := srv.List(context.Background(), &cliv1.ListTerminalsRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, listResp.Terminals)
 
 	// Close again should error
-	_, err = srv.Close(context.Background(), &cliv0.CloseTerminalRequest{SessionId: resp.SessionId})
+	_, err = srv.Close(context.Background(), &cliv1.CloseTerminalRequest{SessionId: resp.SessionId})
 	assert.Error(t, err)
 }
 
 func TestTerminalServer_CloseNotFound(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
-	_, err := srv.Close(context.Background(), &cliv0.CloseTerminalRequest{SessionId: "nonexistent"})
+	_, err := srv.Close(context.Background(), &cliv1.CloseTerminalRequest{SessionId: "nonexistent"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "session not found")
 }
@@ -63,13 +63,13 @@ func TestTerminalServer_CloseNotFound(t *testing.T) {
 func TestTerminalServer_Resize(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{
+	resp, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{
 		Rows: 24,
 		Cols: 80,
 	})
 	require.NoError(t, err)
 
-	_, err = srv.Resize(context.Background(), &cliv0.ResizeTerminalRequest{
+	_, err = srv.Resize(context.Background(), &cliv1.ResizeTerminalRequest{
 		SessionId: resp.SessionId,
 		Rows:      40,
 		Cols:      120,
@@ -77,13 +77,13 @@ func TestTerminalServer_Resize(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup
-	_, err = srv.Close(context.Background(), &cliv0.CloseTerminalRequest{SessionId: resp.SessionId})
+	_, err = srv.Close(context.Background(), &cliv1.CloseTerminalRequest{SessionId: resp.SessionId})
 	require.NoError(t, err)
 }
 
 func TestTerminalServer_ResizeNotFound(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
-	_, err := srv.Resize(context.Background(), &cliv0.ResizeTerminalRequest{
+	_, err := srv.Resize(context.Background(), &cliv1.ResizeTerminalRequest{
 		SessionId: "nonexistent",
 		Rows:      40,
 		Cols:      120,
@@ -95,7 +95,7 @@ func TestTerminalServer_ResizeNotFound(t *testing.T) {
 func TestTerminalServer_OpenBadDir(t *testing.T) {
 	srv := NewTerminalServer("/nonexistent/path/that/should/not/exist")
 
-	_, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{
+	_, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{
 		Module: "bad",
 	})
 	assert.Error(t, err)
@@ -105,22 +105,22 @@ func TestTerminalServer_OpenBadDir(t *testing.T) {
 func TestTerminalServer_MultipleSessions(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp1, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{})
+	resp1, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{})
 	require.NoError(t, err)
 
-	resp2, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{})
+	resp2, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{})
 	require.NoError(t, err)
 
 	assert.NotEqual(t, resp1.SessionId, resp2.SessionId)
 
-	listResp, err := srv.List(context.Background(), &cliv0.ListTerminalsRequest{})
+	listResp, err := srv.List(context.Background(), &cliv1.ListTerminalsRequest{})
 	require.NoError(t, err)
 	assert.Len(t, listResp.Terminals, 2)
 
 	// Close both
 	srv.Shutdown()
 
-	listResp, err = srv.List(context.Background(), &cliv0.ListTerminalsRequest{})
+	listResp, err = srv.List(context.Background(), &cliv1.ListTerminalsRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, listResp.Terminals)
 }
@@ -128,7 +128,7 @@ func TestTerminalServer_MultipleSessions(t *testing.T) {
 func TestTerminalServer_Cleanup(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{
+	resp, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{
 		Shell: "/bin/sh",
 	})
 	require.NoError(t, err)
@@ -146,7 +146,7 @@ func TestTerminalServer_Cleanup(t *testing.T) {
 	// Cleanup should remove the dead session
 	srv.Cleanup()
 
-	listResp, err := srv.List(context.Background(), &cliv0.ListTerminalsRequest{})
+	listResp, err := srv.List(context.Background(), &cliv1.ListTerminalsRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, listResp.Terminals)
 }
@@ -154,7 +154,7 @@ func TestTerminalServer_Cleanup(t *testing.T) {
 func TestTerminalServer_DefaultShell(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{})
+	resp, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{})
 	require.NoError(t, err)
 
 	// Should use $SHELL or fallback to /bin/sh
@@ -166,7 +166,7 @@ func TestTerminalServer_DefaultShell(t *testing.T) {
 func TestTerminalServer_CustomShell(t *testing.T) {
 	srv := NewTerminalServer(os.TempDir())
 
-	resp, err := srv.Open(context.Background(), &cliv0.OpenTerminalRequest{
+	resp, err := srv.Open(context.Background(), &cliv1.OpenTerminalRequest{
 		Shell: "/bin/sh",
 	})
 	require.NoError(t, err)

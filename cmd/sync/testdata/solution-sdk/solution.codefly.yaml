@@ -1,8 +1,8 @@
 # A solution that names no executor: nothing it runs reads an agent block,
 # so it declares none. It reaches both modules through the authority hop,
 # so its backend declares no service-dependencies on them.
-schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 api:
     consumes:
         - id: accounts

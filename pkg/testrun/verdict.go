@@ -15,15 +15,15 @@ package testrun
 import (
 	"fmt"
 
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 )
 
 // Passed reports whether the agent returned an explicit PASSED run outcome.
 //
 // Nothing else is success. Not an absent outcome, not UNKNOWN, not a
 // deprecated status field, and not an empty failure list.
-func Passed(resp *runtimev0.TestResponse) bool {
-	return resp.GetResult().GetState() == runtimev0.TestRunResult_PASSED
+func Passed(resp *runtimev1.TestResponse) bool {
+	return resp.GetResult().GetState() == runtimev1.TestRunResult_PASSED
 }
 
 // State is the run's outcome as the agent reported it, with one substitution:
@@ -34,19 +34,19 @@ func Passed(resp *runtimev0.TestResponse) bool {
 // demoted to FAILED: an aggregate that cannot say what happened must say
 // that, and callers rank UNKNOWN above FAILED so one unit without a verdict
 // decides the whole run.
-func State(resp *runtimev0.TestResponse) runtimev0.TestRunResult_State {
+func State(resp *runtimev1.TestResponse) runtimev1.TestRunResult_State {
 	if resp == nil {
-		return runtimev0.TestRunResult_ERRORED
+		return runtimev1.TestRunResult_ERRORED
 	}
 	return resp.GetResult().GetState()
 }
 
 // RefuseUnlessPassed turns the verdict into an error, naming what was run.
-func RefuseUnlessPassed(resp *runtimev0.TestResponse, unique string, summarize func(*runtimev0.TestResponse) string) error {
+func RefuseUnlessPassed(resp *runtimev1.TestResponse, unique string, summarize func(*runtimev1.TestResponse) string) error {
 	switch state := State(resp); state {
-	case runtimev0.TestRunResult_PASSED:
+	case runtimev1.TestRunResult_PASSED:
 		return nil
-	case runtimev0.TestRunResult_UNKNOWN:
+	case runtimev1.TestRunResult_UNKNOWN:
 		return fmt.Errorf(
 			"tests for %s returned no run-level outcome: the runtime agent reported %q, which is not a verdict this run may treat as success",
 			unique, state)

@@ -1,7 +1,7 @@
 # A composed solution that names no executor: Load refuses it (agent is
 # required), and it asks for no authority.
-schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 api:
     exposes:
         - id: http

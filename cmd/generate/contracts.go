@@ -18,7 +18,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/generators"
 	"github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	resources "github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/services"
@@ -252,7 +252,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		// The agent reports each endpoint's API details at Load. An http
 		// endpoint has none to report (its document is the service's file), so
 		// a service whose carriers are all http is not loaded.
-		var loadedByName map[string]*basev0.Endpoint
+		var loadedByName map[string]*basev1.Endpoint
 		for _, endpoint := range carriers {
 			if endpoint.Api == standards.HTTP || loadedByName != nil {
 				continue
@@ -261,7 +261,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			if loadErr != nil {
 				return nil, fmt.Errorf("cannot load endpoints for service %s: %w", serviceName, loadErr)
 			}
-			loadedByName = make(map[string]*basev0.Endpoint, len(loaded))
+			loadedByName = make(map[string]*basev1.Endpoint, len(loaded))
 			for _, endpoint := range loaded {
 				loadedByName[endpoint.Name] = endpoint
 			}
@@ -296,9 +296,9 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 
 // exportedEndpointsByService groups the exported endpoints by owning service,
 // the services sorted.
-func exportedEndpointsByService(endpoints []*basev0.Endpoint) ([]string, map[string][]*basev0.Endpoint) {
+func exportedEndpointsByService(endpoints []*basev1.Endpoint) ([]string, map[string][]*basev1.Endpoint) {
 	var serviceNames []string
-	byService := map[string][]*basev0.Endpoint{}
+	byService := map[string][]*basev1.Endpoint{}
 	for _, endpoint := range endpoints {
 		if _, seen := byService[endpoint.Service]; !seen {
 			serviceNames = append(serviceNames, endpoint.Service)
@@ -309,7 +309,7 @@ func exportedEndpointsByService(endpoints []*basev0.Endpoint) ([]string, map[str
 	return serviceNames, byService
 }
 
-func anyCarriesContract(exported []*basev0.Endpoint) bool {
+func anyCarriesContract(exported []*basev1.Endpoint) bool {
 	for _, endpoint := range exported {
 		if endpointCarriesContract(endpoint.Api) {
 			return true
@@ -320,8 +320,8 @@ func anyCarriesContract(exported []*basev0.Endpoint) bool {
 
 // contractCarriers keeps the exported endpoints that carry a machine-readable
 // contract, saying why each of the others is skipped.
-func contractCarriers(_ context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto, serviceHasOpenAPI bool) []*basev0.Endpoint {
-	var carriers []*basev0.Endpoint
+func contractCarriers(_ context.Context, serviceName string, exported []*basev1.Endpoint, serviceHasProto, serviceHasOpenAPI bool) []*basev1.Endpoint {
+	var carriers []*basev1.Endpoint
 	for _, endpoint := range exported {
 		switch {
 		case !endpointCarriesContract(endpoint.Api):
@@ -433,7 +433,7 @@ func endpointCarriesContract(api string) bool {
 
 // writeEndpointContract writes one endpoint's contract files and returns its
 // catalog entry.
-func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, surface []composition.APIContractService, opts generateOptions) (*composition.APIContractEndpoint, error) {
+func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev1.Endpoint, surface []composition.APIContractService, opts generateOptions) (*composition.APIContractEndpoint, error) {
 	physicalDir := filepath.Join(opts.writeDir, service.Name, endpoint.Name)
 	canonicalDir := filepath.Join(opts.canonicalOutput, service.Name, endpoint.Name)
 	if err := os.RemoveAll(physicalDir); err != nil {
@@ -469,7 +469,7 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 // an HTTP-shaped endpoint that carries no GrpcAPI, so the package and services
 // are derived from the built descriptor set rather than from endpoint API
 // details.
-func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, surface []composition.APIContractService, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
+func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev1.Endpoint, surface []composition.APIContractService, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
 	protoDir := filepath.Join(service.Dir(), "proto")
 	if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 		return nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
@@ -484,7 +484,7 @@ func writeProtobufContract(ctx context.Context, module *resources.Module, servic
 
 // writeBuiltProtobufContract keeps the export boundary independently testable
 // with real descriptor bytes, without a provider toolchain or released agent.
-func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, surface []composition.APIContractService, physicalDir, canonicalDir string, descriptorSet []byte) (*composition.APIContractEndpoint, error) {
+func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev1.Endpoint, surface []composition.APIContractService, physicalDir, canonicalDir string, descriptorSet []byte) (*composition.APIContractEndpoint, error) {
 	protoDir := filepath.Join(service.Dir(), "proto")
 	var set descriptorpb.FileDescriptorSet
 	if err := googleproto.Unmarshal(descriptorSet, &set); err != nil {
@@ -618,7 +618,7 @@ func surfacePackages(surface []composition.APIContractService) map[string]struct
 	return packages
 }
 
-func writeRestContract(ctx context.Context, module *resources.Module, endpoint *basev0.Endpoint, rest *basev0.RestAPI, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
+func writeRestContract(ctx context.Context, module *resources.Module, endpoint *basev1.Endpoint, rest *basev1.RestAPI, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
 	if len(rest.Openapi) == 0 {
 		return nil, fmt.Errorf("endpoint %s has no OpenAPI document", endpoint.Name)
 	}
@@ -1080,7 +1080,7 @@ func appendScalarField(node *yaml.Node, key, value string) {
 // route's path is already the full path (core's loader holds every route to
 // start with its group's path), so the group's path is never prepended: doing
 // so wrote "/v1/x/y/v1/x/y" into every catalog.
-func contractRoutes(groups []*basev0.RestRouteGroup) []composition.APIContractRoute {
+func contractRoutes(groups []*basev1.RestRouteGroup) []composition.APIContractRoute {
 	var routes []composition.APIContractRoute
 	for _, group := range groups {
 		for _, route := range group.Routes {

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -139,7 +139,7 @@ type secretKeys struct {
 	stored map[string]bool
 }
 
-func declaredSecretKeys(confs []*basev0.Configuration) *secretKeys {
+func declaredSecretKeys(confs []*basev1.Configuration) *secretKeys {
 	declared := &secretKeys{groups: map[string]map[string]map[string]bool{}, stored: map[string]bool{}}
 	for _, conf := range confs {
 		for _, info := range conf.Infos {

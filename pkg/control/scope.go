@@ -6,8 +6,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	codecore "github.com/codefly-dev/core/code"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 )
 
 // ServiceScope is a view of the plane bound to ONE service. File and git
@@ -219,12 +219,12 @@ func (s *serviceScope) ReleaseRepositorySnapshot(ctx context.Context, req Releas
 
 func (s *serviceScope) Build(ctx context.Context, req BuildRequest) (BuildResult, error) {
 	if s.behavior != nil {
-		response, err := s.behavior.Build(ctx, &runtimev0.BuildRequest{})
+		response, err := s.behavior.Build(ctx, &runtimev1.BuildRequest{})
 		if err != nil {
 			return BuildResult{}, err
 		}
 		return BuildResult{
-			Succeeded: response.GetStatus().GetState() == runtimev0.BuildStatus_SUCCESS,
+			Succeeded: response.GetStatus().GetState() == runtimev1.BuildStatus_SUCCESS,
 			Output:    response.GetOutput(),
 		}, nil
 	}
@@ -238,7 +238,7 @@ func (s *serviceScope) Test(ctx context.Context, req *TestRequest) (CheckResult,
 	// entirely — so a fixture request must go the long way round rather than be
 	// silently dropped here.
 	if s.behavior != nil && req.RuntimeContext == "" && req.Fixture == "" && req.Env == "" {
-		request := &runtimev0.TestRequest{Suite: req.Suite}
+		request := &runtimev1.TestRequest{Suite: req.Suite}
 		if req.Filter != "" {
 			request.Filters = []string{req.Filter}
 		}
@@ -258,12 +258,12 @@ func (s *serviceScope) Test(ctx context.Context, req *TestRequest) (CheckResult,
 
 func (s *serviceScope) Lint(ctx context.Context, req CheckRequest) (CheckResult, error) {
 	if s.behavior != nil && req.RuntimeContext == "" {
-		response, err := s.behavior.Lint(ctx, &runtimev0.LintRequest{})
+		response, err := s.behavior.Lint(ctx, &runtimev1.LintRequest{})
 		if err != nil {
 			return CheckResult{}, err
 		}
 		result := CheckResult{
-			Passed: response.GetStatus().GetState() == runtimev0.LintStatus_SUCCESS,
+			Passed: response.GetStatus().GetState() == runtimev1.LintStatus_SUCCESS,
 			Output: response.GetOutput(),
 		}
 		for _, diagnostic := range response.GetDiagnostics() {
@@ -290,7 +290,7 @@ func (s *serviceScope) RunChecks(ctx context.Context, req CheckRequest) (CheckRe
 
 func (s *serviceScope) ListCommands(ctx context.Context) ([]Command, error) {
 	if s.behavior != nil {
-		response, err := s.behavior.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+		response, err := s.behavior.ListCommands(ctx, &agentv1.ListCommandsRequest{})
 		if err != nil {
 			return nil, err
 		}
@@ -308,7 +308,7 @@ func (s *serviceScope) ListCommands(ctx context.Context) ([]Command, error) {
 
 func (s *serviceScope) RunCommand(ctx context.Context, command string, args []string) (CommandResult, error) {
 	if s.behavior != nil {
-		response, err := s.behavior.RunCommand(ctx, &agentv0.RunPluginCommandRequest{Command: command, Args: args})
+		response, err := s.behavior.RunCommand(ctx, &agentv1.RunPluginCommandRequest{Command: command, Args: args})
 		if err != nil {
 			return CommandResult{}, err
 		}
@@ -325,6 +325,6 @@ func (s *serviceScope) Stop(ctx context.Context) error {
 		_, err := s.plane.Stop(ctx, StopRequest{})
 		return err
 	}
-	_, err := s.behavior.Stop(ctx, &runtimev0.StopRequest{})
+	_, err := s.behavior.Stop(ctx, &runtimev1.StopRequest{})
 	return err
 }

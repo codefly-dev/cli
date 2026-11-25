@@ -19,8 +19,8 @@ import (
 	agentservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
@@ -64,7 +64,7 @@ const exposedConfigurationName = "runtime"
 // realAgent answers Init with the mappings it intends to serve, shaped by the
 // behaviour its process was started with.
 type realAgent struct {
-	runtimev0.UnimplementedRuntimeServer
+	runtimev1.UnimplementedRuntimeServer
 	mode string
 }
 
@@ -72,8 +72,8 @@ type realAgent struct {
 // open for the lifetime of the process, serving whatever protocol the endpoint
 // declares, so the reported address is one a readiness probe can actually reach
 // — a bare listener on an endpoint declaring gRPC is not a served endpoint.
-func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping, error) {
-	accepted := make([]*basev0.NetworkMapping, 0, len(proposed))
+func boundMappings(proposed []*basev1.NetworkMapping) ([]*basev1.NetworkMapping, error) {
+	accepted := make([]*basev1.NetworkMapping, 0, len(proposed))
 	for _, mapping := range proposed {
 		// The proposal's ports were bound then released, so the kernel can hand
 		// one of them straight back. Keep asking until the port really differs,
@@ -92,9 +92,9 @@ func boundMappings(proposed []*basev0.NetworkMapping) ([]*basev0.NetworkMapping,
 			server := &http.Server{Handler: http.NotFoundHandler(), ReadHeaderTimeout: time.Second}
 			go func() { _ = server.Serve(listener) }()
 		}
-		accepted = append(accepted, &basev0.NetworkMapping{
+		accepted = append(accepted, &basev1.NetworkMapping{
 			Endpoint: endpoint,
-			Instances: []*basev0.NetworkInstance{
+			Instances: []*basev1.NetworkInstance{
 				network.Container(endpoint, port),
 				network.Native(endpoint, port),
 				network.PublicDefault(endpoint, port),
@@ -125,7 +125,7 @@ func bindPortOtherThan(excluded map[uint16]bool) (net.Listener, error) {
 	return nil, fmt.Errorf("no free port outside the proposed set")
 }
 
-func proposedPorts(proposed []*basev0.NetworkMapping) map[uint16]bool {
+func proposedPorts(proposed []*basev1.NetworkMapping) map[uint16]bool {
 	ports := make(map[uint16]bool)
 	for _, mapping := range proposed {
 		for _, instance := range mapping.GetInstances() {
@@ -135,10 +135,10 @@ func proposedPorts(proposed []*basev0.NetworkMapping) map[uint16]bool {
 	return ports
 }
 
-func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+func (agent *realAgent) Init(_ context.Context, req *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
 	if agent.mode == realAgentRefuses {
-		return &runtimev0.InitResponse{Status: &runtimev0.InitStatus{
-			State: runtimev0.InitStatus_ERROR, Message: realAgentRefusalMessage,
+		return &runtimev1.InitResponse{Status: &runtimev1.InitStatus{
+			State: runtimev1.InitStatus_ERROR, Message: realAgentRefusalMessage,
 		}}, nil
 	}
 	if image := req.GetRuntimeImage(); image != "" {
@@ -153,7 +153,7 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 	mappings := req.GetProposedNetworkMappings()
 	if agent.mode == realAgentLegacy {
 		// A pre-contract agent answers READY without naming any mapping.
-		return &runtimev0.InitResponse{Status: &runtimev0.InitStatus{State: runtimev0.InitStatus_READY}}, nil
+		return &runtimev1.InitResponse{Status: &runtimev1.InitStatus{State: runtimev1.InitStatus_READY}}, nil
 	}
 	if agent.mode != realAgentEcho && agent.mode != realAgentInputs {
 		var err error
@@ -176,8 +176,8 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 		mappings[0].Instances = append(mappings[0].Instances,
 			network.Native(mappings[0].GetEndpoint(), 65000))
 	}
-	return &runtimev0.InitResponse{
-		Status:                &runtimev0.InitStatus{State: runtimev0.InitStatus_READY},
+	return &runtimev1.InitResponse{
+		Status:                &runtimev1.InitStatus{State: runtimev1.InitStatus_READY},
 		NetworkMappings:       mappings,
 		RuntimeConfigurations: exportedConfigurations(agent.mode, req),
 	}, nil
@@ -186,19 +186,19 @@ func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*ru
 // exportedConfigurations is what the agent exports from its Init. The inputs
 // mode echoes the invocation inputs the request carried, so the parent asserts
 // on what actually crossed the process boundary rather than on its own intent.
-func exportedConfigurations(mode string, req *runtimev0.InitRequest) []*basev0.Configuration {
-	values := []*basev0.ConfigurationValue{{Key: "session", Value: "exposed"}}
+func exportedConfigurations(mode string, req *runtimev1.InitRequest) []*basev1.Configuration {
+	values := []*basev1.ConfigurationValue{{Key: "session", Value: "exposed"}}
 	if mode == realAgentInputs {
-		values = []*basev0.ConfigurationValue{{Key: "fixture", Value: req.GetFixture()}}
+		values = []*basev1.ConfigurationValue{{Key: "fixture", Value: req.GetFixture()}}
 		if req.GetRuntimeImage() != "" {
-			values = append(values, &basev0.ConfigurationValue{Key: "runtime-image", Value: req.GetRuntimeImage()})
+			values = append(values, &basev1.ConfigurationValue{Key: "runtime-image", Value: req.GetRuntimeImage()})
 		}
 		for key, value := range req.GetOverrides() {
-			values = append(values, &basev0.ConfigurationValue{Key: key, Value: value})
+			values = append(values, &basev1.ConfigurationValue{Key: key, Value: value})
 		}
 		for _, mapping := range req.GetDependenciesNetworkMappings() {
 			instance := resources.FilterNetworkInstance(context.Background(), mapping.GetInstances(), resources.NewNativeNetworkAccess())
-			values = append(values, &basev0.ConfigurationValue{Key: resources.EndpointDestination(mapping.GetEndpoint()), Value: instance.GetAddress()})
+			values = append(values, &basev1.ConfigurationValue{Key: resources.EndpointDestination(mapping.GetEndpoint()), Value: instance.GetAddress()})
 		}
 	}
 	origin := "web/gateway"
@@ -206,17 +206,17 @@ func exportedConfigurations(mode string, req *runtimev0.InitRequest) []*basev0.C
 		endpoint := mappings[0].GetEndpoint()
 		origin = endpoint.GetModule() + "/" + endpoint.GetService()
 	}
-	return []*basev0.Configuration{{
+	return []*basev1.Configuration{{
 		Origin: origin,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name:                exposedConfigurationName,
 			ConfigurationValues: values,
 		}},
 	}}
 }
 
-func (agent *realAgent) Stop(context.Context, *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
-	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+func (agent *realAgent) Stop(context.Context, *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
+	return &runtimev1.StopResponse{Status: &runtimev1.StopStatus{State: runtimev1.StopStatus_SUCCESS}}, nil
 }
 
 // TestRealAgentProcess is the agent subprocess entry point, not a test: it only
@@ -229,7 +229,7 @@ func TestRealAgentProcess(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
-	runtimev0.RegisterRuntimeServer(server, &realAgent{mode: mode})
+	runtimev1.RegisterRuntimeServer(server, &realAgent{mode: mode})
 	fmt.Printf("%s%s\n", realAgentAddress, listener.Addr().String())
 	_ = os.Stdout.Sync()
 	require.NoError(t, server.Serve(listener))
@@ -333,7 +333,7 @@ func gatewayRunner(t *testing.T, runtime *agentservices.RuntimeAgent) (*Runner, 
 	return runner, world
 }
 
-func nativeAddressFor(t *testing.T, mappings []*basev0.NetworkMapping, name string) string {
+func nativeAddressFor(t *testing.T, mappings []*basev1.NetworkMapping, name string) string {
 	t.Helper()
 	for _, mapping := range mappings {
 		if mapping.GetEndpoint().GetName() != name {
@@ -386,7 +386,7 @@ func TestInitPublishesTheAgentAcceptedPortsEverywhere(t *testing.T) {
 	require.True(t, flow.ServiceReachable(ctx, "web/gateway"), "the accepted port is bound by the agent process")
 
 	// Environment projection: Start writes the runner's own mappings out.
-	require.NoError(t, AppendRuntimeEnvironmentToFile(ctx, outputEnv, &basev0.ServiceIdentity{
+	require.NoError(t, AppendRuntimeEnvironmentToFile(ctx, outputEnv, &basev1.ServiceIdentity{
 		Workspace: world.Workspace.Name, Module: "web", Name: "gateway",
 	}, resources.NewRuntimeContextNative(), "", nil, runner.networkMappings))
 	exported, err := os.ReadFile(outputEnv)
@@ -423,7 +423,7 @@ func TestInitAcceptsAnEchoingAgent(t *testing.T) {
 	}
 }
 
-func gatewayEndpointNamed(t *testing.T, endpoints []*basev0.Endpoint, name string) *basev0.Endpoint {
+func gatewayEndpointNamed(t *testing.T, endpoints []*basev1.Endpoint, name string) *basev1.Endpoint {
 	t.Helper()
 	for _, endpoint := range endpoints {
 		if endpoint.Name == name {
@@ -491,7 +491,7 @@ func freePort(t *testing.T) uint16 {
 	return port
 }
 
-func hostOfNativeInstance(t *testing.T, mappings []*basev0.NetworkMapping, name string) string {
+func hostOfNativeInstance(t *testing.T, mappings []*basev1.NetworkMapping, name string) string {
 	t.Helper()
 	for _, mapping := range mappings {
 		if mapping.GetEndpoint().GetName() != name {

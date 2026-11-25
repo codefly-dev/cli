@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/proto"
 )
@@ -13,7 +13,7 @@ import (
 // cache buildx imports and exports, and the workspace's own record of images it
 // already built from the same inputs, which --rebuild opts out of.
 type BuildCacheFlags struct {
-	options builderv0.BuildCacheOptions
+	options builderv1.BuildCacheOptions
 	rebuild bool
 }
 
@@ -45,7 +45,7 @@ func (f *BuildCacheFlags) Bind(cmd *cobra.Command) {
 	flags.StringVar(&f.options.Backend, "cache-backend", defaultCacheBackend, "Cache transport backend (registry)")
 }
 
-func (f *BuildCacheFlags) Policy() (*builderv0.BuildCacheOptions, error) {
+func (f *BuildCacheFlags) Policy() (*builderv1.BuildCacheOptions, error) {
 	if len(f.options.Imports) == 0 && len(f.options.Exports) == 0 && f.options.Scope == "" && f.options.Mode == "" && f.options.Backend == defaultCacheBackend {
 		return nil, nil
 	}

@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 var (
@@ -82,7 +82,7 @@ modifies code.`,
 	},
 }
 
-func auditService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*builderv0.AuditResponse, error) {
+func auditService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*builderv1.AuditResponse, error) {
 	w := wool.Get(ctx).In("auditService", wool.NameField(service.Name))
 	instance, err := services.Load(ctx, workspace, module, service)
 	if err != nil {
@@ -96,7 +96,7 @@ func auditService(ctx context.Context, workspace *resources.Workspace, module *r
 	if _, err := instance.Builder.Load(ctx); err != nil {
 		return nil, w.Wrapf(err, "builder load")
 	}
-	return instance.Builder.Audit(ctx, &builderv0.AuditRequest{
+	return instance.Builder.Audit(ctx, &builderv1.AuditRequest{
 		IncludeOutdated:        includeOutdated,
 		FailOnVuln:             failOnVuln,
 		IncludeDevDependencies: includeDev,
@@ -106,19 +106,19 @@ func auditService(ctx context.Context, workspace *resources.Workspace, module *r
 // hasHighSeverity is the gate for --fail-on-vuln; the agent's
 // fail_on_vuln flag also makes the agent return ERROR, but we honor
 // the CLI flag locally too so the exit code matches the table output.
-func hasHighSeverity(r *builderv0.AuditResponse) bool {
+func hasHighSeverity(r *builderv1.AuditResponse) bool {
 	if r == nil {
 		return false
 	}
 	for _, f := range r.Findings {
-		if f.Severity >= builderv0.AuditFinding_HIGH {
+		if f.Severity >= builderv1.AuditFinding_HIGH {
 			return true
 		}
 	}
 	return false
 }
 
-func emitJSON(r *builderv0.AuditResponse) error {
+func emitJSON(r *builderv1.AuditResponse) error {
 	payload, err := (protojson.MarshalOptions{
 		Indent:            "  ",
 		UseProtoNames:     true,
@@ -133,7 +133,7 @@ func emitJSON(r *builderv0.AuditResponse) error {
 	return nil
 }
 
-func emitTable(identity *resources.ServiceIdentity, r *builderv0.AuditResponse) {
+func emitTable(identity *resources.ServiceIdentity, r *builderv1.AuditResponse) {
 	if r == nil {
 		fmt.Println("(no response)")
 		return

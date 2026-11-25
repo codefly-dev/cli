@@ -19,7 +19,7 @@ import (
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 var (
@@ -80,7 +80,7 @@ Examples:
 	},
 }
 
-func upgradeService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*builderv0.UpgradeResponse, error) {
+func upgradeService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) (*builderv1.UpgradeResponse, error) {
 	if workspace == nil {
 		return nil, fmt.Errorf("workspace is nil")
 	}
@@ -101,14 +101,14 @@ func upgradeService(ctx context.Context, workspace *resources.Workspace, module 
 	if _, err := instance.Builder.Load(ctx); err != nil {
 		return nil, w.Wrapf(err, "builder load")
 	}
-	return instance.Builder.Upgrade(ctx, &builderv0.UpgradeRequest{
+	return instance.Builder.Upgrade(ctx, &builderv1.UpgradeRequest{
 		IncludeMajor: includeMajor,
 		DryRun:       dryRun,
 		Only:         only,
 	})
 }
 
-func emitJSON(r *builderv0.UpgradeResponse) error {
+func emitJSON(r *builderv1.UpgradeResponse) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(r); err != nil {
@@ -117,7 +117,7 @@ func emitJSON(r *builderv0.UpgradeResponse) error {
 	return nil
 }
 
-func emitTable(identity *resources.ServiceIdentity, r *builderv0.UpgradeResponse) {
+func emitTable(identity *resources.ServiceIdentity, r *builderv1.UpgradeResponse) {
 	if r == nil {
 		fmt.Println("(no response)")
 		return

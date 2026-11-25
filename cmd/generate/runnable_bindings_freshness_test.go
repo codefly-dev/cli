@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/stretchr/testify/require"
@@ -34,18 +34,18 @@ func TestCheckRunnableBindingsRefusesStaleValuesWithUnchangedKeys(t *testing.T) 
 	target := filepath.Join(root, "configurations", "local", RunnableBindingsGroup+".env")
 	raw, err := os.ReadFile(target)
 	require.NoError(t, err)
-	info := &basev0.ConfigurationInformation{Name: RunnableBindingsGroup}
+	info := &basev1.ConfigurationInformation{Name: RunnableBindingsGroup}
 	for _, line := range strings.Split(string(raw), "\n") {
 		if key, value, found := strings.Cut(line, "="); found && !strings.HasPrefix(line, "#") {
-			info.ConfigurationValues = append(info.ConfigurationValues, &basev0.ConfigurationValue{Key: key, Value: value})
+			info.ConfigurationValues = append(info.ConfigurationValues, &basev1.ConfigurationValue{Key: key, Value: value})
 		}
 	}
 	require.Len(t, info.ConfigurationValues, 1)
 	require.NoError(t, CheckRunnableBindings(ctx, ws, env, info))
-	for name, change := range map[string]func(*runnablev0.PreparedBinding){
-		"address":  func(binding *runnablev0.PreparedBinding) { binding.Call.Address += "/stale" },
-		"policy":   func(binding *runnablev0.PreparedBinding) { binding.Policy.MaxAttempts++ },
-		"contract": func(binding *runnablev0.PreparedBinding) { binding.Contract.Input.Fields[0].Name += "Old" },
+	for name, change := range map[string]func(*runnablev1.PreparedBinding){
+		"address":  func(binding *runnablev1.PreparedBinding) { binding.Call.Address += "/stale" },
+		"policy":   func(binding *runnablev1.PreparedBinding) { binding.Policy.MaxAttempts++ },
+		"contract": func(binding *runnablev1.PreparedBinding) { binding.Contract.Input.Fields[0].Name += "Old" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			stale := proto.CloneOf(info)
@@ -60,7 +60,7 @@ func TestCheckRunnableBindingsRefusesStaleValuesWithUnchangedKeys(t *testing.T) 
 		})
 	}
 	extra := proto.CloneOf(info)
-	extra.ConfigurationValues = append(extra.ConfigurationValues, &basev0.ConfigurationValue{Key: "OBSOLETE", Value: "old"})
+	extra.ConfigurationValues = append(extra.ConfigurationValues, &basev1.ConfigurationValue{Key: "OBSOLETE", Value: "old"})
 	require.ErrorContains(t, CheckRunnableBindings(ctx, ws, env, extra), "out of date")
 	env.NamingScope = "another-run"
 	require.ErrorContains(t, CheckRunnableBindings(ctx, ws, env, info), "out of date")

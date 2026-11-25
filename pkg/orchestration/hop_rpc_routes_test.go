@@ -12,7 +12,7 @@ import (
 
 	"github.com/codefly-dev/authority/libraries/hop/go/routing"
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -81,8 +81,8 @@ func bulletList(names []string) string {
 
 func hopRoutesOf(t *testing.T, workspace *resources.Workspace) (routing.Routing, error) {
 	t.Helper()
-	hop := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{Name: "hop", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "MODULES", Value: "owner"}}}}}
-	group, err := generatedHopRoutes(context.Background(), workspace, []*basev0.Configuration{hop})
+	hop := &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{Name: "hop", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "MODULES", Value: "owner"}}}}}
+	group, err := generatedHopRoutes(context.Background(), workspace, []*basev1.Configuration{hop})
 	if err != nil {
 		return routing.Routing{}, err
 	}
@@ -198,15 +198,15 @@ func TestHopRoutesReadForeignServiceSelectionsFromContract(t *testing.T) {
 func TestHopRoutesAreDeliveredEmptyWhenNoModuleIsNamed(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	workspace := rpcHopWorkspace(t, []string{"chat"}, nil)
-	hop := func(modules string) []*basev0.Configuration {
-		return []*basev0.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-			Name: "hop", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "MODULES", Value: modules}},
+	hop := func(modules string) []*basev1.Configuration {
+		return []*basev1.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+			Name: "hop", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "MODULES", Value: modules}},
 		}}}}
 	}
 
 	// No module named, and no hop group at all: the declaring service is handed
 	// the group with an empty ROUTES, so its declaration resolves.
-	for name, configs := range map[string][]*basev0.Configuration{
+	for name, configs := range map[string][]*basev1.Configuration{
 		"empty hop/MODULES": hop(""),
 		"no hop group":      nil,
 	} {
@@ -240,7 +240,7 @@ func TestHopRoutesAreDeliveredEmptyWhenNoModuleIsNamed(t *testing.T) {
 		"modules/authority/module.codefly.yaml":               "name: authority\nservices:\n - name: hop\n",
 		"modules/authority/services/hop/service.codefly.yaml": "name: hop\nversion: 0.0.0\nagent: {kind: runtime::service, name: go-grpc, version: 0.0.16, publisher: codefly.ai}\n",
 	})
-	for _, configs := range [][]*basev0.Configuration{hop(""), hop("owner"), nil} {
+	for _, configs := range [][]*basev1.Configuration{hop(""), hop("owner"), nil} {
 		group, groupErr := generatedHopRoutes(context.Background(), none, configs)
 		require.NoError(t, groupErr)
 		require.Nil(t, group)

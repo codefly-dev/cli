@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/tui"
@@ -156,7 +156,7 @@ func testServiceCommand(cmd *cobra.Command, args []string) error {
 	// Render the structured test report (counts + failed cases with
 	// captured output) whenever the agent returned one — on success and
 	// failure alike. This is the agent's Test RPC structured response.
-	var resp *runtimev0.TestResponse
+	var resp *runtimev1.TestResponse
 	if flow != nil {
 		resp = flow.OriginTestResponse()
 	}
@@ -254,7 +254,7 @@ func serviceArgs(cmd *cobra.Command, args []string) error {
 	return cobra.MaximumNArgs(1)(cmd, positional)
 }
 
-func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev0.TestRequest, derived solutionrun.RunInputs) (*orchestration.Flow, error) {
+func initRunService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, request *runtimev1.TestRequest, derived solutionrun.RunInputs) (*orchestration.Flow, error) {
 	w := wool.Get(ctx).In("testService", wool.ThisField(resources.WithUnique(service)))
 	defer w.Catch()
 
@@ -354,8 +354,8 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 // buildTestRequest assembles a TestRequest from the CLI flags. Returns
 // a zero-value request (run all tests, default settings) when no flags
 // were supplied so existing callers see no behavioural change.
-func buildTestRequest(extraArgs []string) *runtimev0.TestRequest {
-	return &runtimev0.TestRequest{
+func buildTestRequest(extraArgs []string) *runtimev1.TestRequest {
+	return &runtimev1.TestRequest{
 		Target:    testTarget,
 		Verbose:   testVerbose,
 		Race:      testRace,

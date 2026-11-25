@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -53,8 +53,8 @@ func (m *recordingManager) RunnerDoStart(context.Context) (*OutputProperty, erro
 func (m *recordingManager) RunnerDoBuild(context.Context) (*OutputProperty, error)       { return nil, nil }
 func (m *recordingManager) RunnerDoLint(context.Context) (*OutputProperty, error)        { return nil, nil }
 func (m *recordingManager) RunnerDoTest(context.Context) (*OutputProperty, error)        { return nil, nil }
-func (m *recordingManager) RunnerTestResponse() *runtimev0.TestResponse                  { return nil }
-func (m *recordingManager) RunnerStartedArtifact() *runtimev0.StartedArtifact            { return nil }
+func (m *recordingManager) RunnerTestResponse() *runtimev1.TestResponse                  { return nil }
+func (m *recordingManager) RunnerStartedArtifact() *runtimev1.StartedArtifact            { return nil }
 func (m *recordingManager) DoSetCallback(func(ctx context.Context, action Action) error) {}
 func (m *recordingManager) DoSetFailureSink(func(unique, msg string))                    {}
 

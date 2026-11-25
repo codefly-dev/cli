@@ -3,28 +3,28 @@ package orchestration
 import (
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 )
 
 func TestValidationSupportDistinguishesLegacyUnsupportedAndSupported(t *testing.T) {
 	tests := []struct {
 		name       string
-		info       *agentv0.AgentInformation
+		info       *agentv1.AgentInformation
 		action     ActionType
 		advertised bool
 		supported  bool
 	}{
-		{name: "legacy", info: &agentv0.AgentInformation{}, action: RuntimeLint},
+		{name: "legacy", info: &agentv1.AgentInformation{}, action: RuntimeLint},
 		{
 			name:       "explicitly unsupported",
-			info:       &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{}},
+			info:       &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{}},
 			action:     RuntimeLint,
 			advertised: true,
 		},
 		{
 			name: "lint supported",
-			info: &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-				Lint: &agentv0.ValidationOperationCapability{Supported: true},
+			info: &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+				Lint: &agentv1.ValidationOperationCapability{Supported: true},
 			}},
 			action:     RuntimeLint,
 			advertised: true,
@@ -32,8 +32,8 @@ func TestValidationSupportDistinguishesLegacyUnsupportedAndSupported(t *testing.
 		},
 		{
 			name: "compile supported",
-			info: &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-				Compile: &agentv0.ValidationOperationCapability{Supported: true},
+			info: &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+				Compile: &agentv1.ValidationOperationCapability{Supported: true},
 			}},
 			action:     RuntimeBuild,
 			advertised: true,
@@ -41,8 +41,8 @@ func TestValidationSupportDistinguishesLegacyUnsupportedAndSupported(t *testing.
 		},
 		{
 			name: "test supported",
-			info: &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-				Test: &agentv0.TestValidationCapability{Supported: true},
+			info: &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+				Test: &agentv1.TestValidationCapability{Supported: true},
 			}},
 			action:     RuntimeTest,
 			advertised: true,
@@ -50,7 +50,7 @@ func TestValidationSupportDistinguishesLegacyUnsupportedAndSupported(t *testing.
 		},
 		{
 			name:       "non-validation action",
-			info:       &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{}},
+			info:       &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{}},
 			action:     RuntimeStart,
 			advertised: false,
 			supported:  false,
@@ -68,12 +68,12 @@ func TestValidationSupportDistinguishesLegacyUnsupportedAndSupported(t *testing.
 }
 
 func TestValidationOperationSupportCoversBuilderCapabilities(t *testing.T) {
-	info := &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-		Audit:         &agentv0.ValidationOperationCapability{Supported: true},
-		ArtifactBuild: &agentv0.ValidationOperationCapability{Supported: true},
-		Sbom:          &agentv0.ValidationOperationCapability{Supported: true},
-		Sync:          &agentv0.ValidationOperationCapability{Supported: true},
-		SourcePackage: &agentv0.ValidationOperationCapability{Supported: true},
+	info := &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+		Audit:         &agentv1.ValidationOperationCapability{Supported: true},
+		ArtifactBuild: &agentv1.ValidationOperationCapability{Supported: true},
+		Sbom:          &agentv1.ValidationOperationCapability{Supported: true},
+		Sync:          &agentv1.ValidationOperationCapability{Supported: true},
+		SourcePackage: &agentv1.ValidationOperationCapability{Supported: true},
 	}}
 	for _, operation := range []ValidationOperation{ValidationAudit, ValidationArtifactBuild, ValidationSBOM, ValidationSync, ValidationSourcePackage} {
 		advertised, supported := ValidationOperationSupport(info, operation)
@@ -81,7 +81,7 @@ func TestValidationOperationSupportCoversBuilderCapabilities(t *testing.T) {
 			t.Fatalf("operation %q support = (%v, %v)", operation, advertised, supported)
 		}
 	}
-	if advertised, supported := ValidationOperationSupport(&agentv0.AgentInformation{}, ValidationAudit); advertised || supported {
+	if advertised, supported := ValidationOperationSupport(&agentv1.AgentInformation{}, ValidationAudit); advertised || supported {
 		t.Fatalf("legacy operation support = (%v, %v), want compatibility probe", advertised, supported)
 	}
 }

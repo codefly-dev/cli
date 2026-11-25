@@ -35,7 +35,7 @@ resolves service agents.
 
 A unary, idempotent method an owner service already publishes becomes a
 Runnable by **derivation, not by authoring**. The method carries core's
-`codefly.runnable.v0.operation` option; `codefly generate runnables` reads it
+`codefly.runnable.v1.operation` option; `codefly generate runnables` reads it
 off the `contract.binpb` that `generate contracts` already published and writes
 a SERVICE-facility package per marked method under `contracts/runnables`. Core
 owns the option, the descriptor-to-bounded-schema projection and

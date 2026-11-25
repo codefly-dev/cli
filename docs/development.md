@@ -304,7 +304,7 @@ The CLI depends on two sibling packages:
 - Agent lifecycle: `services.Instance`, `services.Runtime`, `services.Builder`
 - Network management: `network.RuntimeManager`, `network.RemoteManager`
 - Configuration management: `configurations.Manager`
-- gRPC proto definitions: `codefly/base/v0`, `codefly/services/runtime/v0`, etc.
+- gRPC proto definitions: `codefly/base/v1`, `codefly/services/runtime/v1`, etc.
 
 ### `wool` (github.com/codefly-dev/wool)
 

@@ -12,10 +12,10 @@ import (
 
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc/connectivity"
@@ -54,10 +54,10 @@ type AgentSession struct {
 	descriptor *serviceDescriptor
 	agent      *resources.Agent
 	connection *manager.AgentConn
-	code       codev0.CodeClient
-	agentAPI   agentv0.AgentClient
-	builder    builderv0.BuilderClient
-	runtime    runtimev0.RuntimeClient
+	code       codev1.CodeClient
+	agentAPI   agentv1.AgentClient
+	builder    builderv1.BuilderClient
+	runtime    runtimev1.RuntimeClient
 	builderMu  sync.Mutex
 	builderOK  bool
 	runtimeMu  sync.Mutex
@@ -186,7 +186,7 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 	if err != nil {
 		return nil, fmt.Errorf("load agent %s: %w", agentName, err)
 	}
-	info, err := agentv0.NewAgentClient(connection.GRPCConn()).GetAgentInformation(loadCtx, &agentv0.AgentInformationRequest{})
+	info, err := agentv1.NewAgentClient(connection.GRPCConn()).GetAgentInformation(loadCtx, &agentv1.AgentInformationRequest{})
 	if err == nil {
 		err = contract.Check(info.GetContract())
 	}
@@ -199,10 +199,10 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 		descriptor: descriptor,
 		agent:      agent,
 		connection: connection,
-		code:       codev0.NewCodeClient(connection.GRPCConn()),
-		agentAPI:   agentv0.NewAgentClient(connection.GRPCConn()),
-		builder:    builderv0.NewBuilderClient(connection.GRPCConn()),
-		runtime:    runtimev0.NewRuntimeClient(connection.GRPCConn()),
+		code:       codev1.NewCodeClient(connection.GRPCConn()),
+		agentAPI:   agentv1.NewAgentClient(connection.GRPCConn()),
+		builder:    builderv1.NewBuilderClient(connection.GRPCConn()),
+		runtime:    runtimev1.NewRuntimeClient(connection.GRPCConn()),
 	}
 	s.mu.Lock()
 	if s.closed {
@@ -231,13 +231,13 @@ func initializeBuilder(ctx context.Context, session *AgentSession) error {
 	if session.builderOK {
 		return nil
 	}
-	response, err := session.builder.Load(ctx, &builderv0.LoadRequest{
+	response, err := session.builder.Load(ctx, &builderv1.LoadRequest{
 		Identity: session.descriptor.identity,
 	})
 	if err != nil {
 		return fmt.Errorf("builder Load: %w", err)
 	}
-	if response == nil || response.GetState().GetState() != builderv0.LoadStatus_READY {
+	if response == nil || response.GetState().GetState() != builderv1.LoadStatus_READY {
 		return fmt.Errorf("builder Load did not become ready: %s", response.GetState().GetMessage())
 	}
 	session.builderOK = true
@@ -274,24 +274,24 @@ func initializeRuntime(ctx context.Context, session *AgentSession) error {
 	if err != nil {
 		return fmt.Errorf("build local environment: %w", err)
 	}
-	loadResponse, err := session.runtime.Load(ctx, &runtimev0.LoadRequest{
+	loadResponse, err := session.runtime.Load(ctx, &runtimev1.LoadRequest{
 		Identity:    descriptor.identity,
 		Environment: environmentProto,
 	})
 	if err != nil {
 		return fmt.Errorf("runtime Load: %w", err)
 	}
-	if loadResponse == nil || loadResponse.GetStatus().GetState() != runtimev0.LoadStatus_READY {
+	if loadResponse == nil || loadResponse.GetStatus().GetState() != runtimev1.LoadStatus_READY {
 		return fmt.Errorf("runtime Load did not become ready: %s", loadResponse.GetStatus().GetMessage())
 	}
 	if descriptor.workspace == nil {
-		initResponse, initErr := session.runtime.Init(ctx, &runtimev0.InitRequest{
+		initResponse, initErr := session.runtime.Init(ctx, &runtimev1.InitRequest{
 			RuntimeContext: resources.NewRuntimeContextNative(),
 		})
 		if initErr != nil {
 			return fmt.Errorf("runtime Init: %w", initErr)
 		}
-		if initResponse == nil || initResponse.GetStatus().GetState() != runtimev0.InitStatus_READY {
+		if initResponse == nil || initResponse.GetStatus().GetState() != runtimev1.InitStatus_READY {
 			return fmt.Errorf("runtime Init did not become ready: %s", initResponse.GetStatus().GetMessage())
 		}
 		return nil
@@ -320,14 +320,14 @@ func initializeRuntime(ctx context.Context, session *AgentSession) error {
 	if err != nil {
 		return fmt.Errorf("generate local runtime mappings: %w", err)
 	}
-	initResponse, err := session.runtime.Init(ctx, &runtimev0.InitRequest{
+	initResponse, err := session.runtime.Init(ctx, &runtimev1.InitRequest{
 		RuntimeContext:          resources.NewRuntimeContextNative(),
 		ProposedNetworkMappings: mappings,
 	})
 	if err != nil {
 		return fmt.Errorf("runtime Init: %w", err)
 	}
-	if initResponse == nil || initResponse.GetStatus().GetState() != runtimev0.InitStatus_READY {
+	if initResponse == nil || initResponse.GetStatus().GetState() != runtimev1.InitStatus_READY {
 		return fmt.Errorf("runtime Init did not become ready: %s", initResponse.GetStatus().GetMessage())
 	}
 	return nil

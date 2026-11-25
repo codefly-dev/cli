@@ -8,7 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 )
@@ -146,8 +146,8 @@ func derivedRunnableReach(ctx context.Context, workspace *resources.Workspace, e
 
 // calledEndpoints is the endpoint names a prepared call to this operation
 // targets.
-func calledEndpoints(module string, operation *runnablespkg.IndexEntry, endpoints []*basev0.Endpoint) ([]string, error) {
-	var published *basev0.Endpoint
+func calledEndpoints(module string, operation *runnablespkg.IndexEntry, endpoints []*basev1.Endpoint) ([]string, error) {
+	var published *basev1.Endpoint
 	for _, endpoint := range endpoints {
 		if endpoint.GetName() == operation.Endpoint {
 			published = endpoint

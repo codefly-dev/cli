@@ -219,7 +219,7 @@ func TestEntryConsumesToleratesUnrelatedSchemaDrift(t *testing.T) {
 	}{
 		{"field from a newer core", solutionManifestWithConsumes + "\nfuture_field:\n  nested: true\n"},
 		{"unknown key inside a consumes entry", strings.Replace(solutionManifestWithConsumes, "      as: documents", "      as: documents\n      timeout: 30s", 1)},
-		{"schema version this CLI predates", strings.Replace(solutionManifestWithConsumes, "codefly.solution-manifest/v0", "codefly.solution-manifest/v1", 1)},
+		{"schema version this CLI predates", strings.Replace(solutionManifestWithConsumes, "codefly.solution-manifest/v1", "codefly.solution-manifest/v2", 1)},
 		{"agent block that would fail strict validation", strings.Replace(solutionManifestWithConsumes, "  version: 0.1.0", "  version: latest", 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,8 +323,8 @@ func writeSolutionManifest(t *testing.T, dir string, content string) {
 }
 
 const solutionManifestWithoutConsumes = `
-schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 agent:
   kind: codefly:solution
   publisher: codefly.dev
@@ -339,8 +339,8 @@ lifecycle:
 `
 
 const solutionManifestWithConsumes = `
-schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 agent:
   kind: codefly:solution
   publisher: codefly.dev

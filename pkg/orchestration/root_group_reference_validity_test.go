@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -70,7 +70,7 @@ func referenceValidityWorld(t *testing.T, workspace *resources.Workspace, option
 		LocalNetworkManager:   localNetwork,
 		runtimeContextFor:     func(*resources.Service) string { return resources.RuntimeContextNative },
 		compositionRootGroups: localReader.CompositionRootWorkspaceConfigurationNames,
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return workspaceConfigurationInfos(localReader.Configurations())
 		},
 	}
@@ -332,9 +332,9 @@ func requireTemporaryPortsResolvesTheRootReference(t *testing.T, module, name st
 // for them, so its values are silently absent from the workload.
 func TestRequireKnownRootGroupRefusesAGroupTheResolutionDidNotPlanFor(t *testing.T) {
 	world := &World{}
-	conf := &basev0.Configuration{
+	conf := &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos:  []*basev0.ConfigurationInformation{{Name: "work-context"}},
+		Infos:  []*basev1.ConfigurationInformation{{Name: "work-context"}},
 	}
 
 	require.NoError(t, world.requireKnownRootGroup(conf, []string{"work-context"}),
@@ -514,7 +514,7 @@ func TestARenderRefusesARootReferenceWithTheDerivationsOwnReason(t *testing.T) {
 // (Layer-4 round four, E3.)
 func TestAWorldWithNoWorkspaceRefusesToResolveAReferenceBearingGroup(t *testing.T) {
 	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
 		},
 	})
@@ -523,11 +523,11 @@ func TestAWorldWithNoWorkspaceRefusesToResolveAReferenceBearingGroup(t *testing.
 	// the producer declares private: everything needed to deliver an address
 	// this consumer may not have.
 	consumer := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
-	mappings := []*basev0.NetworkMapping{{
-		Endpoint: &basev0.Endpoint{
+	mappings := []*basev1.NetworkMapping{{
+		Endpoint: &basev1.Endpoint{
 			Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest", Visibility: "private",
 		},
-		Instances: []*basev0.NetworkInstance{
+		Instances: []*basev1.NetworkInstance{
 			{Address: "localhost:38342", Access: resources.NewNativeNetworkAccess()},
 		},
 	}}
@@ -561,7 +561,7 @@ func TestNeitherUncheckableGuardQuotesTheReference(t *testing.T) {
 	reference := "${endpoint:" + canary + "/db/tcp}"
 	consumer := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
 	loader := staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("platform", "store-endpoint", "http://"+reference),
 		},
 	}

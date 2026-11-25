@@ -22,7 +22,7 @@ import (
 	"unicode/utf8"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -571,16 +571,16 @@ func validateInventoryKubernetesOutput(service string, output *KubernetesOutputI
 	if output == nil {
 		return fmt.Errorf("service %s has no restricted Kubernetes output evidence", service)
 	}
-	if output.Kind != builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String() ||
-		output.Profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String() ||
+	if output.Kind != builderv1.KubernetesDeploymentOutput_KUSTOMIZE.String() ||
+		output.Profile != builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String() ||
 		output.ContractVersion != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf("service %s has incompatible Kubernetes output evidence", service)
 	}
 	if output.Validation == nil {
 		return fmt.Errorf("service %s has no restricted Kubernetes validation evidence", service)
 	}
-	passed := builderv0.KubernetesManifestValidation_STATUS_PASSED.String()
-	notRun := builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String()
+	passed := builderv1.KubernetesManifestValidation_STATUS_PASSED.String()
+	notRun := builderv1.KubernetesManifestValidation_STATUS_NOT_RUN.String()
 	serverSideValidation := output.Validation.ServerSideValidation
 	if output.Validation.StaticValidation != passed ||
 		(serverSideValidation != passed && serverSideValidation != notRun) ||

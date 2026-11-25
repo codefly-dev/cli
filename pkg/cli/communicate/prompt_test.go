@@ -5,22 +5,22 @@ import (
 	"strings"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 )
 
 func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 	prompt := NewHeadlessPrompt()
 	tests := []struct {
 		name     string
-		question *agentv0.Question
-		assert   func(*testing.T, *agentv0.Answer)
+		question *agentv1.Question
+		assert   func(*testing.T, *agentv1.Answer)
 	}{
 		{
 			name: "confirm",
-			question: &agentv0.Question{Message: &agentv0.Message{Name: "hot-reload"}, Value: &agentv0.Question_Confirm{
-				Confirm: &agentv0.Confirm{Default: true},
+			question: &agentv1.Question{Message: &agentv1.Message{Name: "hot-reload"}, Value: &agentv1.Question_Confirm{
+				Confirm: &agentv1.Confirm{Default: true},
 			}},
-			assert: func(t *testing.T, answer *agentv0.Answer) {
+			assert: func(t *testing.T, answer *agentv1.Answer) {
 				if answer.GetConfirm() == nil || !answer.GetConfirm().Confirmed {
 					t.Fatalf("confirm answer = %#v, want declared true default", answer)
 				}
@@ -28,10 +28,10 @@ func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 		},
 		{
 			name: "string input",
-			question: &agentv0.Question{Message: &agentv0.Message{Name: "service-name"}, Value: &agentv0.Question_Input{
-				Input: &agentv0.Input{Default: &agentv0.Input_StringDefault{StringDefault: "coordinator"}},
+			question: &agentv1.Question{Message: &agentv1.Message{Name: "service-name"}, Value: &agentv1.Question_Input{
+				Input: &agentv1.Input{Default: &agentv1.Input_StringDefault{StringDefault: "coordinator"}},
 			}},
-			assert: func(t *testing.T, answer *agentv0.Answer) {
+			assert: func(t *testing.T, answer *agentv1.Answer) {
 				if got := answer.GetInput().GetStringValue(); got != "coordinator" {
 					t.Fatalf("string answer = %q, want coordinator", got)
 				}
@@ -39,10 +39,10 @@ func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 		},
 		{
 			name: "integer input",
-			question: &agentv0.Question{Message: &agentv0.Message{Name: "replicas"}, Value: &agentv0.Question_Input{
-				Input: &agentv0.Input{Default: &agentv0.Input_IntDefault{IntDefault: 3}},
+			question: &agentv1.Question{Message: &agentv1.Message{Name: "replicas"}, Value: &agentv1.Question_Input{
+				Input: &agentv1.Input{Default: &agentv1.Input_IntDefault{IntDefault: 3}},
 			}},
-			assert: func(t *testing.T, answer *agentv0.Answer) {
+			assert: func(t *testing.T, answer *agentv1.Answer) {
 				if got := answer.GetInput().GetIntValue(); got != 3 {
 					t.Fatalf("integer answer = %d, want 3", got)
 				}
@@ -50,13 +50,13 @@ func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 		},
 		{
 			name: "choice",
-			question: &agentv0.Question{Message: &agentv0.Message{Name: "runtime"}, Value: &agentv0.Question_Choice{
-				Choice: &agentv0.Choice{
-					Options:       []*agentv0.Message{{Name: "development"}, {Name: "production"}},
+			question: &agentv1.Question{Message: &agentv1.Message{Name: "runtime"}, Value: &agentv1.Question_Choice{
+				Choice: &agentv1.Choice{
+					Options:       []*agentv1.Message{{Name: "development"}, {Name: "production"}},
 					DefaultOption: "production",
 				},
 			}},
-			assert: func(t *testing.T, answer *agentv0.Answer) {
+			assert: func(t *testing.T, answer *agentv1.Answer) {
 				if got := answer.GetChoice().GetOption(); got != "production" {
 					t.Fatalf("choice answer = %q, want production", got)
 				}
@@ -64,13 +64,13 @@ func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 		},
 		{
 			name: "explicitly empty selection",
-			question: &agentv0.Question{Message: &agentv0.Message{Name: "features"}, Value: &agentv0.Question_Selection{
-				Selection: &agentv0.Selection{
-					Options: []*agentv0.Message{{Name: "grpc"}},
-					Default: &agentv0.SelectionDefault{},
+			question: &agentv1.Question{Message: &agentv1.Message{Name: "features"}, Value: &agentv1.Question_Selection{
+				Selection: &agentv1.Selection{
+					Options: []*agentv1.Message{{Name: "grpc"}},
+					Default: &agentv1.SelectionDefault{},
 				},
 			}},
-			assert: func(t *testing.T, answer *agentv0.Answer) {
+			assert: func(t *testing.T, answer *agentv1.Answer) {
 				if answer.GetSelection() == nil || len(answer.GetSelection().GetSelected()) != 0 {
 					t.Fatalf("selection answer = %#v, want explicit empty selection", answer)
 				}
@@ -90,10 +90,10 @@ func TestHeadlessPromptUsesDeclaredDefaults(t *testing.T) {
 
 func TestHeadlessPromptRejectsUndeclaredDecisions(t *testing.T) {
 	prompt := NewHeadlessPrompt()
-	questions := []*agentv0.Question{
-		{Message: &agentv0.Message{Name: "region"}, Value: &agentv0.Question_Choice{Choice: &agentv0.Choice{Options: []*agentv0.Message{{Name: "east"}}}}},
-		{Message: &agentv0.Message{Name: "features"}, Value: &agentv0.Question_Selection{Selection: &agentv0.Selection{Options: []*agentv0.Message{{Name: "grpc"}}}}},
-		{Message: &agentv0.Message{Name: "token"}, Value: &agentv0.Question_Input{Input: &agentv0.Input{}}},
+	questions := []*agentv1.Question{
+		{Message: &agentv1.Message{Name: "region"}, Value: &agentv1.Question_Choice{Choice: &agentv1.Choice{Options: []*agentv1.Message{{Name: "east"}}}}},
+		{Message: &agentv1.Message{Name: "features"}, Value: &agentv1.Question_Selection{Selection: &agentv1.Selection{Options: []*agentv1.Message{{Name: "grpc"}}}}},
+		{Message: &agentv1.Message{Name: "token"}, Value: &agentv1.Question_Input{Input: &agentv1.Input{}}},
 	}
 	for _, question := range questions {
 		_, err := prompt.Answer(context.Background(), question)

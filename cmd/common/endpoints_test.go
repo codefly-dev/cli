@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -176,14 +176,14 @@ func TestCheckEndpointReadinessUsesDeclaredHTTPPredicateAndTLS(t *testing.T) {
 	result, err := CheckEndpointReadiness(context.Background(), "mod", "svc", &resources.Endpoint{
 		Name: "api", API: "rest", Health: health,
 	}, address)
-	if err != nil || result.Outcome != basev0.ProbeOutcome_PROBE_OUTCOME_PASSED {
+	if err != nil || result.Outcome != basev1.ProbeOutcome_PROBE_OUTCOME_PASSED {
 		t.Fatalf("plain readiness = %+v, %v", result, err)
 	}
 
 	result, err = CheckEndpointReadiness(context.Background(), "mod", "svc", &resources.Endpoint{
 		Name: "api", API: "rest", Secured: true, Health: health,
 	}, address)
-	if err != nil || result.Outcome != basev0.ProbeOutcome_PROBE_OUTCOME_FAILED {
+	if err != nil || result.Outcome != basev1.ProbeOutcome_PROBE_OUTCOME_FAILED {
 		t.Fatalf("secured readiness against plaintext = %+v, %v", result, err)
 	}
 }

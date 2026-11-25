@@ -10,9 +10,9 @@ import (
 
 	"github.com/codefly-dev/core/agents/contract"
 	agentservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -22,13 +22,13 @@ import (
 )
 
 type provenanceBuilderPeer struct {
-	builderv0.UnimplementedBuilderServer
-	requests chan *builderv0.DeploymentRequest
+	builderv1.UnimplementedBuilderServer
+	requests chan *builderv1.DeploymentRequest
 }
 
-func (peer *provenanceBuilderPeer) Deploy(_ context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+func (peer *provenanceBuilderPeer) Deploy(_ context.Context, request *builderv1.DeploymentRequest) (*builderv1.DeploymentResponse, error) {
 	peer.requests <- request
-	return &builderv0.DeploymentResponse{State: &builderv0.DeploymentStatus{State: builderv0.DeploymentStatus_SUCCESS}}, nil
+	return &builderv1.DeploymentResponse{State: &builderv1.DeploymentStatus{State: builderv1.DeploymentStatus_SUCCESS}}, nil
 }
 
 func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
@@ -75,13 +75,13 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 			dependency := &resources.ServiceDependency{Module: "saas", Name: "cache", Kind: resources.DependencyKindRuntime}
 			network := resources.NewNetworkInstance("cache", 6379)
 			network.Access = resources.NewContainerNetworkAccess()
-			mappings := []*basev0.NetworkMapping{{Endpoint: &basev0.Endpoint{Module: "saas", Service: "cache", Name: "redis", Api: "tcp", Visibility: resources.VisibilityInternal}, Instances: []*basev0.NetworkInstance{network}}}
+			mappings := []*basev1.NetworkMapping{{Endpoint: &basev1.Endpoint{Module: "saas", Service: "cache", Name: "redis", Api: "tcp", Visibility: resources.VisibilityInternal}, Instances: []*basev1.NetworkInstance{network}}}
 			_, err = resources.ResolveDependencyNetworkMappings(repoWorkspace, "saas", []*resources.ServiceDependency{dependency}, mappings)
 			require.ErrorIs(t, err, resources.ErrUnjudgedProvenance, "the old disk provenance refuses the composed name")
 
-			peer := &provenanceBuilderPeer{requests: make(chan *builderv0.DeploymentRequest, 3)}
+			peer := &provenanceBuilderPeer{requests: make(chan *builderv1.DeploymentRequest, 3)}
 			server := grpc.NewServer()
-			builderv0.RegisterBuilderServer(server, peer)
+			builderv1.RegisterBuilderServer(server, peer)
 			conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = conn.Close() })
@@ -89,11 +89,11 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 				Workspace: repoWorkspace, // The handoff must replace even a stale instance workspace.
 				Module:    &resources.Module{Name: "saas"},
 				Service:   &resources.Service{Name: "accounts", ServiceDependencies: []*resources.ServiceDependency{dependency}},
-				Info:      &agentv0.AgentInformation{Contract: &agentv0.AgentContract{Capabilities: []string{contract.DeploymentCompositionProvenance}}},
+				Info:      &agentv1.AgentInformation{Contract: &agentv1.AgentContract{Capabilities: []string{contract.DeploymentCompositionProvenance}}},
 			}
 			instance.Builder = &services.BuilderInstance{Instance: instance, Builder: agentservices.NewBuilderAgentClient(conn)}
 			builder := &Builder{world: &World{Workspace: workspace}, instance: instance}
-			request := &builderv0.DeploymentRequest{DependenciesNetworkMappings: mappings}
+			request := &builderv1.DeploymentRequest{DependenciesNetworkMappings: mappings}
 			_, err = builder.deployRequest(ctx, request)
 			require.NoError(t, err)
 			received := <-peer.requests
@@ -103,14 +103,14 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 			withoutProvenance.CompositionProvenance = nil
 			require.Contains(t, agentDependencyJudgment(t, location, "saas", dependency, withoutProvenance), resources.ErrUnjudgedProvenance.Error())
 
-			require.Equal(t, []*builderv0.CompositionMember{
-				{Name: "saas", Role: builderv0.CompositionMember_ROLE_MODULE, Workspace: "platform-base"},
-				{Name: "beacon-go", Role: builderv0.CompositionMember_ROLE_SOLUTION, Workspace: "platform-northwind"},
+			require.Equal(t, []*builderv1.CompositionMember{
+				{Name: "saas", Role: builderv1.CompositionMember_ROLE_MODULE, Workspace: "platform-base"},
+				{Name: "beacon-go", Role: builderv1.CompositionMember_ROLE_SOLUTION, Workspace: "platform-northwind"},
 			}, received.GetCompositionProvenance().GetMembers())
 
 			// No dependencies still carries the complete composition; this is not
 			// conditional on a pin or the presence of a cross-module edge.
-			_, err = builder.deployRequest(ctx, &builderv0.DeploymentRequest{})
+			_, err = builder.deployRequest(ctx, &builderv1.DeploymentRequest{})
 			require.NoError(t, err)
 			require.Equal(t, received.GetCompositionProvenance(), (<-peer.requests).GetCompositionProvenance())
 
@@ -129,7 +129,7 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 			require.Empty(t, peer.requests, "a solution's direct route must never reach the agent")
 
 			instance.Info.Contract.Capabilities = nil
-			_, err = builder.deployRequest(ctx, &builderv0.DeploymentRequest{})
+			_, err = builder.deployRequest(ctx, &builderv1.DeploymentRequest{})
 			require.ErrorContains(t, err, contract.DeploymentCompositionProvenance)
 			require.Empty(t, peer.requests, "an older agent must not silently ignore membership")
 		})
@@ -139,17 +139,17 @@ func TestDeploymentRequestCarriesRenderingComposition(t *testing.T) {
 // Exercise Core's real request-backed agent judge with the received wire request.
 // Stop at Prepare, after dependency collection, so this host-boundary regression
 // needs neither provider templates/toolchains nor a cluster.
-func agentDependencyJudgment(t *testing.T, location, module string, dependency *resources.ServiceDependency, received *builderv0.DeploymentRequest) string {
+func agentDependencyJudgment(t *testing.T, location, module string, dependency *resources.ServiceDependency, received *builderv1.DeploymentRequest) string {
 	t.Helper()
 	base := &agentservices.Base{}
-	require.NoError(t, base.HeadlessLoad(t.Context(), &basev0.ServiceIdentity{Name: "accounts", Module: module, WorkspacePath: location}))
+	require.NoError(t, base.HeadlessLoad(t.Context(), &basev1.ServiceIdentity{Name: "accounts", Module: module, WorkspacePath: location}))
 	base.Service = &resources.Service{ServiceDependencies: []*resources.ServiceDependency{dependency}}
-	base.EnvironmentVariables.SetIdentity(&basev0.ServiceIdentity{Name: "accounts", Module: module})
+	base.EnvironmentVariables.SetIdentity(&basev1.ServiceIdentity{Name: "accounts", Module: module})
 	wrapper := &agentservices.BuilderWrapper{Base: base}
 	request := proto.CloneOf(received)
-	request.Environment = &basev0.Environment{Name: "staging"}
-	request.Deployment = &builderv0.Deployment{Kind: &builderv0.Deployment_Kubernetes{Kubernetes: &builderv0.KubernetesDeployment{
-		Namespace: "test", Destination: t.TempDir(), Profile: builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+	request.Environment = &basev1.Environment{Name: "staging"}
+	request.Deployment = &builderv1.Deployment{Kind: &builderv1.Deployment_Kubernetes{Kubernetes: &builderv1.KubernetesDeployment{
+		Namespace: "test", Destination: t.TempDir(), Profile: builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 	}}}
 	response, err := wrapper.DeployKustomize(t.Context(), request, agentservices.KustomizeDeployment{
 		EnvironmentVariables: base.EnvironmentVariables, Templates: fstest.MapFS{},

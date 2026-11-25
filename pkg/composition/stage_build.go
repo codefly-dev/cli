@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/shared"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -101,7 +101,7 @@ func (session *SelectionSession) StageBuild(ctx context.Context, options *StageO
 		// Rehash earlier outputs after later executors have stopped; one executor
 		// finishing is not proof that the rest of a batch left its files alone.
 		for i, execution := range staged.Executions {
-			var receipt basev0.ArtifactExecutionReceipt
+			var receipt basev1.ArtifactExecutionReceipt
 			if err = protojson.Unmarshal(execution.Receipt, &receipt); err != nil {
 				return err
 			}

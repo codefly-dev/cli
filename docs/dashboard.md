@@ -3,7 +3,7 @@
 The local dashboard is a Vite/React SPA in `web/dashboard`, built into
 `pkg/web/go-grpc/out` with `make dashboard`, and embedded into the CLI binary
 via `go:embed`. It is served at `/` and talks Connect to
-`/codefly.cli.v0.CLI/` on the same port (`pkg/web/go-grpc/http.go`).
+`/codefly.cli.v1.CLI/` on the same port (`pkg/web/go-grpc/http.go`).
 
 ## Ports
 

@@ -6,7 +6,7 @@ import (
 
 	"github.com/codefly-dev/core/architecture"
 	providers "github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -31,8 +31,8 @@ type StateManager struct {
 	// composition, so the verdict runs here with it.
 	workspace *resources.Workspace
 
-	endpoints       map[string][]*basev0.Endpoint
-	networkMappings map[string][]*basev0.NetworkMapping
+	endpoints       map[string][]*basev1.Endpoint
+	networkMappings map[string][]*basev1.NetworkMapping
 	// Generated hop snapshots retain these exact addresses until run restart.
 	routingMappings map[string]frozenRoute
 	// How many times each service has recorded its mappings: one means the
@@ -67,14 +67,14 @@ func NewStateManager(_ context.Context, configurationManager *providers.Manager,
 		dependencies:         dependencies,
 		configurationManager: configurationManager,
 		workspace:            workspace,
-		endpoints:            make(map[string][]*basev0.Endpoint),
-		networkMappings:      make(map[string][]*basev0.NetworkMapping),
+		endpoints:            make(map[string][]*basev1.Endpoint),
+		networkMappings:      make(map[string][]*basev1.NetworkMapping),
 	}, nil
 }
 
 // GetDependentConfigurationsFor returns the configurations for the given service
 // It includes configuration from its dependencies
-func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, service *resources.ServiceIdentity) ([]*basev0.Configuration, error) {
+func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, service *resources.ServiceIdentity) ([]*basev1.Configuration, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -97,8 +97,8 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot resolve run-stage dependencies")
 	}
-	var serviceConfigurations []*basev0.Configuration
-	var shared []*basev0.Configuration
+	var serviceConfigurations []*basev1.Configuration
+	var shared []*basev1.Configuration
 	for _, req := range requires {
 		_, err = resources.ParseServiceWithOptionalModule(req.Unique)
 		if err != nil {
@@ -114,7 +114,7 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 		serviceConfigurations = append(serviceConfigurations, shared...)
 
 	}
-	confs := make([]*basev0.Configuration, 0, len(serviceConfigurations))
+	confs := make([]*basev1.Configuration, 0, len(serviceConfigurations))
 	confs = append(confs, serviceConfigurations...)
 	w.Debug("configurations",
 		wool.Field("uniqueToService", resources.MakeManyConfigurationSummary(serviceConfigurations)))
@@ -142,7 +142,7 @@ func (s *StateManager) runStageDependencies(service *resources.ServiceIdentity) 
 
 // GetDependentConfigurationsForUnique returns the configurations for the given service
 // It includes configuration from its dependencies
-func (s *StateManager) GetDependentConfigurationsForUnique(ctx context.Context, unique string) ([]*basev0.Configuration, error) {
+func (s *StateManager) GetDependentConfigurationsForUnique(ctx context.Context, unique string) ([]*basev1.Configuration, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -159,7 +159,7 @@ func (s *StateManager) GetDependentConfigurationsForUnique(ctx context.Context, 
 }
 
 // RecordEndpoints records the endpoints for the given service
-func (s *StateManager) RecordEndpoints(ctx context.Context, service *resources.ServiceIdentity, endpoints []*basev0.Endpoint) error {
+func (s *StateManager) RecordEndpoints(ctx context.Context, service *resources.ServiceIdentity, endpoints []*basev1.Endpoint) error {
 	if s == nil {
 		return nil
 	}
@@ -172,7 +172,7 @@ func (s *StateManager) RecordEndpoints(ctx context.Context, service *resources.S
 }
 
 // RecordedEndpoints returns the endpoints a service of the run recorded at Load.
-func (s *StateManager) RecordedEndpoints(unique string) []*basev0.Endpoint {
+func (s *StateManager) RecordedEndpoints(unique string) []*basev1.Endpoint {
 	if s == nil {
 		return nil
 	}
@@ -182,13 +182,13 @@ func (s *StateManager) RecordedEndpoints(unique string) []*basev0.Endpoint {
 }
 
 // GetDependenciesEndpoints returns the endpoints for the dependencies of the given service
-func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *resources.Service) ([]*basev0.Endpoint, error) {
+func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *resources.Service) ([]*basev1.Endpoint, error) {
 	if s == nil {
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("StateManager.GetDependenciesEndpoints", wool.ThisField(resources.WithUnique(service)))
 	s.mu.RLock()
-	var endpoints []*basev0.Endpoint
+	var endpoints []*basev1.Endpoint
 	for _, req := range service.ServiceDependencies {
 		for _, endpoint := range s.endpoints[req.Unique()] {
 			if endpoint == nil || dependencyConsumesEndpoint(req, endpoint) {
@@ -202,7 +202,7 @@ func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *re
 }
 
 // GetNetworkMappings returns the network mappings for the given service
-func (s *StateManager) GetNetworkMappings(_ context.Context, service *resources.ServiceIdentity) ([]*basev0.NetworkMapping, error) {
+func (s *StateManager) GetNetworkMappings(_ context.Context, service *resources.ServiceIdentity) ([]*basev1.NetworkMapping, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -211,7 +211,7 @@ func (s *StateManager) GetNetworkMappings(_ context.Context, service *resources.
 	return s.networkMappings[service.Unique()], nil
 }
 
-func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev0.NetworkMapping, bool) {
+func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev1.NetworkMapping, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	mappings, ok := s.networkMappings[unique]
@@ -232,7 +232,7 @@ func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev0.Ne
 // this one is the one that holds for it. It used to narrow by the dependency's
 // endpoint list alone, never by visibility, which core#717 named as the CLI's
 // unjudged provider.
-func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, service *resources.Service) ([]*basev0.NetworkMapping, error) {
+func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, service *resources.Service) ([]*basev1.NetworkMapping, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -242,7 +242,7 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 		return nil, w.Wrapf(err, "cannot judge dependency network mappings for a consumer with no identity")
 	}
 	s.mu.RLock()
-	var candidates []*basev0.NetworkMapping
+	var candidates []*basev1.NetworkMapping
 	// Several dependencies can name one producer (three interfaces one
 	// endpoint implements bind to the same service), and its mappings are
 	// that producer's once: core judges each dependency against them.
@@ -283,12 +283,12 @@ func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, servi
 // never disagree about which endpoints matter. Matching is by name and API and
 // never by owning module/service — those fields cross an agent's gRPC boundary,
 // while the mapping list is already scoped to one producer.
-func dependencyConsumesEndpoint(dependency *resources.ServiceDependency, endpoint *basev0.Endpoint) bool {
+func dependencyConsumesEndpoint(dependency *resources.ServiceDependency, endpoint *basev1.Endpoint) bool {
 	return dependency.ConsumesEndpoint(endpoint.GetName(), endpoint.GetApi())
 }
 
 // RecordNetworkMappings records the network mappings for the given service
-func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *resources.Service, mappings []*basev0.NetworkMapping) error {
+func (s *StateManager) RecordNetworkMappings(ctx context.Context, service *resources.Service, mappings []*basev1.NetworkMapping) error {
 	if s == nil {
 		return nil
 	}

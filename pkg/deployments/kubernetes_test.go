@@ -12,7 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/workingrender"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -51,17 +51,17 @@ func TestVerifyLocalK3dTargetRejectsRemoteKindsBeforeInspectingKubeconfig(t *tes
 func TestKubernetesOutputProfileReservesEphemeralForVerifiedLocalApply(t *testing.T) {
 	require.Equal(
 		t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		KubernetesOutputProfile(nil),
 	)
 	require.Equal(
 		t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		KubernetesOutputProfile(&RenderManager{}),
 	)
 	require.Equal(
 		t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		KubernetesOutputProfile(&LocalApplyManager{}),
 	)
 }
@@ -698,11 +698,11 @@ agent:
 	return workspace, module, service
 }
 
-func kubernetesDeploymentOutput() *builderv0.DeploymentOutput {
-	return &builderv0.DeploymentOutput{
-		Kind: &builderv0.DeploymentOutput_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeploymentOutput{
-				Kind: builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
+func kubernetesDeploymentOutput() *builderv1.DeploymentOutput {
+	return &builderv1.DeploymentOutput{
+		Kind: &builderv1.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeploymentOutput{
+				Kind: builderv1.KubernetesDeploymentOutput_KUSTOMIZE,
 			},
 		},
 	}

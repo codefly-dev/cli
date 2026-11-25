@@ -13,7 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -189,7 +189,7 @@ func TestALocalRunHandsTheGatewayTheRunsAddress(t *testing.T) {
 	ctx := context.Background()
 	world, workspace := hostRoutesWorld(t, RunMode, nil)
 	gateway := parityService(t, workspace, "host", "gateway")
-	access := resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+	access := resources.NetworkAccessFromRuntimeContext(&basev1.RuntimeContext{Kind: resources.RuntimeContextNative})
 
 	none, problems, err := world.hostRouteCarriers(ctx, gateway, access)
 	require.NoError(t, err, "a producer this run has not addressed is not a fault of the composition")
@@ -316,7 +316,7 @@ func TestModulePageGetsACarrierWithoutASolutionConsumer(t *testing.T) {
 				gateway := parityService(t, workspace, "host", "gateway")
 				access := resources.NewContainerNetworkAccess()
 				if mode == RunMode {
-					access = resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+					access = resources.NetworkAccessFromRuntimeContext(&basev1.RuntimeContext{Kind: resources.RuntimeContextNative})
 					for _, pair := range [][2]string{{"docs", "documents"}, {"quill", "backend"}} {
 						service := parityService(t, workspace, pair[0], pair[1])
 						identity, err := service.Identity()
@@ -373,7 +373,7 @@ func TestALocalRunNamesAnUndeclaredEndpointAsMissing(t *testing.T) {
 	consumes := "    - id: docs\n      protocol: connect\n      module: docs\n      service: documents\n      endpoint: connect\n      as: docs\n"
 	world, workspace := hostRoutesWorld(t, RunMode, func(dir string) { writeWikiConsumes(t, dir, consumes) })
 	gateway := parityService(t, workspace, "host", "gateway")
-	access := resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+	access := resources.NetworkAccessFromRuntimeContext(&basev1.RuntimeContext{Kind: resources.RuntimeContextNative})
 
 	_, problems, err := world.hostRouteCarriers(context.Background(), gateway, access)
 	require.NoError(t, err)

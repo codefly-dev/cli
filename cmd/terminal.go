@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliv1 "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
@@ -75,10 +75,10 @@ func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 		}
 	}()
 
-	client := cliv0.NewTerminalServiceClient(conn)
+	client := cliv1.NewTerminalServiceClient(conn)
 
 	// Open a new session
-	openResp, err := client.Open(ctx, &cliv0.OpenTerminalRequest{
+	openResp, err := client.Open(ctx, &cliv1.OpenTerminalRequest{
 		Module:  termModule,
 		Service: termService,
 		Shell:   termShell,
@@ -100,7 +100,7 @@ func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cleanupCancel()
-		if _, err = client.Close(cleanupCtx, &cliv0.CloseTerminalRequest{SessionId: sessionID}); err != nil {
+		if _, err = client.Close(cleanupCtx, &cliv1.CloseTerminalRequest{SessionId: sessionID}); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("close incomplete terminal session: %w", err))
 		}
 	}()
@@ -109,7 +109,7 @@ func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 	// Get current terminal size
 	width, height, err := term.GetSize(int(os.Stdin.Fd()))
 	if err == nil {
-		_, _ = client.Resize(ctx, &cliv0.ResizeTerminalRequest{
+		_, _ = client.Resize(ctx, &cliv1.ResizeTerminalRequest{
 			SessionId: sessionID,
 			Rows:      terminalCells(height),
 			Cols:      terminalCells(width),
@@ -134,7 +134,7 @@ func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 	}
 
 	// Send initial message with session ID
-	if err := stream.Send(&cliv0.TerminalInput{SessionId: sessionID}); err != nil {
+	if err := stream.Send(&cliv1.TerminalInput{SessionId: sessionID}); err != nil {
 		return fmt.Errorf("cannot send session ID: %w", err)
 	}
 	keepSession = true
@@ -193,7 +193,7 @@ func resolveTerminalServer(ctx context.Context) (string, error) {
 // followTerminalResize forwards SIGWINCH (terminal resize) to the session
 // until the returned stop is called, which releases both the signal
 // registration and the listener goroutine.
-func followTerminalResize(ctx context.Context, client cliv0.TerminalServiceClient, sessionID string) func() {
+func followTerminalResize(ctx context.Context, client cliv1.TerminalServiceClient, sessionID string) func() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGWINCH)
 	resizeCtx, resizeCancel := context.WithCancel(ctx)
@@ -208,7 +208,7 @@ func followTerminalResize(ctx context.Context, client cliv0.TerminalServiceClien
 			case <-sigCh:
 				w, h, err := term.GetSize(int(os.Stdin.Fd()))
 				if err == nil {
-					_, _ = client.Resize(resizeCtx, &cliv0.ResizeTerminalRequest{
+					_, _ = client.Resize(resizeCtx, &cliv1.ResizeTerminalRequest{
 						SessionId: sessionID,
 						Rows:      terminalCells(h),
 						Cols:      terminalCells(w),
@@ -226,7 +226,7 @@ func followTerminalResize(ctx context.Context, client cliv0.TerminalServiceClien
 
 // receiveTerminalOutput writes what the server sends to stdout and reports
 // on done once the stream ends.
-func receiveTerminalOutput(stream cliv0.TerminalService_AttachClient, done chan<- error) {
+func receiveTerminalOutput(stream cliv1.TerminalService_AttachClient, done chan<- error) {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
@@ -269,12 +269,12 @@ func stoppedTerminalSide(done <-chan error) error {
 
 // sendTerminalInput reads stdin and sends it to the session, reporting on
 // done when stdin ends or a send fails.
-func sendTerminalInput(ctx context.Context, stream cliv0.TerminalService_AttachClient, sessionID string, done chan<- error) {
+func sendTerminalInput(ctx context.Context, stream cliv1.TerminalService_AttachClient, sessionID string, done chan<- error) {
 	buf := make([]byte, 1024)
 	for {
 		n, err := readTerminalInput(ctx, int(os.Stdin.Fd()), buf)
 		if n > 0 {
-			if sendErr := stream.Send(&cliv0.TerminalInput{
+			if sendErr := stream.Send(&cliv1.TerminalInput{
 				SessionId: sessionID,
 				Data:      buf[:n],
 			}); sendErr != nil {

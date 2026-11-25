@@ -64,7 +64,7 @@ func trackedSleep(t *testing.T) int {
 // to decide while the leader's pid and start are unchanged.
 func recordedByAnOlderAgent(t *testing.T, home string, pgid int) {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(home, ".codefly", "*", "authenticated-v2", strconv.Itoa(pgid)+".pgid"))
+	paths, err := filepath.Glob(filepath.Join(home, ".codefly", "*", "workspace-authenticated-v1", strconv.Itoa(pgid)+".pgid"))
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("record for %d: %v %v", pgid, paths, err)
 	}

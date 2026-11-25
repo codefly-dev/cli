@@ -12,8 +12,8 @@ import (
 	solutionhost "github.com/codefly-dev/authority/libraries/solutionhost/go"
 	"github.com/codefly-dev/cli/pkg/environments"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/stretchr/testify/require"
@@ -35,27 +35,27 @@ const (
 func preparedValue(t *testing.T) string {
 	t.Helper()
 	const spelling = "/acme.items.v1.Items/Apply"
-	value, err := corerunnable.EncodePrepared(&runnablev0.PreparedBinding{
-		Operation: &runnablev0.PreparedOperation{Module: "owner", Service: "items", Endpoint: "grpc", Spelling: spelling},
-		Call: &runnablev0.PreparedCall{
+	value, err := corerunnable.EncodePrepared(&runnablev1.PreparedBinding{
+		Operation: &runnablev1.PreparedOperation{Module: "owner", Service: "items", Endpoint: "grpc", Spelling: spelling},
+		Call: &runnablev1.PreparedCall{
 			Address: "http://items-connect.owner:8081",
-			Route:   &runnablev0.PreparedCall_Connect{Connect: &runnablev0.ConnectProcedure{Procedure: spelling}},
+			Route:   &runnablev1.PreparedCall_Connect{Connect: &runnablev1.ConnectProcedure{Procedure: spelling}},
 		},
-		Contract: &basev0.RunnableContract{
+		Contract: &basev1.RunnableContract{
 			Protocol: resources.RunnableServiceProtocolV1,
-			Input:    &basev0.RunnableSchema{Fields: []*basev0.RunnableField{{Name: "item", Type: basev0.RunnableField_STRING}}},
-			Output:   &basev0.RunnableSchema{Fields: []*basev0.RunnableField{{Name: "applied", Type: basev0.RunnableField_BOOLEAN}}},
+			Input:    &basev1.RunnableSchema{Fields: []*basev1.RunnableField{{Name: "item", Type: basev1.RunnableField_STRING}}},
+			Output:   &basev1.RunnableSchema{Fields: []*basev1.RunnableField{{Name: "applied", Type: basev1.RunnableField_BOOLEAN}}},
 		},
-		Policy: &runnablev0.Operation{
+		Policy: &runnablev1.Operation{
 			AttemptTimeout: durationpb.New(10 * time.Second),
 			TotalTimeout:   durationpb.New(time.Minute),
 			MaxAttempts:    3,
 			Backoff:        durationpb.New(time.Second),
 			RetryableCodes: []string{"UNAVAILABLE"},
 			Audience:       "acme.items",
-			InvokeScopes:   []*basev0.WorkScopeV1{{ResourceKind: "acme.item", Actions: []string{"write", "read"}, ResourceIds: []string{"item-1"}}},
-			LookupScopes:   []*basev0.WorkScopeV1{{ResourceKind: "acme.item", Actions: []string{"read"}, ResourceIds: []string{"item-1"}}},
-			Completion:     basev0.RunnableExecution_COMPLETION_CALL,
+			InvokeScopes:   []*basev1.WorkScopeV1{{ResourceKind: "acme.item", Actions: []string{"write", "read"}, ResourceIds: []string{"item-1"}}},
+			LookupScopes:   []*basev1.WorkScopeV1{{ResourceKind: "acme.item", Actions: []string{"read"}, ResourceIds: []string{"item-1"}}},
+			Completion:     basev1.RunnableExecution_COMPLETION_CALL,
 		},
 	})
 	require.NoError(t, err)

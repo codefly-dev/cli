@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	googleproto "google.golang.org/protobuf/proto"
@@ -56,7 +56,7 @@ func writeSandboxListeners(t *testing.T, surface []composition.APIContractServic
 	for _, name := range []string{"grpc", "connect"} {
 		dir := filepath.Join(out, service.Name, name)
 		require.NoError(t, os.MkdirAll(dir, 0o755))
-		entry, err := writeBuiltProtobufContract(ctx, module, service, &basev0.Endpoint{Name: name, Api: name}, surface, dir, dir, descriptor)
+		entry, err := writeBuiltProtobufContract(ctx, module, service, &basev1.Endpoint{Name: name, Api: name}, surface, dir, dir, descriptor)
 		require.NoError(t, err, "each listener alone names only methods its descriptor has")
 		rows = append(rows, *entry)
 	}

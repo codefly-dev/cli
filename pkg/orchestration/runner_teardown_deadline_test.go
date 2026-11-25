@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type teardownDeadlinePeer struct {
-	runtimev0.UnimplementedRuntimeServer
+	runtimev1.UnimplementedRuntimeServer
 	deadlines chan time.Duration
 }
 
@@ -22,14 +22,14 @@ func (s *teardownDeadlinePeer) record(ctx context.Context) {
 	s.deadlines <- time.Until(deadline)
 }
 
-func (s *teardownDeadlinePeer) Stop(ctx context.Context, _ *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+func (s *teardownDeadlinePeer) Stop(ctx context.Context, _ *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
 	s.record(ctx)
-	return &runtimev0.StopResponse{}, nil
+	return &runtimev1.StopResponse{}, nil
 }
 
-func (s *teardownDeadlinePeer) Destroy(ctx context.Context, _ *runtimev0.DestroyRequest) (*runtimev0.DestroyResponse, error) {
+func (s *teardownDeadlinePeer) Destroy(ctx context.Context, _ *runtimev1.DestroyRequest) (*runtimev1.DestroyResponse, error) {
 	s.record(ctx)
-	return &runtimev0.DestroyResponse{}, nil
+	return &runtimev1.DestroyResponse{}, nil
 }
 
 func TestRunnerTeardownDoesNotShortenThePhaseToTheBackendTimeout(t *testing.T) {
@@ -37,13 +37,13 @@ func TestRunnerTeardownDoesNotShortenThePhaseToTheBackendTimeout(t *testing.T) {
 	require.NoError(t, err)
 	peer := &teardownDeadlinePeer{deadlines: make(chan time.Duration, 1)}
 	server := grpc.NewServer()
-	runtimev0.RegisterRuntimeServer(server, peer)
+	runtimev1.RegisterRuntimeServer(server, peer)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 	connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = connection.Close() })
-	runner := runnerWithRuntimeClient(runtimev0.NewRuntimeClient(connection))
+	runner := runnerWithRuntimeClient(runtimev1.NewRuntimeClient(connection))
 	for _, test := range []struct {
 		name   string
 		budget time.Duration

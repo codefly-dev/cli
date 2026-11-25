@@ -98,10 +98,10 @@ var MCPServeCmd = &cobra.Command{
 #### Proto Definitions
 
 ```protobuf
-// proto/codefly/mcp/v0/mcp.proto
+// proto/codefly/mcp/v1/mcp.proto
 syntax = "proto3";
 
-package codefly.mcp.v0;
+package codefly.mcp.v1;
 
 // MCP Tool Definition (matches MCP spec)
 message Tool {
@@ -273,7 +273,7 @@ Agents can then use MCP servers:
 
 ```go
 // In a service agent
-func (s *Runtime) Init(ctx context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+func (s *Runtime) Init(ctx context.Context, req *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
     // Connect to external MCP server
     mcpClient, err := mcp.Connect(ctx, "postgres-mcp://localhost:5432")
     if err != nil {
@@ -360,7 +360,7 @@ Returns structured proposal with services, dependencies, and agent recommendatio
 
 ## Next Steps
 
-1. [ ] Create `proto/codefly/mcp/v0/mcp.proto`
+1. [ ] Create `proto/codefly/mcp/v1/mcp.proto`
 2. [ ] Implement `pkg/mcp/server.go` with stdio transport
 3. [ ] Add `codefly mcp serve` command
 4. [ ] Implement core tools (workspace_info, list_services, etc.)

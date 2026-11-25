@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/fixturefragments"
@@ -15,7 +15,7 @@ import (
 // mergedFixtureComposition supplies the Authority-owned merge unless the
 // workspace itself supplies the document. A module's resolved default is still
 // a fragment, even when Core sees just one provider or identical providers.
-func mergedFixtureComposition(ctx context.Context, workspace *resources.Workspace, env *resources.Environment, rootNames []string) (*basev0.Configuration, error) {
+func mergedFixtureComposition(ctx context.Context, workspace *resources.Workspace, env *resources.Environment, rootNames []string) (*basev1.Configuration, error) {
 	if slices.Contains(rootNames, fixturefragments.Group) {
 		return nil, nil
 	}
@@ -43,9 +43,9 @@ func mergedFixtureComposition(ctx context.Context, workspace *resources.Workspac
 	if err != nil || document == nil {
 		return nil, err
 	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+	return &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
 		Name: fixturefragments.Group,
-		Data: &basev0.ConfigurationData{Kind: "yaml", Content: document},
+		Data: &basev1.ConfigurationData{Kind: "yaml", Content: document},
 	}}}, nil
 }
 

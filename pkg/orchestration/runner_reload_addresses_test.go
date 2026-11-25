@@ -8,16 +8,16 @@ import (
 	"strings"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
 )
 
-func mappingOn(module, service, endpoint string, port uint32) *basev0.NetworkMapping {
-	return &basev0.NetworkMapping{
-		Endpoint:  &basev0.Endpoint{Module: module, Service: service, Name: endpoint, Api: "rest"},
-		Instances: []*basev0.NetworkInstance{{Host: "127.0.0.1", Port: port, Address: "http://127.0.0.1:1", Access: resources.NewNativeNetworkAccess()}},
+func mappingOn(module, service, endpoint string, port uint32) *basev1.NetworkMapping {
+	return &basev1.NetworkMapping{
+		Endpoint:  &basev1.Endpoint{Module: module, Service: service, Name: endpoint, Api: "rest"},
+		Instances: []*basev1.NetworkInstance{{Host: "127.0.0.1", Port: port, Address: "http://127.0.0.1:1", Access: resources.NewNativeNetworkAccess()}},
 	}
 }
 
@@ -25,19 +25,19 @@ func mappingOn(module, service, endpoint string, port uint32) *basev0.NetworkMap
 // override seam keys them; a mapping with no instance pins nothing.
 func TestAcceptedPortsArePinnedByEndpointDestination(t *testing.T) {
 	rest := mappingOn("app", "api", "rest", 51234)
-	none := &basev0.NetworkMapping{Endpoint: &basev0.Endpoint{Module: "app", Service: "api", Name: "grpc", Api: "grpc"}}
-	require.Equal(t, map[string]uint16{resources.EndpointDestination(rest.Endpoint): 51234}, acceptedPortOverrides([]*basev0.NetworkMapping{rest, none, nil}))
+	none := &basev1.NetworkMapping{Endpoint: &basev1.Endpoint{Module: "app", Service: "api", Name: "grpc", Api: "grpc"}}
+	require.Equal(t, map[string]uint16{resources.EndpointDestination(rest.Endpoint): 51234}, acceptedPortOverrides([]*basev1.NetworkMapping{rest, none, nil}))
 }
 
 // A hot-reload agent keeps its process across a reload only while that
 // process still serves where the shared state says it does.
 func TestAHotReloadProcessWhoseAddressesMovedIsRestarted(t *testing.T) {
-	before := []*basev0.NetworkMapping{mappingOn("app", "api", "rest", 51234)}
+	before := []*basev1.NetworkMapping{mappingOn("app", "api", "rest", 51234)}
 	runner := &Runner{networkMappings: before}
 	require.False(t, runner.addressesMoved(), "never started: nothing moved")
 	runner.markStarted()
 	require.False(t, runner.addressesMoved(), "the addresses it was started with")
-	runner.networkMappings = []*basev0.NetworkMapping{mappingOn("app", "api", "rest", 50695)}
+	runner.networkMappings = []*basev1.NetworkMapping{mappingOn("app", "api", "rest", 50695)}
 	require.True(t, runner.addressesMoved(), "the shared state moved the service")
 }
 

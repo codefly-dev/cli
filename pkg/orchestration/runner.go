@@ -18,9 +18,9 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -40,9 +40,9 @@ type Runner struct {
 	instance *services.Instance
 
 	// API
-	endpoints []*basev0.Endpoint
+	endpoints []*basev1.Endpoint
 	// Network
-	networkMappings []*basev0.NetworkMapping
+	networkMappings []*basev1.NetworkMapping
 
 	// View of the world
 	world *World
@@ -79,7 +79,7 @@ type Runner struct {
 	// Nil until an Init succeeds — a failed one leaves no baseline rather than
 	// an empty one that would protect nothing — and replaced whole by the next
 	// successful Init, which is the ordinary way a reload adopts new bytes.
-	delivered []*basev0.Configuration
+	delivered []*basev1.Configuration
 
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
@@ -113,13 +113,13 @@ type Runner struct {
 	// testRequest carries CLI-provided test filtering / suite / extra-args
 	// to the agent's Test RPC. Set by Flow only on the origin runner in
 	// TestMode; nil for dependency runners.
-	testRequest *runtimev0.TestRequest
+	testRequest *runtimev1.TestRequest
 
 	// testResponse holds the structured result of the last Test RPC so the
 	// CLI can render counts / failed cases and set an accurate exit code.
 	// Populated on both success and failure (whenever the RPC itself returns
 	// a response, even if tests failed).
-	testResponse *runtimev0.TestResponse
+	testResponse *runtimev1.TestResponse
 
 	// serviceRunningForTest preserves an explicitly started target for suites
 	// whose advertised dependency mode is START_STACK.
@@ -133,7 +133,7 @@ type Runner struct {
 
 // WithTestRequest stores the TestRequest to forward to the agent on Test().
 // Wired from CLI flags via Flow.WithTestRequest.
-func (runner *Runner) WithTestRequest(req *runtimev0.TestRequest) {
+func (runner *Runner) WithTestRequest(req *runtimev1.TestRequest) {
 	runner.testRequest = req
 }
 
@@ -143,7 +143,7 @@ func (runner *Runner) WithServiceRunningForTest(running bool) {
 
 // TestResponse returns the structured response from the last Test RPC, or nil
 // if this runner has not been tested (or the RPC failed before responding).
-func (runner *Runner) TestResponse() *runtimev0.TestResponse {
+func (runner *Runner) TestResponse() *runtimev1.TestResponse {
 	return runner.testResponse
 }
 
@@ -209,7 +209,7 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	if resp == nil || resp.Status == nil {
 		return nil, w.NewError("cannot load runtime instance for %s: agent returned no status", runner.instance.Unique())
 	}
-	if resp.Status.State != runtimev0.LoadStatus_READY {
+	if resp.Status.State != runtimev1.LoadStatus_READY {
 		message := statusDiagnostic(resp.Status.Message, "agent reported load failure")
 		w.Warn(fmt.Sprintf("load failed for %s: %s", runner.instance.Unique(), message))
 		if runner.outputPropertyForLoad.processed == nil {
@@ -363,7 +363,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	// altogether, so a fixture or an override delivered only at Start reaches
 	// every dependency and never the service the suite is about. Start still
 	// carries both, and the agent takes the first non-empty.
-	req := &runtimev0.InitRequest{
+	req := &runtimev1.InitRequest{
 		RuntimeImage:                runtimeImage,
 		RuntimeContext:              runtimeContext,
 		ProposedNetworkMappings:     networkMappings,
@@ -390,7 +390,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if resp == nil || resp.Status == nil {
 		return nil, w.NewError("cannot initialize %s: agent returned no status", runner.instance.Unique())
 	}
-	if resp.Status.State != runtimev0.InitStatus_READY {
+	if resp.Status.State != runtimev1.InitStatus_READY {
 		message := statusDiagnostic(resp.Status.Message, "agent reported initialization failure")
 		w.Warn(fmt.Sprintf("initialization failed for %s: %s", runner.instance.Unique(), message))
 		if runner.outputPropertyForInit.processed == nil {
@@ -539,9 +539,9 @@ func (world *World) producerInRun() func(unique string) bool {
 // producer, so there is nothing to blame, and
 // refuseDroppedWorkspaceConfigurationValues warns by name.
 func (world *World) referencedProducerMappings(
-	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev0.NetworkMapping,
+	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev1.NetworkMapping,
 	withheld withheldCredentials,
-) ([]*basev0.NetworkMapping, error) {
+) ([]*basev1.NetworkMapping, error) {
 	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(effective) == 0 {
 		return nil, nil
 	}
@@ -586,7 +586,7 @@ func (world *World) referencedProducerMappings(
 	if identity, idErr := service.Identity(); idErr == nil {
 		consumerModule = identity.Module
 	}
-	var out []*basev0.NetworkMapping
+	var out []*basev1.NetworkMapping
 	collected := make(map[string]bool)
 	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
 		if skip[reference] {
@@ -721,8 +721,8 @@ func (world *World) referencedProducerMappings(
 // (resources.Endpoint.AllowsModule): consulting it here would make this
 // filter disagree with core's plan-time check, which judges by reach alone.
 func (world *World) exportableTo(
-	ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping,
-) ([]*basev0.NetworkMapping, error) {
+	ctx context.Context, consumer *resources.Service, mappings []*basev1.NetworkMapping,
+) ([]*basev1.NetworkMapping, error) {
 	if len(mappings) == 0 {
 		return mappings, nil
 	}
@@ -745,7 +745,7 @@ func (world *World) exportableTo(
 	if identity, err := consumer.Identity(); err == nil {
 		consumerModule = identity.Module
 	}
-	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	out := make([]*basev1.NetworkMapping, 0, len(mappings))
 	for _, mapping := range mappings {
 		endpoint := mapping.GetEndpoint()
 		if endpoint == nil {
@@ -797,7 +797,7 @@ func (world *World) exportableTo(
 // bound either: the two fields would then describe different endpoints, and
 // nothing here can say which one the address belongs to.
 func manifestEndpoint(
-	producers configurations.ProducerLookup, unique string, endpoint *basev0.Endpoint,
+	producers configurations.ProducerLookup, unique string, endpoint *basev1.Endpoint,
 ) (*resources.Endpoint, bool) {
 	if endpoint.GetName() == "" {
 		return nil, false
@@ -834,7 +834,7 @@ func manifestEndpoint(
 // sibling as the wrong answer and the value was dropped with a WARN blaming the
 // producer's address, or refused in a render. The same shape silently resolved
 // to the sibling before precedence existed. (Layer-5 round-seven N2.)
-func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation, requireExactName bool) bool {
+func mappingsCarry(mappings []*basev1.NetworkMapping, info *resources.EndpointInformation, requireExactName bool) bool {
 	for _, mapping := range mappings {
 		endpoint := mapping.GetEndpoint()
 		if endpoint == nil || endpoint.GetModule() != info.Module || endpoint.GetService() != info.Service {
@@ -867,7 +867,7 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 // proposal for the producer, its own Init included, offers that port. A root
 // group's reference, which orders nothing, and two services whose groups
 // reference each other, which cannot both be ordered first, resolve this way.
-func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev1.Endpoint) ([]*basev1.NetworkMapping, error) {
 	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
 		return nil, nil
 	}
@@ -891,7 +891,7 @@ func (world *World) localProducerMappings(ctx context.Context, service *resource
 // loaded is not in the run and has no address — it contributes nothing, and core
 // fails the consumer's read naming the key and the producer rather than this
 // handing back an address no service is behind.
-func (world *World) producerNetworkMappings(ctx context.Context, producer string) ([]*basev0.NetworkMapping, error) {
+func (world *World) producerNetworkMappings(ctx context.Context, producer string) ([]*basev1.NetworkMapping, error) {
 	if mappings, ok := world.SharedState.GetNetworkMappingsFromUnique(producer); ok {
 		return mappings, nil
 	}
@@ -931,7 +931,7 @@ func (world *World) deploys() bool {
 	}
 }
 
-func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev1.Configuration, error) {
 	if flow == nil || flow.world == nil {
 		return nil, nil
 	}
@@ -984,9 +984,9 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 // reached disk. It answers (nil, nil, nil) when no output was requested.
 func (runner *Runner) pendingStartOutput(
 	ctx context.Context,
-	dependenciesNetworkMappings []*basev0.NetworkMapping,
+	dependenciesNetworkMappings []*basev1.NetworkMapping,
 	overrides map[string]string,
-) ([]outputRecord, []*basev0.Configuration, error) {
+) ([]outputRecord, []*basev1.Configuration, error) {
 	if runner.outputEnv == "" {
 		return nil, nil, nil
 	}
@@ -999,7 +999,7 @@ func (runner *Runner) pendingStartOutput(
 	// but it must also work for infrastructure agents whose optional path
 	// fields are empty. ServiceIdentity.Proto validates those deployment
 	// fields and is therefore intentionally not the conversion boundary.
-	identity := &basev0.ServiceIdentity{
+	identity := &basev1.ServiceIdentity{
 		Workspace:           runner.instance.Identity.Workspace,
 		Module:              runner.instance.Identity.Module,
 		Name:                runner.instance.Identity.Name,
@@ -1133,7 +1133,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		}
 	}
 
-	req := &runtimev0.StartRequest{
+	req := &runtimev1.StartRequest{
 		DependenciesNetworkMappings: dependenciesNetworkMappings,
 		Fixture:                     runner.fixture,
 		Overrides:                   overrides,
@@ -1166,7 +1166,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	if resp == nil || resp.Status == nil {
 		return nil, w.NewError("cannot start %s: agent returned no status", runner.instance.Unique())
 	}
-	if resp.Status.State != runtimev0.StartStatus_STARTED {
+	if resp.Status.State != runtimev1.StartStatus_STARTED {
 		message := statusDiagnostic(resp.Status.Message, "agent reported start failure")
 		return nil, w.NewError("cannot start %s: %s", runner.instance.Unique(), message)
 	}
@@ -1256,7 +1256,7 @@ type portCollision struct {
 // adopted excuses an address whose listener is the service's own: the
 // container attributed by Runner.adoptedContainerAddresses. The agent decides
 // actual reuse during Init. nil excuses nothing.
-func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, adopted func(address string) bool) []string {
+func boundNativePorts(ctx context.Context, mappings []*basev1.NetworkMapping, adopted func(address string) bool) []string {
 	var collisions []portCollision
 	for _, mapping := range mappings {
 		// networkMappings arrive over the agent's Init gRPC response, so a nil
@@ -1293,7 +1293,7 @@ func boundNativePorts(ctx context.Context, mappings []*basev0.NetworkMapping, ad
 // held at: the port on each loopback family, and the instance's own host when
 // it is not a loopback name those two already cover. A loopback host is
 // probed per family only, so a holder is always attributed to one family.
-func nativeProbeAddresses(instance *basev0.NetworkInstance) []string {
+func nativeProbeAddresses(instance *basev1.NetworkInstance) []string {
 	var addresses []string
 	if host := instance.GetHost(); host != "" && !isLoopbackHostname(instance.GetHostname()) {
 		addresses = append(addresses, host)
@@ -1401,7 +1401,7 @@ func portHolderSuffix(ctx context.Context, pid int32) string {
 	return fmt.Sprintf(" held by pid %d (%s)", pid, executable)
 }
 
-func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed []*basev0.NetworkMapping) error {
+func (runner *Runner) checkInitialPortAvailability(ctx context.Context, proposed []*basev1.NetworkMapping) error {
 	// Only the very first Init can see a ghost: once this runner has started
 	// the service, a bound port is its own — either still running (hot reload)
 	// or still releasing after the Stop that precedes a restart. Testing
@@ -1464,7 +1464,7 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 
 	req := runner.testRequest
 	if req == nil {
-		req = &runtimev0.TestRequest{}
+		req = &runtimev1.TestRequest{}
 	}
 	err := resources.Validate(req)
 	if err != nil {
@@ -1521,7 +1521,7 @@ func (runner *Runner) Build(ctx context.Context) (*OutputProperty, error) {
 		w.Info("native build is explicitly unsupported by this agent; skipping")
 		return OnInit(), nil
 	}
-	resp, err := runner.instance.Runtime.Runtime.Build(ctx, &runtimev0.BuildRequest{})
+	resp, err := runner.instance.Runtime.Runtime.Build(ctx, &runtimev1.BuildRequest{})
 	if status.Code(err) == codes.Unimplemented {
 		if advertised {
 			return nil, w.NewError("validation contract violation for %s: compile is advertised but Runtime.Build is unimplemented", runner.Unique())
@@ -1545,7 +1545,7 @@ func (runner *Runner) Build(ctx context.Context) (*OutputProperty, error) {
 		w.Info("native build completed with a legacy empty response")
 		return OnInit(), nil
 	}
-	if resp.Status.State != runtimev0.BuildStatus_SUCCESS {
+	if resp.Status.State != runtimev1.BuildStatus_SUCCESS {
 		message := statusDiagnostic(resp.Status.Message, resp.Output)
 		return nil, w.NewError("native build failed for %s: %s", runner.Unique(), statusDiagnostic(message, "agent reported build failure"))
 	}
@@ -1561,7 +1561,7 @@ func (runner *Runner) Lint(ctx context.Context) (*OutputProperty, error) {
 		w.Info("lint is explicitly unsupported by this agent; skipping")
 		return OnInit(), nil
 	}
-	resp, err := runner.instance.Runtime.Runtime.Lint(ctx, &runtimev0.LintRequest{})
+	resp, err := runner.instance.Runtime.Runtime.Lint(ctx, &runtimev1.LintRequest{})
 	if status.Code(err) == codes.Unimplemented {
 		if advertised {
 			return nil, w.NewError("validation contract violation for %s: lint is advertised but Runtime.Lint is unimplemented", runner.Unique())
@@ -1578,7 +1578,7 @@ func (runner *Runner) Lint(ctx context.Context) (*OutputProperty, error) {
 	if strings.TrimSpace(resp.Output) != "" {
 		w.Forwardf("%s", resp.Output)
 	}
-	if resp.Status.State != runtimev0.LintStatus_SUCCESS {
+	if resp.Status.State != runtimev1.LintStatus_SUCCESS {
 		message := statusDiagnostic(resp.Status.Message, resp.Output)
 		return nil, w.NewError("lint failed for %s: %s", runner.Unique(), statusDiagnostic(message, "agent reported lint failure"))
 	}
@@ -1631,7 +1631,7 @@ func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
 	// the runtime's own bounded cleanup and abandons its final response.
 	stoppingContext, cancel := context.WithTimeout(ctx, defaultStopPhaseBudget)
 	defer cancel()
-	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
+	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev1.StopRequest{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot stop service instance: %s", runner.Unique())
 	}
@@ -1654,7 +1654,7 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("shutting down")
 	stoppingContext, cancel := context.WithTimeout(ctx, defaultShutdownPhaseBudget)
 	defer cancel()
-	_, err := runner.instance.Runtime.Destroy(stoppingContext, &runtimev0.DestroyRequest{})
+	_, err := runner.instance.Runtime.Destroy(stoppingContext, &runtimev1.DestroyRequest{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot shutdown service instance: %s", runner.Unique())
 	}
@@ -1667,18 +1667,18 @@ func (runner *Runner) Destroy(ctx context.Context) (*OutputProperty, error) {
 // would relaunch the stale binary and never surface a fresh compiler error.
 // So a START request re-enters at Init, which the policy cascades back into
 // Start.
-func restartActionType(stage runtimev0.DesiredState_Stage) ActionType {
+func restartActionType(stage runtimev1.DesiredState_Stage) ActionType {
 	switch stage {
-	case runtimev0.DesiredState_LOAD:
+	case runtimev1.DesiredState_LOAD:
 		return RuntimeLoad
-	case runtimev0.DesiredState_INIT, runtimev0.DesiredState_START:
+	case runtimev1.DesiredState_INIT, runtimev1.DesiredState_START:
 		return RuntimeInit
 	default:
 		return ""
 	}
 }
 
-func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev0.DesiredState_Stage) error {
+func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev1.DesiredState_Stage) error {
 	if actionType := restartActionType(stage); actionType != "" {
 		runner.queueRestart(actionType)
 	}
@@ -1742,7 +1742,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				infoCtx, cancel := runnerInformationContext(ctx)
-				info, err := runner.instance.Runtime.Information(infoCtx, &runtimev0.InformationRequest{})
+				info, err := runner.instance.Runtime.Information(infoCtx, &runtimev1.InformationRequest{})
 				cancel()
 				if err != nil {
 					if ContextCancelled(err) {
@@ -1763,7 +1763,7 @@ func (runner *Runner) Follow(ctx context.Context) error {
 				// MarkRunnerExited; we mirror that into a flow-level failure
 				// so `codefly run` can shut down the rest of the stack.
 				if runner.isStarted.Load() && info.StartStatus != nil &&
-					info.StartStatus.State == runtimev0.StartStatus_ERROR &&
+					info.StartStatus.State == runtimev1.StartStatus_ERROR &&
 					runner.failureSink != nil {
 					msg := info.StartStatus.Message
 					if msg == "" {
@@ -1774,11 +1774,11 @@ func (runner *Runner) Follow(ctx context.Context) error {
 					return
 				}
 
-				stage := runtimev0.DesiredState_NOOP
+				stage := runtimev1.DesiredState_NOOP
 				if info.DesiredState != nil {
 					stage = info.DesiredState.Stage
 				}
-				if stage != runtimev0.DesiredState_NOOP {
+				if stage != runtimev1.DesiredState_NOOP {
 					w.Debug("received a request to change SharedState", wool.Field("SharedState", info.DesiredState.Stage))
 				}
 				if err := runner.handleDesiredState(ctx, stage); err != nil {
@@ -1808,7 +1808,7 @@ func (runner *Runner) WithRuntimeContext(runtimeContext string) {
 // SupportsBackend reports whether the agent advertises the given execution
 // backend among its SupportedBackends. The CLI uses this capability set to
 // resolve the concrete runtime for a service launched with the "free" hint.
-func (runner *Runner) SupportsBackend(backend agentv0.Backend_Type) bool {
+func (runner *Runner) SupportsBackend(backend agentv1.Backend_Type) bool {
 	if runner == nil || runner.instance == nil || runner.instance.Info == nil {
 		return false
 	}
@@ -1825,17 +1825,17 @@ func (runner *Runner) SupportsBackend(backend agentv0.Backend_Type) bool {
 // supports nix can fall back when Docker is unavailable, one that does not can
 // only run under Docker.
 func (runner *Runner) SupportsNix() bool {
-	return runner.SupportsBackend(agentv0.Backend_NIX)
+	return runner.SupportsBackend(agentv1.Backend_NIX)
 }
 
 // SupportedBackends returns the plugin's execution backends in PREFERENCE ORDER
 // ([0] = preferred). The CLI walks this to resolve a "free" service to the first
 // backend actually available in the environment.
-func (runner *Runner) SupportedBackends() []agentv0.Backend_Type {
+func (runner *Runner) SupportedBackends() []agentv1.Backend_Type {
 	if runner == nil || runner.instance == nil || runner.instance.Info == nil {
 		return nil
 	}
-	out := make([]agentv0.Backend_Type, 0, len(runner.instance.Info.SupportedBackends))
+	out := make([]agentv1.Backend_Type, 0, len(runner.instance.Info.SupportedBackends))
 	for _, b := range runner.instance.Info.SupportedBackends {
 		out = append(out, b.Type)
 	}
@@ -1869,7 +1869,7 @@ func (runner *Runner) runtimeOverrides() map[string]string {
 // runtime context's, as core's RuntimeWrapper.AddSelfEndpoints selects: a
 // native process advertises its host address, a container its container-network
 // address.
-func (runner *Runner) selfNetworkAccess() *basev0.NetworkAccess {
+func (runner *Runner) selfNetworkAccess() *basev1.NetworkAccess {
 	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
 	if err != nil {
 		return resources.NewNativeNetworkAccess()
@@ -1888,7 +1888,7 @@ func (runner *Runner) selfNetworkAccess() *basev0.NetworkAccess {
 // override seam so it reaches agents built before core emits it themselves
 // (RuntimeWrapper.AddSelfEndpoints); the derivation is core's, so both paths
 // converge on the same value.
-func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[string]string {
+func (runner *Runner) runtimeOverridesFor(own []*basev1.NetworkMapping) map[string]string {
 	self := SelfEndpointEnvironmentVariables(context.Background(), own, runner.selfNetworkAccess())
 	overrides := make(map[string]string, len(self)+len(runner.overrides)+1)
 	for key, value := range self {
@@ -1958,7 +1958,7 @@ func (runner *Runner) WithRemote(environment *environments.Environment) {
 	runner.remoteEnvironment = environment
 }
 
-func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, environment *basev0.Environment, confs []*basev0.Configuration) error {
+func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, environment *basev1.Environment, confs []*basev1.Configuration) error {
 	w := wool.Get(ctx).In("resources.AppendToFile", wool.Field("filePath", filePath))
 	// On the UNFILTERED payload, before the filter and before the manager's
 	// lossy merge: filtering drops offers, and a dropped offer is one the
@@ -2004,12 +2004,12 @@ func AppendEnvironmentVariablesToFile(ctx context.Context, filePath string, envi
 func AppendServiceProcessConfigurationsToFile(
 	ctx context.Context,
 	filePath string,
-	environment *basev0.Environment,
-	runtimeContext *basev0.RuntimeContext,
-	serviceConfiguration *basev0.Configuration,
-	workspaceConfigurations []*basev0.Configuration,
-	dependencyConfigurations []*basev0.Configuration,
-	runtimeConfigurations []*basev0.Configuration,
+	environment *basev1.Environment,
+	runtimeContext *basev1.RuntimeContext,
+	serviceConfiguration *basev1.Configuration,
+	workspaceConfigurations []*basev1.Configuration,
+	dependencyConfigurations []*basev1.Configuration,
+	runtimeConfigurations []*basev1.Configuration,
 ) error {
 	environments, err := serviceProcessConfigurationVariables(ctx, environment, runtimeContext, serviceConfiguration, workspaceConfigurations, dependencyConfigurations, runtimeConfigurations)
 	if err != nil {
@@ -2024,12 +2024,12 @@ func AppendServiceProcessConfigurationsToFile(
 // write are separable (output_records.go says why the batch is the unit).
 func serviceProcessConfigurationVariables(
 	ctx context.Context,
-	environment *basev0.Environment,
-	runtimeContext *basev0.RuntimeContext,
-	serviceConfiguration *basev0.Configuration,
-	workspaceConfigurations []*basev0.Configuration,
-	dependencyConfigurations []*basev0.Configuration,
-	runtimeConfigurations []*basev0.Configuration,
+	environment *basev1.Environment,
+	runtimeContext *basev1.RuntimeContext,
+	serviceConfiguration *basev1.Configuration,
+	workspaceConfigurations []*basev1.Configuration,
+	dependencyConfigurations []*basev1.Configuration,
+	runtimeConfigurations []*basev1.Configuration,
 ) ([]*resources.EnvironmentVariable, error) {
 	w := wool.Get(ctx).In("resources.AppendServiceProcessConfigurationsToFile")
 	if environment == nil || environment.GetName() == "" {
@@ -2095,7 +2095,7 @@ func serviceProcessConfigurationVariables(
 // accepted set is the hashed one, or the one the agent chose instead, which
 // is the truth either way. Core's override seam is the one place a port is
 // pinned.
-func (runner *Runner) pinAcceptedPorts(accepted []*basev0.NetworkMapping) {
+func (runner *Runner) pinAcceptedPorts(accepted []*basev1.NetworkMapping) {
 	if runner.world == nil || runner.world.LocalNetworkManager == nil {
 		return
 	}
@@ -2106,7 +2106,7 @@ func (runner *Runner) pinAcceptedPorts(accepted []*basev0.NetworkMapping) {
 
 // acceptedPortOverrides is the host port each accepted mapping serves on, by
 // the endpoint destination core keys a port override on.
-func acceptedPortOverrides(accepted []*basev0.NetworkMapping) map[string]uint16 {
+func acceptedPortOverrides(accepted []*basev1.NetworkMapping) map[string]uint16 {
 	overrides := map[string]uint16{}
 	for _, mapping := range accepted {
 		if mapping.GetEndpoint() == nil {
@@ -2134,14 +2134,14 @@ func outputEnvNetworkMappings(
 	provenance resources.Provenance,
 	consumerModule string,
 	dependencies []*resources.ServiceDependency,
-	own []*basev0.NetworkMapping,
-	dependencyMappings []*basev0.NetworkMapping,
-) ([]*basev0.NetworkMapping, error) {
+	own []*basev1.NetworkMapping,
+	dependencyMappings []*basev1.NetworkMapping,
+) ([]*basev1.NetworkMapping, error) {
 	resolved, err := resources.ResolveDependencyNetworkMappings(provenance, consumerModule, dependencies, dependencyMappings)
 	if err != nil {
 		return nil, err
 	}
-	mappings := make([]*basev0.NetworkMapping, 0, len(own)+len(resolved))
+	mappings := make([]*basev1.NetworkMapping, 0, len(own)+len(resolved))
 	mappings = append(mappings, own...)
 	return append(mappings, resolved...), nil
 }
@@ -2154,11 +2154,11 @@ func outputEnvNetworkMappings(
 func AppendRuntimeEnvironmentToFile(
 	ctx context.Context,
 	filePath string,
-	identity *basev0.ServiceIdentity,
-	runtimeContext *basev0.RuntimeContext,
+	identity *basev1.ServiceIdentity,
+	runtimeContext *basev1.RuntimeContext,
 	fixture string,
 	overrides map[string]string,
-	endpointMappings []*basev0.NetworkMapping,
+	endpointMappings []*basev1.NetworkMapping,
 ) error {
 	environments, err := runtimeEnvironmentVariables(ctx, identity, runtimeContext, fixture, overrides, endpointMappings)
 	if err != nil {
@@ -2173,11 +2173,11 @@ func AppendRuntimeEnvironmentToFile(
 // the other has already reached the file.
 func runtimeEnvironmentVariables(
 	ctx context.Context,
-	identity *basev0.ServiceIdentity,
-	runtimeContext *basev0.RuntimeContext,
+	identity *basev1.ServiceIdentity,
+	runtimeContext *basev1.RuntimeContext,
 	fixture string,
 	overrides map[string]string,
-	endpointMappings []*basev0.NetworkMapping,
+	endpointMappings []*basev1.NetworkMapping,
 ) ([]*resources.EnvironmentVariable, error) {
 	w := wool.Get(ctx).In("resources.AppendRuntimeEnvironmentToFile")
 	if identity == nil {
@@ -2311,13 +2311,13 @@ func writeOutputRecords(
 // the dependency views, this service's own configuration, and the addresses it
 // proposes to serve.
 type runnerInitInputs struct {
-	dependenciesEndpoints       []*basev0.Endpoint
-	dependenciesNetworkMappings []*basev0.NetworkMapping
-	conf                        *basev0.Configuration
-	runtimeContext              *basev0.RuntimeContext
-	workspaceConfigurations     []*basev0.Configuration
-	dependenciesConfigurations  []*basev0.Configuration
-	networkMappings             []*basev0.NetworkMapping
+	dependenciesEndpoints       []*basev1.Endpoint
+	dependenciesNetworkMappings []*basev1.NetworkMapping
+	conf                        *basev1.Configuration
+	runtimeContext              *basev1.RuntimeContext
+	workspaceConfigurations     []*basev1.Configuration
+	dependenciesConfigurations  []*basev1.Configuration
+	networkMappings             []*basev1.NetworkMapping
 }
 
 // gatherInitInputs performs the reads Init needs, each bounded by cfgCtx.

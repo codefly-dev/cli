@@ -5,7 +5,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
+	observabilityv1 "github.com/codefly-dev/core/generated/go/codefly/observability/v1"
 )
 
 // logHistory is a fixed-capacity ring buffer of the most recent log entries,
@@ -19,21 +19,21 @@ import (
 // shared channel splitting entries across whichever reader happens to win.
 type logHistory struct {
 	mu          sync.Mutex
-	buf         []*observabilityv0.Log
+	buf         []*observabilityv1.Log
 	next        int
 	full        bool
-	subscribers map[uint64]chan *observabilityv0.Log
+	subscribers map[uint64]chan *observabilityv1.Log
 	nextSubID   uint64
 }
 
 func newLogHistory(capacity int) *logHistory {
 	return &logHistory{
-		buf:         make([]*observabilityv0.Log, capacity),
-		subscribers: make(map[uint64]chan *observabilityv0.Log),
+		buf:         make([]*observabilityv1.Log, capacity),
+		subscribers: make(map[uint64]chan *observabilityv1.Log),
 	}
 }
 
-func (h *logHistory) Add(entry *observabilityv0.Log) {
+func (h *logHistory) Add(entry *observabilityv1.Log) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.buf[h.next] = entry
@@ -54,14 +54,14 @@ func (h *logHistory) Add(entry *observabilityv0.Log) {
 
 // Snapshot returns entries in chronological order; when from/to are non-nil
 // (and valid per .IsValid()), only entries with from <= At <= to are returned.
-func (h *logHistory) Snapshot(from, to *timestamppb.Timestamp) []*observabilityv0.Log {
+func (h *logHistory) Snapshot(from, to *timestamppb.Timestamp) []*observabilityv1.Log {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.snapshotLocked(from, to)
 }
 
-func (h *logHistory) snapshotLocked(from, to *timestamppb.Timestamp) []*observabilityv0.Log {
-	var ordered []*observabilityv0.Log
+func (h *logHistory) snapshotLocked(from, to *timestamppb.Timestamp) []*observabilityv1.Log {
+	var ordered []*observabilityv1.Log
 	if h.full {
 		ordered = append(ordered, h.buf[h.next:]...)
 		ordered = append(ordered, h.buf[:h.next]...)
@@ -75,7 +75,7 @@ func (h *logHistory) snapshotLocked(from, to *timestamppb.Timestamp) []*observab
 		return ordered
 	}
 
-	var out []*observabilityv0.Log
+	var out []*observabilityv1.Log
 	for _, entry := range ordered {
 		if hasFrom && entry.At.AsTime().Before(from.AsTime()) {
 			continue
@@ -92,12 +92,12 @@ func (h *logHistory) snapshotLocked(from, to *timestamppb.Timestamp) []*observab
 // that receives every entry Added after this call returns. The caller MUST
 // call the returned unsubscribe func exactly once when done, to stop future
 // Add calls from blocking on (or leaking into) an abandoned channel.
-func (h *logHistory) Subscribe(capacity int) (snapshot []*observabilityv0.Log, live <-chan *observabilityv0.Log, unsubscribe func()) {
+func (h *logHistory) Subscribe(capacity int) (snapshot []*observabilityv1.Log, live <-chan *observabilityv1.Log, unsubscribe func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	snapshot = h.snapshotLocked(nil, nil)
-	ch := make(chan *observabilityv0.Log, capacity)
+	ch := make(chan *observabilityv1.Log, capacity)
 	id := h.nextSubID
 	h.nextSubID++
 	h.subscribers[id] = ch

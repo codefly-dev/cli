@@ -37,7 +37,7 @@ import (
 	"sync"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -117,7 +117,7 @@ func Destination(endpointDestination, mode string) string {
 // Candidates is an endpoint's port sequence: the derived port exactly as core
 // derives it (network.NativeFor's naming-scope folding, network.ToNamedPort),
 // then re-derivations of it, which keep its API digit.
-func Candidates(ctx context.Context, workspace, module, service, namingScope string, endpoint *basev0.Endpoint, mode string) []uint16 {
+func Candidates(ctx context.Context, workspace, module, service, namingScope string, endpoint *basev1.Endpoint, mode string) []uint16 {
 	name := endpoint.GetName()
 	if namingScope != "" {
 		name = fmt.Sprintf("%s-%s", name, namingScope)
@@ -197,11 +197,11 @@ func (l *Ledger) Lookup(run, destination string) (uint16, bool) {
 
 // NativeFor is network.NativeFor with the run's claim when it has one: the
 // address a run of that workspace and scope binds, read without a live run.
-func (l *Ledger) NativeFor(ctx context.Context, workspace, module, service, namingScope string, endpoint *basev0.Endpoint) *basev0.NetworkInstance {
+func (l *Ledger) NativeFor(ctx context.Context, workspace, module, service, namingScope string, endpoint *basev1.Endpoint) *basev1.NetworkInstance {
 	if l == nil {
 		return network.NativeFor(ctx, workspace, module, service, namingScope, endpoint)
 	}
-	stamped := &basev0.Endpoint{Module: module, Service: service, Name: endpoint.GetName(), Api: endpoint.GetApi()}
+	stamped := &basev1.Endpoint{Module: module, Service: service, Name: endpoint.GetName(), Api: endpoint.GetApi()}
 	if port, ok := l.Lookup(RunKey(workspace, namingScope), Destination(resources.EndpointDestination(stamped), network.PortModeHost)); ok {
 		return network.Native(endpoint, port)
 	}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/provider/conformance"
 	"github.com/codefly-dev/core/agents/manager"
-	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
+	providerv1 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v1"
 	"github.com/codefly-dev/core/provider/artifact"
 	"github.com/codefly-dev/core/provider/manifest"
 	"github.com/codefly-dev/core/resources"
@@ -70,7 +70,7 @@ func exerciseProviderArtifact(
 	ctx context.Context,
 	temporary, agentDir string,
 	agent *agentYAML,
-) (*providerv0.RuntimeCatalog, error) {
+) (*providerv1.RuntimeCatalog, error) {
 	identity := &resources.Agent{
 		Kind:      resources.ProviderAgent,
 		Publisher: agent.Publisher,
@@ -92,8 +92,8 @@ func exerciseProviderArtifact(
 	}
 	defer connection.Close()
 
-	information, err := providerv0.NewProviderClient(connection.GRPCConn()).
-		GetProviderInformation(ctx, &providerv0.GetProviderInformationRequest{})
+	information, err := providerv1.NewProviderClient(connection.GRPCConn()).
+		GetProviderInformation(ctx, &providerv1.GetProviderInformationRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("provider conformance: read the provider advertisement: %w", err)
 	}

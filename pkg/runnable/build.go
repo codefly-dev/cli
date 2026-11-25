@@ -15,9 +15,9 @@ import (
 
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -75,11 +75,11 @@ func create(ctx context.Context, workspace *resources.Workspace, r *resources.Ru
 		return err
 	}
 	defer closeAgent()
-	response, err := client.Create(ctx, &builderv0.CreateRequest{})
+	response, err := client.Create(ctx, &builderv1.CreateRequest{})
 	if err != nil {
 		return fmt.Errorf("agent Create: %w", err)
 	}
-	if response.GetState().GetState() != builderv0.CreateStatus_CREATED {
+	if response.GetState().GetState() != builderv1.CreateStatus_CREATED {
 		return fmt.Errorf("agent did not create the Runnable: %s", response.GetState().GetMessage())
 	}
 	return nil
@@ -87,7 +87,7 @@ func create(ctx context.Context, workspace *resources.Workspace, r *resources.Ru
 
 // Build emits one verified release into a new caller-owned directory.
 // This is authoring/building; it does not install a binding or invoke a task.
-func Build(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, output string, logs io.Writer) (*basev0.RunnablePackage, error) {
+func Build(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, output string, logs io.Writer) (*basev1.RunnablePackage, error) {
 	if !filepath.IsAbs(output) {
 		return nil, fmt.Errorf("build output must be absolute")
 	}
@@ -116,22 +116,22 @@ func Build(ctx context.Context, workspace *resources.Workspace, r *resources.Run
 	}
 	defer closeAgent()
 	preparedDir := filepath.Join(output, "prepared")
-	inputs, err := client.RunnableBuildInputs(ctx, &builderv0.RunnableBuildInputsRequest{OutputDirectory: preparedDir})
+	inputs, err := client.RunnableBuildInputs(ctx, &builderv1.RunnableBuildInputsRequest{OutputDirectory: preparedDir})
 	if err != nil {
 		return nil, fmt.Errorf("agent RunnableBuildInputs: %w", err)
 	}
-	if inputs.GetState().GetState() != builderv0.RunnableBuildInputsStatus_SUCCESS || inputs.GetBuild() == nil {
+	if inputs.GetState().GetState() != builderv1.RunnableBuildInputsStatus_SUCCESS || inputs.GetBuild() == nil {
 		return nil, fmt.Errorf("agent did not prepare build inputs: %s", inputs.GetState().GetMessage())
 	}
 	if err = verifyPrepared(preparedDir); err != nil {
 		return nil, err
 	}
 	artifactsDir := filepath.Join(output, "artifacts")
-	response, err := client.Package(ctx, &builderv0.PackageRequest{OutputDirectory: artifactsDir})
+	response, err := client.Package(ctx, &builderv1.PackageRequest{OutputDirectory: artifactsDir})
 	if err != nil {
 		return nil, fmt.Errorf("agent Package: %w", err)
 	}
-	if response.GetState().GetState() != builderv0.PackageStatus_SUCCESS {
+	if response.GetState().GetState() != builderv1.PackageStatus_SUCCESS {
 		return nil, fmt.Errorf("agent did not package the Runnable: %s", response.GetState().GetMessage())
 	}
 	pkg, err := assemble(ctx, workspace, r, inputs.GetBuild(), response.GetArtifacts())
@@ -203,7 +203,7 @@ func verifyPrepared(directory string) error {
 	return nil
 }
 
-func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, logs io.Writer) (builderv0.BuilderClient, func(), error) {
+func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, logs io.Writer) (builderv1.BuilderClient, func(), error) {
 	location, err := workspace.RunnableLocationOf(r)
 	if err != nil {
 		return nil, nil, err
@@ -222,22 +222,22 @@ func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runn
 			connection.Close()
 		}
 	}()
-	info, err := agentv0.NewAgentClient(connection.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	info, err := agentv1.NewAgentClient(connection.GRPCConn()).GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent metadata: %w", err)
 	}
 	if err = contract.Check(info.GetContract()); err != nil {
 		return nil, nil, fmt.Errorf("incompatible Runnable agent %s: %w", r.Agent.Identifier(), err)
 	}
-	if !slices.ContainsFunc(info.GetCapabilities(), func(c *agentv0.Capability) bool { return c.GetType() == agentv0.Capability_BUILDER }) {
+	if !slices.ContainsFunc(info.GetCapabilities(), func(c *agentv1.Capability) bool { return c.GetType() == agentv1.Capability_BUILDER }) {
 		return nil, nil, fmt.Errorf("runnable agent %s does not advertise Builder; install a compatible agent", r.Agent.Identifier())
 	}
-	client := builderv0.NewBuilderClient(connection.GRPCConn())
-	loaded, err := client.Load(ctx, &builderv0.LoadRequest{Runnable: wire})
+	client := builderv1.NewBuilderClient(connection.GRPCConn())
+	loaded, err := client.Load(ctx, &builderv1.LoadRequest{Runnable: wire})
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent Load: %w", err)
 	}
-	if loaded.GetState().GetState() != builderv0.LoadStatus_READY {
+	if loaded.GetState().GetState() != builderv1.LoadStatus_READY {
 		return nil, nil, fmt.Errorf("agent did not load the Runnable: %s", loaded.GetState().GetMessage())
 	}
 	failed = false
@@ -254,7 +254,7 @@ func load(ctx context.Context, workspace *resources.Workspace, r *resources.Runn
 // such as one read back from disk. Making them meaningful in the build path
 // needs the agent to return them over the wire, which PackageResponse does not
 // yet carry (codefly-dev/core#472).
-func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, pkg *basev0.RunnablePackage, emittedFiles []*builderv0.PackageArtifact, directory string) error {
+func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, pkg *basev1.RunnablePackage, emittedFiles []*builderv1.PackageArtifact, directory string) error {
 	if err := corerunnable.VerifyPackage(pkg); err != nil {
 		return fmt.Errorf("verify Runnable package: %w", err)
 	}
@@ -275,7 +275,7 @@ func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resourc
 	}
 	// Canonicalize declared dependencies using the same core preparation rules,
 	// so ordering is irrelevant but omission or addition is still an error.
-	expected := &basev0.RunnablePackage{}
+	expected := &basev1.RunnablePackage{}
 	proto.Merge(expected, pkg)
 	expected.Digest = ""
 	expected.Execution = declaration.GetExecution()
@@ -303,7 +303,7 @@ func VerifyBuild(ctx context.Context, workspace *resources.Workspace, r *resourc
 // inside a stale archive whose digest matches it, and nothing would notice the
 // author's current source never shipped. The CLI holds that source, so it
 // hashes it here rather than trusting the process it exists to verify.
-func verifyBuildInputs(dir string, build *basev0.RunnableBuild, handler string, inputs []string) error {
+func verifyBuildInputs(dir string, build *basev1.RunnableBuild, handler string, inputs []string) error {
 	if dir == "" {
 		return fmt.Errorf("runnable was not loaded from a directory; cannot verify build inputs")
 	}
@@ -373,7 +373,7 @@ func digestFile(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*builderv0.PackageArtifact, directory string) error {
+func verifyArtifacts(artifacts []*basev1.RunnableArtifact, emittedFiles []*builderv1.PackageArtifact, directory string) error {
 	if len(artifacts) != len(emittedFiles) {
 		return fmt.Errorf("package descriptor and emitted artifacts differ")
 	}
@@ -388,7 +388,7 @@ func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*build
 			return fmt.Errorf("invalid or duplicate archive artifact filename %q", name)
 		}
 		seen[name] = true
-		if artifact.GetKind() != basev0.RunnableArtifact_ARCHIVE {
+		if artifact.GetKind() != basev1.RunnableArtifact_ARCHIVE {
 			return fmt.Errorf("runnable build returned an unsupported artifact kind")
 		}
 		file := filepath.Join(root, name)
@@ -401,7 +401,7 @@ func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*build
 		}
 		matched := false
 		for _, emitted := range emittedFiles {
-			if canonicalPath(emitted.GetPath()) == file && emitted.GetKind() == builderv0.PackageArtifact_ARCHIVE && emitted.GetTarget().GetOs()+"/"+emitted.GetTarget().GetArchitecture() == artifact.GetPlatform() && "sha256:"+emitted.GetSha256() == artifact.GetDigest() && slices.Equal(emitted.GetCommand(), artifact.GetCommand()) {
+			if canonicalPath(emitted.GetPath()) == file && emitted.GetKind() == builderv1.PackageArtifact_ARCHIVE && emitted.GetTarget().GetOs()+"/"+emitted.GetTarget().GetArchitecture() == artifact.GetPlatform() && "sha256:"+emitted.GetSha256() == artifact.GetDigest() && slices.Equal(emitted.GetCommand(), artifact.GetCommand()) {
 				matched = true
 			}
 		}
@@ -453,7 +453,7 @@ func canonicalPath(p string) string {
 	return filepath.Join(dir, filepath.Base(p))
 }
 
-func assemble(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, build *basev0.RunnableBuild, files []*builderv0.PackageArtifact) (*basev0.RunnablePackage, error) {
+func assemble(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, build *basev1.RunnableBuild, files []*builderv1.PackageArtifact) (*basev1.RunnablePackage, error) {
 	location, err := workspace.RunnableLocationOf(r)
 	if err != nil {
 		return nil, err
@@ -466,18 +466,18 @@ func assemble(ctx context.Context, workspace *resources.Workspace, r *resources.
 	if err != nil {
 		return nil, err
 	}
-	pkg := &basev0.RunnablePackage{
+	pkg := &basev1.RunnablePackage{
 		Schema: corerunnable.PackageSchemaV1, Identity: identity, Agent: declaration.GetAgent(),
 		Contract: declaration.GetContract(), Execution: declaration.GetExecution(), Build: build,
 		ServiceDependencies:                declaration.GetServiceDependencies(),
 		WorkspaceConfigurationDependencies: declaration.GetWorkspaceConfigurationDependencies(),
 	}
 	for _, file := range files {
-		if file.GetKind() != builderv0.PackageArtifact_ARCHIVE || len(file.GetCommand()) == 0 {
+		if file.GetKind() != builderv1.PackageArtifact_ARCHIVE || len(file.GetCommand()) == 0 {
 			return nil, fmt.Errorf("agent must return an archive with the command that starts its harness")
 		}
-		pkg.Artifacts = append(pkg.Artifacts, &basev0.RunnableArtifact{
-			Kind: basev0.RunnableArtifact_ARCHIVE, Platform: file.GetTarget().GetOs() + "/" + file.GetTarget().GetArchitecture(),
+		pkg.Artifacts = append(pkg.Artifacts, &basev1.RunnableArtifact{
+			Kind: basev1.RunnableArtifact_ARCHIVE, Platform: file.GetTarget().GetOs() + "/" + file.GetTarget().GetArchitecture(),
 			Reference: filepath.Base(file.GetPath()), Digest: "sha256:" + file.GetSha256(), Command: slices.Clone(file.GetCommand()),
 		})
 	}

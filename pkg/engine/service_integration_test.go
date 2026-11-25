@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
 )
 
 // Inspection must not initialize Runtime; the first mutation must. Controlled
@@ -18,7 +18,7 @@ func TestReadOnlyCodeAndCommandsRunWithoutRuntimeInitialization(t *testing.T) {
 	writeSourceFile(t, root, "broken.py", "def oops(:\n    return\n")
 
 	agent := protocoltest.Install(t, "inspection-peer")[0]
-	protocoltest.Response(t, root, "project", &codev0.CodeResponse{Result: &codev0.CodeResponse_GetProjectInfo{GetProjectInfo: &codev0.GetProjectInfoResponse{Module: "probe", Language: "opaque-language"}}})
+	protocoltest.Response(t, root, "project", &codev1.CodeResponse{Result: &codev1.CodeResponse_GetProjectInfo{GetProjectInfo: &codev1.GetProjectInfoResponse{Module: "probe", Language: "opaque-language"}}})
 
 	host, err := NewWorkspaceHost(Config{Root: root})
 	if err != nil {
@@ -33,8 +33,8 @@ func TestReadOnlyCodeAndCommandsRunWithoutRuntimeInitialization(t *testing.T) {
 
 	ctx := t.Context()
 
-	project, err := service.ExecuteCode(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_GetProjectInfo{GetProjectInfo: &codev0.GetProjectInfoRequest{}},
+	project, err := service.ExecuteCode(ctx, &codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_GetProjectInfo{GetProjectInfo: &codev1.GetProjectInfoRequest{}},
 	})
 	if err != nil {
 		t.Fatalf("GetProjectInfo transport error: %v", err)
@@ -46,10 +46,10 @@ func TestReadOnlyCodeAndCommandsRunWithoutRuntimeInitialization(t *testing.T) {
 
 	// Agent-level command discovery and execution are not part of the runtime
 	// lifecycle either; they must succeed against the started agent alone.
-	if _, err := service.ListCommands(ctx, &agentv0.ListCommandsRequest{}); err != nil {
+	if _, err := service.ListCommands(ctx, &agentv1.ListCommandsRequest{}); err != nil {
 		t.Fatalf("ListCommands transport error: %v", err)
 	}
-	if _, err := service.RunCommand(ctx, &agentv0.RunPluginCommandRequest{Command: "bash", Args: []string{"echo", "ok"}}); err != nil {
+	if _, err := service.RunCommand(ctx, &agentv1.RunPluginCommandRequest{Command: "bash", Args: []string{"echo", "ok"}}); err != nil {
 		t.Fatalf("RunCommand transport error: %v", err)
 	}
 
@@ -65,8 +65,8 @@ func TestReadOnlyCodeAndCommandsRunWithoutRuntimeInitialization(t *testing.T) {
 
 	// A mutating Code operation acts on the runtime-managed workspace, so it must
 	// initialize the runtime on first use and write through to real source.
-	write, err := service.ExecuteCode(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{Path: "note.txt", Content: "ok\n"}},
+	write, err := service.ExecuteCode(ctx, &codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_WriteFile{WriteFile: &codev1.WriteFileRequest{Path: "note.txt", Content: "ok\n"}},
 	})
 	if err != nil {
 		t.Fatalf("WriteFile transport error: %v", err)

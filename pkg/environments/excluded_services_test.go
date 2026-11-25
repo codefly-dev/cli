@@ -245,8 +245,8 @@ func TestExcludeServicesRefusesASolutionConsumingIt(t *testing.T) {
 		"workspace.codefly.yaml":                           "",
 		"modules/portal/module.codefly.yaml":               "kind: module\nname: portal\nservice-entry: web\nservices:\n    - name: web\n",
 		"modules/portal/services/web/service.codefly.yaml": "kind: service\nname: web\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n",
-		filepath.Join("modules", "portal", manifest.FileName): `schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+		filepath.Join("modules", "portal", manifest.FileName): `schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 agent:
   kind: codefly:solution
   publisher: codefly.dev

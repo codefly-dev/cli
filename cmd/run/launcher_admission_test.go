@@ -15,7 +15,7 @@ import (
 	"time"
 
 	agentservices "github.com/codefly-dev/core/agents/services"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	coreservices "github.com/codefly-dev/core/services"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -25,7 +25,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
@@ -38,7 +38,7 @@ type admissionFlow struct {
 }
 
 func (f *admissionFlow) LocalAuthorityServices() []string { return f.selected }
-func (f *admissionFlow) ReadyEndpointCarriers(_ context.Context, module string, _ *basev0.NetworkAccess, ready []string) (map[string]string, error) {
+func (f *admissionFlow) ReadyEndpointCarriers(_ context.Context, module string, _ *basev1.NetworkAccess, ready []string) (map[string]string, error) {
 	carriers := map[string]string{}
 	for _, unique := range ready {
 		ref, _ := resources.ParseServiceWithOptionalModule(unique)
@@ -346,18 +346,18 @@ func TestRuntimeOverridesDoNotIssueOrRestoreCredentials(t *testing.T) {
 // A real Runner and the real launcher share a World here. The controlled peer
 // observes signed delivery before the actual Runtime.Start RPC.
 type admittedRuntimePeer struct {
-	runtimev0.UnimplementedRuntimeServer
+	runtimev1.UnimplementedRuntimeServer
 	composition   *admissionPeer
 	starts, stops atomic.Int32
 }
 
-func (p *admittedRuntimePeer) Load(context.Context, *runtimev0.LoadRequest) (*runtimev0.LoadResponse, error) {
-	return &runtimev0.LoadResponse{Status: &runtimev0.LoadStatus{State: runtimev0.LoadStatus_READY}}, nil
+func (p *admittedRuntimePeer) Load(context.Context, *runtimev1.LoadRequest) (*runtimev1.LoadResponse, error) {
+	return &runtimev1.LoadResponse{Status: &runtimev1.LoadStatus{State: runtimev1.LoadStatus_READY}}, nil
 }
-func (p *admittedRuntimePeer) Init(context.Context, *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
-	return &runtimev0.InitResponse{Status: &runtimev0.InitStatus{State: runtimev0.InitStatus_READY}}, nil
+func (p *admittedRuntimePeer) Init(context.Context, *runtimev1.InitRequest) (*runtimev1.InitResponse, error) {
+	return &runtimev1.InitResponse{Status: &runtimev1.InitStatus{State: runtimev1.InitStatus_READY}}, nil
 }
-func (p *admittedRuntimePeer) Start(_ context.Context, req *runtimev0.StartRequest) (*runtimev0.StartResponse, error) {
+func (p *admittedRuntimePeer) Start(_ context.Context, req *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
 	if len(p.composition.snapshots()) < 2 {
 		return nil, fmt.Errorf("Start preceded selected declarations")
 	}
@@ -365,11 +365,11 @@ func (p *admittedRuntimePeer) Start(_ context.Context, req *runtimev0.StartReque
 		return nil, err
 	}
 	p.starts.Add(1)
-	return &runtimev0.StartResponse{Status: &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED}}, nil
+	return &runtimev1.StartResponse{Status: &runtimev1.StartStatus{State: runtimev1.StartStatus_STARTED}}, nil
 }
-func (p *admittedRuntimePeer) Stop(context.Context, *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+func (p *admittedRuntimePeer) Stop(context.Context, *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
 	p.stops.Add(1)
-	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+	return &runtimev1.StopResponse{Status: &runtimev1.StopStatus{State: runtimev1.StopStatus_SUCCESS}}, nil
 }
 
 func TestRunnerFailureReplacesLauncherRoutes(t *testing.T) {
@@ -389,7 +389,7 @@ func TestRunnerFailureReplacesLauncherRoutes(t *testing.T) {
 	require.NoError(t, err)
 	peer := &admittedRuntimePeer{composition: composition}
 	server := grpc.NewServer()
-	runtimev0.RegisterRuntimeServer(server, peer)
+	runtimev1.RegisterRuntimeServer(server, peer)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))

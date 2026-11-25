@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,8 +12,8 @@ func platformBuilder(mode Mode, env *environments.Environment, host string) *Bui
 	return &Builder{world: &World{Mode: mode, Env: env, hostArchitecture: func() (string, error) { return host, nil }}}
 }
 
-func multiArchRecipe() *builderv0.DockerBuildRecipe {
-	return &builderv0.DockerBuildRecipe{Name: "app", Image: "repo/app:v1", Platforms: []string{"linux/amd64", "linux/arm64"}}
+func multiArchRecipe() *builderv1.DockerBuildRecipe {
+	return &builderv1.DockerBuildRecipe{Name: "app", Image: "repo/app:v1", Platforms: []string{"linux/amd64", "linux/arm64"}}
 }
 
 // TestARenderBuildsOnlyTheCellsArchitectures is the defect this closes: a
@@ -55,7 +55,7 @@ func TestARenderRefusesAnUndeclaredCell(t *testing.T) {
 
 func TestARenderRefusesAnArchitectureTheRecipeCannotBuild(t *testing.T) {
 	cell := &environments.Environment{Name: "edge", Cluster: &environments.EnvironmentCluster{Kind: "eks", Architectures: []string{"arm64"}}}
-	recipe := &builderv0.DockerBuildRecipe{Name: "app", Platforms: []string{"linux/amd64"}}
+	recipe := &builderv1.DockerBuildRecipe{Name: "app", Platforms: []string{"linux/amd64"}}
 	_, err := platformBuilder(SnapshotMode, cell, "amd64").targetEnvironmentPlatforms(recipe)
 	require.ErrorContains(t, err, "linux/arm64")
 }
@@ -69,7 +69,7 @@ func TestAPortableBuildKeepsTheRecipesPlatforms(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"linux/amd64", "linux/arm64"}, kept.GetPlatforms())
 
-	_, err = platformBuilder(BuildMode, env, "arm64").targetEnvironmentPlatforms(&builderv0.DockerBuildRecipe{Platforms: []string{"linux/arm64"}})
+	_, err = platformBuilder(BuildMode, env, "arm64").targetEnvironmentPlatforms(&builderv1.DockerBuildRecipe{Platforms: []string{"linux/arm64"}})
 	require.ErrorContains(t, err, "linux/amd64")
 }
 

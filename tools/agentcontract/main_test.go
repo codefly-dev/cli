@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/agents/contract"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -18,14 +18,14 @@ import (
 func TestReleaseCompatibility(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		previous *agentv0.AgentContract
+		previous *agentv1.AgentContract
 		want     string
 	}{
 		{"introduction", nil, "agents without a protocol declaration must adopt"},
 		{"unchanged", contract.Current(), "No agent rebuild"},
-		{"lifecycle changed", &agentv0.AgentContract{ProtocolVersion: 2, StartupProtocolVersion: 2}, "Agent protocol changed"},
-		{"startup changed", &agentv0.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 1}, "Agent protocol changed"},
-		{"capabilities changed", &agentv0.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 2}, "Required capabilities changed"},
+		{"lifecycle changed", &agentv1.AgentContract{ProtocolVersion: 2, StartupProtocolVersion: 1}, "Agent protocol changed"},
+		{"startup changed", &agentv1.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 2}, "Agent protocol changed"},
+		{"capabilities changed", &agentv1.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 1}, "Required capabilities changed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			notes := releaseNotes(contract.Current(), tc.previous, "v0.1.160")
@@ -121,7 +121,7 @@ func TestGenerateFromConsumedCore(t *testing.T) {
 	require.NoError(t, validateManifest(data))
 	data, err = os.ReadFile(filepath.Join(output, "agent-requirements.json"))
 	require.NoError(t, err)
-	var requirements agentv0.AgentContract
+	var requirements agentv1.AgentContract
 	require.NoError(t, protojson.Unmarshal(data, &requirements))
 	require.Equal(t, []string{contract.ContainerRecoveryScope}, requirements.Capabilities)
 	data, err = os.ReadFile(filepath.Join(output, "agent-compatibility.md"))

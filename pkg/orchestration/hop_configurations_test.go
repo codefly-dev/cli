@@ -11,7 +11,7 @@ import (
 
 	"github.com/codefly-dev/authority/libraries/hop/go/routing"
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -67,7 +67,7 @@ func TestGeneratedHopRoutesUseTheNormalGraphAndAddressResolver(t *testing.T) {
 		recordMappings(t, world, "platform", service, endpointMapping("platform", service, "web", "http", "public", nativeInstance("http://"+service+".native"), containerInstance("http://"+service+".cell")))
 	}
 	for _, tc := range []struct {
-		access *basev0.NetworkAccess
+		access *basev1.NetworkAccess
 		suffix string
 		mode   Mode
 	}{{resources.NewNativeNetworkAccess(), "native", RunMode}, {resources.NewContainerNetworkAccess(), "cell", SnapshotMode}} {
@@ -90,7 +90,7 @@ func TestGeneratedHopRoutesUseTheNormalGraphAndAddressResolver(t *testing.T) {
 	first, err := service.LoadServiceFromName(ctx, "first")
 	require.NoError(t, err)
 	moved := endpointMapping("platform", "first", "web", "http", "public", nativeInstance("http://moved.native"), containerInstance("http://first.cell"))
-	err = world.SharedState.RecordNetworkMappings(ctx, first, []*basev0.NetworkMapping{moved})
+	err = world.SharedState.RecordNetworkMappings(ctx, first, []*basev1.NetworkMapping{moved})
 	require.ErrorContains(t, err, "stop and restart")
 	require.ErrorContains(t, err, "(hop route platform/first/web::http is routed at [native http://first.native, container http://first.cell], but platform/first now offers [native http://moved.native, container http://first.cell])")
 	previous, found := world.SharedState.GetNetworkMappingsFromUnique("platform/first")
@@ -148,7 +148,7 @@ func TestHopRoutesFreezeAModuleThatInitializesAfterTheHop(t *testing.T) {
 	// An Init that accepts another address than the frozen one is refused by
 	// name, and nothing is recorded in its place.
 	moved := endpointMapping("platform", "second", "web", "http", "public", nativeInstance("http://moved.native"))
-	err = world.SharedState.RecordNetworkMappings(ctx, second, []*basev0.NetworkMapping{moved})
+	err = world.SharedState.RecordNetworkMappings(ctx, second, []*basev1.NetworkMapping{moved})
 	require.ErrorContains(t, err, "hop route platform/second/web::http is routed at "+mappingAddresses(proposed...))
 	require.ErrorContains(t, err, "its Init accepted [native http://moved.native]")
 	// The address is derived, so a restart cannot help and is not asked for;
@@ -189,7 +189,7 @@ func hopFenceState(t *testing.T) (*StateManager, *resources.Service, string) {
 	return state, second, string(raw)
 }
 
-func secondAt(address string) *basev0.NetworkMapping {
+func secondAt(address string) *basev1.NetworkMapping {
 	return endpointMapping("platform", "second", "web", "http", "public", nativeInstance(address))
 }
 
@@ -198,8 +198,8 @@ func secondAt(address string) *basev0.NetworkMapping {
 func TestHopFreezeRefusesARecordBetweenDerivationAndFreeze(t *testing.T) {
 	ctx := context.Background()
 	state, second, raw := hopFenceState(t)
-	require.NoError(t, state.RecordNetworkMappings(ctx, second, []*basev0.NetworkMapping{secondAt("http://moved.native")}))
-	err := state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://derived.native")})
+	require.NoError(t, state.RecordNetworkMappings(ctx, second, []*basev1.NetworkMapping{secondAt("http://moved.native")}))
+	err := state.freezeHopAddresses(raw, []*basev1.NetworkMapping{secondAt("http://derived.native")})
 	// Its first record: the hop resolved the address that Init was proposed,
 	// and a restart proposes it again, so no restart is asked for.
 	require.ErrorContains(t, err, "hop route platform/second/web::http is routed at [native http://derived.native], the address platform/second was proposed, but its Init accepted [native http://moved.native]")
@@ -208,8 +208,8 @@ func TestHopFreezeRefusesARecordBetweenDerivationAndFreeze(t *testing.T) {
 	require.Empty(t, state.routingMappings, "a refused freeze holds nothing")
 	// A service that re-records inside the window (a reload) is a real change:
 	// a restart adopts its new address.
-	require.NoError(t, state.RecordNetworkMappings(ctx, second, []*basev0.NetworkMapping{secondAt("http://reloaded.native")}))
-	err = state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://moved.native")})
+	require.NoError(t, state.RecordNetworkMappings(ctx, second, []*basev1.NetworkMapping{secondAt("http://reloaded.native")}))
+	err = state.freezeHopAddresses(raw, []*basev1.NetworkMapping{secondAt("http://moved.native")})
 	require.ErrorContains(t, err, "stop and restart")
 	require.ErrorContains(t, err, "hop route platform/second/web::http was resolved at [native http://moved.native], but platform/second initialized at [native http://reloaded.native]")
 }
@@ -221,11 +221,11 @@ func TestHopFrozenRouteRefusesADuplicateEndpointAtAnotherAddress(t *testing.T) {
 	ctx := context.Background()
 	derived, other := secondAt("http://derived.native"), secondAt("http://other.native")
 	key := resources.EndpointDestination(derived.GetEndpoint())
-	require.True(t, carriesMapping([]*basev0.NetworkMapping{derived}, key, resources.NetworkMappingHash(derived)))
-	for _, offered := range [][]*basev0.NetworkMapping{{derived, other}, {other, derived}} {
+	require.True(t, carriesMapping([]*basev1.NetworkMapping{derived}, key, resources.NetworkMappingHash(derived)))
+	for _, offered := range [][]*basev1.NetworkMapping{{derived, other}, {other, derived}} {
 		require.False(t, carriesMapping(offered, key, resources.NetworkMappingHash(derived)))
 		state, second, raw := hopFenceState(t)
-		require.NoError(t, state.freezeHopAddresses(raw, []*basev0.NetworkMapping{derived}))
+		require.NoError(t, state.freezeHopAddresses(raw, []*basev1.NetworkMapping{derived}))
 		err := state.RecordNetworkMappings(ctx, second, offered)
 		require.ErrorContains(t, err, "its Init accepted [native http://")
 		_, recorded := state.GetNetworkMappingsFromUnique("platform/second")
@@ -237,9 +237,9 @@ func TestHopFrozenRouteRefusesADuplicateEndpointAtAnotherAddress(t *testing.T) {
 // another address than the snapshot froze is refused as a move.
 func TestHopFreezeRefusesARouteThatMovedBeforeItsOwnerInitialized(t *testing.T) {
 	state, _, raw := hopFenceState(t)
-	require.NoError(t, state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://derived.native")}))
-	require.NoError(t, state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://derived.native")}), "the same address re-freezes")
-	err := state.freezeHopAddresses(raw, []*basev0.NetworkMapping{secondAt("http://other.native")})
+	require.NoError(t, state.freezeHopAddresses(raw, []*basev1.NetworkMapping{secondAt("http://derived.native")}))
+	require.NoError(t, state.freezeHopAddresses(raw, []*basev1.NetworkMapping{secondAt("http://derived.native")}), "the same address re-freezes")
+	err := state.freezeHopAddresses(raw, []*basev1.NetworkMapping{secondAt("http://other.native")})
 	require.ErrorContains(t, err, "stop and restart")
 	require.ErrorContains(t, err, "hop route platform/second/web::http moved from [native http://derived.native], the address this run's hop snapshot holds, to [native http://other.native]")
 }

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 // BuildImages selects agent-owned image roles without changing agent recipes.
@@ -40,7 +40,7 @@ func (policy *BuildImages) Validate() error {
 				return fmt.Errorf("build-images %s %q declares no roles", kind, selector)
 			}
 			for role, input := range roles {
-				if err := services.ValidateBuildImageInput(&builderv0.BuildImageInput{Role: role, Reference: input.Reference, Variant: input.Variant}); err != nil {
+				if err := services.ValidateBuildImageInput(&builderv1.BuildImageInput{Role: role, Reference: input.Reference, Variant: input.Variant}); err != nil {
 					return err
 				}
 			}
@@ -55,7 +55,7 @@ func (policy *BuildImages) Applies(agent, service string) bool {
 
 // Resolve preserves declaration order and leaves the caller's values untouched.
 // Explicit bindings are destination references and are never relocated again.
-func (policy *BuildImages) Resolve(agent, service string, declarations []*builderv0.BuildImageInput) ([]*builderv0.BuildImageInput, error) {
+func (policy *BuildImages) Resolve(agent, service string, declarations []*builderv1.BuildImageInput) ([]*builderv1.BuildImageInput, error) {
 	if err := policy.Validate(); err != nil {
 		return nil, err
 	}
@@ -73,9 +73,9 @@ func (policy *BuildImages) Resolve(agent, service string, declarations []*builde
 	for k, v := range policy.Services[service] {
 		chosen[k] = v
 	}
-	bindings := make([]*builderv0.BuildImageInput, 0, len(chosen))
+	bindings := make([]*builderv1.BuildImageInput, 0, len(chosen))
 	for role, input := range chosen {
-		bindings = append(bindings, &builderv0.BuildImageInput{Role: role, Reference: input.Reference, Variant: input.Variant})
+		bindings = append(bindings, &builderv1.BuildImageInput{Role: role, Reference: input.Reference, Variant: input.Variant})
 	}
 	resolved, err := services.ResolveBuildImages(defaults, bindings)
 	if err != nil {

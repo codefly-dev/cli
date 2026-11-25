@@ -972,8 +972,8 @@ The `StateManager` tracks shared state across services during orchestration:
 
 ```go
 type StateManager struct {
-    endpoints       map[string][]*basev0.Endpoint
-    networkMappings map[string][]*basev0.NetworkMapping
+    endpoints       map[string][]*basev1.Endpoint
+    networkMappings map[string][]*basev1.NetworkMapping
     configurationManager *providers.Manager
     dependencies         *architecture.ServiceDependencies
 }

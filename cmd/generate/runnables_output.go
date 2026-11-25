@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/generators"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/shared"
 	"github.com/pmezard/go-difflib/difflib"
@@ -44,14 +44,14 @@ func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operat
 // recoveryName spells a declared recovery, empty when the owner stated none:
 // an operation derived before recovery could be stated keeps its document
 // byte for byte, and reads back as the receipt it always was.
-func recoveryName(recovery basev0.RunnableExecution_Recovery) string {
-	if recovery == basev0.RunnableExecution_RECOVERY_UNKNOWN {
+func recoveryName(recovery basev1.RunnableExecution_Recovery) string {
+	if recovery == basev1.RunnableExecution_RECOVERY_UNKNOWN {
 		return ""
 	}
 	return recovery.String()
 }
 
-func scopeDocuments(scopes []*basev0.WorkScopeV1) []runnablespkg.Scope {
+func scopeDocuments(scopes []*basev1.WorkScopeV1) []runnablespkg.Scope {
 	documents := make([]runnablespkg.Scope, 0, len(scopes))
 	for _, scope := range scopes {
 		documents = append(documents, runnablespkg.Scope{

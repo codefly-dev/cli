@@ -8,7 +8,7 @@ import (
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -64,11 +64,11 @@ func excludedRootVisibilityFlow(t *testing.T, ctx context.Context) (*Flow, strin
 	endpoints, err := producer.LoadEndpoints(ctx)
 	require.NoError(t, err)
 	require.Len(t, endpoints, 2)
-	mappings := make([]*basev0.NetworkMapping, 0, len(endpoints))
+	mappings := make([]*basev1.NetworkMapping, 0, len(endpoints))
 	for _, endpoint := range endpoints {
-		mappings = append(mappings, &basev0.NetworkMapping{
+		mappings = append(mappings, &basev1.NetworkMapping{
 			Endpoint: endpoint,
-			Instances: []*basev0.NetworkInstance{{
+			Instances: []*basev1.NetworkInstance{{
 				Address: "http://localhost:10650",
 				Access:  resources.NewNativeNetworkAccess(),
 			}},
@@ -106,19 +106,19 @@ func TestOutputEnvOmitsBuildOnlyDependencyCredentials(t *testing.T) {
 	ctx := context.Background()
 	flow, outputEnv := excludedRootVisibilityFlow(t, ctx)
 
-	secret := func(origin, name, key, value string) *basev0.Configuration {
-		return &basev0.Configuration{
+	secret := func(origin, name, key, value string) *basev1.Configuration {
+		return &basev1.Configuration{
 			Origin:         origin,
 			RuntimeContext: resources.NewRuntimeContextNative(),
-			Infos: []*basev0.ConfigurationInformation{{
+			Infos: []*basev1.ConfigurationInformation{{
 				Name: name,
-				ConfigurationValues: []*basev0.ConfigurationValue{{
+				ConfigurationValues: []*basev1.ConfigurationValue{{
 					Key: key, Value: value, Secret: true,
 				}},
 			}},
 		}
 	}
-	expose := func(module, service string, conf *basev0.Configuration) {
+	expose := func(module, service string, conf *basev1.Configuration) {
 		require.NoError(t, flow.ConfigurationManager.ExposeConfiguration(
 			ctx,
 			&resources.ServiceIdentity{Module: module, Name: service, Version: "0.0.0"},

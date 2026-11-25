@@ -104,7 +104,7 @@ func legacyBootID(t *testing.T, pgid int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths, err := filepath.Glob(filepath.Join(home, ".codefly", "*", "authenticated-v2", strconv.Itoa(pgid)+".pgid"))
+	paths, err := filepath.Glob(filepath.Join(home, ".codefly", "*", "workspace-authenticated-v1", strconv.Itoa(pgid)+".pgid"))
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("record for %d: %v %v", pgid, paths, err)
 	}

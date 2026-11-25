@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -32,21 +32,21 @@ func edgeRouteWorkspace(t *testing.T, services []string, foreign []string) *reso
 
 // mounted is the composition's two authored lists: the modules the edge
 // mounts and the modules published through the hop.
-func mounted(edge, hop string) []*basev0.Configuration {
-	return []*basev0.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{
-		{Name: "edge", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "MODULES", Value: edge}}},
-		{Name: "hop", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "MODULES", Value: hop}}},
+func mounted(edge, hop string) []*basev1.Configuration {
+	return []*basev1.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{
+		{Name: "edge", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "MODULES", Value: edge}}},
+		{Name: "hop", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "MODULES", Value: hop}}},
 	}}}
 }
 
-func edgeRoutesOf(t *testing.T, workspace *resources.Workspace, configs []*basev0.Configuration) (string, error) {
+func edgeRoutesOf(t *testing.T, workspace *resources.Workspace, configs []*basev1.Configuration) (string, error) {
 	t.Helper()
 	group, err := generatedEdgeRoutes(context.Background(), workspace, configs)
 	if err != nil {
 		return "", err
 	}
 	require.NotNil(t, group)
-	raw, delivered := groupValue([]*basev0.Configuration{group}, "edge-routes", "ROUTES")
+	raw, delivered := groupValue([]*basev1.Configuration{group}, "edge-routes", "ROUTES")
 	require.True(t, delivered)
 	return raw, nil
 }
@@ -87,7 +87,7 @@ func TestEdgeRoutesLeaveOutForeignMethods(t *testing.T) {
 func TestEdgeRoutesNameOnlyModulesPublishedThroughTheHop(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	workspace := edgeRouteWorkspace(t, []string{"chat"}, nil)
-	for name, configs := range map[string][]*basev0.Configuration{
+	for name, configs := range map[string][]*basev1.Configuration{
 		"mounted, not behind the hop": mounted("page, owner", ""),
 		"nothing mounted":             mounted("", "owner"),
 		"no edge group":               nil,
@@ -115,7 +115,7 @@ func TestEdgeRoutesAreGeneratedForADeclaringServiceOnly(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	ctx := context.Background()
 	authored := mounted("owner", "owner")
-	authored[0].Infos = append(authored[0].Infos, &basev0.ConfigurationInformation{Name: "edge-routes", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "ROUTES", Value: "{}"}}})
+	authored[0].Infos = append(authored[0].Infos, &basev1.ConfigurationInformation{Name: "edge-routes", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "ROUTES", Value: "{}"}}})
 	_, err := generatedEdgeRoutes(ctx, edgeRouteWorkspace(t, []string{"chat"}, nil), authored)
 	require.ErrorContains(t, err, "edge-routes is generated from published API catalogs; remove its authored configuration")
 

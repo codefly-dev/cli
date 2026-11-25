@@ -9,7 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 )
@@ -27,7 +27,7 @@ import (
 // loads. A later load may legitimately see changed bytes; nothing here freezes
 // them, and nothing rereads the file at emission to prove they were stable.
 func ModuleArtifactResolverFor(workspace *resources.Workspace) configurations.ModuleArtifactResolver {
-	return func(ctx context.Context, ref *basev0.ConfigurationModuleArtifactReference) ([]byte, error) {
+	return func(ctx context.Context, ref *basev1.ConfigurationModuleArtifactReference) ([]byte, error) {
 		return acquireModuleArtifact(ctx, workspace, ref)
 	}
 }
@@ -44,7 +44,7 @@ func ModuleArtifactResolverFor(workspace *resources.Workspace) configurations.Mo
 // the read refuses rather than delivering a mixture of two versions. That is a
 // same-file observation, not a snapshot of the tree against arbitrary
 // concurrent mutation.
-func acquireModuleArtifact(ctx context.Context, workspace *resources.Workspace, ref *basev0.ConfigurationModuleArtifactReference) ([]byte, error) {
+func acquireModuleArtifact(ctx context.Context, workspace *resources.Workspace, ref *basev1.ConfigurationModuleArtifactReference) ([]byte, error) {
 	if workspace == nil {
 		return nil, fmt.Errorf("module artifacts require a selected workspace")
 	}
@@ -116,8 +116,8 @@ func acquireModuleArtifact(ctx context.Context, workspace *resources.Workspace, 
 // or reduced to a map first. A duplicate coordinate, an alias and a repeated
 // pointer all stay visible, because the offer that would be LOST to precedence
 // is exactly the one core has to refuse.
-func deliveryBaseline(own *basev0.Configuration, workspace, dependencies []*basev0.Configuration) []*basev0.Configuration {
-	baseline := make([]*basev0.Configuration, 0, len(workspace)+len(dependencies)+1)
+func deliveryBaseline(own *basev1.Configuration, workspace, dependencies []*basev1.Configuration) []*basev1.Configuration {
+	baseline := make([]*basev1.Configuration, 0, len(workspace)+len(dependencies)+1)
 	if own != nil {
 		baseline = append(baseline, own)
 	}
@@ -129,8 +129,8 @@ func deliveryBaseline(own *basev0.Configuration, workspace, dependencies []*base
 // clones, so the generated artifact evidence travels with each value and a
 // later load, filter or clone of the original slices cannot quietly rewrite
 // what this service was delivered.
-func detachConfigurations(confs []*basev0.Configuration) []*basev0.Configuration {
-	detached := make([]*basev0.Configuration, 0, len(confs))
+func detachConfigurations(confs []*basev1.Configuration) []*basev1.Configuration {
+	detached := make([]*basev1.Configuration, 0, len(confs))
 	for _, conf := range confs {
 		if conf == nil {
 			continue

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/artifactexecution"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -30,7 +30,7 @@ func decodeBuildInputs(inputs []BuildInput) ([]renderInput, error) {
 			return nil, errors.New("build request has an empty, invalid or duplicate service identity")
 		}
 		seen[key] = true
-		request := &builderv0.BuildRequest{}
+		request := &builderv1.BuildRequest{}
 		if err := protojson.Unmarshal(input.Request, request); err != nil {
 			return nil, errors.New("invalid build request protobuf JSON; payload values withheld")
 		}

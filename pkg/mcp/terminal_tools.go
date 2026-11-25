@@ -8,7 +8,7 @@ import (
 	"io"
 	"time"
 
-	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliv1 "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/codefly-dev/core/network"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -20,7 +20,7 @@ func terminalAddress(workspaceName string) string {
 
 // terminalClient connects to the same deterministic per-workspace endpoint as
 // `codefly terminal`. The old fixed localhost:10000 listener no longer exists.
-func (s *Server) terminalClient() (cliv0.TerminalServiceClient, *grpc.ClientConn, error) {
+func (s *Server) terminalClient() (cliv1.TerminalServiceClient, *grpc.ClientConn, error) {
 	workspace, err := s.requireWorkspace()
 	if err != nil {
 		return nil, nil, err
@@ -30,7 +30,7 @@ func (s *Server) terminalClient() (cliv0.TerminalServiceClient, *grpc.ClientConn
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot connect to codefly server at %s: %w", addr, err)
 	}
-	return cliv0.NewTerminalServiceClient(conn), conn, nil
+	return cliv1.NewTerminalServiceClient(conn), conn, nil
 }
 
 // registerTerminalTools adds terminal MCP tools.
@@ -102,7 +102,7 @@ func (s *Server) openTerminal(ctx context.Context, args map[string]string) ([]Co
 	}
 	defer conn.Close()
 
-	resp, err := client.Open(ctx, &cliv0.OpenTerminalRequest{
+	resp, err := client.Open(ctx, &cliv1.OpenTerminalRequest{
 		Module:  args[fieldModule],
 		Service: args[fieldService],
 		Shell:   args["shell"],
@@ -135,7 +135,7 @@ func (s *Server) sendTerminalInput(ctx context.Context, args map[string]string) 
 		return nil, fmt.Errorf("session_id and input are required")
 	}
 
-	output, err := collectTerminalOutput(ctx, client, &cliv0.TerminalInput{
+	output, err := collectTerminalOutput(ctx, client, &cliv1.TerminalInput{
 		SessionId: sessionID,
 		Data:      []byte(input),
 	}, 2*time.Second)
@@ -161,7 +161,7 @@ func (s *Server) readTerminalOutput(ctx context.Context, args map[string]string)
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	output, err := collectTerminalOutput(ctx, client, &cliv0.TerminalInput{SessionId: sessionID}, time.Second)
+	output, err := collectTerminalOutput(ctx, client, &cliv1.TerminalInput{SessionId: sessionID}, time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("read_terminal_output: %w", err)
 	}
@@ -184,7 +184,7 @@ func (s *Server) closeTerminal(ctx context.Context, args map[string]string) ([]C
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	_, err = client.Close(ctx, &cliv0.CloseTerminalRequest{SessionId: sessionID})
+	_, err = client.Close(ctx, &cliv1.CloseTerminalRequest{SessionId: sessionID})
 	if err != nil {
 		return nil, fmt.Errorf("close_terminal: %w", err)
 	}
@@ -199,7 +199,7 @@ func (s *Server) listTerminals(ctx context.Context, _ map[string]string) ([]Cont
 	}
 	defer conn.Close()
 
-	resp, err := client.List(ctx, &cliv0.ListTerminalsRequest{})
+	resp, err := client.List(ctx, &cliv1.ListTerminalsRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("list_terminals: %w", err)
 	}
@@ -235,7 +235,7 @@ func (s *Server) listTerminals(ctx context.Context, _ map[string]string) ([]Cont
 // former timeout goroutine appended to a shared byte slice after handlers had
 // started reading or returned, which was a data race and retained goroutines
 // on quiet streams.
-func collectTerminalOutput(ctx context.Context, client cliv0.TerminalServiceClient, input *cliv0.TerminalInput, timeout time.Duration) ([]byte, error) {
+func collectTerminalOutput(ctx context.Context, client cliv1.TerminalServiceClient, input *cliv1.TerminalInput, timeout time.Duration) ([]byte, error) {
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

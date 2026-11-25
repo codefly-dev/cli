@@ -24,7 +24,7 @@ import (
 
 	"github.com/asottile/dockerfile"
 	"github.com/codefly-dev/cli/pkg/timings"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/moby/patternmatcher"
@@ -149,7 +149,7 @@ type imageInputs struct {
 	// Bases is the resolved manifest digest of each external image the recipe's
 	// Dockerfile builds from.
 	Bases         []string                     `json:"base_image_digests,omitempty"`
-	ImageBindings []*builderv0.BuildImageInput `json:"image_bindings,omitempty"`
+	ImageBindings []*builderv1.BuildImageInput `json:"image_bindings,omitempty"`
 }
 
 // imageCacheEntry records which image a previously executed build produced for
@@ -315,7 +315,7 @@ type imageBuildScope struct {
 // contextDigest is the one definition of "the bytes of this recipe's build
 // context". Both the identity and the post-build re-check go through it, so
 // there is no second reading of the ignore policy to drift from the first.
-func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, scope imageBuildScope) (string, error) {
+func contextDigest(ctx context.Context, recipe *builderv1.DockerBuildRecipe, scope imageBuildScope) (string, error) {
 	patterns, err := contextIgnorePatterns(scope.OutputDir, scope.ContextDir, recipe)
 	if err != nil {
 		return "", err
@@ -407,7 +407,7 @@ func sourceIgnoredPaths(ctx context.Context, contextDir string) map[string]bool 
 
 // imageBuildIdentity digests the inputs of one recipe's image build. A zero
 // identity with no error means the build is not cacheable and must run.
-func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies, mirrors map[string]string, bindings ...*builderv0.BuildImageInput) (imageIdentity, error) {
+func imageBuildIdentity(ctx context.Context, recipe *builderv1.DockerBuildRecipe, plan *builderv1.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies, mirrors map[string]string, bindings ...*builderv1.BuildImageInput) (imageIdentity, error) {
 	recipeTree := plan.GetDigest()
 	if recipeTree == "" {
 		return imageIdentity{}, fmt.Errorf("recipe tree of %s declares no verified content digest", recipe.GetName())
@@ -502,7 +502,7 @@ func normalizedBuildxArgs(args []string, contextDir, dockerfilePath string, prox
 // module root outside the build context, and the same containment is required
 // here rather than assumed, so a recipe that names an escaping root declines
 // instead of hashing something the build cannot read.
-func goModuleManifestDigests(contextDir string, recipe *builderv0.DockerBuildRecipe) ([]string, error) {
+func goModuleManifestDigests(contextDir string, recipe *builderv1.DockerBuildRecipe) ([]string, error) {
 	downloads := recipe.GetGoModuleDownloads()
 	if len(downloads) == 0 {
 		return nil, nil
@@ -706,7 +706,7 @@ const imageRegistryProbeTimeout = 30 * time.Second
 // reason). A file the policy excludes is not sent to the builder, so it is not
 // an input; matching is left to the same matcher Docker uses rather than to a
 // second reading of the same patterns.
-func contextIgnorePatterns(outputDir, contextDir string, recipe *builderv0.DockerBuildRecipe) ([]string, error) {
+func contextIgnorePatterns(outputDir, contextDir string, recipe *builderv1.DockerBuildRecipe) ([]string, error) {
 	path := filepath.Join(contextDir, ".dockerignore")
 	if declared := recipe.GetDockerignore(); declared != "" {
 		path = filepath.Join(outputDir, filepath.FromSlash(declared))
@@ -930,7 +930,7 @@ var imageTag = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
 // cachedImageEntry is the entry a completed build records, or nil when the
 // build resolved no immutable identity for its image and therefore has nothing
 // a later run could verify.
-func cachedImageEntry(key, service string, recipe *builderv0.DockerBuildRecipe, pushed bool, digest, imageID string) *imageCacheEntry {
+func cachedImageEntry(key, service string, recipe *builderv1.DockerBuildRecipe, pushed bool, digest, imageID string) *imageCacheEntry {
 	if key == "" || (pushed && digest == "") || (!pushed && imageID == "") {
 		return nil
 	}

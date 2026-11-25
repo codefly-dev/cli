@@ -121,13 +121,13 @@ The first provider-neutral vertical slice is operational:
   security audit, packaging, and SBOM generation are ordinary Runtime `Test`,
   Builder `Audit`, and Builder `Package` operations on the generic source
   resource; the host contains no Go test/build/scanner command selection;
-- Core exposes one generated `codefly.base.v0.Failure` taxonomy for plugin,
+- Core exposes one generated `codefly.base.v1.Failure` taxonomy for plugin,
   host, report, editor, and automation boundaries. Lifecycle statuses and CI
   stages retain the stable reason, transport class, retryability, field/source
   diagnostics, process evidence, resource identity, details, and cause chain;
 - the public agent-CI report contract is
-  `core/proto/codefly/ci/v0/report.proto`; the CLI constructs generated
-  `codefly.ci.v0` messages and serializes protobuf JSON. Handwritten report
+  `core/proto/codefly/ci/v1/report.proto`; the CLI constructs generated
+  `codefly.ci.v1` messages and serializes protobuf JSON. Handwritten report
   DTOs are not an alternate schema;
 - the hardcoded workflow generator was removed from `codefly agent deps`, and
   the Next.js agent's repository-local workflow was deleted.

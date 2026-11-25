@@ -25,9 +25,9 @@ func TestPublishedContractSourcesFollowBufModulesThroughPinnedCompanion(t *testi
 	for rel, content := range map[string]string{
 		"contract.binpb":                          string(contract),
 		"proto/buf.yaml":                          "version: v2\nmodules:\n  - path: .\n    excludes: [codefly, vendor]\n  - path: vendor\n",
-		"proto/accounts/v1/accounts.proto":        "syntax = \"proto3\";\npackage accounts.v1;\nimport \"codefly/base/v0/base.proto\";\nmessage Account { codefly.base.v0.Ref ref = 1; }\n",
+		"proto/accounts/v1/accounts.proto":        "syntax = \"proto3\";\npackage accounts.v1;\nimport \"codefly/base/v1/base.proto\";\nmessage Account { codefly.base.v1.Ref ref = 1; }\n",
 		"proto/codefly/api.proto":                 "syntax = \"proto3\";\npackage codefly.facade;\nimport \"accounts/v1/accounts.proto\";\nmessage Facade { accounts.v1.Account account = 1; }\n",
-		"proto/vendor/codefly/base/v0/base.proto": "syntax = \"proto3\";\npackage codefly.base.v0;\nmessage Ref { string id = 1; }\n",
+		"proto/vendor/codefly/base/v1/base.proto": "syntax = \"proto3\";\npackage codefly.base.v1;\nmessage Ref { string id = 1; }\n",
 	} {
 		path := filepath.Join(contractDir, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -45,5 +45,5 @@ func TestPublishedContractSourcesFollowBufModulesThroughPinnedCompanion(t *testi
 	for _, source := range entry.ProtoSources {
 		names = append(names, source.Path)
 	}
-	require.Equal(t, []string{"accounts/v1/accounts.proto", "codefly/base/v0/base.proto"}, names)
+	require.Equal(t, []string{"accounts/v1/accounts.proto", "codefly/base/v1/base.proto"}, names)
 }

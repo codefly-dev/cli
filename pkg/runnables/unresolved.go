@@ -3,7 +3,7 @@ package runnables
 import (
 	"strings"
 
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 )
@@ -17,7 +17,7 @@ const unresolvedAddress = "http://unresolved.invalid"
 // ${endpoint:…} reference, which the run that delivers the group resolves; a
 // reader of the file itself — the grants a composition asks for — reads the
 // binding's operation, contract and policy, and must not read its address.
-func DecodeUnresolvedPrepared(value string) (*runnablev0.PreparedBinding, error) {
+func DecodeUnresolvedPrepared(value string) (*runnablev1.PreparedBinding, error) {
 	for _, reference := range resources.EndpointReferences(value) {
 		value = strings.ReplaceAll(value, "${endpoint:"+reference+"}", unresolvedAddress)
 	}

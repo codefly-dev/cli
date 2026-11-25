@@ -17,7 +17,7 @@ func writeBindings(t *testing.T, content string) string {
 }
 
 const validDocument = `
-schema: codefly.provider-bindings/v0
+schema: codefly.provider-bindings/v1
 environments:
   local-dogfood:
     billing:
@@ -63,7 +63,7 @@ func TestLoadDocument_UnknownSchema(t *testing.T) {
 }
 
 func TestLoadDocument_UnknownFieldRejected(t *testing.T) {
-	_, _, err := LoadDocument(writeBindings(t, "schema: codefly.provider-bindings/v0\nsurprise: true\n"))
+	_, _, err := LoadDocument(writeBindings(t, "schema: codefly.provider-bindings/v1\nsurprise: true\n"))
 	require.Error(t, err)
 	require.False(t, errors.Is(err, ErrUnknownSchema))
 }

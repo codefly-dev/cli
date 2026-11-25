@@ -48,7 +48,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/config"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -144,9 +144,9 @@ func readConfiguredScope(index map[string]ConfiguredValue, root, scopeDir, profi
 // the name every source in a plan is resolved by.
 func configuredSecretKey(origin, group, key string) string {
 	return resources.ConfigurationValueEnvironmentKey(
-		&basev0.Configuration{Origin: origin},
+		&basev1.Configuration{Origin: origin},
 		group,
-		&basev0.ConfigurationValue{Key: key, Secret: true})
+		&basev1.ConfigurationValue{Key: key, Secret: true})
 }
 
 // configuredFor resolves the one configured value a property's secret keys

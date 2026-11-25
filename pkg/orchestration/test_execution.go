@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"strings"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"google.golang.org/protobuf/proto"
 )
 
 type testExecution struct {
-	Request        *runtimev0.TestRequest
-	DependencyMode agentv0.TestDependencyMode
+	Request        *runtimev1.TestRequest
+	DependencyMode agentv1.TestDependencyMode
 	legacy         bool
 	// skipped marks an agent that owns no test suites at all. Having no tests
 	// is a legitimate answer, distinct from tests that failed to run, so it
@@ -29,9 +29,9 @@ func (execution testExecution) DisplaySuite() string {
 // resolveTestExecution turns the agent's suite advertisement into one binding
 // lifecycle decision. A nil validation contract is the only compatibility
 // path and retains the historical dependency-free test flow.
-func resolveTestExecution(info *agentv0.AgentInformation, request *runtimev0.TestRequest) (testExecution, error) {
+func resolveTestExecution(info *agentv1.AgentInformation, request *runtimev1.TestRequest) (testExecution, error) {
 	if request == nil {
-		request = &runtimev0.TestRequest{}
+		request = &runtimev1.TestRequest{}
 	} else {
 		request = proto.CloneOf(request)
 	}
@@ -39,7 +39,7 @@ func resolveTestExecution(info *agentv0.AgentInformation, request *runtimev0.Tes
 	if legacy {
 		return testExecution{
 			Request:        request,
-			DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+			DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
 			legacy:         true,
 		}, nil
 	}
@@ -48,12 +48,12 @@ func resolveTestExecution(info *agentv0.AgentInformation, request *runtimev0.Tes
 	if !test.GetSupported() {
 		return testExecution{
 			Request:        request,
-			DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+			DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
 			skipped:        true,
 		}, nil
 	}
 	requested := strings.TrimSpace(request.GetSuite())
-	var selected *agentv0.TestSuiteCapability
+	var selected *agentv1.TestSuiteCapability
 	if requested != "" {
 		for _, suite := range test.GetSuites() {
 			if suite.GetName() == requested {
@@ -84,16 +84,16 @@ func resolveTestExecution(info *agentv0.AgentInformation, request *runtimev0.Tes
 		return testExecution{}, fmt.Errorf("validation contract advertises an empty test suite name")
 	}
 	switch selected.GetDependencyMode() {
-	case agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
-		agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES,
-		agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK:
+	case agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+		agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES,
+		agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK:
 	default:
 		return testExecution{}, fmt.Errorf("suite %q has incomplete dependency mode %s", selected.GetName(), selected.GetDependencyMode().String())
 	}
 	return testExecution{Request: request, DependencyMode: selected.GetDependencyMode()}, nil
 }
 
-func advertisedSuiteNames(suites []*agentv0.TestSuiteCapability) string {
+func advertisedSuiteNames(suites []*agentv1.TestSuiteCapability) string {
 	names := make([]string, 0, len(suites))
 	for _, suite := range suites {
 		if name := strings.TrimSpace(suite.GetName()); name != "" {
@@ -109,7 +109,7 @@ func advertisedSuiteNames(suites []*agentv0.TestSuiteCapability) string {
 // TestDependencyMode uses the same suite selection and validation as the live
 // flow. CI inspects the peer before scheduling; it must not interpret the
 // advertisement independently from execution.
-func TestDependencyMode(info *agentv0.AgentInformation, request *runtimev0.TestRequest) (agentv0.TestDependencyMode, error) {
+func TestDependencyMode(info *agentv1.AgentInformation, request *runtimev1.TestRequest) (agentv1.TestDependencyMode, error) {
 	execution, err := resolveTestExecution(info, request)
 	return execution.DependencyMode, err
 }

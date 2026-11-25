@@ -14,8 +14,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/stretchr/testify/require"
@@ -64,11 +64,11 @@ func installFakeAgents(t *testing.T) {
 		_ renderBuild,
 		_ orchestration.OutputSink,
 		destination func(*resources.Module, *resources.Service) string,
-		record func(map[string]*builderv0.DeploymentOutput),
+		record func(map[string]*builderv1.DeploymentOutput),
 		recordServices func(map[string]*resources.Service),
 		recordSelfEndpoints func(map[string]map[string]string),
 		_ func(map[string]map[string]string),
-		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
+		recordConfigurations func(map[string]*basev1.Configuration, map[string][]string),
 		recordInClusterPorts func(map[string]map[string]uint32),
 		_ func(map[string]string),
 	) error {
@@ -88,7 +88,7 @@ func installFakeAgents(t *testing.T) {
 			}
 			graph = append(graph, loaded)
 		}
-		outputs := map[string]*builderv0.DeploymentOutput{}
+		outputs := map[string]*builderv1.DeploymentOutput{}
 		services := map[string]*resources.Service{}
 		ports := map[string]map[string]uint32{}
 		for _, service := range graph {
@@ -124,7 +124,7 @@ func installFakeAgents(t *testing.T) {
 			recordSelfEndpoints(map[string]map[string]string{})
 		}
 		if recordConfigurations != nil {
-			recordConfigurations(map[string]*basev0.Configuration{}, map[string][]string{})
+			recordConfigurations(map[string]*basev1.Configuration{}, map[string][]string{})
 		}
 		if recordInClusterPorts != nil {
 			recordInClusterPorts(ports)
@@ -138,21 +138,21 @@ func installFakeAgents(t *testing.T) {
 // agent could get past the builder gate, because that gate requires
 // restricted. This double replaces serviceFlow wholesale, so it never met the
 // gate and the inventory it produced was installed unvalidated.
-func fakeRestrictedOutput() *builderv0.DeploymentOutput {
-	return &builderv0.DeploymentOutput{Kind: &builderv0.DeploymentOutput_Kubernetes{Kubernetes: &builderv0.KubernetesDeploymentOutput{
-		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+func fakeRestrictedOutput() *builderv1.DeploymentOutput {
+	return &builderv1.DeploymentOutput{Kind: &builderv1.DeploymentOutput_Kubernetes{Kubernetes: &builderv1.KubernetesDeploymentOutput{
+		Kind:            builderv1.KubernetesDeploymentOutput_KUSTOMIZE,
+		Profile:         builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		ContractVersion: coreservices.KubernetesManifestContractVersion,
-		Validation: &builderv0.KubernetesManifestValidation{
-			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
-			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN,
+		Validation: &builderv1.KubernetesManifestValidation{
+			StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED,
+			ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_NOT_RUN,
 			Restricted:           true,
 		},
 	}}}
 }
 
 // fakeAgentTree is the base and overlay one agent writes for a service.
-func fakeAgentTree(ctx context.Context, service *resources.Service, env *environments.Environment, mappings []*basev0.NetworkMapping) (map[string]string, error) {
+func fakeAgentTree(ctx context.Context, service *resources.Service, env *environments.Environment, mappings []*basev1.NetworkMapping) (map[string]string, error) {
 	image := fmt.Sprintf("registry.example.com/acme/%s@sha256:%s", service.Name, strings.Repeat("a", 64))
 	var workload, workloadFile, servicePorts string
 	switch service.Agent.Name {
@@ -225,7 +225,7 @@ spec:
 // fakeGoGrpcPorts mirrors service-go-grpc's templates: grpc on 9090 always,
 // http on 8080 when rest is enabled, and every other endpoint on the
 // in-cluster port it was handed, as both the Service port and the target.
-func fakeGoGrpcPorts(ctx context.Context, service *resources.Service, mappings []*basev0.NetworkMapping) (string, string) {
+func fakeGoGrpcPorts(ctx context.Context, service *resources.Service, mappings []*basev1.NetworkMapping) (string, string) {
 	servicePorts := "    - protocol: TCP\n      name: grpc-port\n      port: 9090\n      targetPort: 9090\n"
 	containerPorts := "            - name: grpc\n              containerPort: 9090\n"
 	if enabled, _ := service.Spec["rest-endpoint"].(bool); enabled {
@@ -253,7 +253,7 @@ func fakeGoGrpcPorts(ctx context.Context, service *resources.Service, mappings [
 	return servicePorts, containerPorts
 }
 
-func containerInstance(ctx context.Context, mappings []*basev0.NetworkMapping, endpoint *basev0.Endpoint) *basev0.NetworkInstance {
+func containerInstance(ctx context.Context, mappings []*basev1.NetworkMapping, endpoint *basev1.Endpoint) *basev1.NetworkInstance {
 	instance, err := resources.FindNetworkInstanceInNetworkMappings(ctx, mappings, endpoint, resources.NewContainerNetworkAccess())
 	if err != nil {
 		return nil

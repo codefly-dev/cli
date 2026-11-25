@@ -11,7 +11,7 @@ import (
 	"os"
 
 	"github.com/codefly-dev/core/agents"
-	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
+	providerv1 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v1"
 	"github.com/codefly-dev/core/provider/artifact"
 	"github.com/codefly-dev/core/provider/manifest"
 )
@@ -21,14 +21,14 @@ import (
 const AdvertiseEnv = "CODEFLY_PROVIDER_FIXTURE_UNDECLARED_RESOURCE"
 
 type server struct {
-	providerv0.UnimplementedProviderServer
-	catalog *providerv0.RuntimeCatalog
+	providerv1.UnimplementedProviderServer
+	catalog *providerv1.RuntimeCatalog
 }
 
 func (s *server) GetProviderInformation(
-	context.Context, *providerv0.GetProviderInformationRequest,
-) (*providerv0.GetProviderInformationResponse, error) {
-	return &providerv0.GetProviderInformationResponse{Catalog: s.catalog}, nil
+	context.Context, *providerv1.GetProviderInformationRequest,
+) (*providerv1.GetProviderInformationResponse, error) {
+	return &providerv1.GetProviderInformationResponse{Catalog: s.catalog}, nil
 }
 
 func main() {
@@ -40,7 +40,7 @@ func main() {
 	agents.Serve(agents.PluginRegistration{Provider: &server{catalog: catalog}})
 }
 
-func advertisedCatalog() (*providerv0.RuntimeCatalog, error) {
+func advertisedCatalog() (*providerv1.RuntimeCatalog, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -77,7 +77,7 @@ func advertisedCatalog() (*providerv0.RuntimeCatalog, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime := &providerv0.RuntimeCatalog{
+	runtime := &providerv1.RuntimeCatalog{
 		ProtocolVersion:       catalog.ProtocolVersion,
 		ManifestSchemaVersion: catalog.SchemaVersion,
 		StateSchemaVersions:   catalog.StateSchemaVersions,
@@ -85,11 +85,11 @@ func advertisedCatalog() (*providerv0.RuntimeCatalog, error) {
 	}
 	for _, request := range catalog.Requests {
 		runtime.Requests = append(runtime.Requests,
-			&providerv0.RuntimeCatalogRequest{Id: request.ID, Digest: request.Digest})
+			&providerv1.RuntimeCatalogRequest{Id: request.ID, Digest: request.Digest})
 	}
 	for _, resourceType := range catalog.ResourceTypes {
 		runtime.ResourceTypes = append(runtime.ResourceTypes,
-			&providerv0.RuntimeCatalogResource{Id: resourceType.ID, Actions: resourceType.Actions})
+			&providerv1.RuntimeCatalogResource{Id: resourceType.ID, Actions: resourceType.Actions})
 	}
 	return runtime, nil
 }

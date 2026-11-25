@@ -10,7 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/portclaims"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func claimsTestEndpoint(t *testing.T) *basev0.Endpoint {
+func claimsTestEndpoint(t *testing.T) *basev1.Endpoint {
 	t.Helper()
 	declaration := resources.Endpoint{Name: "tcp", API: "tcp", Visibility: resources.VisibilityPrivate, Module: "saas", Service: "store"}
 	endpoint, err := declaration.Proto()
@@ -41,10 +41,10 @@ func claimsTestWorld(t *testing.T, scope string, ledger *portclaims.Ledger) *Wor
 	return world
 }
 
-func proposedPort(t *testing.T, world *World, endpoint *basev0.Endpoint) uint32 {
+func proposedPort(t *testing.T, world *World, endpoint *basev1.Endpoint) uint32 {
 	t.Helper()
 	mappings, err := world.localNetworkMappings(context.Background(),
-		&resources.ServiceIdentity{Module: "saas", Name: "store"}, []*basev0.Endpoint{endpoint}, resources.NewRuntimeContextNative())
+		&resources.ServiceIdentity{Module: "saas", Name: "store"}, []*basev1.Endpoint{endpoint}, resources.NewRuntimeContextNative())
 	require.NoError(t, err)
 	require.Len(t, mappings, 1)
 	native := resources.FilterNetworkInstance(context.Background(), mappings[0].GetInstances(), resources.NewNativeNetworkAccess())
@@ -95,8 +95,8 @@ func TestLocalRunSkipsAPortAnotherProcessHolds(t *testing.T) {
 	require.NotEqual(t, derived, port)
 	// The first-Init guard that used to refuse the run passes on the claim,
 	// once the Init has taken the port over from the run that held it.
-	world.releaseProposedPorts(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(port))})
-	require.NoError(t, (&Runner{}).checkInitialPortAvailability(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(port))}))
+	world.releaseProposedPorts(context.Background(), []*basev1.NetworkMapping{nativeMapping("tcp", uint16(port))})
+	require.NoError(t, (&Runner{}).checkInitialPortAvailability(context.Background(), []*basev1.NetworkMapping{nativeMapping("tcp", uint16(port))}))
 }
 
 // A consumer deriving a producer's address before its Init, and the Init

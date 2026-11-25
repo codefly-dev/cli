@@ -5,7 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/architecture"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -53,9 +53,9 @@ func managedStoreEnvironment() *environments.Environment {
 	}
 }
 
-func declarationValues(t *testing.T, configuration *basev0.Configuration, name string) map[string]string {
+func declarationValues(t *testing.T, configuration *basev1.Configuration, name string) map[string]string {
 	t.Helper()
-	var found *basev0.ConfigurationInformation
+	var found *basev1.ConfigurationInformation
 	for _, information := range configuration.GetInfos() {
 		if information.GetName() == name {
 			require.Nil(t, found, "%s declared twice", name)
@@ -80,7 +80,7 @@ func TestManagedStoreAgentIsHandedTheEnvironmentsDeclaration(t *testing.T) {
 	world := storeWorkspace(t)
 	world.Env = managedStoreEnvironment()
 	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
-	own := &basev0.Configuration{Origin: "records/store", Infos: []*basev0.ConfigurationInformation{{Name: "postgres"}}}
+	own := &basev1.Configuration{Origin: "records/store", Infos: []*basev1.ConfigurationInformation{{Name: "postgres"}}}
 	original := proto.CloneOf(own)
 
 	declared, err := withEnvironmentServiceDeclaration(ctx, own, store, postgresAgent(), world)
@@ -175,7 +175,7 @@ func peerAgent() *resources.Agent {
 func TestAStoreTheEnvironmentPlacesNowhereIsRefusedByTheCLI(t *testing.T) {
 	ctx := t.Context()
 	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
-	own := &basev0.Configuration{Origin: "records/store", Infos: []*basev0.ConfigurationInformation{{Name: "postgres"}}}
+	own := &basev1.Configuration{Origin: "records/store", Infos: []*basev1.ConfigurationInformation{{Name: "postgres"}}}
 
 	world := storeWorkspace(t)
 	world.Env = &environments.Environment{Name: "aurora"}
@@ -205,7 +205,7 @@ func TestAStoreTheEnvironmentPlacesNowhereIsRefusedByTheCLI(t *testing.T) {
 func TestAStoreServerAgentIsKnownByItsReferenceNotItsName(t *testing.T) {
 	ctx := t.Context()
 	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
-	own := &basev0.Configuration{Origin: "records/store"}
+	own := &basev1.Configuration{Origin: "records/store"}
 	world := storeWorkspace(t)
 	world.Env = &environments.Environment{Name: "aurora"}
 

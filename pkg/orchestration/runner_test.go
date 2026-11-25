@@ -10,8 +10,8 @@ import (
 	"time"
 
 	agentservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -19,32 +19,32 @@ import (
 )
 
 type restartRuntimeClient struct {
-	runtimev0.RuntimeClient
+	runtimev1.RuntimeClient
 	stopCalls int
 	stopErr   error
 
-	information      []*runtimev0.InformationResponse
+	information      []*runtimev1.InformationResponse
 	informationCalls int
 }
 
-func (client *restartRuntimeClient) Stop(context.Context, *runtimev0.StopRequest, ...grpc.CallOption) (*runtimev0.StopResponse, error) {
+func (client *restartRuntimeClient) Stop(context.Context, *runtimev1.StopRequest, ...grpc.CallOption) (*runtimev1.StopResponse, error) {
 	client.stopCalls++
 	if client.stopErr != nil {
 		return nil, client.stopErr
 	}
-	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+	return &runtimev1.StopResponse{Status: &runtimev1.StopStatus{State: runtimev1.StopStatus_SUCCESS}}, nil
 }
 
-func (client *restartRuntimeClient) Information(context.Context, *runtimev0.InformationRequest, ...grpc.CallOption) (*runtimev0.InformationResponse, error) {
+func (client *restartRuntimeClient) Information(context.Context, *runtimev1.InformationRequest, ...grpc.CallOption) (*runtimev1.InformationResponse, error) {
 	if client.informationCalls >= len(client.information) {
-		return &runtimev0.InformationResponse{DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_NOOP}}, nil
+		return &runtimev1.InformationResponse{DesiredState: &runtimev1.DesiredState{Stage: runtimev1.DesiredState_NOOP}}, nil
 	}
 	response := client.information[client.informationCalls]
 	client.informationCalls++
 	return response, nil
 }
 
-func runnerWithRuntimeClient(client runtimev0.RuntimeClient) *Runner {
+func runnerWithRuntimeClient(client runtimev1.RuntimeClient) *Runner {
 	instance := &coreservices.Instance{
 		Identity: &resources.ServiceIdentity{Module: "backend", Name: "auth-sidecar"},
 	}
@@ -55,12 +55,12 @@ func runnerWithRuntimeClient(client runtimev0.RuntimeClient) *Runner {
 	return &Runner{instance: instance, stopped: make(chan struct{}, 1)}
 }
 
-func nativeMapping(name string, port uint16) *basev0.NetworkMapping {
+func nativeMapping(name string, port uint16) *basev1.NetworkMapping {
 	instance := resources.NewNetworkInstance("localhost", port)
 	instance.Access = resources.NewNativeNetworkAccess()
-	return &basev0.NetworkMapping{
-		Endpoint:  &basev0.Endpoint{Name: name},
-		Instances: []*basev0.NetworkInstance{instance},
+	return &basev1.NetworkMapping{
+		Endpoint:  &basev1.Endpoint{Name: name},
+		Instances: []*basev1.NetworkInstance{instance},
 	}
 }
 
@@ -76,7 +76,7 @@ func TestBoundNativePortsDetectsHeldPort(t *testing.T) {
 	free := freeLn.Addr().(*net.TCPAddr).Port
 	require.NoError(t, freeLn.Close())
 
-	reported := boundNativePorts(context.Background(), []*basev0.NetworkMapping{
+	reported := boundNativePorts(context.Background(), []*basev1.NetworkMapping{
 		nativeMapping("grpc", uint16(held)),
 		nativeMapping("free", uint16(free)),
 	}, nil)
@@ -118,7 +118,7 @@ func TestBoundNativePortsDegradesWhenHolderLookupFails(t *testing.T) {
 	defer ln.Close()
 	held := ln.Addr().(*net.TCPAddr).Port
 
-	mappings := []*basev0.NetworkMapping{nativeMapping("grpc", uint16(held))}
+	mappings := []*basev1.NetworkMapping{nativeMapping("grpc", uint16(held))}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -171,10 +171,10 @@ func TestHolderPIDNamesTheListenerOnTheAddressThatAnswered(t *testing.T) {
 }
 
 func TestBoundNativePortsToleratesNilMappings(t *testing.T) {
-	require.Empty(t, boundNativePorts(context.Background(), []*basev0.NetworkMapping{
+	require.Empty(t, boundNativePorts(context.Background(), []*basev1.NetworkMapping{
 		nil,
 		{Endpoint: nil},
-		{Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: nil},
+		{Endpoint: &basev1.Endpoint{Name: "grpc"}, Instances: nil},
 	}, nil))
 }
 
@@ -192,8 +192,8 @@ func TestBoundNativePortsProbesBothLoopbackFamilies(t *testing.T) {
 			held := ln.Addr().(*net.TCPAddr).Port
 			instance := resources.NewNetworkInstance(tc.named, uint16(held))
 			instance.Access = resources.NewNativeNetworkAccess()
-			reported := boundNativePorts(context.Background(), []*basev0.NetworkMapping{{
-				Endpoint: &basev0.Endpoint{Name: "grpc"}, Instances: []*basev0.NetworkInstance{instance},
+			reported := boundNativePorts(context.Background(), []*basev1.NetworkMapping{{
+				Endpoint: &basev1.Endpoint{Name: "grpc"}, Instances: []*basev1.NetworkInstance{instance},
 			}}, nil)
 			require.Len(t, reported, 1, "a holder on %s is missed when the instance names %s", tc.squatter, tc.named)
 		})
@@ -207,7 +207,7 @@ func TestInitialPortGuardRejectsFirstInitAndSkipsRunningService(t *testing.T) {
 	held := ln.Addr().(*net.TCPAddr).Port
 
 	runner := &Runner{}
-	proposed := []*basev0.NetworkMapping{nativeMapping("http", uint16(held))}
+	proposed := []*basev1.NetworkMapping{nativeMapping("http", uint16(held))}
 
 	err = runner.checkInitialPortAvailability(context.Background(), proposed)
 	require.ErrorContains(t, err, fmt.Sprintf("port %d (http)", held))
@@ -232,9 +232,9 @@ func TestRestartActionType(t *testing.T) {
 	// A watch-triggered restart (START) must re-enter at configure (Init) so a
 	// fresh compiler error gets re-attempted rather than relaunching the stale
 	// binary.
-	require.Equal(t, RuntimeInit, restartActionType(runtimev0.DesiredState_START))
-	require.Equal(t, RuntimeInit, restartActionType(runtimev0.DesiredState_INIT))
-	require.Equal(t, RuntimeLoad, restartActionType(runtimev0.DesiredState_LOAD))
+	require.Equal(t, RuntimeInit, restartActionType(runtimev1.DesiredState_START))
+	require.Equal(t, RuntimeInit, restartActionType(runtimev1.DesiredState_INIT))
+	require.Equal(t, RuntimeLoad, restartActionType(runtimev1.DesiredState_LOAD))
 }
 
 func TestRestartSerializesEveryStartGeneration(t *testing.T) {
@@ -248,20 +248,20 @@ func TestRestartSerializesEveryStartGeneration(t *testing.T) {
 		return nil
 	}
 
-	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_INIT))
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev1.DesiredState_INIT))
 	require.Empty(t, actions)
 	require.Zero(t, client.stopCalls)
 
 	runner.markStarted()
-	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_NOOP))
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev1.DesiredState_NOOP))
 	require.Len(t, actions, 1)
 
-	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_START))
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev1.DesiredState_START))
 	require.Len(t, actions, 1)
 	require.Equal(t, 1, client.stopCalls)
 
 	runner.markStarted()
-	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev0.DesiredState_NOOP))
+	require.NoError(t, runner.handleDesiredState(context.Background(), runtimev1.DesiredState_NOOP))
 	require.Equal(t, []Action{
 		{Service: "backend/auth-sidecar", Type: RuntimeInit},
 		{Service: "backend/auth-sidecar", Type: RuntimeInit},
@@ -279,7 +279,7 @@ func TestRestartDoesNotStartReplacementWhenStopFails(t *testing.T) {
 		return nil
 	}
 
-	err := runner.handleDesiredState(context.Background(), runtimev0.DesiredState_START)
+	err := runner.handleDesiredState(context.Background(), runtimev1.DesiredState_START)
 
 	require.ErrorContains(t, err, "stop before restart")
 	require.ErrorContains(t, err, "runner still alive")
@@ -288,14 +288,14 @@ func TestRestartDoesNotStartReplacementWhenStopFails(t *testing.T) {
 }
 
 func TestFollowKeepsMonitoringAfterFastRestart(t *testing.T) {
-	client := &restartRuntimeClient{information: []*runtimev0.InformationResponse{
+	client := &restartRuntimeClient{information: []*runtimev1.InformationResponse{
 		{
-			DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_START},
-			StartStatus:  &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED},
+			DesiredState: &runtimev1.DesiredState{Stage: runtimev1.DesiredState_START},
+			StartStatus:  &runtimev1.StartStatus{State: runtimev1.StartStatus_STARTED},
 		},
 		{
-			DesiredState: &runtimev0.DesiredState{Stage: runtimev0.DesiredState_NOOP},
-			StartStatus:  &runtimev0.StartStatus{State: runtimev0.StartStatus_ERROR, Message: "runner exited after restart"},
+			DesiredState: &runtimev1.DesiredState{Stage: runtimev1.DesiredState_NOOP},
+			StartStatus:  &runtimev1.StartStatus{State: runtimev1.StartStatus_ERROR, Message: "runner exited after restart"},
 		},
 	}}
 	runner := runnerWithRuntimeClient(client)

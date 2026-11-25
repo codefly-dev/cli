@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
+	civ1 "github.com/codefly-dev/core/generated/go/codefly/ci/v1"
 	"github.com/google/go-github/v89/github"
 )
 
@@ -94,7 +94,7 @@ func TestReleaseSourceAttestation(t *testing.T) {
 			}
 			t.Cleanup(func() { gitRun = oldGit })
 			target := &releaseTarget{workDir: "/agent", owner: "example", repo: "agent"}
-			state := &agentCIState{started: time.Now(), report: &civ0.AgentCIReport{Summary: &civ0.AgentCISummary{}, Stages: []*civ0.AgentCIStage{{Name: stageSource, Status: statusPending}}}}
+			state := &agentCIState{started: time.Now(), report: &civ1.AgentCIReport{Summary: &civ1.AgentCISummary{}, Stages: []*civ1.AgentCIStage{{Name: stageSource, Status: statusPending}}}}
 			prepared, validated := 0, 0
 			var evidence releaseSourceReport
 			err := state.runSourceStage(context.Background(), func(ctx context.Context) bool {
@@ -149,7 +149,7 @@ func TestSourceStagePreservesFailuresAndStandaloneValidation(t *testing.T) {
 		{name: "attested preparation failure", attested: true, prepareError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			state := &agentCIState{report: &civ0.AgentCIReport{Stages: []*civ0.AgentCIStage{{Name: stageSource, Status: statusPending}}}}
+			state := &agentCIState{report: &civ1.AgentCIReport{Stages: []*civ1.AgentCIStage{{Name: stageSource, Status: statusPending}}}}
 			var lookup func(context.Context) bool
 			if test.attested {
 				lookup = func(context.Context) bool { return true }

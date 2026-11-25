@@ -10,8 +10,8 @@ import (
 	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -25,30 +25,30 @@ func TestBuildCacheRetainsCallerPolicyAndNegotiatesExecution(t *testing.T) {
 		t.Run(fmt.Sprintf("recipe=%t", recipe), func(t *testing.T) {
 			ctx := context.Background()
 			base := &coreservices.Base{}
-			require.NoError(t, base.HeadlessLoad(ctx, &basev0.ServiceIdentity{Name: "api", Module: "app", WorkspacePath: t.TempDir()}))
-			requests := make(chan *builderv0.BuildRequest, 2)
+			require.NoError(t, base.HeadlessLoad(ctx, &basev1.ServiceIdentity{Name: "api", Module: "app", WorkspacePath: t.TempDir()}))
+			requests := make(chan *builderv1.BuildRequest, 2)
 			server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-				if request, ok := req.(*builderv0.BuildRequest); ok {
+				if request, ok := req.(*builderv1.BuildRequest); ok {
 					requests <- proto.CloneOf(request)
 				}
 				return handler(ctx, req)
 			}))
 			wrapper := &coreservices.BuilderWrapper{Base: base}
 			if recipe {
-				wrapper.BuildResult = &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: &builderv0.DockerBuildPlan{}}}
+				wrapper.BuildResult = &builderv1.BuildResult{Kind: &builderv1.BuildResult_DockerBuildPlan{DockerBuildPlan: &builderv1.DockerBuildPlan{}}}
 			}
-			builderv0.RegisterBuilderServer(server, coreservices.NewDefaultBuilder(wrapper))
+			builderv1.RegisterBuilderServer(server, coreservices.NewDefaultBuilder(wrapper))
 			address := serveGRPC(t, server)
 			conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = conn.Close() })
 			client := coreservices.NewBuilderAgentClient(conn)
-			response, err := client.Build(ctx, &builderv0.BuildRequest{})
+			response, err := client.Build(ctx, &builderv1.BuildRequest{})
 			require.NoError(t, err)
-			require.Equal(t, builderv0.BuildStatus_SUCCESS, response.GetState().GetState())
+			require.Equal(t, builderv1.BuildStatus_SUCCESS, response.GetState().GetState())
 			<-requests
 
-			cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}
+			cache := &builderv1.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}
 			flow := &Flow{world: &World{Workspace: &resources.Workspace{}}}
 			flow.WithBuildCache(cache)
 			flow.WithBuildxBuilder("selected")
@@ -71,7 +71,7 @@ func TestBuildCacheRetainsCallerPolicyAndNegotiatesExecution(t *testing.T) {
 			require.Equal(t, `["app/api","","app/api",""]`, forwarded.Scope)
 			require.Equal(t, flow.world.BuildCache.Imports, forwarded.Imports)
 			require.Equal(t, flow.world.BuildCache.Exports, forwarded.Exports)
-			require.True(t, proto.Equal(flow.world.BuildCache, &builderv0.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}))
+			require.True(t, proto.Equal(flow.world.BuildCache, &builderv1.BuildCacheOptions{Backend: "registry", Scope: "app/api", Imports: []string{"ghcr.io/org/cache"}}))
 			flow.WithBuildCache(nil)
 			require.Nil(t, flow.world.BuildCache)
 		})
@@ -80,7 +80,7 @@ func TestBuildCacheRetainsCallerPolicyAndNegotiatesExecution(t *testing.T) {
 
 func TestBuildCacheRequiresCallerScopeBeforeAddingServiceIdentity(t *testing.T) {
 	builder := &Builder{
-		world:    &World{Workspace: &resources.Workspace{Name: "workspace"}, BuildxBuilder: "selected", BuildCache: &builderv0.BuildCacheOptions{Backend: "registry", Exports: []string{"ghcr.io/org/cache"}}},
+		world:    &World{Workspace: &resources.Workspace{Name: "workspace"}, BuildxBuilder: "selected", BuildCache: &builderv1.BuildCacheOptions{Backend: "registry", Exports: []string{"ghcr.io/org/cache"}}},
 		instance: &services.Instance{Identity: &resources.ServiceIdentity{Name: "api", Module: "app"}},
 	}
 	_, err := builder.dockerBuildContext(t.Context())
@@ -88,7 +88,7 @@ func TestBuildCacheRequiresCallerScopeBeforeAddingServiceIdentity(t *testing.T) 
 }
 
 func TestBuildCacheIsOwnedByFlowAndScopedByServiceAndRecipe(t *testing.T) {
-	cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "workspace/protected", Exports: []string{"ghcr.io/org/cache"}}
+	cache := &builderv1.BuildCacheOptions{Backend: "registry", Scope: "workspace/protected", Exports: []string{"ghcr.io/org/cache"}}
 	flow := &Flow{world: &World{}}
 	flow.WithBuildCache(cache)
 	cache.Exports[0] = "ghcr.io/different/cache"
@@ -102,8 +102,8 @@ func TestBuildCacheIsOwnedByFlowAndScopedByServiceAndRecipe(t *testing.T) {
 }
 
 func TestCachedBuildxArgsMatchExecutedPlatformsAndPreserveOutputIdentity(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{Name: "app", Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64", "linux/arm64"}, Target: "runtime", BuildArgs: map[string]string{"PUBLIC": "value"}}
-	cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "workspace/service/app", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
+	recipe := &builderv1.DockerBuildRecipe{Name: "app", Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64", "linux/arm64"}, Target: "runtime", BuildArgs: map[string]string{"PUBLIC": "value"}}
+	cache := &builderv1.BuildCacheOptions{Backend: "registry", Scope: "workspace/service/app", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
 	for _, push := range []bool{false, true} {
 		args, err := cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", push, push, "/tmp/metadata", "remote", cache, privateModuleBuild{})
 		require.NoError(t, err)
@@ -142,12 +142,12 @@ func TestCachedBuildxArgsMatchExecutedPlatformsAndPreserveOutputIdentity(t *test
 }
 
 type observedRecipeClient struct {
-	builderv0.BuilderClient
-	request  *builderv0.BuildRequest
-	response *builderv0.BuildResponse
+	builderv1.BuilderClient
+	request  *builderv1.BuildRequest
+	response *builderv1.BuildResponse
 }
 
-func (client *observedRecipeClient) Build(ctx context.Context, request *builderv0.BuildRequest, options ...grpc.CallOption) (*builderv0.BuildResponse, error) {
+func (client *observedRecipeClient) Build(ctx context.Context, request *builderv1.BuildRequest, options ...grpc.CallOption) (*builderv1.BuildResponse, error) {
 	client.request = proto.CloneOf(request)
 	response, err := client.BuilderClient.Build(ctx, request, options...)
 	client.response = response
@@ -155,15 +155,15 @@ func (client *observedRecipeClient) Build(ctx context.Context, request *builderv
 }
 
 type recipeProtocolPeer struct {
-	builderv0.UnimplementedBuilderServer
+	builderv1.UnimplementedBuilderServer
 	tamper bool
 }
 
-func (*recipeProtocolPeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
-	return &builderv0.BuildCapabilitiesResponse{BuildxSelection: true}, nil
+func (*recipeProtocolPeer) BuildCapabilities(context.Context, *builderv1.BuildCapabilitiesRequest) (*builderv1.BuildCapabilitiesResponse, error) {
+	return &builderv1.BuildCapabilitiesResponse{BuildxSelection: true}, nil
 }
 
-func (peer *recipeProtocolPeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (peer *recipeProtocolPeer) Build(_ context.Context, request *builderv1.BuildRequest) (*builderv1.BuildResponse, error) {
 	if err := coreservices.ValidateBuildRequestOutputDirectory(request); err != nil {
 		return nil, err
 	}
@@ -184,9 +184,9 @@ func (peer *recipeProtocolPeer) Build(_ context.Context, request *builderv0.Buil
 			return nil, err
 		}
 	}
-	return &builderv0.BuildResponse{
-		State:  &builderv0.BuildStatus{State: builderv0.BuildStatus_SUCCESS},
-		Result: &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}},
+	return &builderv1.BuildResponse{
+		State:  &builderv1.BuildStatus{State: builderv1.BuildStatus_SUCCESS},
+		Result: &builderv1.BuildResult{Kind: &builderv1.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}},
 	}, nil
 }
 
@@ -200,17 +200,17 @@ func TestRecipePeerReceivesBuildContextAndOutputDirectory(t *testing.T) {
 				calls <- info.FullMethod
 				return handler(ctx, request)
 			}))
-			builderv0.RegisterBuilderServer(server, &recipeProtocolPeer{tamper: tamper})
+			builderv1.RegisterBuilderServer(server, &recipeProtocolPeer{tamper: tamper})
 			conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = conn.Close() })
-			observed := &observedRecipeClient{BuilderClient: builderv0.NewBuilderClient(conn)}
+			observed := &observedRecipeClient{BuilderClient: builderv1.NewBuilderClient(conn)}
 			client := &coreservices.BuilderAgent{BuilderClient: observed}
 			root := t.TempDir()
 			service := &resources.Service{Name: "api", Version: "1.0.0"}
 			service.WithDir(root)
 			flow := &Flow{world: &World{Workspace: &resources.Workspace{Name: "workspace"}}}
-			cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "protected", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
+			cache := &builderv1.BuildCacheOptions{Backend: "registry", Scope: "protected", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
 			flow.WithBuildCache(cache)
 			flow.WithBuildxBuilder("selected")
 			instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "app"}}
@@ -226,8 +226,8 @@ func TestRecipePeerReceivesBuildContextAndOutputDirectory(t *testing.T) {
 				require.ErrorIs(t, err, exec.ErrNotFound)
 			}
 			require.Len(t, calls, 2)
-			require.Equal(t, builderv0.Builder_BuildCapabilities_FullMethodName, <-calls)
-			require.Equal(t, builderv0.Builder_Build_FullMethodName, <-calls)
+			require.Equal(t, builderv1.Builder_BuildCapabilities_FullMethodName, <-calls)
+			require.Equal(t, builderv1.Builder_Build_FullMethodName, <-calls)
 			require.NotNil(t, observed.request)
 			output, err := buildRecipeOutputDirectory(root)
 			require.NoError(t, err)
@@ -238,7 +238,7 @@ func TestRecipePeerReceivesBuildContextAndOutputDirectory(t *testing.T) {
 			require.Equal(t, cache.Imports, docker.GetCache().GetImports())
 			require.Equal(t, cache.Exports, docker.GetCache().GetExports())
 			require.True(t, proto.Equal(cache, flow.world.BuildCache))
-			require.Equal(t, builderv0.BuildStatus_SUCCESS, observed.response.GetState().GetState())
+			require.Equal(t, builderv1.BuildStatus_SUCCESS, observed.response.GetState().GetState())
 			plan := observed.response.GetResult().GetDockerBuildPlan()
 			require.NotNil(t, plan)
 			if tamper {

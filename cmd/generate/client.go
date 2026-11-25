@@ -16,7 +16,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/generators"
 	coreproto "github.com/codefly-dev/core/companions/proto"
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/languages"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -325,8 +325,8 @@ func resolveLocalSource(ctx context.Context, workspace *resources.Workspace, fro
 // pickContractEndpoint selects the endpoint named by hint, or the single
 // grpc/rest endpoint among endpoints when hint is empty. More than one
 // candidate with no hint is an error listing them.
-func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hint, moduleName, serviceName string) (*basev0.Endpoint, error) {
-	var candidates []*basev0.Endpoint
+func pickContractEndpoint(ctx context.Context, endpoints []*basev1.Endpoint, hint, moduleName, serviceName string) (*basev1.Endpoint, error) {
+	var candidates []*basev1.Endpoint
 	for _, e := range endpoints {
 		if servesContract(ctx, e) {
 			candidates = append(candidates, e)
@@ -358,12 +358,12 @@ func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hin
 // OpenAPI-title-extraction helpers `generate contracts` uses, but anchored at
 // a flat "contract.binpb"/"openapi.json" path (a generated library owns its
 // own contract/ directory, not a module's committed contracts tree).
-func buildLocalContractEndpoint(ctx context.Context, service *resources.Service, endpoint *basev0.Endpoint) ([]byte, *composition.APIContractEndpoint, []coreproto.Source, error) {
+func buildLocalContractEndpoint(ctx context.Context, service *resources.Service, endpoint *basev1.Endpoint) ([]byte, *composition.APIContractEndpoint, []coreproto.Source, error) {
 	// A Connect endpoint serves the service's protobuf contract over the
 	// Connect protocol family; its contract is the gRPC one.
 	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil || endpoint.GetApi() == standards.CONNECT {
 		if grpc == nil {
-			grpc = &basev0.GrpcAPI{}
+			grpc = &basev1.GrpcAPI{}
 		}
 		protoDir := filepath.Join(service.Dir(), "proto")
 		if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
@@ -579,6 +579,6 @@ func lastPathSegment(s string) string {
 // servesContract is whether an endpoint has a contract a client is generated
 // from: a protobuf one (grpc, or connect, which serves the same proto over the
 // Connect protocol family) or an OpenAPI one (rest).
-func servesContract(ctx context.Context, e *basev0.Endpoint) bool {
+func servesContract(ctx context.Context, e *basev1.Endpoint) bool {
 	return resources.IsGRPC(ctx, e) != nil || resources.IsRest(ctx, e) != nil || e.GetApi() == standards.CONNECT
 }

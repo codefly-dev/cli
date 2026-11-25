@@ -3,7 +3,7 @@ package runnables
 import (
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -11,9 +11,9 @@ import (
 func TestInstallationSelectionFailsClosedAndDoesNotMutateCatalog(t *testing.T) {
 	service := &resources.Service{WorkspaceConfigurationDependencies: []string{RuntimeExecutionGroup, RunnableBindingsGroup}}
 	service.WithModule("runtime")
-	info := &basev0.ConfigurationInformation{Name: RuntimeExecutionGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: "INSTALLATION_JSON"}}}
-	bindings := &basev0.ConfigurationInformation{Name: RunnableBindingsGroup, ConfigurationValues: []*basev0.ConfigurationValue{{Key: "READ"}, {Key: "ADMIN"}}}
-	confs := []*basev0.Configuration{{Infos: []*basev0.ConfigurationInformation{info, bindings}}}
+	info := &basev1.ConfigurationInformation{Name: RuntimeExecutionGroup, ConfigurationValues: []*basev1.ConfigurationValue{{Key: "INSTALLATION_JSON"}}}
+	bindings := &basev1.ConfigurationInformation{Name: RunnableBindingsGroup, ConfigurationValues: []*basev1.ConfigurationValue{{Key: "READ"}, {Key: "ADMIN"}}}
+	confs := []*basev1.Configuration{{Infos: []*basev1.ConfigurationInformation{info, bindings}}}
 	for _, raw := range []string{`null`, `{`, `{"contract":"unknown"}`, `{"contract":"runtime.installation/v1","bindings":"all"}`, `[{"contract":"runtime.installation/v1"},null]`} {
 		info.ConfigurationValues[0].Value = raw
 		_, err := PreparedSelectionFor(service, confs)

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -34,8 +34,8 @@ modules:
 	})
 }
 
-func artifactReference(module, path string) *basev0.ConfigurationModuleArtifactReference {
-	return &basev0.ConfigurationModuleArtifactReference{Module: module, Path: path}
+func artifactReference(module, path string) *basev1.ConfigurationModuleArtifactReference {
+	return &basev1.ConfigurationModuleArtifactReference{Module: module, Path: path}
 }
 
 // TestTheResolverAcquiresTheSelectedModulesExactBytes is the delivery truth:
@@ -75,7 +75,7 @@ func TestTheResolverRefusesWhatItCannotConfineOrBound(t *testing.T) {
 	resolve := ModuleArtifactResolverFor(workspace)
 	for _, probe := range []struct {
 		name string
-		ref  *basev0.ConfigurationModuleArtifactReference
+		ref  *basev1.ConfigurationModuleArtifactReference
 	}{
 		{"an absolute path", artifactReference("quill", filepath.Join(workspace.Dir(), "outside.txt"))},
 		{"a traversing path", artifactReference("quill", "../../outside.txt")},
@@ -134,17 +134,17 @@ modules:
 // check possible: the offer precedence would discard is exactly the one that
 // must still be visible, so nothing is merged, deduplicated or keyed first.
 func TestTheDeliveryBaselinePreservesEveryOffer(t *testing.T) {
-	value := func(key, text string) *basev0.ConfigurationValue {
-		return &basev0.ConfigurationValue{Key: key, Value: text}
+	value := func(key, text string) *basev1.ConfigurationValue {
+		return &basev1.ConfigurationValue{Key: key, Value: text}
 	}
-	own := &basev0.Configuration{Origin: "quill/backend", Infos: []*basev0.ConfigurationInformation{{
-		Name: "docs", ConfigurationValues: []*basev0.ConfigurationValue{value("README", "a")},
+	own := &basev1.Configuration{Origin: "quill/backend", Infos: []*basev1.ConfigurationInformation{{
+		Name: "docs", ConfigurationValues: []*basev1.ConfigurationValue{value("README", "a")},
 	}}}
-	first := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: "docs", ConfigurationValues: []*basev0.ConfigurationValue{value("README", "b")},
+	first := &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+		Name: "docs", ConfigurationValues: []*basev1.ConfigurationValue{value("README", "b")},
 	}}}
 	// The same pointer offered twice, and a duplicate coordinate: both survive.
-	baseline := deliveryBaseline(own, []*basev0.Configuration{first, first}, []*basev0.Configuration{first})
+	baseline := deliveryBaseline(own, []*basev1.Configuration{first, first}, []*basev1.Configuration{first})
 	require.Len(t, baseline, 4)
 	require.Same(t, own, baseline[0])
 	for _, conf := range baseline[1:] {
@@ -160,16 +160,16 @@ func TestTheDeliveryBaselinePreservesEveryOffer(t *testing.T) {
 func TestTheRetainedDeliveryIsDetached(t *testing.T) {
 	body := "# Install\n"
 	digest := sha256.Sum256([]byte(body))
-	evidence := &basev0.ResolvedConfigurationModuleArtifact{
+	evidence := &basev1.ResolvedConfigurationModuleArtifact{
 		Reference: artifactReference("quill", "docs/install.md"),
-		ArtifactIdentity: &basev0.SourceIdentity{
-			Algorithm: basev0.SourceIdentityAlgorithm_SOURCE_IDENTITY_ALGORITHM_SHA256,
+		ArtifactIdentity: &basev1.SourceIdentity{
+			Algorithm: basev1.SourceIdentityAlgorithm_SOURCE_IDENTITY_ALGORITHM_SHA256,
 			Digest:    hex.EncodeToString(digest[:]),
 			SizeBytes: int64(len(body)),
 		},
 	}
-	source := []*basev0.Configuration{nil, {Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-		Name: "docs", ConfigurationValues: []*basev0.ConfigurationValue{
+	source := []*basev1.Configuration{nil, {Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+		Name: "docs", ConfigurationValues: []*basev1.ConfigurationValue{
 			{Key: "README", Value: body, ResolvedModuleArtifact: evidence},
 		},
 	}}}}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -47,32 +47,32 @@ func TestAppendEnvironmentVariablesToFileRejectsSymlink(t *testing.T) {
 
 func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.env")
-	identity := &basev0.ServiceIdentity{
+	identity := &basev1.ServiceIdentity{
 		Workspace: "warden-platform",
 		Module:    "platform",
 		Name:      "warden",
 		Version:   "0.0.0",
 	}
-	providedMapping := &basev0.NetworkMapping{
-		Endpoint: &basev0.Endpoint{
+	providedMapping := &basev1.NetworkMapping{
+		Endpoint: &basev1.Endpoint{
 			Module:  "platform",
 			Service: "warden",
 			Name:    "rest",
 			Api:     "rest",
 		},
-		Instances: []*basev0.NetworkInstance{{
+		Instances: []*basev1.NetworkInstance{{
 			Address: "http://localhost:18982",
 			Access:  resources.NewNativeNetworkAccess(),
 		}},
 	}
-	dependencyMapping := &basev0.NetworkMapping{
-		Endpoint: &basev0.Endpoint{
+	dependencyMapping := &basev1.NetworkMapping{
+		Endpoint: &basev1.Endpoint{
 			Module:  "saas",
 			Service: "accounts",
 			Name:    "connect",
 			Api:     "connect",
 		},
-		Instances: []*basev0.NetworkInstance{{
+		Instances: []*basev1.NetworkInstance{{
 			Address: "http://localhost:10650",
 			Access:  resources.NewNativeNetworkAccess(),
 		}},
@@ -85,7 +85,7 @@ func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testi
 		resources.NewRuntimeContextNative(),
 		"codefly",
 		nil,
-		[]*basev0.NetworkMapping{providedMapping, dependencyMapping},
+		[]*basev1.NetworkMapping{providedMapping, dependencyMapping},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -110,12 +110,12 @@ func TestAppendRuntimeEnvironmentToFileIncludesSDKDiscoveryCapabilities(t *testi
 func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDependencies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.env")
 	native := resources.NewRuntimeContextNative()
-	configuration := func(origin, name, key, value string, secret bool, runtimeContext *basev0.RuntimeContext) *basev0.Configuration {
-		return &basev0.Configuration{
+	configuration := func(origin, name, key, value string, secret bool, runtimeContext *basev1.RuntimeContext) *basev1.Configuration {
+		return &basev1.Configuration{
 			Origin: origin, RuntimeContext: runtimeContext,
-			Infos: []*basev0.ConfigurationInformation{{
+			Infos: []*basev1.ConfigurationInformation{{
 				Name: name,
-				ConfigurationValues: []*basev0.ConfigurationValue{{
+				ConfigurationValues: []*basev1.ConfigurationValue{{
 					Key: key, Value: value, Secret: secret,
 				}},
 			}},
@@ -126,15 +126,15 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 	postgres := configuration("infra/postgres", "postgres", "read-write-connection", "postgres://runtime", true, native)
 	containerOnly := configuration(
 		"infra/redis", "redis", "connection", "redis://container", true,
-		&basev0.RuntimeContext{Kind: resources.RuntimeContextContainer},
+		&basev1.RuntimeContext{Kind: resources.RuntimeContextContainer},
 	)
 	runtime := configuration("mind/mind", "runtime", "session_id", "session-123", false, native)
 
 	if err := AppendServiceProcessConfigurationsToFile(
 		context.Background(), path, localRunEnvironment(), native, service,
-		[]*basev0.Configuration{workspace},
-		[]*basev0.Configuration{postgres, containerOnly},
-		[]*basev0.Configuration{runtime},
+		[]*basev1.Configuration{workspace},
+		[]*basev1.Configuration{postgres, containerOnly},
+		[]*basev1.Configuration{runtime},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -175,12 +175,12 @@ func TestAppendServiceProcessConfigurationsToFileIncludesSecretsAndFiltersDepend
 func TestServiceProcessOutputEnvWritesDependencyConfigsOncePerRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.env")
 	native := resources.NewRuntimeContextNative()
-	configuration := func(origin, name, key, value string) *basev0.Configuration {
-		return &basev0.Configuration{
+	configuration := func(origin, name, key, value string) *basev1.Configuration {
+		return &basev1.Configuration{
 			Origin: origin, RuntimeContext: native,
-			Infos: []*basev0.ConfigurationInformation{{
+			Infos: []*basev1.ConfigurationInformation{{
 				Name: name,
-				ConfigurationValues: []*basev0.ConfigurationValue{{
+				ConfigurationValues: []*basev1.ConfigurationValue{{
 					Key: key, Value: value, Secret: true,
 				}},
 			}},
@@ -192,13 +192,13 @@ func TestServiceProcessOutputEnvWritesDependencyConfigsOncePerRun(t *testing.T) 
 
 	// Init phase: own + runtime only, NO dependency configurations.
 	if err := AppendServiceProcessConfigurationsToFile(
-		context.Background(), path, localRunEnvironment(), native, own, nil, nil, []*basev0.Configuration{runtime},
+		context.Background(), path, localRunEnvironment(), native, own, nil, nil, []*basev1.Configuration{runtime},
 	); err != nil {
 		t.Fatal(err)
 	}
 	// Start phase: refreshed dependency configurations only.
 	if err := AppendServiceProcessConfigurationsToFile(
-		context.Background(), path, localRunEnvironment(), native, nil, nil, []*basev0.Configuration{dependency}, nil,
+		context.Background(), path, localRunEnvironment(), native, nil, nil, []*basev1.Configuration{dependency}, nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -228,13 +228,13 @@ func environmentKeys(body string) []string {
 // A public endpoint states its exposure — none here: nothing in these tests
 // has an address reachable from outside the workspace — because the verdict
 // judges the declaration whole before it judges the consumer.
-func dependencyMappingOf(name, visibility string) *basev0.NetworkMapping {
+func dependencyMappingOf(name, visibility string) *basev1.NetworkMapping {
 	exposure := ""
 	if visibility == string(resources.VisibilityPublic) {
 		exposure = resources.ExposureNone
 	}
-	return &basev0.NetworkMapping{
-		Endpoint: &basev0.Endpoint{
+	return &basev1.NetworkMapping{
+		Endpoint: &basev1.Endpoint{
 			Module:     "saas",
 			Service:    "accounts",
 			Name:       name,
@@ -242,7 +242,7 @@ func dependencyMappingOf(name, visibility string) *basev0.NetworkMapping {
 			Visibility: visibility,
 			Exposure:   exposure,
 		},
-		Instances: []*basev0.NetworkInstance{{
+		Instances: []*basev1.NetworkInstance{{
 			Address: "http://localhost:10650",
 			Access:  resources.NewNativeNetworkAccess(),
 		}},
@@ -271,7 +271,7 @@ func accountsDependency(endpoints ...string) []*resources.ServiceDependency {
 	return []*resources.ServiceDependency{dependency}
 }
 
-func outputEnvEndpointNames(t *testing.T, mappings []*basev0.NetworkMapping) []string {
+func outputEnvEndpointNames(t *testing.T, mappings []*basev1.NetworkMapping) []string {
 	t.Helper()
 	names := make([]string, 0, len(mappings))
 	for _, mapping := range mappings {
@@ -283,15 +283,15 @@ func outputEnvEndpointNames(t *testing.T, mappings []*basev0.NetworkMapping) []s
 // The service's own mappings always reach the file; a producer endpoint the
 // service never declared does not, even when the dependency graph surfaces it.
 func TestOutputEnvNetworkMappingsDropsUndeclaredDependencyEndpoint(t *testing.T) {
-	own := []*basev0.NetworkMapping{{
-		Endpoint: &basev0.Endpoint{Module: "platform", Service: "warden", Name: "rest", Api: "rest"},
+	own := []*basev1.NetworkMapping{{
+		Endpoint: &basev1.Endpoint{Module: "platform", Service: "warden", Name: "rest", Api: "rest"},
 	}}
 	mappings, err := outputEnvNetworkMappings(
 		outputEnvProvenance(t),
 		"platform",
 		accountsDependency("connect"),
 		own,
-		[]*basev0.NetworkMapping{
+		[]*basev1.NetworkMapping{
 			dependencyMappingOf("connect", string(resources.VisibilityPublic)),
 			dependencyMappingOf("admin", string(resources.VisibilityPublic)),
 		},
@@ -313,7 +313,7 @@ func TestOutputEnvNetworkMappingsFiltersForbiddenEndpointWhenConsumingAll(t *tes
 		"platform",
 		accountsDependency(),
 		nil,
-		[]*basev0.NetworkMapping{
+		[]*basev1.NetworkMapping{
 			dependencyMappingOf("connect", string(resources.VisibilityPublic)),
 			dependencyMappingOf("internal", string(resources.VisibilityPrivate)),
 		},
@@ -337,7 +337,7 @@ func TestOutputEnvNetworkMappingsRejectsDeclaredForbiddenEndpoint(t *testing.T) 
 		"platform",
 		accountsDependency("internal"),
 		nil,
-		[]*basev0.NetworkMapping{dependencyMappingOf("internal", string(resources.VisibilityPrivate))},
+		[]*basev1.NetworkMapping{dependencyMappingOf("internal", string(resources.VisibilityPrivate))},
 	)
 	if err == nil {
 		t.Fatal("declaring an endpoint that does not permit the module must fail")
@@ -353,7 +353,7 @@ func TestOutputEnvNetworkMappingsRefusesToJudgeWithoutAComposition(t *testing.T)
 		"platform",
 		accountsDependency("connect"),
 		nil,
-		[]*basev0.NetworkMapping{dependencyMappingOf("connect", string(resources.VisibilityPublic))},
+		[]*basev1.NetworkMapping{dependencyMappingOf("connect", string(resources.VisibilityPublic))},
 	)
 	if !errors.Is(err, resources.ErrUnjudgedProvenance) {
 		t.Fatalf("a hand-out with no composition must be refused as unjudged, got %v", err)
@@ -368,7 +368,7 @@ func TestAppendRuntimeEnvironmentToFileOmitsForbiddenDependencyEndpoint(t *testi
 		"platform",
 		accountsDependency(),
 		nil,
-		[]*basev0.NetworkMapping{
+		[]*basev1.NetworkMapping{
 			dependencyMappingOf("connect", string(resources.VisibilityPublic)),
 			dependencyMappingOf("internal", string(resources.VisibilityPrivate)),
 		},
@@ -380,7 +380,7 @@ func TestAppendRuntimeEnvironmentToFileOmitsForbiddenDependencyEndpoint(t *testi
 	if err := AppendRuntimeEnvironmentToFile(
 		context.Background(),
 		path,
-		&basev0.ServiceIdentity{Workspace: "warden-platform", Module: "platform", Name: "warden", Version: "0.0.0"},
+		&basev1.ServiceIdentity{Workspace: "warden-platform", Module: "platform", Name: "warden", Version: "0.0.0"},
 		resources.NewRuntimeContextNative(),
 		"codefly",
 		nil,
@@ -403,7 +403,7 @@ func TestAppendRuntimeEnvironmentToFileOmitsForbiddenDependencyEndpoint(t *testi
 
 // localRunEnvironment is the run environment the writers name their carriers
 // for, as the runner reads it off the world.
-func localRunEnvironment() *basev0.Environment { return &basev0.Environment{Name: "local"} }
+func localRunEnvironment() *basev1.Environment { return &basev1.Environment{Name: "local"} }
 
 // carrierValue is the value written for key in a KEY=value file.
 func carrierValue(t *testing.T, text, key string) string {

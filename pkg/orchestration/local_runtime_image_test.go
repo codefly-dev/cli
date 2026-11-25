@@ -13,8 +13,8 @@ import (
 
 	"github.com/codefly-dev/core/agents/contract"
 	agentservices "github.com/codefly-dev/core/agents/services"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -34,7 +34,7 @@ func localRuntimeBuilder(t *testing.T, harness *imageCacheHarness) *Builder {
 	instance := &services.Instance{Service: service, Identity: &resources.ServiceIdentity{Name: "api", Module: "saas"}}
 	declaration := contract.Current()
 	declaration.Capabilities = append(declaration.Capabilities, contract.RuntimeInitImage)
-	instance.Info = &agentv0.AgentInformation{Contract: declaration}
+	instance.Info = &agentv1.AgentInformation{Contract: declaration}
 	instance.Builder = &services.BuilderInstance{Instance: instance, Builder: harness.client}
 	b, err := NewBuilder(t.Context(), instance, &World{
 		Workspace: workspace, BuildxBuilder: "stub", RebuildImages: harness.rebuild,
@@ -61,14 +61,14 @@ type runtimeImageBuilderPeer struct {
 	builds atomic.Int32
 }
 
-func (peer *runtimeImageBuilderPeer) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+func (peer *runtimeImageBuilderPeer) Load(context.Context, *builderv1.LoadRequest) (*builderv1.LoadResponse, error) {
 	peer.loads.Add(1)
-	return &builderv0.LoadResponse{State: &builderv0.LoadStatus{State: builderv0.LoadStatus_READY}}, nil
+	return &builderv1.LoadResponse{State: &builderv1.LoadStatus{State: builderv1.LoadStatus_READY}}, nil
 }
 
-func (peer *runtimeImageBuilderPeer) Init(context.Context, *builderv0.InitRequest) (*builderv0.InitResponse, error) {
+func (peer *runtimeImageBuilderPeer) Init(context.Context, *builderv1.InitRequest) (*builderv1.InitResponse, error) {
 	peer.inits.Add(1)
-	return &builderv0.InitResponse{State: &builderv0.InitStatus{State: builderv0.InitStatus_SUCCESS}}, nil
+	return &builderv1.InitResponse{State: &builderv1.InitStatus{State: builderv1.InitStatus_SUCCESS}}, nil
 }
 
 // requireNoBuilderTraffic is the zero-call assertion: no Load, no Init, no
@@ -80,11 +80,11 @@ func (peer *runtimeImageBuilderPeer) requireNoBuilderTraffic(t *testing.T) {
 	require.Zero(t, peer.builds.Load(), "nor asked for a build plan")
 }
 
-func (peer *runtimeImageBuilderPeer) Build(ctx context.Context, req *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (peer *runtimeImageBuilderPeer) Build(ctx context.Context, req *builderv1.BuildRequest) (*builderv1.BuildResponse, error) {
 	peer.builds.Add(1)
 	if peer.stock {
-		return &builderv0.BuildResponse{
-			State:         &builderv0.BuildStatus{State: builderv0.BuildStatus_SUCCESS},
+		return &builderv1.BuildResponse{
+			State:         &builderv1.BuildStatus{State: builderv1.BuildStatus_SUCCESS},
 			BuildxBuilder: req.GetBuildContext().GetDockerBuildContext().GetBuildxBuilder(),
 		}, nil
 	}
@@ -123,16 +123,16 @@ func runtimeImageRunnerWithAgent(t *testing.T, peer *runtimeImageBuilderPeer, mo
 	runner.instance.ContainerRecoveryScope = runner.containerRecoveryIdentity
 	declaration := contract.Current()
 	declaration.Capabilities = append(declaration.Capabilities, contract.RuntimeInitImage)
-	runner.instance.Info = &agentv0.AgentInformation{Contract: declaration}
-	runner.instance.Capabilities = []*agentv0.Capability{{Type: agentv0.Capability_BUILDER}}
+	runner.instance.Info = &agentv1.AgentInformation{Contract: declaration}
+	runner.instance.Capabilities = []*agentv1.Capability{{Type: agentv1.Capability_BUILDER}}
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, peer)
+	builderv1.RegisterBuilderServer(server, peer)
 	conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	runner.instance.Builder = &services.BuilderInstance{
 		Instance: runner.instance,
-		Builder:  &agentservices.BuilderAgent{BuilderClient: builderv0.NewBuilderClient(conn)},
+		Builder:  &agentservices.BuilderAgent{BuilderClient: builderv1.NewBuilderClient(conn)},
 	}
 	return runner, stub
 }
@@ -293,8 +293,8 @@ func TestRunnerNativeRuntimeDoesNotBuildImage(t *testing.T) {
 
 func TestRunnerUnsupportedArtifactBuildDoesNotBuildImage(t *testing.T) {
 	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{})
-	runner.instance.Info.Validation = &agentv0.ValidationCapabilities{
-		ArtifactBuild: &agentv0.ValidationOperationCapability{Supported: false},
+	runner.instance.Info.Validation = &agentv1.ValidationCapabilities{
+		ArtifactBuild: &agentv1.ValidationOperationCapability{Supported: false},
 	}
 	_, err := runner.Init(t.Context())
 	require.NoError(t, err)
@@ -429,7 +429,7 @@ func TestLocalRuntimeImageTagBindsBuildArgumentsAndRecipeBytes(t *testing.T) {
 		}
 		plan, err = agentservices.BuildEmittedDockerBuildPlan(b.planned.outputDir, plan.Recipes, []string{"Dockerfile", "dockerignore"})
 		require.NoError(t, err)
-		b.planned.response.Result = &builderv0.BuildResult{Kind: &builderv0.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}}
+		b.planned.response.Result = &builderv1.BuildResult{Kind: &builderv1.BuildResult_DockerBuildPlan{DockerBuildPlan: plan}}
 		image, err := b.buildLocalRuntimeImage(t.Context())
 		require.NoError(t, err)
 		return image

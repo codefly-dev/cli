@@ -10,7 +10,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/spf13/cobra"
@@ -124,19 +124,19 @@ func runCommand(ctx context.Context, workspace *resources.Workspace, module *res
 	return nil
 }
 
-func parseMode(value string, aggressive bool) (basev0.FixMode, error) {
+func parseMode(value string, aggressive bool) (basev1.FixMode, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if aggressive {
 		if value != "" && value != "safe" && value != "aggressive" {
 			return 0, fmt.Errorf("--aggressive conflicts with --mode=%s", value)
 		}
-		return basev0.FixMode_FIX_MODE_AGGRESSIVE, nil
+		return basev1.FixMode_FIX_MODE_AGGRESSIVE, nil
 	}
 	switch value {
 	case "", "safe":
-		return basev0.FixMode_FIX_MODE_SAFE, nil
+		return basev1.FixMode_FIX_MODE_SAFE, nil
 	case "aggressive":
-		return basev0.FixMode_FIX_MODE_AGGRESSIVE, nil
+		return basev1.FixMode_FIX_MODE_AGGRESSIVE, nil
 	default:
 		return 0, fmt.Errorf("unknown fix mode %q (use safe or aggressive)", value)
 	}

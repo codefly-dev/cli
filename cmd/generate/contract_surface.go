@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	googleproto "google.golang.org/protobuf/proto"
@@ -67,7 +67,7 @@ func loadContractSurfacePaths(module *resources.Module) (map[string]string, erro
 // owner code nor interprets an owner's private policy.
 type contractSurfaces map[string][]composition.APIContractService
 
-func loadContractSurfaces(service *resources.Service, endpoints []*basev0.Endpoint, path string) (contractSurfaces, error) {
+func loadContractSurfaces(service *resources.Service, endpoints []*basev1.Endpoint, path string) (contractSurfaces, error) {
 	var protobufEndpoints []string
 	for _, endpoint := range endpoints {
 		if endpoint.Api == standards.GRPC || endpoint.Api == standards.CONNECT {

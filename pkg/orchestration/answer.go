@@ -4,7 +4,7 @@ import (
 	"context"
 
 	agentscommunicate "github.com/codefly-dev/core/agents/communicate"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 )
 
 // AnswerProvider answers interactive questions a builder plugin asks during
@@ -23,16 +23,16 @@ type headlessAnswerProvider struct {
 	world *World
 }
 
-func (h headlessAnswerProvider) Answer(_ context.Context, q *agentv0.Question) (*agentv0.Answer, error) {
+func (h headlessAnswerProvider) Answer(_ context.Context, q *agentv1.Question) (*agentv1.Answer, error) {
 	if q == nil {
 		return agentscommunicate.AnswerDefault(q)
 	}
 	switch q.Value.(type) {
-	case *agentv0.Question_Display:
+	case *agentv1.Question_Display:
 		if h.world != nil && h.world.OutputSink != nil && q.Message != nil {
 			h.world.OutputSink.Info("%s", q.Message.GetMessage())
 		}
-		return &agentv0.Answer{}, nil
+		return &agentv1.Answer{}, nil
 	default:
 		return agentscommunicate.AnswerDefault(q)
 	}

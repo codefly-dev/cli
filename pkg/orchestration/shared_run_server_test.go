@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -123,8 +123,8 @@ func TestAFreeRunIsRefusedOnceItsStoresResolveToTheSharedServer(t *testing.T) {
 	flow, required := sharedServerFlow(t, sharedServerWorkspace(t, "0.0.150", "0.0.152", ""), resources.RuntimeContextFree)
 	flow.dockerProbed = true
 	flow.hub = &Hub{managers: []IManager{
-		fakeManager("evaluation", "store", resources.RuntimeContextFree, agentv0.Backend_NIX, agentv0.Backend_DOCKER),
-		fakeManager("scenarios", "store", resources.RuntimeContextFree, agentv0.Backend_NIX, agentv0.Backend_DOCKER),
+		fakeManager("evaluation", "store", resources.RuntimeContextFree, agentv1.Backend_NIX, agentv1.Backend_DOCKER),
+		fakeManager("scenarios", "store", resources.RuntimeContextFree, agentv1.Backend_NIX, agentv1.Backend_DOCKER),
 	}}
 	t.Cleanup(func() { flow.hub = &Hub{} })
 	require.NoError(t, flow.checkSharedRunServers(required, nil), "nothing is shared while the backend is undecided")
@@ -298,7 +298,7 @@ func TestExtendRefusesOnceAnAdmittedFreeStoreResolvesToTheSharedServer(t *testin
 		}
 		identity, err := service.Identity()
 		require.NoError(t, err)
-		manager := fakeManager(identity.Module, identity.Name, resources.RuntimeContextFree, agentv0.Backend_NIX, agentv0.Backend_DOCKER)
+		manager := fakeManager(identity.Module, identity.Name, resources.RuntimeContextFree, agentv1.Backend_NIX, agentv1.Backend_DOCKER)
 		manager.service = service
 		return manager
 	}

@@ -9,7 +9,7 @@ what is therefore unavailable in this release.
 
 ## One implementation: core's
 
-The Work Context is a core proto (`codefly.base.v0.WorkContextV1`), and
+The Work Context is a core proto (`codefly.base.v1.WorkContextV1`), and
 `github.com/codefly-dev/core/workcontext` is its **only** mint and its only
 verify — the deterministic proto marshal, Ed25519 over those bytes. The CLI
 does not carry a second one. `pkg/executionrecorder` resolves to core's

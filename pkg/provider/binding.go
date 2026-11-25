@@ -19,9 +19,9 @@ const (
 	// `codefly provider doctor` surface that silent-ignore risk explicitly.
 	BindingsFileName = "provider-bindings.codefly.yaml"
 
-	// BindingsSchemaV0 is the only schema this CLI understands. An unknown
+	// BindingsSchemaV1 is the only schema this CLI understands. An unknown
 	// schema is rejected rather than silently ignored.
-	BindingsSchemaV0 = "codefly.provider-bindings/v0"
+	BindingsSchemaV1 = "codefly.provider-bindings/v1"
 )
 
 // ErrUnknownSchema is returned by LoadDocument when the bindings file declares a
@@ -108,8 +108,8 @@ func LoadDocument(dir string) (*Document, bool, error) {
 	if err := decoder.Decode(&doc); err != nil {
 		return nil, true, fmt.Errorf("cannot parse %s: %w", BindingsFileName, err)
 	}
-	if doc.Schema != BindingsSchemaV0 {
-		return &doc, true, fmt.Errorf("%w: %q declares %q, this CLI understands %q — upgrade codefly", ErrUnknownSchema, BindingsFileName, doc.Schema, BindingsSchemaV0)
+	if doc.Schema != BindingsSchemaV1 {
+		return &doc, true, fmt.Errorf("%w: %q declares %q, this CLI understands %q — upgrade codefly", ErrUnknownSchema, BindingsFileName, doc.Schema, BindingsSchemaV1)
 	}
 
 	for envName, bindings := range doc.Environments {

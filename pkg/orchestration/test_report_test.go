@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 )
 
 func TestSummarizeTestResponsePreservesTypedTerminalFailure(t *testing.T) {
@@ -13,11 +13,11 @@ func TestSummarizeTestResponsePreservesTypedTerminalFailure(t *testing.T) {
 	// the deprecated flat fields from this tree, so an agent that reports a
 	// terminal failure reports it here; the legacy fallback this test used to
 	// exercise is deleted rather than kept as a second place to look.
-	response := &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{
-		State:   runtimev0.TestRunResult_ERRORED,
+	response := &runtimev1.TestResponse{Result: &runtimev1.TestRunResult{
+		State:   runtimev1.TestRunResult_ERRORED,
 		Message: "test not available: generic agent has no language knowledge",
-		Failure: &basev0.Failure{
-			Code:      basev0.FailureCode_FAILURE_CODE_UNSUPPORTED_OPERATION,
+		Failure: &basev1.Failure{
+			Code:      basev1.FailureCode_FAILURE_CODE_UNSUPPORTED_OPERATION,
 			Operation: "runtime.test",
 			Message:   "test not available: generic agent has no language knowledge",
 		},
@@ -38,15 +38,15 @@ func TestSummarizeTestResponsePreservesTypedTerminalFailure(t *testing.T) {
 func TestOnlyAPassedRunIsSuccess(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		resp  *runtimev0.TestResponse
+		resp  *runtimev1.TestResponse
 		allow bool
 	}{
-		{"passed", &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_PASSED}}, true},
-		{"failed", &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_FAILED}}, false},
-		{"errored", &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_ERRORED}}, false},
-		{"timed out", &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_TIMED_OUT}}, false},
-		{"unknown", &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_UNKNOWN}}, false},
-		{"no result at all", &runtimev0.TestResponse{}, false},
+		{"passed", &runtimev1.TestResponse{Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED}}, true},
+		{"failed", &runtimev1.TestResponse{Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_FAILED}}, false},
+		{"errored", &runtimev1.TestResponse{Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_ERRORED}}, false},
+		{"timed out", &runtimev1.TestResponse{Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_TIMED_OUT}}, false},
+		{"unknown", &runtimev1.TestResponse{Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_UNKNOWN}}, false},
+		{"no result at all", &runtimev1.TestResponse{}, false},
 		{"nothing at all", nil, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {

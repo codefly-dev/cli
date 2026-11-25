@@ -6,7 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	agentscommunicate "github.com/codefly-dev/core/agents/communicate"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/wool"
 	"golang.org/x/term"
 )
@@ -32,7 +32,7 @@ func NewHeadlessPrompt() *Prompt {
 	return &Prompt{headless: true}
 }
 
-func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answer, error) {
+func (h *Prompt) Answer(ctx context.Context, q *agentv1.Question) (*agentv1.Answer, error) {
 	w := wool.Get(ctx).In("communicate.Answer")
 	w.Trace("processing", wool.RequestField(q))
 	if q == nil {
@@ -42,14 +42,14 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answ
 		return answerHeadless(ctx, q)
 	}
 	switch v := q.Value.(type) {
-	case *agentv0.Question_Display:
+	case *agentv1.Question_Display:
 
 		return Display(ctx, q.Message, v.Display)
-	case *agentv0.Question_Confirm:
+	case *agentv1.Question_Confirm:
 		return Confirm(ctx, q.Message, v.Confirm)
-	case *agentv0.Question_Input:
+	case *agentv1.Question_Input:
 		return Input(ctx, q.Message, v.Input)
-	case *agentv0.Question_Choice:
+	case *agentv1.Question_Choice:
 		return Choice(ctx, q.Message, v.Choice)
 	default:
 		return nil, w.NewError("unknown question type: %v", q.Value)
@@ -59,9 +59,9 @@ func (h *Prompt) Answer(ctx context.Context, q *agentv0.Question) (*agentv0.Answ
 // answerHeadless resolves protocol-declared defaults without consulting a
 // terminal. The policy lives in Core so CLI and embedded orchestration cannot
 // drift. A plugin that omits a default still fails closed.
-func answerHeadless(ctx context.Context, q *agentv0.Question) (*agentv0.Answer, error) {
+func answerHeadless(ctx context.Context, q *agentv1.Question) (*agentv1.Answer, error) {
 	switch value := q.Value.(type) {
-	case *agentv0.Question_Display:
+	case *agentv1.Question_Display:
 		return Display(ctx, q.Message, value.Display)
 	default:
 		return agentscommunicate.AnswerDefault(q)

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 	"google.golang.org/protobuf/proto"
@@ -40,7 +40,7 @@ var canonicalAccessOrder = []string{
 // the first agents, so an agent that returns none is taken to accept the
 // proposal, which is then adopted whole. A partial response is never merged with
 // the proposal endpoint by endpoint.
-func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdentity, proposed, returned []*basev0.NetworkMapping) ([]*basev0.NetworkMapping, error) {
+func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdentity, proposed, returned []*basev1.NetworkMapping) ([]*basev1.NetworkMapping, error) {
 	w := wool.Get(ctx).In("orchestration.acceptNetworkMappings", wool.ThisField(identity))
 	if len(returned) == 0 {
 		if len(proposed) > 0 {
@@ -55,7 +55,7 @@ func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdent
 		return cloneNetworkMappings(proposed), nil
 	}
 
-	proposals := make(map[string]*basev0.NetworkMapping, len(proposed))
+	proposals := make(map[string]*basev1.NetworkMapping, len(proposed))
 	for _, proposal := range proposed {
 		destination, err := proposedDestination(proposal)
 		if err != nil {
@@ -67,7 +67,7 @@ func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdent
 	// Membership in the proposal is what establishes ownership: the proposal is
 	// generated from this runner's own endpoints, so an endpoint found here was
 	// proposed for this service and could not have been claimed from another.
-	answers := make(map[string]*basev0.NetworkMapping, len(returned))
+	answers := make(map[string]*basev1.NetworkMapping, len(returned))
 	for _, mapping := range returned {
 		endpoint := mapping.GetEndpoint()
 		if endpoint == nil {
@@ -86,7 +86,7 @@ func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdent
 	// Walking the proposal (not the response) fixes the order of the accepted
 	// set, so an agent that reorders endpoints between Inits cannot move the
 	// mapping hash and trigger a propagation to every dependent.
-	accepted := make([]*basev0.NetworkMapping, 0, len(proposed))
+	accepted := make([]*basev1.NetworkMapping, 0, len(proposed))
 	for _, proposal := range proposed {
 		endpoint := proposal.GetEndpoint()
 		destination := resources.EndpointDestination(endpoint)
@@ -101,7 +101,7 @@ func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdent
 		// The endpoint comes from the proposal so the published mapping stays
 		// identical to the endpoint recorded at Load: an agent cannot restate
 		// its visibility or location through the mapping it returns.
-		accepted = append(accepted, &basev0.NetworkMapping{Endpoint: endpoint, Instances: instances})
+		accepted = append(accepted, &basev1.NetworkMapping{Endpoint: endpoint, Instances: instances})
 	}
 	return cloneNetworkMappings(accepted), nil
 }
@@ -111,13 +111,13 @@ func acceptNetworkMappings(ctx context.Context, identity *resources.ServiceIdent
 // one the proposal did not carry, but it may not answer the same view twice,
 // give a private endpoint a public address, leave the endpoint with no address
 // at all, or degrade an address it chose to rewrite.
-func acceptNetworkInstances(destination string, endpoint *basev0.Endpoint, proposed, returned *basev0.NetworkMapping) ([]*basev0.NetworkInstance, error) {
-	proposedViews := make(map[string]*basev0.NetworkInstance, len(proposed.GetInstances()))
+func acceptNetworkInstances(destination string, endpoint *basev1.Endpoint, proposed, returned *basev1.NetworkMapping) ([]*basev1.NetworkInstance, error) {
+	proposedViews := make(map[string]*basev1.NetworkInstance, len(proposed.GetInstances()))
 	for _, instance := range proposed.GetInstances() {
 		proposedViews[instance.GetAccess().GetKind()] = instance
 	}
 
-	views := make(map[string]*basev0.NetworkInstance, len(returned.GetInstances()))
+	views := make(map[string]*basev1.NetworkInstance, len(returned.GetInstances()))
 	for _, instance := range returned.GetInstances() {
 		access := instance.GetAccess().GetKind()
 		if access == "" {
@@ -139,7 +139,7 @@ func acceptNetworkInstances(destination string, endpoint *basev0.Endpoint, propo
 		return nil, fmt.Errorf("accepted network mapping for %s carries no address", destination)
 	}
 
-	out := make([]*basev0.NetworkInstance, 0, len(views))
+	out := make([]*basev1.NetworkInstance, 0, len(views))
 	for _, access := range canonicalAccessOrder {
 		if instance, ok := views[access]; ok {
 			out = append(out, instance)
@@ -157,7 +157,7 @@ func acceptNetworkInstances(destination string, endpoint *basev0.Endpoint, propo
 // for echoing it back would reject the CLI's own output — an external endpoint
 // whose DNS record carries no port proposes port 0, and an agent that faithfully
 // returns it is not the one at fault.
-func acceptNetworkInstance(destination, access string, proposed, accepted *basev0.NetworkInstance) error {
+func acceptNetworkInstance(destination, access string, proposed, accepted *basev1.NetworkInstance) error {
 	// A view the proposal never carried has no baseline to be echoed from, so
 	// every field of it is the agent's own and every field must hold up.
 	invented := proposed == nil
@@ -193,7 +193,7 @@ func acceptNetworkInstance(destination, access string, proposed, accepted *basev
 // v0.14.0 — or an external endpoint, which is addressed where it lives (the
 // remote manager publishes its DNS-backed address as Public). A visibility says
 // who may call and nothing about addresses, so it is not part of this.
-func publiclyReachable(endpoint *basev0.Endpoint) bool {
+func publiclyReachable(endpoint *basev1.Endpoint) bool {
 	return resources.IsExposedEndpoint(endpoint) || resources.IsExternalEndpoint(endpoint)
 }
 
@@ -207,7 +207,7 @@ func isLoopbackHostname(hostname string) bool {
 
 // proposedDestination guards the proposal side of the identity lookup, which
 // resources.EndpointDestination cannot do itself: it dereferences the endpoint.
-func proposedDestination(proposal *basev0.NetworkMapping) (string, error) {
+func proposedDestination(proposal *basev1.NetworkMapping) (string, error) {
 	endpoint := proposal.GetEndpoint()
 	if endpoint == nil {
 		return "", fmt.Errorf("proposed network mapping has no endpoint")
@@ -218,13 +218,13 @@ func proposedDestination(proposal *basev0.NetworkMapping) (string, error) {
 // cloneNetworkMappings detaches the accepted set from the objects it was built
 // out of: the agent's gRPC response, and the endpoints the runner recorded at
 // Load.
-func cloneNetworkMappings(mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
+func cloneNetworkMappings(mappings []*basev1.NetworkMapping) []*basev1.NetworkMapping {
 	if mappings == nil {
 		return nil
 	}
-	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	out := make([]*basev1.NetworkMapping, 0, len(mappings))
 	for _, mapping := range mappings {
-		clone := &basev0.NetworkMapping{}
+		clone := &basev1.NetworkMapping{}
 		proto.Merge(clone, mapping)
 		out = append(out, clone)
 	}

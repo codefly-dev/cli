@@ -49,7 +49,7 @@ func TestProcessGroupHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		if os.Getenv("CODEFLY_TEST_MIXED_REGISTRIES") == "1" {
-			current := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "authenticated-v2", fmt.Sprintf("%d.pgid", command.Process.Pid))
+			current := filepath.Join(os.Getenv("HOME"), ".codefly", "runs", "workspace-authenticated-v1", fmt.Sprintf("%d.pgid", command.Process.Pid))
 			data, err := os.ReadFile(current)
 			if err != nil {
 				t.Fatal(err)
@@ -389,7 +389,7 @@ func TestReaperCleansAuthenticatedRootRecordAfterOwnerIsKilled(t *testing.T) {
 	waitForFile(t, pidPath)
 	waitForFile(t, readyPath)
 	pid := readPID(t, pidPath)
-	currentRecord := filepath.Join(home, ".codefly", stateDirName, "authenticated-v2", fmt.Sprintf("%d.pgid", pid))
+	currentRecord := filepath.Join(home, ".codefly", stateDirName, "workspace-authenticated-v1", fmt.Sprintf("%d.pgid", pid))
 	rootRecord := registryPath(t, pid)
 	// Historical root JSON predates persisted workspace attribution. Preserve
 	// that old wire fixture rather than move a new namespace envelope to root.

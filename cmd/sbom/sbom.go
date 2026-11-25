@@ -10,7 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -106,7 +106,7 @@ var WorkspaceCmd = &cobra.Command{
 	},
 }
 
-func generate(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, withDev bool) (*builderv0.SBOMResponse, error) {
+func generate(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, withDev bool) (*builderv1.SBOMResponse, error) {
 	w := wool.Get(ctx).In("sbom", wool.NameField(service.Name))
 	instance, err := services.Load(ctx, workspace, module, service)
 	if err != nil {
@@ -118,7 +118,7 @@ func generate(ctx context.Context, workspace *resources.Workspace, module *resou
 	if _, err := instance.Builder.Load(ctx); err != nil {
 		return nil, w.Wrapf(err, "builder load")
 	}
-	return instance.Builder.SBOM(ctx, &builderv0.SBOMRequest{IncludeDevDependencies: withDev})
+	return instance.Builder.SBOM(ctx, &builderv1.SBOMRequest{IncludeDevDependencies: withDev})
 }
 
 func safeName(value string) string {

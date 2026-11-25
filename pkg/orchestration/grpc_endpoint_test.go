@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect"
 	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/stretchr/testify/require"
@@ -20,18 +20,18 @@ import (
 // whatever scheme its recorded address carries — with the transport its own
 // `secured` declaration asks for; an endpoint serving another API is refused.
 func TestGRPCEndpointTargetIsTheNativeInstanceWithItsDeclaredTransport(t *testing.T) {
-	grpcEndpoint := func(name string, secured bool) *basev0.Endpoint {
-		return &basev0.Endpoint{Name: name, Api: standards.GRPC, ApiDetails: resources.ToGrpcAPI(&basev0.GrpcAPI{Secured: secured})}
+	grpcEndpoint := func(name string, secured bool) *basev1.Endpoint {
+		return &basev1.Endpoint{Name: name, Api: standards.GRPC, ApiDetails: resources.ToGrpcAPI(&basev1.GrpcAPI{Secured: secured})}
 	}
-	flow := flowWithNetworkMappings("platform/host", []*basev0.NetworkMapping{
-		{Endpoint: grpcEndpoint("delivery", false), Instances: []*basev0.NetworkInstance{
+	flow := flowWithNetworkMappings("platform/host", []*basev1.NetworkMapping{
+		{Endpoint: grpcEndpoint("delivery", false), Instances: []*basev1.NetworkInstance{
 			networkInstance(resources.NetworkAccessContainer, "grpc://host.docker.internal:7000"),
 			networkInstance(resources.NetworkAccessNative, "grpc://localhost:7001"),
 		}},
-		{Endpoint: grpcEndpoint("secured", true), Instances: []*basev0.NetworkInstance{networkInstance(resources.NetworkAccessNative, "https://localhost:7002")}},
-		{Endpoint: &basev0.Endpoint{Name: "rest", Api: standards.REST}, Instances: []*basev0.NetworkInstance{networkInstance(resources.NetworkAccessNative, "http://localhost:7003")}},
-		{Endpoint: &basev0.Endpoint{Name: "connect", Api: standards.CONNECT, ApiDetails: resources.ToHTTPAPI(&basev0.HttpAPI{})}, Instances: []*basev0.NetworkInstance{networkInstance(resources.NetworkAccessNative, "http://localhost:7004")}},
-		{Endpoint: &basev0.Endpoint{Name: "connect-tls", Api: standards.CONNECT, ApiDetails: resources.ToHTTPAPI(&basev0.HttpAPI{Secured: true})}, Instances: []*basev0.NetworkInstance{networkInstance(resources.NetworkAccessNative, "https://localhost:7005")}},
+		{Endpoint: grpcEndpoint("secured", true), Instances: []*basev1.NetworkInstance{networkInstance(resources.NetworkAccessNative, "https://localhost:7002")}},
+		{Endpoint: &basev1.Endpoint{Name: "rest", Api: standards.REST}, Instances: []*basev1.NetworkInstance{networkInstance(resources.NetworkAccessNative, "http://localhost:7003")}},
+		{Endpoint: &basev1.Endpoint{Name: "connect", Api: standards.CONNECT, ApiDetails: resources.ToHTTPAPI(&basev1.HttpAPI{})}, Instances: []*basev1.NetworkInstance{networkInstance(resources.NetworkAccessNative, "http://localhost:7004")}},
+		{Endpoint: &basev1.Endpoint{Name: "connect-tls", Api: standards.CONNECT, ApiDetails: resources.ToHTTPAPI(&basev1.HttpAPI{Secured: true})}, Instances: []*basev1.NetworkInstance{networkInstance(resources.NetworkAccessNative, "https://localhost:7005")}},
 	})
 	ctx := context.Background()
 	target, err := flow.GRPCEndpointTarget(ctx, "platform", "host", "delivery")
@@ -78,9 +78,9 @@ func TestAConnectListenerAnswersTheCompositionClientOverGRPC(t *testing.T) {
 	server.Start()
 	t.Cleanup(server.Close)
 
-	flow := flowWithNetworkMappings("platform/host", []*basev0.NetworkMapping{
-		{Endpoint: &basev0.Endpoint{Name: "connect", Api: standards.CONNECT, ApiDetails: resources.ToHTTPAPI(&basev0.HttpAPI{})},
-			Instances: []*basev0.NetworkInstance{networkInstance(resources.NetworkAccessNative, server.URL)}},
+	flow := flowWithNetworkMappings("platform/host", []*basev1.NetworkMapping{
+		{Endpoint: &basev1.Endpoint{Name: "connect", Api: standards.CONNECT, ApiDetails: resources.ToHTTPAPI(&basev1.HttpAPI{})},
+			Instances: []*basev1.NetworkInstance{networkInstance(resources.NetworkAccessNative, server.URL)}},
 	})
 	target, err := flow.GRPCEndpointTarget(t.Context(), "platform", "host", "connect")
 	require.NoError(t, err)

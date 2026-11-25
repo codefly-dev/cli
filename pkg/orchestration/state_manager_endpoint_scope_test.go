@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/stretchr/testify/require"
@@ -20,19 +20,19 @@ func TestDependencyRuntimeCapabilitiesHonorEndpointScope(t *testing.T) {
 		"modules/mind/module.codefly.yaml":  "kind: module\nname: mind\n",
 		"modules/users/module.codefly.yaml": "kind: module\nname: users\n",
 	})
-	published := func(name, api string) *basev0.Endpoint {
-		return &basev0.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}
+	published := func(name, api string) *basev1.Endpoint {
+		return &basev1.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}
 	}
 	state := &StateManager{
 		workspace: workspace,
-		endpoints: map[string][]*basev0.Endpoint{
+		endpoints: map[string][]*basev1.Endpoint{
 			dependencyUnique: {
 				published("connect", standards.CONNECT),
 				published("grpc", standards.GRPC),
 				published("rest", standards.REST),
 			},
 		},
-		networkMappings: map[string][]*basev0.NetworkMapping{
+		networkMappings: map[string][]*basev1.NetworkMapping{
 			dependencyUnique: {
 				{Endpoint: published("connect", standards.CONNECT)},
 				{Endpoint: published("grpc", standards.GRPC)},
@@ -86,7 +86,7 @@ func TestDependencyRuntimeCapabilitiesHonorEndpointScope(t *testing.T) {
 	}
 }
 
-func endpointNames(endpoints []*basev0.Endpoint) []string {
+func endpointNames(endpoints []*basev1.Endpoint) []string {
 	names := make([]string, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		names = append(names, endpoint.GetName())
@@ -94,7 +94,7 @@ func endpointNames(endpoints []*basev0.Endpoint) []string {
 	return names
 }
 
-func mappingEndpointNames(mappings []*basev0.NetworkMapping) []string {
+func mappingEndpointNames(mappings []*basev1.NetworkMapping) []string {
 	names := make([]string, 0, len(mappings))
 	for _, mapping := range mappings {
 		names = append(names, mapping.GetEndpoint().GetName())
@@ -112,12 +112,12 @@ func TestDependencyNetworkMappingsNameEachProducerOnce(t *testing.T) {
 		"modules/mind/module.codefly.yaml":  "kind: module\nname: mind\n",
 		"modules/users/module.codefly.yaml": "kind: module\nname: users\n",
 	})
-	published := func(name, api string) *basev0.Endpoint {
-		return &basev0.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}
+	published := func(name, api string) *basev1.Endpoint {
+		return &basev1.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}
 	}
 	state := &StateManager{
 		workspace: workspace,
-		networkMappings: map[string][]*basev0.NetworkMapping{
+		networkMappings: map[string][]*basev1.NetworkMapping{
 			dependencyUnique: {
 				{Endpoint: published("connect", standards.CONNECT)},
 				{Endpoint: published("grpc", standards.GRPC)},

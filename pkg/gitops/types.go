@@ -7,7 +7,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/composition"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -376,7 +376,7 @@ type RenderOptions struct {
 	renderRoot       *renderRoot
 }
 
-func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
+func inventoryKubernetesOutput(output *builderv1.DeploymentOutput) *InventoryKubernetesOutput {
 	kubernetes := output.GetKubernetes()
 	if kubernetes == nil {
 		return nil

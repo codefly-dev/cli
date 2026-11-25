@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -73,7 +73,7 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("name the run environment for the excluded root's output environment: %w", err)
 	}
-	protoIdentity := &basev0.ServiceIdentity{
+	protoIdentity := &basev1.ServiceIdentity{
 		Workspace:           identity.Workspace,
 		Module:              identity.Module,
 		Name:                identity.Name,

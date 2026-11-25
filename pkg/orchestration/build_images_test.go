@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,13 +20,13 @@ func TestBuildImagePolicyVerifiesEveryExternalRecipeImage(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 		plan, err := coreservices.SingleImageBuildPlan(dir, "example.test/app:v1", []string{"linux/amd64"}, []string{"Dockerfile"})
 		require.NoError(t, err)
-		require.Error(t, verifyBuildImages(dir, plan, []*builderv0.BuildImageInput{{Role: "runtime", Reference: ref, Variant: "alpine"}}), body)
+		require.Error(t, verifyBuildImages(dir, plan, []*builderv1.BuildImageInput{{Role: "runtime", Reference: ref, Variant: "alpine"}}), body)
 	}
 	body := "# syntax=" + other + "\nFROM scratch AS proxy\nFROM " + ref + " AS build\nRUN --mount=type=bind,from=proxy,target=/proxy true\nFROM scratch\nCOPY --from=build /app /app\n"
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	plan, err := coreservices.SingleImageBuildPlan(dir, "example.test/app:v1", []string{"linux/amd64"}, []string{"Dockerfile"})
 	require.NoError(t, err)
-	bindings := []*builderv0.BuildImageInput{{Role: "runtime", Reference: ref, Variant: "alpine"}, {Role: "frontend", Reference: other, Variant: "dockerfile-v1"}}
+	bindings := []*builderv1.BuildImageInput{{Role: "runtime", Reference: ref, Variant: "alpine"}, {Role: "frontend", Reference: other, Variant: "dockerfile-v1"}}
 	require.NoError(t, verifyBuildImages(dir, plan, bindings))
 	scope := imageBuildScope{OutputDir: dir, ContextDir: dir, WorkspaceDir: dir}
 	first, err := imageBuildIdentity(t.Context(), plan.Recipes[0], plan, scope, path, "", []string{"buildx", "build", dir}, nil, nil, bindings...)
@@ -42,7 +42,7 @@ func TestBuildImagePolicyVerifiesEveryExternalRecipeImage(t *testing.T) {
 
 // A reused Builder must forget bindings when its environment no longer selects them.
 func TestBuildImagePolicyClearsPriorSelection(t *testing.T) {
-	b := &Builder{world: &World{}, imageBindings: []*builderv0.BuildImageInput{{Role: "runtime"}}}
+	b := &Builder{world: &World{}, imageBindings: []*builderv1.BuildImageInput{{Role: "runtime"}}}
 	require.NoError(t, b.selectBuildImages(t.Context()))
 	require.Empty(t, b.imageBindings)
 }
@@ -50,8 +50,8 @@ func TestBuildImagePolicyClearsPriorSelection(t *testing.T) {
 // Policy inputs need a complete identity and a distinct publication tag, even
 // when the service source version did not change. Existing qualified names stay.
 func TestBuildImagePolicyQualifiesPublication(t *testing.T) {
-	original := &builderv0.DockerBuildRecipe{Image: "registry.example/app:v1.0.0"}
-	bindings := []*builderv0.BuildImageInput{{Role: "runtime"}}
+	original := &builderv1.DockerBuildRecipe{Image: "registry.example/app:v1.0.0"}
+	bindings := []*builderv1.BuildImageInput{{Role: "runtime"}}
 	_, _, err := qualifyBoundImage(original, imageReuse{}, nil, true, bindings)
 	require.ErrorContains(t, err, "complete build identity")
 	decision := imageReuse{}

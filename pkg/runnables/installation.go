@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 )
@@ -30,7 +30,7 @@ func (s PreparedSelection) Includes(key string) bool {
 // PreparedSelectionFor reads the composition's offered tools and Runtime's
 // installation references from the actual delivered configuration. Missing
 // declarations select nothing. Full installation validation remains Runtime's.
-func PreparedSelectionFor(service *resources.Service, delivered []*basev0.Configuration) (PreparedSelection, error) {
+func PreparedSelectionFor(service *resources.Service, delivered []*basev1.Configuration) (PreparedSelection, error) {
 	keys, available, offered := PreparedSelection{}, PreparedSelection{}, PreparedSelection{}
 	if !slices.Contains(service.WorkspaceConfigurationDependencies, RunnableBindingsGroup) {
 		return keys, nil
@@ -123,7 +123,7 @@ func installationKeys(raw string, keys PreparedSelection) error {
 
 // SelectPreparedConfigurations copies only the filtered group, so resolving
 // one service never narrows the manager's catalog for another service.
-func SelectPreparedConfigurations(delivered []*basev0.Configuration, keys PreparedSelection) []*basev0.Configuration {
+func SelectPreparedConfigurations(delivered []*basev1.Configuration, keys PreparedSelection) []*basev1.Configuration {
 	if keys == nil {
 		return delivered
 	}
@@ -136,7 +136,7 @@ func SelectPreparedConfigurations(delivered []*basev0.Configuration, keys Prepar
 			out[i] = proto.CloneOf(conf)
 			for _, cloned := range out[i].Infos {
 				if cloned.GetName() == RunnableBindingsGroup {
-					cloned.ConfigurationValues = slices.DeleteFunc(cloned.ConfigurationValues, func(v *basev0.ConfigurationValue) bool { return !keys.Includes(v.GetKey()) })
+					cloned.ConfigurationValues = slices.DeleteFunc(cloned.ConfigurationValues, func(v *basev1.ConfigurationValue) bool { return !keys.Includes(v.GetKey()) })
 				}
 			}
 			break
@@ -146,7 +146,7 @@ func SelectPreparedConfigurations(delivered []*basev0.Configuration, keys Prepar
 }
 
 // PreparedConfigurationsFor applies the installation selection at delivery.
-func PreparedConfigurationsFor(service *resources.Service, delivered []*basev0.Configuration) ([]*basev0.Configuration, error) {
+func PreparedConfigurationsFor(service *resources.Service, delivered []*basev1.Configuration) ([]*basev1.Configuration, error) {
 	keys, err := PreparedSelectionFor(service, delivered)
 	if err != nil {
 		return nil, fmt.Errorf("service %s: %w", service.Name, err)

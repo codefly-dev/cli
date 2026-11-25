@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/core/services"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -18,18 +18,18 @@ func TestLocalRuntimeServicesMatchesActualStartPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name                              string
 		mode                              Mode
-		testMode                          agentv0.TestDependencyMode
+		testMode                          agentv1.TestDependencyMode
 		excludedRoot, remoteRoot, skipped bool
 		want                              []string
 	}{
 		{"run", RunMode, 0, false, false, false, []string{"saas/frontend", "quill/backend"}},
 		{"excluded root", RunMode, 0, true, false, false, []string{"saas/frontend"}},
 		{"remote root", RunMode, 0, false, true, false, []string{"saas/frontend"}},
-		{"test policy unresolved", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_UNSPECIFIED, false, false, false, nil},
-		{"test none", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE, false, false, false, nil},
-		{"test dependencies", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, false, false, false, []string{"saas/frontend"}},
-		{"test stack", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, false, []string{"saas/frontend", "quill/backend"}},
-		{"skipped test", TestMode, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, true, nil},
+		{"test policy unresolved", TestMode, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_UNSPECIFIED, false, false, false, nil},
+		{"test none", TestMode, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE, false, false, false, nil},
+		{"test dependencies", TestMode, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, false, false, false, []string{"saas/frontend"}},
+		{"test stack", TestMode, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, false, []string{"saas/frontend", "quill/backend"}},
+		{"skipped test", TestMode, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK, false, false, true, nil},
 		{"build", BuildMode, 0, false, false, false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

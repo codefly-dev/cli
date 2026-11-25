@@ -18,7 +18,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	coreproto "github.com/codefly-dev/core/companions/proto"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/languages"
 	"github.com/codefly-dev/core/standards"
 )
@@ -348,7 +348,7 @@ func pythonDistribution(requirement string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "_", "-"))
 }
 
-// stageOpenAPIEntry synthesizes a basev0.Endpoint carrying the raw OpenAPI
+// stageOpenAPIEntry synthesizes a basev1.Endpoint carrying the raw OpenAPI
 // document (the only thing proto.GenerateOpenAPI reads) and generates it into
 // a scratch directory laid out as the library's language directory: gen/, and
 // for Go the go.mod go-swagger derives its import paths from — the library's
@@ -384,13 +384,13 @@ func stageOpenAPIEntry(ctx context.Context, lang languages.Language, langDir str
 		}
 	}
 
-	endpoint := &basev0.Endpoint{
+	endpoint := &basev1.Endpoint{
 		Name:    entry.Endpoint.Endpoint,
 		Service: entry.Endpoint.Service,
 		Module:  defaultFacadeModule,
 		Api:     standards.REST,
-		ApiDetails: &basev0.API{
-			Value: &basev0.API_Rest{Rest: &basev0.RestAPI{Openapi: entry.ContractBytes}},
+		ApiDetails: &basev1.API{
+			Value: &basev1.API_Rest{Rest: &basev1.RestAPI{Openapi: entry.ContractBytes}},
 		},
 	}
 	if err = coreproto.GenerateOpenAPI(ctx, lang, filepath.Join(raw, "gen"), "", endpoint); err != nil {

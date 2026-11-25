@@ -4,11 +4,11 @@ import (
 	"context"
 
 	"connectrpc.com/connect"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
-	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
-	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
+	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v1/cliv1connect"
+	observabilityv1 "github.com/codefly-dev/core/generated/go/codefly/observability/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -37,13 +37,13 @@ func (a *cliConnect) Ping(ctx context.Context, r *connect.Request[emptypb.Empty]
 func (a *cliConnect) SessionHandshake(ctx context.Context, r *connect.Request[cli.SessionHandshakeRequest]) (*connect.Response[cli.SessionHandshakeResponse], error) {
 	return resp(a.s.SessionHandshake(ctx, r.Msg))
 }
-func (a *cliConnect) GetAgentInformation(ctx context.Context, r *connect.Request[cli.GetAgentInformationRequest]) (*connect.Response[agentv0.AgentInformation], error) {
+func (a *cliConnect) GetAgentInformation(ctx context.Context, r *connect.Request[cli.GetAgentInformationRequest]) (*connect.Response[agentv1.AgentInformation], error) {
 	return resp(a.s.GetAgentInformation(ctx, r.Msg))
 }
-func (a *cliConnect) GetWorkspaceInventory(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[basev0.Workspace], error) {
+func (a *cliConnect) GetWorkspaceInventory(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[basev1.Workspace], error) {
 	return resp(a.s.GetWorkspaceInventory(ctx, r.Msg))
 }
-func (a *cliConnect) GetWorkspaceServiceDependencyGraph(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[observabilityv0.GraphResponse], error) {
+func (a *cliConnect) GetWorkspaceServiceDependencyGraph(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[observabilityv1.GraphResponse], error) {
 	return resp(a.s.GetWorkspaceServiceDependencyGraph(ctx, r.Msg))
 }
 func (a *cliConnect) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[cli.MultiGraphResponse], error) {
@@ -67,7 +67,7 @@ func (a *cliConnect) GetRuntimeConfigurations(ctx context.Context, r *connect.Re
 func (a *cliConnect) GetDependenciesNetworkMappings(ctx context.Context, r *connect.Request[cli.GetNetworkMappingsRequest]) (*connect.Response[cli.GetNetworkMappingsResponse], error) {
 	return resp(a.s.GetDependenciesNetworkMappings(ctx, r.Msg))
 }
-func (a *cliConnect) ActiveLogHistory(ctx context.Context, r *connect.Request[observabilityv0.LogRequest]) (*connect.Response[observabilityv0.LogResponse], error) {
+func (a *cliConnect) ActiveLogHistory(ctx context.Context, r *connect.Request[observabilityv1.LogRequest]) (*connect.Response[observabilityv1.LogResponse], error) {
 	return resp(a.s.ActiveLogHistory(ctx, r.Msg))
 }
 func (a *cliConnect) GetFlowStatus(ctx context.Context, r *connect.Request[emptypb.Empty]) (*connect.Response[cli.FlowStatus], error) {
@@ -81,7 +81,7 @@ func (a *cliConnect) DestroyFlow(ctx context.Context, r *connect.Request[cli.Des
 }
 
 // Logs bridges the gRPC server-stream onto the Connect server-stream.
-func (a *cliConnect) Logs(ctx context.Context, _ *connect.Request[emptypb.Empty], stream *connect.ServerStream[observabilityv0.Log]) error {
+func (a *cliConnect) Logs(ctx context.Context, _ *connect.Request[emptypb.Empty], stream *connect.ServerStream[observabilityv1.Log]) error {
 	return a.s.Logs(&emptypb.Empty{}, &logsStreamShim{ctx: ctx, out: stream})
 }
 
@@ -91,8 +91,8 @@ func (a *cliConnect) Logs(ctx context.Context, _ *connect.Request[emptypb.Empty]
 type logsStreamShim struct {
 	grpc.ServerStream
 	ctx context.Context
-	out *connect.ServerStream[observabilityv0.Log]
+	out *connect.ServerStream[observabilityv1.Log]
 }
 
-func (s *logsStreamShim) Send(log *observabilityv0.Log) error { return s.out.Send(log) }
+func (s *logsStreamShim) Send(log *observabilityv1.Log) error { return s.out.Send(log) }
 func (s *logsStreamShim) Context() context.Context            { return s.ctx }

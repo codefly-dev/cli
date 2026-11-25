@@ -15,10 +15,10 @@ import (
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
-	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
+	toolingv1 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/spf13/cobra"
@@ -76,7 +76,7 @@ var SourceCmd = &cobra.Command{
 			}
 		}
 
-		request := &runtimev0.TestRequest{
+		request := &runtimev1.TestRequest{
 			Target:   sourceTarget,
 			Filters:  append([]string(nil), sourceFilters...),
 			Suite:    sourceSuite,
@@ -91,7 +91,7 @@ var SourceCmd = &cobra.Command{
 				return testService(ctx, flow)
 			})
 		}
-		var response *runtimev0.TestResponse
+		var response *runtimev1.TestResponse
 		if flow != nil {
 			response = flow.OriginTestResponse()
 		}
@@ -148,7 +148,7 @@ func verifySourceCapabilityHandshake(ctx context.Context, agent *resources.Agent
 }
 
 func verifySourceCapabilityClients(ctx context.Context, agent *resources.Agent, connection grpc.ClientConnInterface) error {
-	info, err := agentv0.NewAgentClient(connection).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	info, err := agentv1.NewAgentClient(connection).GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	if err != nil {
 		return fmt.Errorf("source agent handshake: %w", err)
 	}
@@ -157,7 +157,7 @@ func verifySourceCapabilityClients(ctx context.Context, agent *resources.Agent, 
 	}
 	runtimeAdvertised := false
 	for _, capability := range info.GetCapabilities() {
-		if capability.GetType() == agentv0.Capability_RUNTIME {
+		if capability.GetType() == agentv1.Capability_RUNTIME {
 			runtimeAdvertised = true
 			break
 		}
@@ -166,20 +166,20 @@ func verifySourceCapabilityClients(ctx context.Context, agent *resources.Agent, 
 		return fmt.Errorf("source agent %s does not advertise Runtime capability", agent.Identifier())
 	}
 
-	codeClient := codev0.NewCodeClient(connection)
-	if _, err := codeClient.Execute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_GetProjectInfo{GetProjectInfo: &codev0.GetProjectInfoRequest{}},
+	codeClient := codev1.NewCodeClient(connection)
+	if _, err := codeClient.Execute(ctx, &codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_GetProjectInfo{GetProjectInfo: &codev1.GetProjectInfoRequest{}},
 	}); err != nil {
 		return fmt.Errorf("source agent %s Code capability handshake: %w", agent.Identifier(), err)
 	}
-	toolingClient := toolingv0.NewToolingClient(connection)
-	if _, err := toolingClient.GetProjectInfo(ctx, &toolingv0.GetProjectInfoRequest{}); err != nil {
+	toolingClient := toolingv1.NewToolingClient(connection)
+	if _, err := toolingClient.GetProjectInfo(ctx, &toolingv1.GetProjectInfoRequest{}); err != nil {
 		return fmt.Errorf("source agent %s Tooling capability handshake: %w", agent.Identifier(), err)
 	}
 	return nil
 }
 
-func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, request *runtimev0.TestRequest) (*orchestration.Flow, error) {
+func initSourceTest(ctx context.Context, prepared *sourceworkspace.Prepared, request *runtimev1.TestRequest) (*orchestration.Flow, error) {
 	if err := resources.ValidateRuntimeContext(sourceRuntimeContext); err != nil {
 		return nil, fmt.Errorf("invalid runtime context: %w", err)
 	}

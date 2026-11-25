@@ -8,7 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -41,11 +41,11 @@ import (
 // only the reverse would cycle through pkg/gitops.
 func rootGroupCredentialKey(t *testing.T, group, key string) string {
 	t.Helper()
-	variables, err := resources.ConfigurationAsEnvironmentVariables(&basev0.Configuration{
+	variables, err := resources.ConfigurationAsEnvironmentVariables(&basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name:                group,
-			ConfigurationValues: []*basev0.ConfigurationValue{{Key: key, Secret: true}},
+			ConfigurationValues: []*basev1.ConfigurationValue{{Key: key, Secret: true}},
 		}},
 	}, "", true)
 	if err != nil {

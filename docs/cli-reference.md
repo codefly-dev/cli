@@ -25,14 +25,14 @@ codefly [flags]
 Flags:
 
 ```
-      --agent-updates string   Agent freshness policy for workspace run/build/deploy: check (default), auto, require-current, off; overrides CODEFLY_AGENT_UPDATES and workspace agent-update-policy
-  -d, --debug                  Enable debug mode
-      --focus                  Enable focus log mode
-      --local-agents           Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working on local agent builds or offline.
-      --plugin-path string     Override the codefly home directory (default: ~/.codefly). Plugins, containers and logs resolve from <plugin-path>/agents, <plugin-path>/containers, <plugin-path>/logs. Equivalent to setting CODEFLY_HOME.
-      --timestamps             Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it (default true)
-      --trace                  Enable trace mode
-      --track string           Tracker of actions -- advanced usage
+      --agent-updates string        Agent freshness policy for workspace run/build/deploy: check (default), auto, require-current, off; overrides CODEFLY_AGENT_UPDATES and workspace agent-update-policy
+  -d, --debug[=true|false]          Enable debug mode
+      --focus[=true|false]          Enable focus log mode
+      --local-agents[=true|false]   Resolve agent versions from ~/.codefly/agents/ only (skip GitHub). Equivalent to setting CODEFLY_AGENT_SOURCE=local. Use when working on local agent builds or offline.
+      --plugin-path string          Override the codefly home directory (default: ~/.codefly). Plugins, containers and logs resolve from <plugin-path>/agents, <plugin-path>/containers, <plugin-path>/logs. Equivalent to setting CODEFLY_HOME.
+      --timestamps[=true|false]     Prefix log output with a wall-clock timestamp (HH:MM:SS); use --timestamps=false to hide it (default true)
+      --trace[=true|false]          Enable trace mode
+      --track string                Tracker of actions -- advanced usage
 ```
 
 Subcommands:
@@ -123,9 +123,9 @@ codefly add application [flags]
 Flags:
 
 ```
-      --agent string   Agent to build/run the application
-      --default        Use default options
-      --override       Override existing application
+      --agent string            Agent to build/run the application
+      --default[=true|false]    Use default options
+      --override[=true|false]   Override existing application
 ```
 
 ## `codefly add application-dependency`
@@ -170,7 +170,7 @@ Flags:
 ```
       --dependency string   Service to depend on: a service of the same module, or module/service
       --endpoint strings    Endpoint of the dependency to consume (repeatable); every endpoint when omitted
-      --yes                 Skip confirmation prompts (non-interactive/MCP mode)
+      --yes[=true|false]    Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add job`
@@ -245,7 +245,7 @@ Flags:
       --branch string       Git branch for submodule (default "main")
       --git string          Git remote URL to add as submodule
   -l, --languages strings   Languages to support (e.g., go,python,typescript)
-      --yes                 Skip confirmation prompts (non-interactive/MCP mode)
+      --yes[=true|false]    Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add library-dependency`
@@ -277,12 +277,12 @@ codefly add library-dependency [library-name]
 Flags:
 
 ```
-      --languages strings   Language exports to use
-      --module string       Module name
-      --service string      Service name
-      --setup-local         Setup local development immediately
-      --version string      Version constraint (e.g., ^1.0.0)
-      --yes                 Skip confirmation prompts (non-interactive/MCP mode)
+      --languages strings          Language exports to use
+      --module string              Module name
+      --service string             Service name
+      --setup-local[=true|false]   Setup local development immediately
+      --version string             Version constraint (e.g., ^1.0.0)
+      --yes[=true|false]           Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add module`
@@ -296,12 +296,12 @@ codefly add module [flags]
 Flags:
 
 ```
-      --agent string      Module template agent (e.g. user-management, rag)
-  -i, --interactive       interactive mode
-      --source string     Compose an out-of-repo module at a local path; the path lands in codefly.local.yaml, not committed config
-      --version string    Committed version constraint recorded with a composed module's identity (default "latest")
-      --worktree string   Compose an out-of-repo module by <owner/repo>@<ref>; the resolver finds your local worktree (location in codefly.local.yaml)
-      --yes               Skip confirmation prompts (non-interactive/MCP mode)
+      --agent string               Module template agent (e.g. user-management, rag)
+  -i, --interactive[=true|false]   interactive mode
+      --source string              Compose an out-of-repo module at a local path; the path lands in codefly.local.yaml, not committed config
+      --version string             Committed version constraint recorded with a composed module's identity (default "latest")
+      --worktree string            Compose an out-of-repo module by <owner/repo>@<ref>; the resolver finds your local worktree (location in codefly.local.yaml)
+      --yes[=true|false]           Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly add runnable`
@@ -324,10 +324,10 @@ codefly add runnable <name>
 Flags:
 
 ```
-      --agent string     Pinned Runnable agent (publisher/name:version)
-      --handler string   Handler path relative to the Runnable directory
-      --json             Emit the created resource as JSON
-      --module string    Owning module (defaults to the current module)
+      --agent string        Pinned Runnable agent (publisher/name:version)
+      --handler string      Handler path relative to the Runnable directory
+      --json[=true|false]   Emit the created resource as JSON
+      --module string       Owning module (defaults to the current module)
 ```
 
 ## `codefly add service`
@@ -341,9 +341,9 @@ codefly add service [flags]
 Flags:
 
 ```
-      --agent string   Instance agent to get started
-      --default        Use default options
-      --override       Override existing service
+      --agent string            Instance agent to get started
+      --default[=true|false]    Use default options
+      --override[=true|false]   Override existing service
 ```
 
 ## `codefly add solution`
@@ -405,7 +405,7 @@ Flags:
       --order int                        The page's order in the host's shell (default 50)
       --package-id string                The <owner>/<name> identity the solution is published under. Required; nothing here can derive who publishes it
       --title string                     The page's title in the host's shell (default: the module name, capitalised)
-      --yes                              Skip confirmation prompts (non-interactive/MCP mode)
+      --yes[=true|false]                 Skip confirmation prompts (non-interactive/MCP mode)
 ```
 
 ## `codefly agent`
@@ -462,12 +462,12 @@ codefly agent build [flags]
 Flags:
 
 ```
-      --all            Build all agents found in the current directory tree
-      --dir string     Agent source directory (default: current directory)
-      --fail-on-vuln   Fail the build if any HIGH/CRITICAL vulnerability is found
-  -j, --jobs int       Max agents to build in parallel with --all (default: number of CPUs)
-      --native-only    Build only the host-platform binary; skip the Linux/amd64 container cross-build (local dev fast path)
-      --skip-audit     Explicitly skip the post-build vulnerability audit
+      --all[=true|false]            Build all agents found in the current directory tree
+      --dir string                  Agent source directory (default: current directory)
+      --fail-on-vuln[=true|false]   Fail the build if any HIGH/CRITICAL vulnerability is found
+  -j, --jobs int                    Max agents to build in parallel with --all (default: number of CPUs)
+      --native-only[=true|false]    Build only the host-platform binary; skip the Linux/amd64 container cross-build (local dev fast path)
+      --skip-audit[=true|false]     Explicitly skip the post-build vulnerability audit
 ```
 
 ## `codefly agent ci`
@@ -481,13 +481,13 @@ codefly agent ci [flags]
 Flags:
 
 ```
-      --dir string         Agent source directory (default: current directory)
-      --fail-on-vuln       Fail on actionable HIGH or CRITICAL agent vulnerabilities (default true)
-      --format string      Final agent CI report format: text or json (default "text")
-      --native-only        Build only the host agent binary; skip the Linux/amd64 release artifact
-      --output string      Agent CI report and artifact directory (relative to the agent repository) (default ".codefly/agent-ci")
-      --skip-audit         Explicitly skip the agent-binary vulnerability audit
-      --skip-conformance   Explicitly skip fresh generated-service conformance
+      --dir string                      Agent source directory (default: current directory)
+      --fail-on-vuln[=true|false]       Fail on actionable HIGH or CRITICAL agent vulnerabilities (default true)
+      --format string                   Final agent CI report format: text or json (default "text")
+      --native-only[=true|false]        Build only the host agent binary; skip the Linux/amd64 release artifact
+      --output string                   Agent CI report and artifact directory (relative to the agent repository) (default ".codefly/agent-ci")
+      --skip-audit[=true|false]         Explicitly skip the agent-binary vulnerability audit
+      --skip-conformance[=true|false]   Explicitly skip fresh generated-service conformance
 ```
 
 ## `codefly agent deps`
@@ -529,12 +529,12 @@ codefly agent deps [flags]
 Flags:
 
 ```
-      --all                      Apply to every agent found in the directory tree
+      --all[=true|false]         Apply to every agent found in the directory tree
       --dependency stringArray   With --pin, also pin an existing module@version across owned locks (repeatable)
       --dir string               Agent source directory (default: current directory)
-      --link                     Wire go.work -> local core for dev builds (default action)
+      --link[=true|false]        Wire go.work -> local core for dev builds (default action)
       --pin string               Pin go.mod to a published core version (e.g. latest, v0.1.164) + tidy + verify
-      --unlink                   Remove the local go.work (revert to published deps)
+      --unlink[=true|false]      Remove the local go.work (revert to published deps)
 ```
 
 ## `codefly agent generate`
@@ -636,7 +636,7 @@ codefly agent list [flags]
 Flags:
 
 ```
-      --json   Emit the workspace agent inventory as JSON
+      --json[=true|false]   Emit the workspace agent inventory as JSON
 ```
 
 ## `codefly agent promote-source`
@@ -693,12 +693,12 @@ codefly agent release [flags]
 Flags:
 
 ```
-      --bump string       Version bump from the latest tag: patch | minor | major (default "patch")
-      --dir string        Agent source directory (default: current directory)
-      --no-attestation    Run local source tests even when the head SHA has successful CI attestation
-      --no-wait           Open the PR and stop; re-run after merge to tag and verify
-      --pin string        Pin core to this published version before the CI gate (e.g. latest, v0.3.11)
-      --platform string   Additional os_arch the release must ship (e.g. linux_arm64); linux_amd64 is always required
+      --bump string                   Version bump from the latest tag: patch | minor | major (default "patch")
+      --dir string                    Agent source directory (default: current directory)
+      --no-attestation[=true|false]   Run local source tests even when the head SHA has successful CI attestation
+      --no-wait[=true|false]          Open the PR and stop; re-run after merge to tag and verify
+      --pin string                    Pin core to this published version before the CI gate (e.g. latest, v0.3.11)
+      --platform string               Additional os_arch the release must ship (e.g. linux_arm64); linux_amd64 is always required
 ```
 
 ## `codefly agent verify-platform`
@@ -720,7 +720,7 @@ codefly agent versions <publisher/name>
 Flags:
 
 ```
-      --json   Emit the version inventory as JSON
+      --json[=true|false]   Emit the version inventory as JSON
 ```
 
 ## `codefly audit`
@@ -763,9 +763,9 @@ codefly audit go [flags]
 Flags:
 
 ```
-      --dir string       Go module directory to audit (default: current directory)
-      --fail-on-vuln     Exit non-zero on an actionable finding or stale suppression (default true)
-      --stale-days int   Fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
+      --dir string                  Go module directory to audit (default: current directory)
+      --fail-on-vuln[=true|false]   Exit non-zero on an actionable finding or stale suppression (default true)
+      --stale-days int              Fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
 ```
 
 ## `codefly audit service`
@@ -786,10 +786,10 @@ codefly audit service [name]
 Flags:
 
 ```
-      --fail-on-vuln   Exit non-zero if any HIGH/CRITICAL finding is present
-      --include-dev    Include development/test-only dependencies
-      --json           Emit raw JSON instead of a table
-      --outdated       Also report available dependency releases (default true)
+      --fail-on-vuln[=true|false]   Exit non-zero if any HIGH/CRITICAL finding is present
+      --include-dev[=true|false]    Include development/test-only dependencies
+      --json[=true|false]           Emit raw JSON instead of a table
+      --outdated[=true|false]       Also report available dependency releases (default true)
 ```
 
 ## `codefly audit workspace`
@@ -803,10 +803,10 @@ codefly audit workspace [flags]
 Flags:
 
 ```
-      --fail-on-vuln   Exit non-zero if any HIGH/CRITICAL finding is present
-      --include-dev    Include development/test-only dependencies
-      --json           Emit raw JSON instead of a table
-      --outdated       Also report outdated patch+minor releases (default true)
+      --fail-on-vuln[=true|false]   Exit non-zero if any HIGH/CRITICAL finding is present
+      --include-dev[=true|false]    Include development/test-only dependencies
+      --json[=true|false]           Emit raw JSON instead of a table
+      --outdated[=true|false]       Also report outdated patch+minor releases (default true)
 ```
 
 ## `codefly build`
@@ -834,16 +834,16 @@ codefly build module [name]
 Flags:
 
 ```
-      --cache-backend string     Cache transport backend (registry) (default "registry")
-      --cache-from stringArray   Trusted registry cache repository to import (repeatable, without tag)
-      --cache-mode string        Exported layers: max (default, includes dependencies) or min
-      --cache-scope string       Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
-      --cache-to stringArray     Registry cache repository to publish (repeatable; omit for read-only builds)
-      --env string               Environment to build for (looks up registry/cluster from workspace.codefly.yaml) (default "local")
-      --org string               Image registry override (wins over env's registry.url)
-      --push                     Push the images to the registry
-      --rebuild                  Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --stand-alone              Begin services as standalone, i.e. without their dependencies
+      --cache-backend string       Cache transport backend (registry) (default "registry")
+      --cache-from stringArray     Trusted registry cache repository to import (repeatable, without tag)
+      --cache-mode string          Exported layers: max (default, includes dependencies) or min
+      --cache-scope string         Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
+      --cache-to stringArray       Registry cache repository to publish (repeatable; omit for read-only builds)
+      --env string                 Environment to build for (looks up registry/cluster from workspace.codefly.yaml) (default "local")
+      --org string                 Image registry override (wins over env's registry.url)
+      --push[=true|false]          Push the images to the registry
+      --rebuild[=true|false]       Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --stand-alone[=true|false]   Begin services as standalone, i.e. without their dependencies
 ```
 
 ## `codefly build runnable`
@@ -871,8 +871,8 @@ codefly build runnable <name>
 Flags:
 
 ```
-      --json            Emit the verified Runnable package descriptor as JSON
-      --output string   New build directory (default: .codefly/build/runnables/module/name/version, replaced on each build)
+      --json[=true|false]   Emit the verified Runnable package descriptor as JSON
+      --output string       New build directory (default: .codefly/build/runnables/module/name/version, replaced on each build)
 ```
 
 ## `codefly build service`
@@ -886,17 +886,17 @@ codefly build service [flags]
 Flags:
 
 ```
-      --builder string           docker buildx builder to run the build on (e.g. a native amd64 buildkit) to avoid local QEMU emulation
-      --cache-backend string     Cache transport backend (registry) (default "registry")
-      --cache-from stringArray   Trusted registry cache repository to import (repeatable, without tag)
-      --cache-mode string        Exported layers: max (default, includes dependencies) or min
-      --cache-scope string       Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
-      --cache-to stringArray     Registry cache repository to publish (repeatable; omit for read-only builds)
-      --env string               Environment to build for (looks up registry/cluster from workspace.codefly.yaml) (default "local")
-      --org string               Image registry override (e.g. ghcr.io/myorg). Wins over the env's registry.url.
-      --push                     Push the image to the repository
-      --rebuild                  Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --stand-alone              Begin service as standalone, i.e. without its dependencies
+      --builder string             docker buildx builder to run the build on (e.g. a native amd64 buildkit) to avoid local QEMU emulation
+      --cache-backend string       Cache transport backend (registry) (default "registry")
+      --cache-from stringArray     Trusted registry cache repository to import (repeatable, without tag)
+      --cache-mode string          Exported layers: max (default, includes dependencies) or min
+      --cache-scope string         Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
+      --cache-to stringArray       Registry cache repository to publish (repeatable; omit for read-only builds)
+      --env string                 Environment to build for (looks up registry/cluster from workspace.codefly.yaml) (default "local")
+      --org string                 Image registry override (e.g. ghcr.io/myorg). Wins over the env's registry.url.
+      --push[=true|false]          Push the image to the repository
+      --rebuild[=true|false]       Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --stand-alone[=true|false]   Begin service as standalone, i.e. without its dependencies
 ```
 
 ## `codefly ci`
@@ -930,27 +930,27 @@ codefly ci build [flags]
 Flags:
 
 ```
-      --all                      Select every service explicitly
-      --base string              Base Git revision for affected-service discovery
-      --cache-backend string     Cache transport backend (registry) (default "registry")
-      --cache-from stringArray   Trusted registry cache repository to import (repeatable, without tag)
-      --cache-mode string        Exported layers: max (default, includes dependencies) or min
-      --cache-scope string       Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
-      --cache-to stringArray     Registry cache repository to publish (repeatable; omit for read-only builds)
-      --changed-file strings     Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --fail-fast                Stop native tests and service scheduling after the first failure (default true)
-      --format string            Final CI report format: text or json (default "text")
-      --head string              Head Git revision (defaults to HEAD when --base is set)
-      --image-sbom               Require digest-bound image SBOM evidence for every image the build produces
-      --init-only                Initialize service only, i.e. without running it
-      --jobs int                 Maximum parallel service tasks (0: auto, capped at 4)
-      --load-only                LoadRequired service only, i.e. without running it
-      --output string            Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
-      --plan string              Replay a saved CI plan, validating independent selection bounds and local contents
-      --rebuild                  Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --runtime-context string   Runtime context for the flow (default "free")
-      --scope string             Runtime scope (for testing encapsulation)
-      --silent strings           Silent mode
+      --all[=true|false]          Select every service explicitly
+      --base string               Base Git revision for affected-service discovery
+      --cache-backend string      Cache transport backend (registry) (default "registry")
+      --cache-from stringArray    Trusted registry cache repository to import (repeatable, without tag)
+      --cache-mode string         Exported layers: max (default, includes dependencies) or min
+      --cache-scope string        Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
+      --cache-to stringArray      Registry cache repository to publish (repeatable; omit for read-only builds)
+      --changed-file strings      Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
+      --fail-fast[=true|false]    Stop native tests and service scheduling after the first failure (default true)
+      --format string             Final CI report format: text or json (default "text")
+      --head string               Head Git revision (defaults to HEAD when --base is set)
+      --image-sbom[=true|false]   Require digest-bound image SBOM evidence for every image the build produces
+      --init-only[=true|false]    Initialize service only, i.e. without running it
+      --jobs int                  Maximum parallel service tasks (0: auto, capped at 4)
+      --load-only[=true|false]    LoadRequired service only, i.e. without running it
+      --output string             Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
+      --plan string               Replay a saved CI plan, validating independent selection bounds and local contents
+      --rebuild[=true|false]      Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --runtime-context string    Runtime context for the flow (default "free")
+      --scope string              Runtime scope (for testing encapsulation)
+      --silent strings            Silent mode
 ```
 
 ## `codefly ci compile`
@@ -964,10 +964,10 @@ codefly ci compile [flags]
 Flags:
 
 ```
-      --all                      Select every service explicitly
+      --all[=true|false]         Select every service explicitly
       --base string              Base Git revision for affected-service discovery
       --changed-file strings     Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --fail-fast                Stop native tests and service scheduling after the first failure (default true)
+      --fail-fast[=true|false]   Stop native tests and service scheduling after the first failure (default true)
       --format string            Final CI report format: text or json (default "text")
       --head string              Head Git revision (defaults to HEAD when --base is set)
       --jobs int                 Maximum parallel service tasks (0: auto, capped at 4)
@@ -988,9 +988,9 @@ codefly ci deploy [flags]
 Flags:
 
 ```
-      --dry-run       Dry run the deployment
-      --env string    Environment to deploy the service (default "local")
-      --stand-alone   Begin service as standalone, i.e. without its dependencies
+      --dry-run[=true|false]       Dry run the deployment
+      --env string                 Environment to deploy the service (default "local")
+      --stand-alone[=true|false]   Begin service as standalone, i.e. without its dependencies
 ```
 
 ## `codefly ci lint`
@@ -1004,10 +1004,10 @@ codefly ci lint [flags]
 Flags:
 
 ```
-      --all                      Select every service explicitly
+      --all[=true|false]         Select every service explicitly
       --base string              Base Git revision for affected-service discovery
       --changed-file strings     Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --fail-fast                Stop native tests and service scheduling after the first failure (default true)
+      --fail-fast[=true|false]   Stop native tests and service scheduling after the first failure (default true)
       --format string            Final CI report format: text or json (default "text")
       --head string              Head Git revision (defaults to HEAD when --base is set)
       --jobs int                 Maximum parallel service tasks (0: auto, capped at 4)
@@ -1028,16 +1028,16 @@ codefly ci plan [flags]
 Flags:
 
 ```
-      --all                       Select every service explicitly
-      --allow-service-overrides   Plan against the machine-local per-service overrides in codefly.local.yaml instead of refusing
-      --base string               Base Git revision for change discovery
-      --changed-file strings      Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --format string             Output format: text or json (default "text")
-      --head string               Head Git revision (defaults to HEAD when --base is set)
-      --phase strings             Phases bound by a replay plan (default: full CI gate)
-      --replay                    Include validated execution plans and candidate content identity (use --format json; save outside the repository)
-      --runtime-context string    Runtime context bound by a replay plan (default "free")
-      --suite strings             Named test suites bound by a replay plan
+      --all[=true|false]                       Select every service explicitly
+      --allow-service-overrides[=true|false]   Plan against the machine-local per-service overrides in codefly.local.yaml instead of refusing
+      --base string                            Base Git revision for change discovery
+      --changed-file strings                   Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
+      --format string                          Output format: text or json (default "text")
+      --head string                            Head Git revision (defaults to HEAD when --base is set)
+      --phase strings                          Phases bound by a replay plan (default: full CI gate)
+      --replay[=true|false]                    Include validated execution plans and candidate content identity (use --format json; save outside the repository)
+      --runtime-context string                 Runtime context bound by a replay plan (default "free")
+      --suite strings                          Named test suites bound by a replay plan
 ```
 
 ## `codefly ci prerelease`
@@ -1086,12 +1086,12 @@ codefly ci prerelease [flags]
 Flags:
 
 ```
-      --dir string            Repository directory to scan (default: current directory)
-      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/])
-      --format string         Report format: text or json (default "text")
-      --go-modules            Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them
-      --include-testdata      Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose
-      --release               Release scope: refuse a prerelease in agent-overrides too, so a tag cannot be cut over a dev override
+      --dir string                      Repository directory to scan (default: current directory)
+      --first-party strings             Go module path prefixes treated as first-party (default [github.com/codefly-dev/])
+      --format string                   Report format: text or json (default "text")
+      --go-modules[=true|false]         Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them
+      --include-testdata[=true|false]   Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose
+      --release[=true|false]            Release scope: refuse a prerelease in agent-overrides too, so a tag cannot be cut over a dev override
 ```
 
 ## `codefly ci push`
@@ -1105,8 +1105,8 @@ codefly ci push [flags]
 Flags:
 
 ```
-      --init-only                Initialize service only, i.e. without running it
-      --load-only                LoadRequired service only, i.e. without running it
+      --init-only[=true|false]   Initialize service only, i.e. without running it
+      --load-only[=true|false]   LoadRequired service only, i.e. without running it
       --runtime-context string   Runtime context for the flow (default "free")
       --scope string             Runtime scope (for testing encapsulation)
       --silent strings           Silent mode
@@ -1123,42 +1123,42 @@ codefly ci run [flags]
 Flags:
 
 ```
-      --all                               Select every service explicitly
-      --allow-service-overrides           Run against the machine-local per-service overrides in codefly.local.yaml instead of refusing
-      --audit-include-dev                 Include development/test-only dependencies in audit evidence
-      --audit-outdated                    Include outdated dependencies in audit evidence (default true)
-      --base string                       Base Git revision for affected-service discovery
-      --cache-backend string              Cache transport backend (registry) (default "registry")
-      --cache-from stringArray            Trusted registry cache repository to import (repeatable, without tag)
-      --cache-mode string                 Exported layers: max (default, includes dependencies) or min
-      --cache-scope string                Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
-      --cache-to stringArray              Registry cache repository to publish (repeatable; omit for read-only builds)
-      --changed-file strings              Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --disposable                        Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
-      --fail-fast                         Stop native tests and service scheduling after the first failure (default true)
-      --fail-on-vuln                      Fail audit on HIGH or CRITICAL vulnerabilities (default true)
-      --format string                     Final CI report format: text or json (default "text")
-      --head string                       Head Git revision (defaults to HEAD when --base is set)
-      --image-sbom                        Require digest-bound image SBOM evidence for every image the build phase produces
-      --jobs int                          Maximum parallel service tasks (0: auto, capped at 4)
-      --output string                     Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
-      --override-port strings             Pin an endpoint to a host port (endpoint=port, e.g. app/subject/rest=45001; repeatable)
-      --phase strings                     CI phase to run (repeatable or comma-separated; default: full Codefly gate)
-      --plan string                       Replay a saved CI plan, validating independent selection bounds and local contents
-      --rebuild                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --reuse-audit-max-age duration      Maximum age of a reusable dependency-audit result; zero always re-runs audits because advisory data changes independently of source
-      --reuse-environment string          Identity of the execution environment (for example the runner image digest; default $CODEFLY_CI_REUSE_ENVIRONMENT)
-      --reuse-max-age duration            Maximum age of a reusable result (default 168h0m0s)
-      --reuse-reference string            Reference this run publishes results under (default $CODEFLY_CI_REFERENCE)
-      --reuse-results                     Reuse verified successful task results from a trusted reference instead of re-executing identical work
-      --reuse-run string                  Identity of this run, recorded as the provenance of published results (default $CODEFLY_CI_RUN)
-      --reuse-store string                Directory holding verified CI result records and artifacts (default $CODEFLY_CI_RESULT_STORE)
-      --reuse-trusted-reference strings   Reference whose successful results may be reused (repeatable; required with --reuse-results)
-      --runtime-context string            Runtime context for validation and tests (default "free")
-      --sbom-include-dev                  Include development/test dependencies in CI SBOMs (default true)
-      --silent strings                    Silent services
-      --suite strings                     Named test suite to run during the test phase (repeatable; default: each agent's advertised default)
-      --temporary-ports                   Allocate OS-probed ephemeral ports so this CI run's port space cannot collide with another run on the host
+      --all[=true|false]                       Select every service explicitly
+      --allow-service-overrides[=true|false]   Run against the machine-local per-service overrides in codefly.local.yaml instead of refusing
+      --audit-include-dev[=true|false]         Include development/test-only dependencies in audit evidence
+      --audit-outdated[=true|false]            Include outdated dependencies in audit evidence (default true)
+      --base string                            Base Git revision for affected-service discovery
+      --cache-backend string                   Cache transport backend (registry) (default "registry")
+      --cache-from stringArray                 Trusted registry cache repository to import (repeatable, without tag)
+      --cache-mode string                      Exported layers: max (default, includes dependencies) or min
+      --cache-scope string                     Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically
+      --cache-to stringArray                   Registry cache repository to publish (repeatable; omit for read-only builds)
+      --changed-file strings                   Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
+      --disposable[=true|false]                Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
+      --fail-fast[=true|false]                 Stop native tests and service scheduling after the first failure (default true)
+      --fail-on-vuln[=true|false]              Fail audit on HIGH or CRITICAL vulnerabilities (default true)
+      --format string                          Final CI report format: text or json (default "text")
+      --head string                            Head Git revision (defaults to HEAD when --base is set)
+      --image-sbom[=true|false]                Require digest-bound image SBOM evidence for every image the build phase produces
+      --jobs int                               Maximum parallel service tasks (0: auto, capped at 4)
+      --output string                          Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
+      --override-port strings                  Pin an endpoint to a host port (endpoint=port, e.g. app/subject/rest=45001; repeatable)
+      --phase strings                          CI phase to run (repeatable or comma-separated; default: full Codefly gate)
+      --plan string                            Replay a saved CI plan, validating independent selection bounds and local contents
+      --rebuild[=true|false]                   Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --reuse-audit-max-age duration           Maximum age of a reusable dependency-audit result; zero always re-runs audits because advisory data changes independently of source
+      --reuse-environment string               Identity of the execution environment (for example the runner image digest; default $CODEFLY_CI_REUSE_ENVIRONMENT)
+      --reuse-max-age duration                 Maximum age of a reusable result (default 168h0m0s)
+      --reuse-reference string                 Reference this run publishes results under (default $CODEFLY_CI_REFERENCE)
+      --reuse-results[=true|false]             Reuse verified successful task results from a trusted reference instead of re-executing identical work
+      --reuse-run string                       Identity of this run, recorded as the provenance of published results (default $CODEFLY_CI_RUN)
+      --reuse-store string                     Directory holding verified CI result records and artifacts (default $CODEFLY_CI_RESULT_STORE)
+      --reuse-trusted-reference strings        Reference whose successful results may be reused (repeatable; required with --reuse-results)
+      --runtime-context string                 Runtime context for validation and tests (default "free")
+      --sbom-include-dev[=true|false]          Include development/test dependencies in CI SBOMs (default true)
+      --silent strings                         Silent services
+      --suite strings                          Named test suite to run during the test phase (repeatable; default: each agent's advertised default)
+      --temporary-ports[=true|false]           Allocate OS-probed ephemeral ports so this CI run's port space cannot collide with another run on the host
 ```
 
 ## `codefly ci test`
@@ -1172,22 +1172,22 @@ codefly ci test [flags]
 Flags:
 
 ```
-      --all                      Select every service explicitly
-      --base string              Base Git revision for affected-service discovery
-      --changed-file strings     Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
-      --disposable               Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
-      --fail-fast                Stop native tests and service scheduling after the first failure (default true)
-      --format string            Final CI report format: text or json (default "text")
-      --head string              Head Git revision (defaults to HEAD when --base is set)
-      --init-only                Initialize service only, i.e. without running it
-      --jobs int                 Maximum parallel service tasks (0: auto, capped at 4)
-      --load-only                LoadRequired service only, i.e. without running it
-      --output string            Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
-      --plan string              Replay a saved CI plan, validating independent selection bounds and local contents
-      --runtime-context string   Runtime context for the flow (default "free")
-      --scope string             Runtime scope (for testing encapsulation)
-      --silent strings           Silent services
-      --suite strings            Named test suite to run (repeatable; default: each agent's advertised default)
+      --all[=true|false]          Select every service explicitly
+      --base string               Base Git revision for affected-service discovery
+      --changed-file strings      Changed path supplied by the CI provider (repeatable; bypasses Git discovery)
+      --disposable[=true|false]   Isolate runtime resources and host recipe outputs; destroy owned runtime resources but retain images (independent single-recipe fixtures only)
+      --fail-fast[=true|false]    Stop native tests and service scheduling after the first failure (default true)
+      --format string             Final CI report format: text or json (default "text")
+      --head string               Head Git revision (defaults to HEAD when --base is set)
+      --init-only[=true|false]    Initialize service only, i.e. without running it
+      --jobs int                  Maximum parallel service tasks (0: auto, capped at 4)
+      --load-only[=true|false]    LoadRequired service only, i.e. without running it
+      --output string             Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
+      --plan string               Replay a saved CI plan, validating independent selection bounds and local contents
+      --runtime-context string    Runtime context for the flow (default "free")
+      --scope string              Runtime scope (for testing encapsulation)
+      --silent strings            Silent services
+      --suite strings             Named test suite to run (repeatable; default: each agent's advertised default)
 ```
 
 ## `codefly clear`
@@ -1245,12 +1245,12 @@ codefly clear [name-filter...]
 Flags:
 
 ```
-      --all                 Act on every workspace on this machine, not just the current one
-      --dry-run             List what would be removed without removing anything
-      --keep-containers     Don't remove docker containers (only kill processes)
-      --keep-processes      Don't kill running codefly processes (only remove containers)
-      --older-than string   Remove the scope's persistent run state that no run has claimed for this long (72h, 30d); clear then does only this
-      --state stringArray   Remove this persistent run state directory, as --dry-run lists it (repeatable); clear then does only this
+      --all[=true|false]               Act on every workspace on this machine, not just the current one
+      --dry-run[=true|false]           List what would be removed without removing anything
+      --keep-containers[=true|false]   Don't remove docker containers (only kill processes)
+      --keep-processes[=true|false]    Don't kill running codefly processes (only remove containers)
+      --older-than string              Remove the scope's persistent run state that no run has claimed for this long (72h, 30d); clear then does only this
+      --state stringArray              Remove this persistent run state directory, as --dry-run lists it (repeatable); clear then does only this
 ```
 
 ## `codefly companion`
@@ -1302,12 +1302,12 @@ codefly companion build [name]
 Flags:
 
 ```
-      --all               Build every companion under <core>/companions/
-      --core-dir string   Path to the core directory (default: walk up from cwd looking for companions/)
-      --force-docker      Skip the flake.nix path even when present + nix is installed
-      --platform string   Target platform(s) for Docker builds (e.g. linux/amd64 or linux/amd64,linux/arm64). Multiple platforms require --push.
-      --pull              Always pull a newer base image (docker build --pull) — picks up upstream patch releases (e.g. golang:1.26-alpine → latest 1.26.x)
-      --push              Push each image to the registry after a successful build
+      --all[=true|false]            Build every companion under <core>/companions/
+      --core-dir string             Path to the core directory (default: walk up from cwd looking for companions/)
+      --force-docker[=true|false]   Skip the flake.nix path even when present + nix is installed
+      --platform string             Target platform(s) for Docker builds (e.g. linux/amd64 or linux/amd64,linux/arm64). Multiple platforms require --push.
+      --pull[=true|false]           Always pull a newer base image (docker build --pull) — picks up upstream patch releases (e.g. golang:1.26-alpine → latest 1.26.x)
+      --push[=true|false]           Push each image to the registry after a successful build
 ```
 
 ## `codefly companion list`
@@ -1352,13 +1352,13 @@ codefly companion publish [name]
 Flags:
 
 ```
-      --all                         Publish every companion under <core>/companions/
+      --all[=true|false]            Publish every companion under <core>/companions/
       --core-dir string             Path to the core directory (default: walk up from cwd looking for companions/)
-      --force                       Republish a companion whose tag is already in the registry, overwriting it
-      --force-docker                Skip the flake.nix path even when present + nix is installed
+      --force[=true|false]          Republish a companion whose tag is already in the registry, overwriting it
+      --force-docker[=true|false]   Skip the flake.nix path even when present + nix is installed
       --platform string             Target platform(s) for Docker builds (e.g. linux/amd64,linux/arm64). Multiple platforms publish one manifest with buildx.
       --published-manifest string   Write JSON describing the companions this run actually built and pushed to this path
-      --pull                        Always pull a newer base image (docker build --pull) before building
+      --pull[=true|false]           Always pull a newer base image (docker build --pull) before building
 ```
 
 ## `codefly companion push`
@@ -1415,8 +1415,8 @@ codefly companion verify [name]
 Flags:
 
 ```
-      --all               Verify every companion under <core>/companions/ (default when no name is given)
-      --core-dir string   Path to the core directory (default: walk up from cwd looking for companions/)
+      --all[=true|false]   Verify every companion under <core>/companions/ (default when no name is given)
+      --core-dir string    Path to the core directory (default: walk up from cwd looking for companions/)
 ```
 
 ## `codefly compile`
@@ -1466,7 +1466,7 @@ codefly completion [bash|zsh|fish|powershell]
 Flags:
 
 ```
-      --install   Write the completion script to the shell's conventional location instead of stdout
+      --install[=true|false]   Write the completion script to the shell's conventional location instead of stdout
 ```
 
 ## `codefly composition`
@@ -1761,10 +1761,10 @@ codefly composition stage-build [flags]
 Flags:
 
 ```
-      --allow-network          Allow executor network access in the sandbox
-      --output-parent string   Existing canonical absolute staging parent outside product and local checkouts
-      --sandbox string         Executor sandbox: required or none (explicit unrestricted execution) (default "required")
-      --without-principal      Explicit local execution without an authenticated principal; never deployment authorization
+      --allow-network[=true|false]       Allow executor network access in the sandbox
+      --output-parent string             Existing canonical absolute staging parent outside product and local checkouts
+      --sandbox string                   Executor sandbox: required or none (explicit unrestricted execution) (default "required")
+      --without-principal[=true|false]   Explicit local execution without an authenticated principal; never deployment authorization
 ```
 
 ## `codefly composition stage-render`
@@ -1778,10 +1778,10 @@ codefly composition stage-render INPUTS.json
 Flags:
 
 ```
-      --allow-network          Allow executor network access in the sandbox
-      --output-parent string   Existing canonical absolute staging parent outside product and local checkouts
-      --sandbox string         Executor sandbox: required or none (explicit unrestricted execution) (default "required")
-      --without-principal      Explicit local execution without an authenticated principal; never deployment authorization
+      --allow-network[=true|false]       Allow executor network access in the sandbox
+      --output-parent string             Existing canonical absolute staging parent outside product and local checkouts
+      --sandbox string                   Executor sandbox: required or none (explicit unrestricted execution) (default "required")
+      --without-principal[=true|false]   Explicit local execution without an authenticated principal; never deployment authorization
 ```
 
 ## `codefly composition upstream`
@@ -1851,7 +1851,7 @@ Flags:
 
 ```
       --env string               Environment whose configuration profile is used. Default: the workspace's local environment
-      --plaintext                Check a non-secret configuration (<name>.env)
+      --plaintext[=true|false]   Check a non-secret configuration (<name>.env)
       --service module/service   Target a service's configuration (module/service, or a unique service name). Default: the workspace configuration
 ```
 
@@ -1883,7 +1883,7 @@ Flags:
 ```
       --bytes int                Number of random bytes to generate (default 32)
       --env string               Environment whose configuration profile is used. Default: the workspace's local environment
-      --force                    Regenerate keys that already have a value (rotates the credential)
+      --force[=true|false]       Regenerate keys that already have a value (rotates the credential)
       --format string            Encoding of the generated value: hex or base64 (default "hex")
       --service module/service   Target a service's configuration (module/service, or a unique service name). Default: the workspace configuration
 ```
@@ -1910,7 +1910,7 @@ Flags:
 
 ```
       --env string               Environment whose configuration profile is used. Default: the workspace's local environment
-      --plaintext                List non-secret configurations (<name>.env)
+      --plaintext[=true|false]   List non-secret configurations (<name>.env)
       --service module/service   Target a service's configuration (module/service, or a unique service name). Default: the workspace configuration
 ```
 
@@ -1943,8 +1943,8 @@ Flags:
 
 ```
       --env string               Environment whose configuration profile is used. Default: the workspace's local environment
-      --force                    Replace keys that already have a value
-      --plaintext                Write a non-secret configuration (<name>.env) instead of <name>.secret.env
+      --force[=true|false]       Replace keys that already have a value
+      --plaintext[=true|false]   Write a non-secret configuration (<name>.env) instead of <name>.secret.env
       --service module/service   Target a service's configuration (module/service, or a unique service name). Default: the workspace configuration
 ```
 
@@ -1976,8 +1976,8 @@ codefly daemon logs [flags]
 Flags:
 
 ```
-  -f, --follow     Follow log output
-  -n, --tail int   Show last N lines
+  -f, --follow[=true|false]   Follow log output
+  -n, --tail int              Show last N lines
 ```
 
 ## `codefly daemon monitor`
@@ -2001,8 +2001,8 @@ codefly daemon monitor [flags]
 Flags:
 
 ```
-      --kill-orphans   Kill orphaned agent processes
-  -w, --watch          Run continuously (every 30s)
+      --kill-orphans[=true|false]   Kill orphaned agent processes
+  -w, --watch[=true|false]          Run continuously (every 30s)
 ```
 
 ## `codefly daemon restart`
@@ -2151,7 +2151,7 @@ Flags:
       --identity-file string       Path of the projected delivery credential, read at execution
       --max-pause duration         Longest pause between rounds (default 1m0s)
       --request-timeout duration   Bound on one call (default 30s)
-      --secure                     Dial with TLS, for a delivery endpoint that serves it itself
+      --secure[=true|false]        Dial with TLS, for a delivery endpoint that serves it itself
 ```
 
 ## `codefly delivery key`
@@ -2205,10 +2205,10 @@ codefly delivery prepare [flags]
 Flags:
 
 ```
-      --developer        Sign with this machine's developer key, for a local qualification host
-      --env string       Environment whose host the declarations are read for
-      --out string       Directory the prepared documents are written to
-      --overlay string   Rendered delivery overlay holding the module manifest carriers
+      --developer[=true|false]   Sign with this machine's developer key, for a local qualification host
+      --env string               Environment whose host the declarations are read for
+      --out string               Directory the prepared documents are written to
+      --overlay string           Rendered delivery overlay holding the module manifest carriers
 ```
 
 ## `codefly deploy`
@@ -2256,10 +2256,10 @@ codefly deploy dev <module>/<service>
 Flags:
 
 ```
-      --app-project string   AppProject the environment was rendered for (checked against the render)
-      --env string           Environment whose working render to patch (required)
-      --path string          Service source directory to deploy (default: the machine-local service override)
-      --rebuild              Build the image even when no input of it changed, instead of keeping the image already built from those inputs
+      --app-project string     AppProject the environment was rendered for (checked against the render)
+      --env string             Environment whose working render to patch (required)
+      --path string            Service source directory to deploy (default: the machine-local service override)
+      --rebuild[=true|false]   Build the image even when no input of it changed, instead of keeping the image already built from those inputs
 ```
 
 ## `codefly deploy gitops`
@@ -2294,7 +2294,7 @@ Flags:
       --app-project string    Selected Argo CD AppProject
       --application strings   Argo CD application to observe (repeatable)
       --env string            Environment to promote (default "local")
-      --local                 Observe a disposable local GitOps qualification
+      --local[=true|false]    Observe a disposable local GitOps qualification
       --revision string       Expected immutable service snapshot revision
       --timeout duration      Maximum time to wait for Synced and Healthy (default 10m0s)
 ```
@@ -2310,14 +2310,14 @@ codefly deploy gitops plan [module]
 Flags:
 
 ```
-      --advance strings                                                                   Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
-      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
-      --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
-      --env string                                                                        Environment to promote (default "local")
-      --local                                                                             Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
-      --promotion-branch string                                                           Promotion branch (deterministic default when empty)
-      --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
-      --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
+      --advance strings                           Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
+      --allow-cell-removal strings                Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
+      --allow-unresolved-contracts[=true|false]   Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
+      --env string                                Environment to promote (default "local")
+      --local[=true|false]                        Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
+      --promotion-branch string                   Promotion branch (deterministic default when empty)
+      --resign[=true|false]                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
+      --skip-workspace-readiness[=true|false]     Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
 ```
 
 ## `codefly deploy gitops publish`
@@ -2331,20 +2331,20 @@ codefly deploy gitops publish [module]
 Flags:
 
 ```
-      --advance strings                                                                   Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
-      --all                                                                               Deploy the whole composition: render it if any module has no publishable render, publish every changed module (each after the modules it depends on, the hop and the host last), and merge each promotion once its base branch's required checks pass
-      --allow-cell-removal strings                                                        Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
-      --allow-unresolved-contracts                                                        Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
-      --body string                                                                       Promotion pull request body
-      --env string                                                                        Environment to promote (default "local")
-      --local                                                                             Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
-      --merge-timeout duration                                                            With --all, how long to wait for one promotion's required checks (or merge queue) before stopping (default 30m0s)
-      --message string                                                                    Signed commit message
-      --promotion-branch string                                                           Promotion branch (deterministic default when empty)
-      --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
-      --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
-      --title string                                                                      Promotion pull request title
-  -y, --yes                                                                               Publish the inspected plan without an interactive confirmation
+      --advance strings                           Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied
+      --all[=true|false]                          Deploy the whole composition: render it if any module has no publishable render, publish every changed module (each after the modules it depends on, the hop and the host last), and merge each promotion once its base branch's required checks pass
+      --allow-cell-removal strings                Module whose removal from the environment's cell file, relative to the base branch's, is intended (repeatable); a module the composition no longer declares is removed without it, and any other removal refuses
+      --allow-unresolved-contracts[=true|false]   Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
+      --body string                               Promotion pull request body
+      --env string                                Environment to promote (default "local")
+      --local[=true|false]                        Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
+      --merge-timeout duration                    With --all, how long to wait for one promotion's required checks (or merge queue) before stopping (default 30m0s)
+      --message string                            Signed commit message
+      --promotion-branch string                   Promotion branch (deterministic default when empty)
+      --resign[=true|false]                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
+      --skip-workspace-readiness[=true|false]     Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
+      --title string                              Promotion pull request title
+  -y, --yes[=true|false]                          Publish the inspected plan without an interactive confirmation
 ```
 
 ## `codefly deploy gitops remote`
@@ -2373,8 +2373,8 @@ codefly deploy gitops remote down [flags]
 Flags:
 
 ```
-      --env string   Environment whose fetch remote to manage (default "local")
-  -y, --yes          Tear down without an interactive confirmation
+      --env string         Environment whose fetch remote to manage (default "local")
+  -y, --yes[=true|false]   Tear down without an interactive confirmation
 ```
 
 ## `codefly deploy gitops remote plan`
@@ -2430,12 +2430,12 @@ codefly deploy gitops render [module]
 Flags:
 
 ```
-      --all                                                                               Render every module the workspace composes, the host first, and derive the environment's cell file once at the end
-      --app-project string                                                                AppProject contract for cluster-scoped resources
-      --env string                                                                        Environment to promote (default "local")
-      --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
-      --validate-cluster                                                                  Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)
+      --all[=true|false]                        Render every module the workspace composes, the host first, and derive the environment's cell file once at the end
+      --app-project string                      AppProject contract for cluster-scoped resources
+      --env string                              Environment to promote (default "local")
+      --rebuild[=true|false]                    Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --skip-workspace-readiness[=true|false]   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
+      --validate-cluster[=true|false]           Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)
 ```
 
 ## `codefly deploy gitops rollback`
@@ -2449,16 +2449,16 @@ codefly deploy gitops rollback [module]
 Flags:
 
 ```
-      --allow-unresolved-contracts   Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
-      --body string                  Promotion pull request body
-      --env string                   Environment to promote (default "local")
-      --local                        Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
-      --message string               Signed commit message
-      --promotion-branch string      Promotion branch (deterministic default when empty)
-      --resign                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
-      --title string                 Promotion pull request title
-      --to-revision string           Previously reviewed Git revision to re-promote
-  -y, --yes                          Publish the inspected plan without an interactive confirmation
+      --allow-unresolved-contracts[=true|false]   Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering
+      --body string                               Promotion pull request body
+      --env string                                Environment to promote (default "local")
+      --local[=true|false]                        Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
+      --message string                            Signed commit message
+      --promotion-branch string                   Promotion branch (deterministic default when empty)
+      --resign[=true|false]                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
+      --title string                              Promotion pull request title
+      --to-revision string                        Previously reviewed Git revision to re-promote
+  -y, --yes[=true|false]                          Publish the inspected plan without an interactive confirmation
 ```
 
 ## `codefly deploy gitops snapshot`
@@ -2472,10 +2472,10 @@ codefly deploy gitops snapshot [module]
 Flags:
 
 ```
-      --app-project string                                                                AppProject contract for cluster-scoped resources
-      --env string                                                                        Environment to promote (default "local")
-      --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
+      --app-project string                      AppProject contract for cluster-scoped resources
+      --env string                              Environment to promote (default "local")
+      --rebuild[=true|false]                    Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --skip-workspace-readiness[=true|false]   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
 ```
 
 ## `codefly deploy init`
@@ -2497,13 +2497,13 @@ codefly deploy module [name]
 Flags:
 
 ```
-      --app-project string      AppProject contract used to validate cluster-scoped rendered resources
-      --dry-run                 Render the deployment without applying it
-      --env string              Environment to deploy the module (default "local")
-      --rebuild                 Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --render-only             Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.
-      --wait-for string         Completion stage the deployment must establish before it is reported as successful (applied, bootstrapped, healthy) (default "applied")
-      --wait-timeout duration   Budget for observing the deployment when --wait-for goes beyond applied (default 10m0s)
+      --app-project string         AppProject contract used to validate cluster-scoped rendered resources
+      --dry-run[=true|false]       Render the deployment without applying it
+      --env string                 Environment to deploy the module (default "local")
+      --rebuild[=true|false]       Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --render-only[=true|false]   Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.
+      --wait-for string            Completion stage the deployment must establish before it is reported as successful (applied, bootstrapped, healthy) (default "applied")
+      --wait-timeout duration      Budget for observing the deployment when --wait-for goes beyond applied (default 10m0s)
 ```
 
 ## `codefly deploy secrets`
@@ -2561,13 +2561,13 @@ codefly deploy secrets [flags]
 Flags:
 
 ```
-      --allow-missing    Write what can be resolved even when some properties must still be supplied
-      --dry-run          Print the plan and write nothing
-      --env string       Environment whose rendered ExternalSecrets to seed (default "local")
-      --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
-      --module strings   Plan only these modules' remote keys (comma-separated or repeated)
-      --rotate strings   Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
-  -y, --yes              Write without an interactive confirmation
+      --allow-missing[=true|false]   Write what can be resolved even when some properties must still be supplied
+      --dry-run[=true|false]         Print the plan and write nothing
+      --env string                   Environment whose rendered ExternalSecrets to seed (default "local")
+      --metadata-only[=true|false]   With --dry-run: never read a stored value, only which remote keys exist
+      --module strings               Plan only these modules' remote keys (comma-separated or repeated)
+      --rotate strings               Replace a generated key's stored value and every stored value derived from it: <module>/<service>/<configuration>:<KEY>, <configuration>:<KEY>, or the CODEFLY__ key (repeatable)
+  -y, --yes[=true|false]             Write without an interactive confirmation
 ```
 
 ## `codefly deploy service`
@@ -2581,14 +2581,14 @@ codefly deploy service [flags]
 Flags:
 
 ```
-      --app-project string      AppProject contract used to validate cluster-scoped rendered resources
-      --dry-run                 Render the deployment without applying it
-      --env string              Environment to deploy the service (default "local")
-      --rebuild                 Build every image even when no input of it changed, instead of keeping the image already built from those inputs
-      --render-only             Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.
-      --stand-alone             Begin service as standalone, i.e. without its dependencies
-      --wait-for string         Completion stage the deployment must establish before it is reported as successful (applied, bootstrapped, healthy) (default "applied")
-      --wait-timeout duration   Budget for observing the deployment when --wait-for goes beyond applied (default 10m0s)
+      --app-project string         AppProject contract used to validate cluster-scoped rendered resources
+      --dry-run[=true|false]       Render the deployment without applying it
+      --env string                 Environment to deploy the service (default "local")
+      --rebuild[=true|false]       Build every image even when no input of it changed, instead of keeping the image already built from those inputs
+      --render-only[=true|false]   Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.
+      --stand-alone[=true|false]   Begin service as standalone, i.e. without its dependencies
+      --wait-for string            Completion stage the deployment must establish before it is reported as successful (applied, bootstrapped, healthy) (default "applied")
+      --wait-timeout duration      Budget for observing the deployment when --wait-for goes beyond applied (default 10m0s)
 ```
 
 ## `codefly deploy solution`
@@ -2677,10 +2677,10 @@ codefly doctor parity [flags]
 Flags:
 
 ```
-      --against string     Environment it must match (required)
-      --env string         Environment the run under test uses (default "local")
-      --json               Print a machine-readable report to stdout; log lines go to stderr
-      --timeout duration   Overall bound (default 2m0s)
+      --against string      Environment it must match (required)
+      --env string          Environment the run under test uses (default "local")
+      --json[=true|false]   Print a machine-readable report to stdout; log lines go to stderr
+      --timeout duration    Overall bound (default 2m0s)
 ```
 
 ## `codefly doctor solution`
@@ -2768,10 +2768,10 @@ codefly doctor solution [module]
 Flags:
 
 ```
-      --dir string         Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace
-      --env string         Also judge what this environment's RENDERED tree would enforce: every rendered manifest's operation bindings against the rendered module envelope, naming each binding the ceiling does not admit
-      --json               Print a versioned report per module to stdout
-      --require-solution   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
+      --dir string                      Judge this module directory on its own, without resolving a workspace. For a consumer repository gating a tree of solutions, where a directory need not be a workspace
+      --env string                      Also judge what this environment's RENDERED tree would enforce: every rendered manifest's operation bindings against the rendered module envelope, naming each binding the ceiling does not admit
+      --json[=true|false]               Print a versioned report per module to stdout
+      --require-solution[=true|false]   With --dir, fail when the directory ships no solution manifest instead of reporting it as not a solution. A tree gate uses it to say every directory it walks must BE a solution
 ```
 
 ## `codefly doctor workspace`
@@ -2864,13 +2864,13 @@ codefly doctor workspace [flags]
 Flags:
 
 ```
-      --env string             Environment to validate against (default "local")
-      --json                   Print a machine-readable report to stdout; log lines go to stderr
-      --module string          Restrict validation to one module's services and their declared configuration dependencies
-      --naming-scope scope     Naming scope the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
-      --require-current-pins   Fail, rather than warn, when a pin is behind its source's default branch or newest release (a render always does)
-      --service string         Restrict validation to one service's declared configuration dependencies
-      --timeout duration       Overall bound; secret resolution is cancelled when it expires (default 30s)
+      --env string                          Environment to validate against (default "local")
+      --json[=true|false]                   Print a machine-readable report to stdout; log lines go to stderr
+      --module string                       Restrict validation to one module's services and their declared configuration dependencies
+      --naming-scope scope                  Naming scope the runnable bindings are checked in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
+      --require-current-pins[=true|false]   Fail, rather than warn, when a pin is behind its source's default branch or newest release (a render always does)
+      --service string                      Restrict validation to one service's declared configuration dependencies
+      --timeout duration                    Overall bound; secret resolution is cancelled when it expires (default 30s)
 ```
 
 ## `codefly endpoint`
@@ -2903,10 +2903,10 @@ codefly endpoint [service]
 Flags:
 
 ```
-      --endpoint string       Endpoint name to resolve (when a service has several of the same API)
-      --naming-scope string   Naming scope the service runs under (advanced; empty for the normal case)
-      --require-up            Fail unless the endpoint's declared readiness predicate passes
-      --type string           API type to resolve (grpc, rest, tcp, http, connect, mcp)
+      --endpoint string           Endpoint name to resolve (when a service has several of the same API)
+      --naming-scope string       Naming scope the service runs under (advanced; empty for the normal case)
+      --require-up[=true|false]   Fail unless the endpoint's declared readiness predicate passes
+      --type string               API type to resolve (grpc, rest, tcp, http, connect, mcp)
 ```
 
 ## `codefly environment`
@@ -2945,8 +2945,8 @@ codefly environment images <env> --file <policy.yaml|->
 Flags:
 
 ```
-      --dry-run       Print the workspace diff without writing
-      --file string   YAML or JSON image policy file, or - for stdin
+      --dry-run[=true|false]   Print the workspace diff without writing
+      --file string            YAML or JSON image policy file, or - for stdin
 ```
 
 ## `codefly environment import`
@@ -2996,7 +2996,7 @@ Flags:
 
 ```
       --coordinate-contract string       Path to a codefly/coordinate/v1 descriptor, or - for stdin
-      --dry-run                          Print the unified diff of workspace.codefly.yaml and write nothing
+      --dry-run[=true|false]             Print the unified diff of workspace.codefly.yaml and write nothing
       --namespace string                 Assert the namespace declared by the producer
       --product-intent string            Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
       --retire-service-key stringArray   Retire a bare service key the producer re-keyed, as <block>:<bare-key>=<module>/<service> (repeatable). Blocks: service-config, service-identity, service-mesh. The whole named entry is removed
@@ -3013,7 +3013,7 @@ codefly environment show <env>
 Flags:
 
 ```
-      --json   Print the environment as JSON instead of YAML
+      --json[=true|false]   Print the environment as JSON instead of YAML
 ```
 
 ## `codefly explain`
@@ -3079,7 +3079,7 @@ Flags:
       --gateway string             Shared gateway the routes attach to (default "codefly-gateway")
       --gateway-namespace string   Namespace of the shared gateway (defaults to the service namespace)
       --host stringArray           Override the ingress hostnames (repeatable)
-      --mtls                       Emit an Istio STRICT-mTLS PeerAuthentication (selector app=<service>); enable only when your workloads carry that label
+      --mtls[=true|false]          Emit an Istio STRICT-mTLS PeerAuthentication (selector app=<service>); enable only when your workloads carry that label
       --output string              Write manifests to this directory instead of stdout
       --prefix string              gRPC proto package to scope gRPC routes to (matched as <prefix>.*)
       --routing string             Routing backend (gateway-api, istio) (default "gateway-api")
@@ -3136,7 +3136,7 @@ codefly fix proto-names [service]
 Flags:
 
 ```
-      --dry-run   Show what would change without changing it
+      --dry-run[=true|false]   Show what would change without changing it
 ```
 
 ## `codefly fix service`
@@ -3150,13 +3150,13 @@ codefly fix service [module/]service
 Flags:
 
 ```
-      --aggressive     Enable explicitly aggressive language fixes
-      --check          Preview without writing and fail if changes are needed
-      --dry-run        Preview changes and evidence without writing
-  -f, --file strings   Source-root-relative file to repair (repeatable)
-      --json           Emit machine-readable JSON evidence
-      --mode string    Fix mode: safe or aggressive (default "safe")
-  -p, --path strings   Directory scope to repair recursively (repeatable)
+      --aggressive[=true|false]   Enable explicitly aggressive language fixes
+      --check[=true|false]        Preview without writing and fail if changes are needed
+      --dry-run[=true|false]      Preview changes and evidence without writing
+  -f, --file strings              Source-root-relative file to repair (repeatable)
+      --json[=true|false]         Emit machine-readable JSON evidence
+      --mode string               Fix mode: safe or aggressive (default "safe")
+  -p, --path strings              Directory scope to repair recursively (repeatable)
 ```
 
 ## `codefly fix source`
@@ -3170,14 +3170,14 @@ codefly fix source [flags]
 Flags:
 
 ```
-      --aggressive     Enable explicitly aggressive language fixes
-      --check          Preview without writing and fail if changes are needed
-      --dir string     Source checkout (default: current directory)
-      --dry-run        Preview changes and evidence without writing
-  -f, --file strings   Source-root-relative file to repair (repeatable)
-      --json           Emit machine-readable JSON evidence
-      --mode string    Fix mode: safe or aggressive (default "safe")
-  -p, --path strings   Directory scope to repair recursively (repeatable)
+      --aggressive[=true|false]   Enable explicitly aggressive language fixes
+      --check[=true|false]        Preview without writing and fail if changes are needed
+      --dir string                Source checkout (default: current directory)
+      --dry-run[=true|false]      Preview changes and evidence without writing
+  -f, --file strings              Source-root-relative file to repair (repeatable)
+      --json[=true|false]         Emit machine-readable JSON evidence
+      --mode string               Fix mode: safe or aggressive (default "safe")
+  -p, --path strings              Directory scope to repair recursively (repeatable)
 ```
 
 ## `codefly generate`
@@ -3219,17 +3219,17 @@ codefly generate client [flags]
 Flags:
 
 ```
-      --endpoint string      select an endpoint when --from package:/contracts: resolves to more than one: service/endpoint (a local --from names its endpoint as its own third segment instead)
-      --force                overwrite an existing library with a different contract digest
-      --from string          contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>
-      --go-module string     Go module path for the generated go/ library (default: github.com/codefly-dev/<name>-go)
-      --language strings     languages to generate: go,typescript,python
-      --module-name string   facade entry-point name (default: derived from the contract)
-      --name string          library name (default: <module>-<service>-client)
-      --no-facade            generate bindings only, no facade
-      --npm-scope string     npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
-      --output string        output directory (default: <workspace>/libraries/<name>)
-      --services strings     restrict the library to these protobuf services (short or fully qualified names; ambiguous short names are refused) and the declarations they need: contract, catalog, bindings and facade
+      --endpoint string          select an endpoint when --from package:/contracts: resolves to more than one: service/endpoint (a local --from names its endpoint as its own third segment instead)
+      --force[=true|false]       overwrite an existing library with a different contract digest
+      --from string              contract source: module/service[/endpoint], package:<id>@<version>, or contracts:<dir>
+      --go-module string         Go module path for the generated go/ library (default: github.com/codefly-dev/<name>-go)
+      --language strings         languages to generate: go,typescript,python
+      --module-name string       facade entry-point name (default: derived from the contract)
+      --name string              library name (default: <module>-<service>-client)
+      --no-facade[=true|false]   generate bindings only, no facade
+      --npm-scope string         npm package name for the generated typescript/ library (default: @codefly-dev/<name>)
+      --output string            output directory (default: <workspace>/libraries/<name>)
+      --services strings         restrict the library to these protobuf services (short or fully qualified names; ambiguous short names are refused) and the declarations they need: contract, catalog, bindings and facade
 ```
 
 ## `codefly generate contracts`
@@ -3271,10 +3271,10 @@ codefly generate contracts [module]
 Flags:
 
 ```
-      --check           do not write; exit 1 if the on-disk catalog differs from what would be generated
-      --format string   output format: text|json (default "text")
-      --output string   output directory for generated contracts (default: <module dir>/contracts/api)
-      --permissions     also generate typed permission constants; with --check, verify their freshness
+      --check[=true|false]         do not write; exit 1 if the on-disk catalog differs from what would be generated
+      --format string              output format: text|json (default "text")
+      --output string              output directory for generated contracts (default: <module dir>/contracts/api)
+      --permissions[=true|false]   also generate typed permission constants; with --check, verify their freshness
 ```
 
 ## `codefly generate fixture-composition`
@@ -3363,8 +3363,8 @@ codefly generate permissions [module]
 Flags:
 
 ```
-      --check           fail on missing or stale output without writing
-      --output string   write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions and each Python service's <source-dir>/src/gen)
+      --check[=true|false]   fail on missing or stale output without writing
+      --output string        write the whole module's table to this one directory (default: each Go service's <source-dir>/pkg/gen/permissions and each Python service's <source-dir>/src/gen)
 ```
 
 ## `codefly generate proto`
@@ -3404,11 +3404,11 @@ codefly generate proto [flags]
 Flags:
 
 ```
-      --local             select --output/buf.gen.local.yaml; plugins still run inside the pinned companion
-      --output string     path to output directory with buf.gen.yaml (required)
-      --path strings      limit generation to a proto-relative path (repeatable)
-      --proto string      path to proto source directory (required)
-      --template string   generation template, relative to --output or absolute; runs in its own directory
+      --local[=true|false]   select --output/buf.gen.local.yaml; plugins still run inside the pinned companion
+      --output string        path to output directory with buf.gen.yaml (required)
+      --path strings         limit generation to a proto-relative path (repeatable)
+      --proto string         path to proto source directory (required)
+      --template string      generation template, relative to --output or absolute; runs in its own directory
 ```
 
 ## `codefly generate runnable-bindings`
@@ -3513,7 +3513,7 @@ Flags:
 
 ```
       --call-endpoint module/service/endpoint   declared HTTP-based endpoint, as module/service/endpoint, every prepared call is sent to instead of the owner's listener, overriding the environment's runnable-call-endpoint (empty: each owner's listener; the owner's operation, route, contract and policy are kept)
-      --check                                   leave binding output unchanged; materialize selected pins, then exit 1 if the output is stale
+      --check[=true|false]                      leave binding output unchanged; materialize selected pins, then exit 1 if the output is stale
       --env string                              environment supplying resolved addresses and runnable-scope-selections (default "local")
       --naming-scope scope                      scope addresses resolve in, as codefly run --naming-scope reads it: omitted keeps the environment's, empty clears it
 ```
@@ -3531,8 +3531,8 @@ A method that declares its authority policy (authority.hop.v1.policy) is an
 operation with nothing added: a policy requiring only "read" derives a
 read-only tool that is safe to re-run and carries no receipt; anything else
 derives a mutation resolved by its effect receipt through the SDK's generic
-lookup. The codefly.runnable.v0.operation option overrides those defaults, and
-codefly.runnable.v0.exclude keeps a method from every agent. The message
+lookup. The codefly.runnable.v1.operation option overrides those defaults, and
+codefly.runnable.v1.exclude keeps a method from every agent. The message
 descriptors say what the contract is, by their proto3 JSON. Nothing is written
 twice.
 
@@ -3584,8 +3584,8 @@ codefly generate runnables [module]
 Flags:
 
 ```
-      --check           do not write; exit 1 with a unified diff if the on-disk tree differs from what would be generated
-      --output string   output directory for derived runnables (default: <module dir>/contracts/runnables)
+      --check[=true|false]   do not write; exit 1 with a unified diff if the on-disk tree differs from what would be generated
+      --output string        output directory for derived runnables (default: <module dir>/contracts/runnables)
 ```
 
 ## `codefly get`
@@ -3661,9 +3661,9 @@ codefly init workspace [flags]
 Flags:
 
 ```
-      --default         use default values for all prompts
-  -i, --interactive     interactive mode
-      --layout string   workspace layout: flat or modules
+      --default[=true|false]       use default values for all prompts
+  -i, --interactive[=true|false]   interactive mode
+      --layout string              workspace layout: flat or modules
 ```
 
 ## `codefly install`
@@ -3790,8 +3790,8 @@ codefly list libraries [flags]
 Flags:
 
 ```
-      --json     Emit machine-readable JSON
-      --remote   Include each library's published versions from its configured store (network)
+      --json[=true|false]     Emit machine-readable JSON
+      --remote[=true|false]   Include each library's published versions from its configured store (network)
 ```
 
 ## `codefly list runnables`
@@ -3817,8 +3817,8 @@ codefly list runnables [flags]
 Flags:
 
 ```
-      --json            Emit machine-readable JSON
-      --module string   Module to list runnables from
+      --json[=true|false]   Emit machine-readable JSON
+      --module string       Module to list runnables from
 ```
 
 ## `codefly login`
@@ -3860,11 +3860,11 @@ codefly logs [flags]
 Flags:
 
 ```
-      --file string   Read a specific log file instead of the latest invocation segment
-  -f, --follow        Follow the log live
-      --path          Print only the log file path
-      --raw           Print raw JSON lines (for jq/grep)
-  -n, --tail int      Show the last N lines (0 = all) (default 100)
+      --file string           Read a specific log file instead of the latest invocation segment
+  -f, --follow[=true|false]   Follow the log live
+      --path[=true|false]     Print only the log file path
+      --raw[=true|false]      Print raw JSON lines (for jq/grep)
+  -n, --tail int              Show the last N lines (0 = all) (default 100)
 ```
 
 ## `codefly mcp`
@@ -4028,10 +4028,10 @@ codefly override service <module>/<service>
 Flags:
 
 ```
-      --clear             remove the override and go back to the module's own copy
-      --path string       directory holding the service
-      --version string    module package version to take the service from
-      --worktree string   <owner/repo>@<ref> of a local checkout to take the service from
+      --clear[=true|false]   remove the override and go back to the module's own copy
+      --path string          directory holding the service
+      --version string       module package version to take the service from
+      --worktree string      <owner/repo>@<ref> of a local checkout to take the service from
 ```
 
 ## `codefly package`
@@ -4061,7 +4061,7 @@ Flags:
       --name string              Portable artifact base name (defaults to resource name)
       --output-dir string        Directory for portable package artifacts (default ".codefly/packages")
       --publisher string         Release subject publisher
-      --sbom                     Emit release-bound CycloneDX evidence (default true)
+      --sbom[=true|false]        Emit release-bound CycloneDX evidence (default true)
       --subject-name string      Release subject name
       --subject-version string   Release subject version
       --target strings           Target os/architecture (repeatable; empty uses the host)
@@ -4118,7 +4118,7 @@ codefly provider apply [flags]
 Flags:
 
 ```
-      --json                               Print a machine-readable report to stdout
+      --json[=true|false]                  Print a machine-readable report to stdout
       --plan codefly provider plan --out   Path to a plan produced by codefly provider plan --out
 ```
 
@@ -4141,8 +4141,8 @@ codefly provider destroy BINDING
 Flags:
 
 ```
-      --env string   Environment the binding belongs to (default "local")
-      --json         Print a machine-readable report to stdout
+      --env string          Environment the binding belongs to (default "local")
+      --json[=true|false]   Print a machine-readable report to stdout
 ```
 
 ## `codefly provider disconnect`
@@ -4156,8 +4156,8 @@ codefly provider disconnect BINDING
 Flags:
 
 ```
-      --env string   Environment the binding belongs to (default "local")
-      --json         Print a machine-readable report to stdout
+      --env string          Environment the binding belongs to (default "local")
+      --json[=true|false]   Print a machine-readable report to stdout
 ```
 
 ## `codefly provider doctor`
@@ -4183,8 +4183,8 @@ codefly provider doctor [BINDING]
 Flags:
 
 ```
-      --env string   Environment whose bindings to diagnose (default "local")
-      --json         Print a machine-readable report to stdout
+      --env string          Environment whose bindings to diagnose (default "local")
+      --json[=true|false]   Print a machine-readable report to stdout
 ```
 
 ## `codefly provider import`
@@ -4205,8 +4205,8 @@ codefly provider import BINDING TYPE REMOTE_ID
 Flags:
 
 ```
-      --env string   Environment the binding belongs to (default "local")
-      --json         Print a machine-readable report to stdout
+      --env string          Environment the binding belongs to (default "local")
+      --json[=true|false]   Print a machine-readable report to stdout
 ```
 
 ## `codefly provider list`
@@ -4220,9 +4220,9 @@ codefly provider list [BINDING]
 Flags:
 
 ```
-      --env string   Environment whose bindings to list (default "local")
-      --json         Print a machine-readable report to stdout
-      --schema       Print the binding schema and declared output contracts instead of listing
+      --env string            Environment whose bindings to list (default "local")
+      --json[=true|false]     Print a machine-readable report to stdout
+      --schema[=true|false]   Print the binding schema and declared output contracts instead of listing
 ```
 
 ## `codefly provider plan`
@@ -4236,11 +4236,11 @@ codefly provider plan BINDING
 Flags:
 
 ```
-      --env string      Environment the binding belongs to (default "local")
-      --json            Print a machine-readable report to stdout
-      --out string      Write the calculated plan to this path
-      --refresh-only    Refresh observation without calculating a plan
-      --validate-only   Validate desired input without observing remote state
+      --env string                   Environment the binding belongs to (default "local")
+      --json[=true|false]            Print a machine-readable report to stdout
+      --out string                   Write the calculated plan to this path
+      --refresh-only[=true|false]    Refresh observation without calculating a plan
+      --validate-only[=true|false]   Validate desired input without observing remote state
 ```
 
 ## `codefly provider setup`
@@ -4254,9 +4254,9 @@ codefly provider setup BINDING
 Flags:
 
 ```
-      --dry-run      Validate and plan without applying any effect
-      --env string   Environment the binding belongs to (default "local")
-      --json         Print a machine-readable report to stdout
+      --dry-run[=true|false]   Validate and plan without applying any effect
+      --env string             Environment the binding belongs to (default "local")
+      --json[=true|false]      Print a machine-readable report to stdout
 ```
 
 ## `codefly ps`
@@ -4286,8 +4286,8 @@ codefly ps [flags]
 Flags:
 
 ```
-      --all    List every workspace's processes on this machine, not just the current one
-      --json   Print the processes as JSON
+      --all[=true|false]    List every workspace's processes on this machine, not just the current one
+      --json[=true|false]   Print the processes as JSON
 ```
 
 ## `codefly publish`
@@ -4377,12 +4377,12 @@ codefly publish [patch|minor|major|beta]
 Flags:
 
 ```
-      --ci                run as a CI job: bot git identity, no signing, fail fast when CI never registers (default: on when CI=true)
-      --dir string        manifest directory (default: cwd)
-      --dry-run           show what would happen without modifying anything
-      --remote            dispatch the repository's release workflow on GitHub instead of releasing from this machine
-      --wait              with --remote, follow the dispatched release to its conclusion
-      --workflow string   with --remote, the release workflow file in .github/workflows (default "publish.yml")
+      --ci[=true|false]        run as a CI job: bot git identity, no signing, fail fast when CI never registers (default: on when CI=true)
+      --dir string             manifest directory (default: cwd)
+      --dry-run[=true|false]   show what would happen without modifying anything
+      --remote[=true|false]    dispatch the repository's release workflow on GitHub instead of releasing from this machine
+      --wait[=true|false]      with --remote, follow the dispatched release to its conclusion
+      --workflow string        with --remote, the release workflow file in .github/workflows (default "publish.yml")
 ```
 
 Subcommands:
@@ -4443,11 +4443,11 @@ codefly publish all [patch|minor|major]
 Flags:
 
 ```
-      --ci codefly publish --help   run as a CI job (default: on when CI=true); see codefly publish --help
-      --dry-run                     print the full plan without modifying anything
-      --remote                      release each repository on GitHub, in dependency order: dispatch its release workflow and wait for it before the next
-      --root string                 workspace root to scan (default: nearest go.work ancestor, else cwd)
-      --workflow string             with --remote, the release workflow file every repository carries (default "publish.yml")
+      --ci[=true|false]        run as a CI job (default: on when CI=true); see codefly publish --help
+      --dry-run[=true|false]   print the full plan without modifying anything
+      --remote[=true|false]    release each repository on GitHub, in dependency order: dispatch its release workflow and wait for it before the next
+      --root string            workspace root to scan (default: nearest go.work ancestor, else cwd)
+      --workflow string        with --remote, the release workflow file every repository carries (default "publish.yml")
 ```
 
 ## `codefly publish clients`
@@ -4494,12 +4494,12 @@ codefly publish clients [module]
 Flags:
 
 ```
-      --check                       Exit 1 unless contracts/clients.codefly.json records every client of the current package version; publishes nothing
-      --create-missing-repository   Create a go/python client's GitHub repository when it does not exist yet (private unless --public-repository)
-      --dry-run                     Show what would be generated and published without touching a toolchain or a store
-      --language strings            Restrict publishing to these languages (default: every language each endpoint declares or supports)
-      --output string               Directory to generate the libraries into (default: a temporary directory removed afterwards)
-      --public-repository           Create repositories public instead of private; a client's bindings carry every message in the contract, so this discloses the whole surface
+      --check[=true|false]                       Exit 1 unless contracts/clients.codefly.json records every client of the current package version; publishes nothing
+      --create-missing-repository[=true|false]   Create a go/python client's GitHub repository when it does not exist yet (private unless --public-repository)
+      --dry-run[=true|false]                     Show what would be generated and published without touching a toolchain or a store
+      --language strings                         Restrict publishing to these languages (default: every language each endpoint declares or supports)
+      --output string                            Directory to generate the libraries into (default: a temporary directory removed afterwards)
+      --public-repository[=true|false]           Create repositories public instead of private; a client's bindings carry every message in the contract, so this discloses the whole surface
 ```
 
 ## `codefly publish dev`
@@ -4538,9 +4538,9 @@ codefly publish dev [flags]
 Flags:
 
 ```
-      --allow-dirty   publish from a working tree with uncommitted changes
-      --dir string    agent directory (default: cwd)
-      --dry-run       print the dev version without building or publishing
+      --allow-dirty[=true|false]   publish from a working tree with uncommitted changes
+      --dir string                 agent directory (default: cwd)
+      --dry-run[=true|false]       print the dev version without building or publishing
 ```
 
 ## `codefly publish library`
@@ -4575,11 +4575,11 @@ codefly publish library <name>
 Flags:
 
 ```
-      --create-missing-repository   Create a go/python export's GitHub repository when it does not exist yet (private unless --public-repository)
-      --dry-run                     Show what would be published without publishing anything
-      --language strings            Languages to publish (defaults to all of the library's declared languages)
-      --public-repository           Create repositories public instead of private; a client's bindings carry every message in the contract, so this discloses the whole surface
-      --version string              Version to publish (defaults to the library's version)
+      --create-missing-repository[=true|false]   Create a go/python export's GitHub repository when it does not exist yet (private unless --public-repository)
+      --dry-run[=true|false]                     Show what would be published without publishing anything
+      --language strings                         Languages to publish (defaults to all of the library's declared languages)
+      --public-repository[=true|false]           Create repositories public instead of private; a client's bindings carry every message in the contract, so this discloses the whole surface
+      --version string                           Version to publish (defaults to the library's version)
 ```
 
 ## `codefly publish re-tag`
@@ -4607,9 +4607,9 @@ codefly publish re-tag [flags]
 Flags:
 
 ```
-      --ci           run as a CI job: bot git identity, no signing (default: on when CI=true)
-      --dir string   manifest directory (default: cwd)
-      --dry-run      show what would happen without modifying anything
+      --ci[=true|false]        run as a CI job: bot git identity, no signing (default: on when CI=true)
+      --dir string             manifest directory (default: cwd)
+      --dry-run[=true|false]   show what would happen without modifying anything
 ```
 
 ## `codefly recover`
@@ -4649,8 +4649,8 @@ codefly recover container ID
 Flags:
 
 ```
-      --expect string   Stop only the exact container matching this reviewed Core JSON receipt
-      --preview         Inspect one full container ID and print its receipt without stopping it
+      --expect string          Stop only the exact container matching this reviewed Core JSON receipt
+      --preview[=true|false]   Inspect one full container ID and print its receipt without stopping it
 ```
 
 ## `codefly recover process`
@@ -4680,9 +4680,9 @@ codefly recover process PID
 Flags:
 
 ```
-      --expect string   Use the complete verbatim version-1 preview receipt
-      --force           Explicitly request irreversible SIGKILL for the selected process birth
-      --preview         Print the current process identity without signaling
+      --expect string          Use the complete verbatim version-1 preview receipt
+      --force[=true|false]     Explicitly request irreversible SIGKILL for the selected process birth
+      --preview[=true|false]   Print the current process identity without signaling
 ```
 
 ## `codefly recover process-group`
@@ -4707,8 +4707,8 @@ codefly recover process-group PGID
 Flags:
 
 ```
-      --expect string   Recover only the generation in this reviewed Core JSON receipt
-      --preview         Authenticate one generation and print its receipt without signaling
+      --expect string          Recover only the generation in this reviewed Core JSON receipt
+      --preview[=true|false]   Authenticate one generation and print its receipt without signaling
 ```
 
 ## `codefly replay`
@@ -4781,8 +4781,8 @@ Flags:
       --app-project string          AppProject contract each module's Argo bootstrap is stamped with
       --delivery-timeout duration   Maximum time to wait for each delivery Job (the Job itself gives up after 25 minutes) (default 30m0s)
       --env string                  k3d environment to run on (declares cluster.kind k3d, cluster.context, host, host.developers and host.trust_anchor) (default "local")
-      --rebuild                     Build every image even when no input of it changed
-  -y, --yes                         Sign and promote every module without an interactive confirmation
+      --rebuild[=true|false]        Build every image even when no input of it changed
+  -y, --yes[=true|false]            Sign and promote every module without an interactive confirmation
 ```
 
 ## `codefly run command`
@@ -4843,8 +4843,8 @@ codefly run job [name]
 Flags:
 
 ```
-      --module string   Module name
-      --with-services   Start service dependencies before running job
+      --module string                Module name
+      --with-services[=true|false]   Start service dependencies before running job
 ```
 
 ## `codefly run service`
@@ -4872,17 +4872,17 @@ codefly run service [service...]
 Flags:
 
 ```
-      --cli-server                                Start CLI server
+      --cli-server[=true|false]                   Start CLI server
       --env string                                Workspace environment to run (default "local")
       --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
-      --exclude-root                              Exclude root service (the first one named; services named after it still start)
+      --exclude-root[=true|false]                 Exclude root service (the first one named; services named after it still start)
       --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
       --fixture string                            Fixture override (defaults to the selected Codefly environment)
-      --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
-      --init-only                                 Initialize service only, i.e. without running it
-      --load-only                                 LoadRequired service only, i.e. without running it
+      --headless[=true|false]                     Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
+      --init-only[=true|false]                    Initialize service only, i.e. without running it
+      --load-only[=true|false]                    LoadRequired service only, i.e. without running it
       --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
-      --open                                      Open the dashboard in the default browser (requires --cli-server)
+      --open[=true|false]                         Open the dashboard in the default browser (requires --cli-server)
       --output-env string                         Write one service's full SDK/runtime environment to an owner-only file
       --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the root service)
       --profile string                            Named workspace run profile
@@ -4892,9 +4892,9 @@ Flags:
       --service-path string                       Path to the service
       --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                            Silence services in CLI output
-      --stand-alone                               Begin service as standalone, i.e. without its dependencies
-      --start-docker                              Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable (default true)
-      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --stand-alone[=true|false]                  Begin service as standalone, i.e. without its dependencies
+      --start-docker[=true|false]                 Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable (default true)
+      --temporary-ports[=true|false]              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
 ```
 
 ## `codefly run solution`
@@ -4912,13 +4912,13 @@ Flags:
       --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
       --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
       --fixture string                            Fixture override (defaults to the selected Codefly environment)
-      --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
+      --headless[=true|false]                     Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
       --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 5m0s)
       --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                            Silence services in CLI output
-      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --temporary-ports[=true|false]              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
 ```
 
 ## `codefly run workspace`
@@ -4932,12 +4932,12 @@ codefly run workspace [flags]
 Flags:
 
 ```
-      --cli-server                                Start CLI server
+      --cli-server[=true|false]                   Start CLI server
       --env string                                Workspace environment to run (default "local")
       --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
       --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
       --fixture string                            Fixture override (defaults to the selected Codefly environment)
-      --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
+      --headless[=true|false]                     Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
       --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
       --output-env string                         Write one service's full SDK/runtime environment to an owner-only file
       --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the first composition root)
@@ -4946,8 +4946,8 @@ Flags:
       --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
       --set strings                               Per-service runtime env override (repeatable)
       --silent strings                            Silence services in CLI output
-      --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
-      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --start-docker[=true|false]                 Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
+      --temporary-ports[=true|false]              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
 ```
 
 ## `codefly sbom`
@@ -4974,8 +4974,8 @@ codefly sbom service [name]
 Flags:
 
 ```
-      --include-dev     Include development/test dependencies
-  -o, --output string   Output file, or - for stdout (default "-")
+      --include-dev[=true|false]   Include development/test dependencies
+  -o, --output string              Output file, or - for stdout (default "-")
 ```
 
 ## `codefly sbom workspace`
@@ -4989,8 +4989,8 @@ codefly sbom workspace [flags]
 Flags:
 
 ```
-      --include-dev         Include development/test dependencies
-      --output-dir string   Directory for per-service CycloneDX files (default ".codefly/sbom")
+      --include-dev[=true|false]   Include development/test dependencies
+      --output-dir string          Directory for per-service CycloneDX files (default ".codefly/sbom")
 ```
 
 ## `codefly self`
@@ -5057,14 +5057,14 @@ codefly self build [flags]
 Flags:
 
 ```
-      --arch string     Cross-compile for this GOARCH (e.g. amd64); implies cross-compile
-      --audit-agents    Run the govulncheck audit on each agent during --with-agents (slow; off by default)
-      --dir string      CLI source directory (default: auto-detect from current directory)
-  -j, --jobs int        With --with-agents: max agents to build in parallel (default: number of CPUs)
-      --native-only     With --with-agents: build only host-platform agent binaries; skip the Linux/amd64 container cross-build (local dev fast path)
-      --os string       Cross-compile for this GOOS (e.g. linux); produces a static binary instead of installing
-      --output string   Install path (default: the running codefly binary; for --os/--arch: bin/<os>/codefly)
-      --with-agents     After rebuilding the CLI, also rebuild every canonical agent repository in the Codefly workspace
+      --arch string                 Cross-compile for this GOARCH (e.g. amd64); implies cross-compile
+      --audit-agents[=true|false]   Run the govulncheck audit on each agent during --with-agents (slow; off by default)
+      --dir string                  CLI source directory (default: auto-detect from current directory)
+  -j, --jobs int                    With --with-agents: max agents to build in parallel (default: number of CPUs)
+      --native-only[=true|false]    With --with-agents: build only host-platform agent binaries; skip the Linux/amd64 container cross-build (local dev fast path)
+      --os string                   Cross-compile for this GOOS (e.g. linux); produces a static binary instead of installing
+      --output string               Install path (default: the running codefly binary; for --os/--arch: bin/<os>/codefly)
+      --with-agents[=true|false]    After rebuilding the CLI, also rebuild every canonical agent repository in the Codefly workspace
 ```
 
 ## `codefly self check-update`
@@ -5078,8 +5078,8 @@ codefly self check-update [flags]
 Flags:
 
 ```
-      --channel string   Release channel: stable or beta (default "stable")
-      --json             Print a machine-readable update status
+      --channel string      Release channel: stable or beta (default "stable")
+      --json[=true|false]   Print a machine-readable update status
 ```
 
 ## `codefly self pull`
@@ -5134,9 +5134,9 @@ codefly self update [flags]
 Flags:
 
 ```
-      --allow-downgrade   Allow the selected channel release to be older than the running version
-      --channel string    Release channel: stable or beta (default "stable")
-      --yes               Install without an interactive confirmation
+      --allow-downgrade[=true|false]   Allow the selected channel release to be older than the running version
+      --channel string                 Release channel: stable or beta (default "stable")
+      --yes[=true|false]               Install without an interactive confirmation
 ```
 
 ## `codefly server`
@@ -5162,7 +5162,7 @@ codefly server [flags]
 Flags:
 
 ```
-      --open   Open the dashboard in the default browser
+      --open[=true|false]   Open the dashboard in the default browser
 ```
 
 ## `codefly service`
@@ -5182,7 +5182,7 @@ codefly service <subcommand>
 Flags:
 
 ```
-      --json   Emit the typed result as JSON
+      --json[=true|false]   Emit the typed result as JSON
 ```
 
 Subcommands:
@@ -5205,21 +5205,21 @@ codefly service install LABEL
 Flags:
 
 ```
-      --executable string          Absolute foreground executable path
-      --health-http string         HTTP(S) readiness URL
-      --health-interval duration   Readiness retry interval (default 250ms)
-      --health-tcp string          TCP readiness address as host:port
-      --health-timeout duration    Readiness wait timeout (default 15s)
-      --log-mode string            Log routing: native or files (platform default when omitted)
-      --public-arg stringArray     Explicitly public executable argument (repeatable)
-      --public-env stringArray     Explicitly public NAME=VALUE environment variable (repeatable)
-      --restart string             Restart policy: on-failure or never (default "on-failure")
-      --restart-delay duration     Delay before a crash restart (default 5s)
-      --start-at-login             Enable the service for future user logins (default true)
-      --stderr-log string          Absolute stderr log file for file routing
-      --stdout-log string          Absolute stdout log file for file routing
-      --version string             Materialized service contract version
-      --working-directory string   Absolute service working directory
+      --executable string             Absolute foreground executable path
+      --health-http string            HTTP(S) readiness URL
+      --health-interval duration      Readiness retry interval (default 250ms)
+      --health-tcp string             TCP readiness address as host:port
+      --health-timeout duration       Readiness wait timeout (default 15s)
+      --log-mode string               Log routing: native or files (platform default when omitted)
+      --public-arg stringArray        Explicitly public executable argument (repeatable)
+      --public-env stringArray        Explicitly public NAME=VALUE environment variable (repeatable)
+      --restart string                Restart policy: on-failure or never (default "on-failure")
+      --restart-delay duration        Delay before a crash restart (default 5s)
+      --start-at-login[=true|false]   Enable the service for future user logins (default true)
+      --stderr-log string             Absolute stderr log file for file routing
+      --stdout-log string             Absolute stdout log file for file routing
+      --version string                Materialized service contract version
+      --working-directory string      Absolute service working directory
 ```
 
 ## `codefly service restart`
@@ -5320,7 +5320,7 @@ codefly show fixtures [flags]
 Flags:
 
 ```
-      --json   Emit machine-readable JSON
+      --json[=true|false]   Emit machine-readable JSON
 ```
 
 ## `codefly show network`
@@ -5355,9 +5355,9 @@ Flags:
 
 ```
       --env string                        Environment whose in-cluster allocation --json reports, as for deploy gitops render --env (default "local")
-      --json                              Emit machine-readable JSON, with each endpoint's deployed in-cluster port
+      --json[=true|false]                 Emit machine-readable JSON, with each endpoint's deployed in-cluster port
       --naming-scope run --naming-scope   naming scope used to derive deterministic ports (matches run --naming-scope)
-      --rendered                          With --json, add each endpoint's container port, read from the module render for --env
+      --rendered[=true|false]             With --json, add each endpoint's container port, read from the module render for --env
 ```
 
 ## `codefly show runnable`
@@ -5394,8 +5394,8 @@ codefly show runnable <name>
 Flags:
 
 ```
-      --json             Emit machine-readable JSON
-      --version string   Select one release when a name is declared at several versions
+      --json[=true|false]   Emit machine-readable JSON
+      --version string      Select one release when a name is declared at several versions
 ```
 
 ## `codefly status`
@@ -5429,7 +5429,7 @@ codefly status release [flags]
 Flags:
 
 ```
-      --create-issues   auto-create GitHub issues for out-of-date agents
+      --create-issues[=true|false]   auto-create GitHub issues for out-of-date agents
 ```
 
 ## `codefly stop`
@@ -5443,7 +5443,7 @@ codefly stop [name-filter...]
 Flags:
 
 ```
-      --all   Stop every workspace's processes on this machine, not just the current one
+      --all[=true|false]   Stop every workspace's processes on this machine, not just the current one
 ```
 
 ## `codefly sync`
@@ -5487,9 +5487,9 @@ codefly sync library-dependencies [flags]
 Flags:
 
 ```
-      --cleanup          Remove local development setup (for production)
-      --module string    Module name
-      --service string   Service name
+      --cleanup[=true|false]   Remove local development setup (for production)
+      --module string          Module name
+      --service string         Service name
 ```
 
 ## `codefly sync service`
@@ -5503,8 +5503,8 @@ codefly sync service [flags]
 Flags:
 
 ```
-      --init-only     Initialize service only, i.e. without syncning it
-      --stand-alone   Begin service as standalone, i.e. without its dependencies
+      --init-only[=true|false]     Initialize service only, i.e. without syncning it
+      --stand-alone[=true|false]   Begin service as standalone, i.e. without its dependencies
 ```
 
 ## `codefly sync solution-sdk`
@@ -5532,10 +5532,10 @@ codefly sync solution-sdk [flags]
 Flags:
 
 ```
-      --apply-dependencies   add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the authority hop)
-      --check                do not write; exit 1 if the library or service-dependencies are out of date
-      --force                overwrite a library generated from a different version of a consumed contract
-      --language strings     languages to generate: go,typescript,python
+      --apply-dependencies[=true|false]   add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the authority hop)
+      --check[=true|false]                do not write; exit 1 if the library or service-dependencies are out of date
+      --force[=true|false]                overwrite a library generated from a different version of a consumed contract
+      --language strings                  languages to generate: go,typescript,python
 ```
 
 ## `codefly terminal`
@@ -5610,24 +5610,24 @@ codefly test service [flags]
 Flags:
 
 ```
-      --coverage                       Run with coverage instrumentation
+      --coverage[=true|false]          Run with coverage instrumentation
       --env string                     Workspace environment to test in (default "local")
       --exclude-dependency strings     Exclude optional dependency services from the test (repeatable, e.g. infra/temporal)
   -k, --filter strings                 Name regex pattern (repeatable; OR-combined). -k mirrors pytest
       --fixture string                 Fixture override (defaults to the selected Codefly environment)
-      --headless                       Run without TUI (auto-enabled when no TTY)
-      --init-only                      Initialize service only, i.e. without running it
-      --load-only                      LoadRequired service only, i.e. without running it
+      --headless[=true|false]          Run without TUI (auto-enabled when no TTY)
+      --init-only[=true|false]         Initialize service only, i.e. without running it
+      --load-only[=true|false]         LoadRequired service only, i.e. without running it
       --naming-scope string            Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
       --output-env string              Write one service's full SDK/runtime environment to an owner-only file
       --profile string                 Named workspace run profile
-      --race                           Run with race detector (Go)
+      --race[=true|false]              Run with race detector (Go)
       --runtime-context string         Runtime context for the flow (default "free")
       --suite string                   Named suite: unit (default), integration, e2e, smoke
       --target string                  Package/directory scope (Go: ./pkg/foo, Python: tests/unit)
-      --temporary-ports show network   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all (default true)
+      --temporary-ports[=true|false]   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all (default true)
       --timeout string                 Per-test timeout, e.g. 30s
-  -v, --verbose                        Verbose runner output
+  -v, --verbose[=true|false]           Verbose runner output
 ```
 
 ## `codefly test solution`
@@ -5641,24 +5641,24 @@ codefly test solution [flags]
 Flags:
 
 ```
-      --coverage                       Run with coverage instrumentation
+      --coverage[=true|false]          Run with coverage instrumentation
       --env string                     Workspace environment to test in (default "local")
       --exclude-dependency strings     Exclude optional dependency services from the test (repeatable, e.g. infra/temporal)
   -k, --filter strings                 Name regex pattern (repeatable; OR-combined). -k mirrors pytest
       --fixture string                 Fixture override (defaults to the selected Codefly environment)
-      --headless                       Run without TUI (auto-enabled when no TTY)
-      --init-only                      Initialize service only, i.e. without running it
-      --load-only                      LoadRequired service only, i.e. without running it
+      --headless[=true|false]          Run without TUI (auto-enabled when no TTY)
+      --init-only[=true|false]         Initialize service only, i.e. without running it
+      --load-only[=true|false]         LoadRequired service only, i.e. without running it
       --naming-scope string            Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
       --output-env string              Write one service's full SDK/runtime environment to an owner-only file
       --profile string                 Named workspace run profile
-      --race                           Run with race detector (Go)
+      --race[=true|false]              Run with race detector (Go)
       --runtime-context string         Runtime context for the flow (default "free")
       --suite string                   Named suite: unit (default), integration, e2e, smoke
       --target string                  Package/directory scope (Go: ./pkg/foo, Python: tests/unit)
-      --temporary-ports show network   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all (default true)
+      --temporary-ports[=true|false]   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all (default true)
       --timeout string                 Per-test timeout, e.g. 30s
-  -v, --verbose                        Verbose runner output
+  -v, --verbose[=true|false]           Verbose runner output
 ```
 
 ## `codefly test source`
@@ -5672,17 +5672,17 @@ codefly test source [flags]
 Flags:
 
 ```
-      --agent string             Select publisher/name[:version] instead of discovering installed agents
-      --coverage                 Enable plugin-defined coverage
-      --dir string               Source checkout (default: current directory)
-  -k, --filter strings           Test-name filter (repeatable)
-      --qualification            Assert the selected agent's Runtime, Code, and Tooling handshake
-      --race                     Enable plugin-defined race checking
-      --runtime-context string   Runtime context for validation (default "free")
-      --suite string             Named test suite
-      --target string            Package/directory scope
-      --timeout string           Test timeout
-  -v, --verbose                  Verbose test output
+      --agent string                 Select publisher/name[:version] instead of discovering installed agents
+      --coverage[=true|false]        Enable plugin-defined coverage
+      --dir string                   Source checkout (default: current directory)
+  -k, --filter strings               Test-name filter (repeatable)
+      --qualification[=true|false]   Assert the selected agent's Runtime, Code, and Tooling handshake
+      --race[=true|false]            Enable plugin-defined race checking
+      --runtime-context string       Runtime context for validation (default "free")
+      --suite string                 Named test suite
+      --target string                Package/directory scope
+      --timeout string               Test timeout
+  -v, --verbose[=true|false]         Verbose test output
 ```
 
 ## `codefly update`
@@ -5736,12 +5736,12 @@ codefly update deps [flags]
 Flags:
 
 ```
-      --audit                    Run the govulncheck audit after updating (default true)
-      --companions               Also rebuild companion Docker images with fresh base layers (docker build --pull)
-      --dependency stringArray   Pin only selected existing external module@version requirements, including indirect dependencies (repeatable)
-      --dir string               Root to update (default: current directory; recurses into every go.mod)
-      --go string                Pin the Go toolchain to this version across every go.mod + go.work (e.g. 1.26.4) — clears stdlib CVEs in standalone/CI builds
-      --stale-days int           Audit: fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
+      --audit[=true|false]        Run the govulncheck audit after updating (default true)
+      --companions[=true|false]   Also rebuild companion Docker images with fresh base layers (docker build --pull)
+      --dependency stringArray    Pin only selected existing external module@version requirements, including indirect dependencies (repeatable)
+      --dir string                Root to update (default: current directory; recurses into every go.mod)
+      --go string                 Pin the Go toolchain to this version across every go.mod + go.work (e.g. 1.26.4) — clears stdlib CVEs in standalone/CI builds
+      --stale-days int            Audit: fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
 ```
 
 ## `codefly update service`
@@ -5849,9 +5849,9 @@ codefly upgrade security [flags]
 Flags:
 
 ```
-      --all          Sweep every Go module in the codefly.dev monorepo
-      --dir string   Module directory (default: current directory)
-      --dry-run      Show the upgrade plan without applying it
+      --all[=true|false]       Sweep every Go module in the codefly.dev monorepo
+      --dir string             Module directory (default: current directory)
+      --dry-run[=true|false]   Show the upgrade plan without applying it
 ```
 
 ## `codefly upgrade service`
@@ -5882,10 +5882,10 @@ codefly upgrade service [name]
 Flags:
 
 ```
-      --dry-run        Preview changes without writing the lockfile
-      --json           Emit raw JSON instead of a table
-      --major          Allow major-version bumps (breaking)
-      --only strings   Restrict upgrades to these packages (comma-separated); for Go, a package not required yet is added, and pkg@version selects a version
+      --dry-run[=true|false]   Preview changes without writing the lockfile
+      --json[=true|false]      Emit raw JSON instead of a table
+      --major[=true|false]     Allow major-version bumps (breaking)
+      --only strings           Restrict upgrades to these packages (comma-separated); for Go, a package not required yet is added, and pkg@version selects a version
 ```
 
 ## `codefly upgrade workspace`
@@ -5907,5 +5907,5 @@ codefly version [flags]
 Flags:
 
 ```
-      --json   Print version, commit, and build date as JSON
+      --json[=true|false]   Print version, commit, and build date as JSON
 ```

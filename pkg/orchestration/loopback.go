@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -40,11 +40,11 @@ const loopbackProbeTimeout = 300 * time.Millisecond
 // mappings, one connect attempt per non-loopback unicast address of the
 // machine's interfaces. An address that answers is one a sibling machine
 // could reach too. Sorted, each once.
-func OffLoopbackAnswers(ctx context.Context, mappings []*basev0.NetworkMapping, timeout time.Duration) []string {
+func OffLoopbackAnswers(ctx context.Context, mappings []*basev1.NetworkMapping, timeout time.Duration) []string {
 	return offLoopbackAnswers(ctx, mappings, machineAddresses(), timeout)
 }
 
-func offLoopbackAnswers(ctx context.Context, mappings []*basev0.NetworkMapping, addresses []net.IP, timeout time.Duration) []string {
+func offLoopbackAnswers(ctx context.Context, mappings []*basev1.NetworkMapping, addresses []net.IP, timeout time.Duration) []string {
 	if len(addresses) == 0 {
 		return nil
 	}

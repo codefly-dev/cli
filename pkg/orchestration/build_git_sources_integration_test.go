@@ -13,7 +13,7 @@ import (
 	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,7 +58,7 @@ func TestALockedGitSourceIsMirroredWithTheHostsGitConfiguration(t *testing.T) {
 
 			prefetch := newGitSourcePrefetch()
 			t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
-			mirrors, err := prefetch.mirrorsFor(ctx, &builderv0.DockerBuildRecipe{Name: "app", GitSourceDownloads: []*builderv0.GitSourceDownload{
+			mirrors, err := prefetch.mirrorsFor(ctx, &builderv1.DockerBuildRecipe{Name: "app", GitSourceDownloads: []*builderv1.GitSourceDownload{
 				{Repository: lockedGitSource, Commit: locked, MirrorContext: "gitsources"},
 			}})
 			require.NoError(t, err)
@@ -96,10 +96,10 @@ func TestAGitSourceBuildNeedsNoCredentialWithThePrefetchedMirror(t *testing.T) {
 
 	prefetch := newGitSourcePrefetch()
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
-	recipe := &builderv0.DockerBuildRecipe{
+	recipe := &builderv1.DockerBuildRecipe{
 		Name: "app", Dockerfile: "Dockerfile", Context: ".", Image: "codefly-git-source-prefetch-test:latest",
 		Platforms:          []string{"linux/" + goArch(t)},
-		GitSourceDownloads: []*builderv0.GitSourceDownload{{Repository: lockedGitSource, Commit: locked, MirrorContext: "gitsources"}},
+		GitSourceDownloads: []*builderv1.GitSourceDownload{{Repository: lockedGitSource, Commit: locked, MirrorContext: "gitsources"}},
 	}
 	mirrors, err := prefetch.mirrorsFor(ctx, recipe)
 	require.NoError(t, err)

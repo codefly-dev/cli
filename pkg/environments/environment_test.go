@@ -865,7 +865,7 @@ environments:
 //	var action actions.Action
 //	var err error
 //
-//	action, err = action.NewActionNew(ctx, &actionsv0.New{
+//	action, err = action.NewActionNew(ctx, &actionsv1.New{
 //		Name: "test-",
 //		Path: Dir,
 //	})
@@ -873,7 +873,7 @@ environments:
 //require.NoError(t, err)
 //	 := shared.Must(actions.As[resources.](out))
 //
-//	action, err = actionenviroment.NewActionAddEnvironment(ctx, &actionsv0.AddEnvironment{
+//	action, err = actionenviroment.NewActionAddEnvironment(ctx, &actionsv1.AddEnvironment{
 //		Name:        "test-environment",
 //		Path: .Dir(),
 //	})

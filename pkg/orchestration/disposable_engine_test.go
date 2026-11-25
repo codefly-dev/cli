@@ -18,7 +18,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	"github.com/codefly-dev/core/agents/manager"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/codefly-dev/core/wool"
 	"github.com/stretchr/testify/require"
@@ -295,7 +295,7 @@ func TestDisposableImagesEngineQualification(t *testing.T) {
 	}
 	// Same-flow reuse through the maintained Builder + actual loopback SBOM
 	// peer. Actual engine IDs/platforms are compared independently of replies.
-	peer := &disposableRecipePeer{sbomRequests: make(chan *builderv0.SBOMRequest, 2)}
+	peer := &disposableRecipePeer{sbomRequests: make(chan *builderv1.SBOMRequest, 2)}
 	b, _ := disposableBuilder(t, peer)
 	t.Setenv("PATH", proxy+string(os.PathListSeparator)+os.Getenv("PATH"))
 	b.world.BuildxBuilder = ""
@@ -304,7 +304,7 @@ func TestDisposableImagesEngineQualification(t *testing.T) {
 	beforeReuse := len(disposableBuildCalls(t, evidence))
 	var ordinaryRef string
 	var ordinaryBefore []byte
-	var previous *builderv0.ImageSubject
+	var previous *builderv1.ImageSubject
 	for i := 0; i < 2; i++ {
 		_, err := b.Plan(t.Context())
 		require.NoError(t, err)

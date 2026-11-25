@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 )
 
 // This file finishes the remaining Introspector/Lifecycle checks:
@@ -128,7 +128,7 @@ func (p *planeImpl) Addresses(ctx context.Context, serviceName string) ([]Endpoi
 // dependency configurations. Workspace configurations use the same projection
 // passed to the service agent during runtime Init. Like Addresses, this only has
 // data while a flow is running.
-func (p *planeImpl) Configurations(ctx context.Context, serviceName string) ([]*basev0.Configuration, error) {
+func (p *planeImpl) Configurations(ctx context.Context, serviceName string) ([]*basev1.Configuration, error) {
 	if p.host == nil || p.host.Flows() == nil {
 		return nil, fmt.Errorf("no running flow; configurations are only available while a service is running")
 	}
@@ -157,7 +157,7 @@ func (p *planeImpl) Configurations(ctx context.Context, serviceName string) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("get dependency configurations: %w", err)
 	}
-	configs := make([]*basev0.Configuration, 0, len(workspaceConfigurations)+len(deps)+1)
+	configs := make([]*basev1.Configuration, 0, len(workspaceConfigurations)+len(deps)+1)
 	if own != nil {
 		configs = append(configs, own)
 	}

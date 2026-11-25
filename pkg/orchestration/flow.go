@@ -25,10 +25,10 @@ import (
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
@@ -120,8 +120,8 @@ type Flow struct {
 	failure     *FlowFailure
 	startCancel context.CancelFunc
 
-	endpoints       map[string][]*basev0.Endpoint
-	networkMappings map[string][]*basev0.NetworkMapping
+	endpoints       map[string][]*basev1.Endpoint
+	networkMappings map[string][]*basev1.NetworkMapping
 
 	loadOnly bool
 	initOnly bool
@@ -165,21 +165,21 @@ type Flow struct {
 	// testRequest carries CLI-provided test filtering/suite/extra-args
 	// to the origin runner when the flow is in TestMode. Dependency
 	// runners ignore it — they only need to be Started, not tested.
-	testRequest *runtimev0.TestRequest
+	testRequest *runtimev1.TestRequest
 	// validationSkipped is resolved from the origin advertisement before any
 	// dependency manager or runtime lifecycle is invoked.
 	validationSkipped bool
 	// testDependencyMode is resolved from the origin agent's authoritative
 	// suite advertisement before dependency managers are selected. Legacy
 	// agents retain the dependency-free behavior they had before the contract.
-	testDependencyMode agentv0.TestDependencyMode
+	testDependencyMode agentv1.TestDependencyMode
 	ownedServices      map[string]bool
 	temporaryPorts     bool
 	portOverrides      map[string]uint16
 
 	// syncRequest carries CI dry-run intent to every builder participating in a
 	// SyncMode flow. Nil retains the conventional mutating sync behavior.
-	syncRequest *builderv0.SyncRequest
+	syncRequest *builderv1.SyncRequest
 
 	// Output running configurations
 	outputEnvPath    string
@@ -278,7 +278,7 @@ type World struct {
 	// projects it per workload; a laptop run has no render, so the CLI hands
 	// the group out here, to a service that declares it and to nobody else.
 	// Nil outside such a run.
-	RenderOwnedGroups func(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error)
+	RenderOwnedGroups func(ctx context.Context, service *resources.Service) ([]*basev1.Configuration, error)
 
 	// RuntimeOverrides supplies per-service process environment a NATIVE run
 	// derives for the composition it stands in for (a cluster's in-cluster
@@ -305,7 +305,7 @@ type World struct {
 	// an amd64 target build without local QEMU emulation. Empty selects the
 	// default builder, or the dedicated local container builder for multi-arch.
 	BuildxBuilder string
-	BuildCache    *builderv0.BuildCacheOptions
+	BuildCache    *builderv1.BuildCacheOptions
 
 	// RebuildImages builds every image even when no input of it changed,
 	// bypassing the content-addressed reuse of a previously built image (see
@@ -363,7 +363,7 @@ type World struct {
 
 	Workspace               *resources.Workspace
 	DeploymentDestination   func(*resources.Module, *resources.Service) string
-	KubernetesOutputProfile builderv0.KubernetesOutputProfile
+	KubernetesOutputProfile builderv1.KubernetesOutputProfile
 
 	// ValidateCluster opts a promotable render into a server-side dry-run of
 	// its manifests against the environment's declared cluster. Off by default:
@@ -386,7 +386,7 @@ type World struct {
 
 	RemoteManager deployments.Manager
 
-	SyncRequest *builderv0.SyncRequest
+	SyncRequest *builderv1.SyncRequest
 
 	excludedWorkspaceConfigurations map[string]bool
 
@@ -413,7 +413,7 @@ type World struct {
 	// the producer existing at all, exactly as a declared group's is
 	// (checkEffectiveWorkspaceConfigurationReferences). A function for the same
 	// reason as compositionRootGroups: the read happens after the World exists.
-	providedWorkspaceConfigurationInfos func() []*basev0.ConfigurationInformation
+	providedWorkspaceConfigurationInfos func() []*basev1.ConfigurationInformation
 
 	// ambiguousWorkspaceConfigurations names the groups two composed modules
 	// define differently, from the same loader. Such a group is absent from
@@ -636,7 +636,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// (CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES, core's SDK-to-CLI carrier —
 	// not `--set`, which is a per-service runtime environment override), so a
 	// reference an override supplies is checked like any other.
-	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
+	world.providedWorkspaceConfigurationInfos = func() []*basev1.ConfigurationInformation {
 		return workspaceConfigurationInfos(localReader.Configurations())
 	}
 	world.ambiguousWorkspaceConfigurations = localReader.AmbiguousWorkspaceConfigurations
@@ -654,7 +654,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// snapshot is by definition the restricted, portable snapshot.
 	if mode == SnapshotMode {
 		configurationManager.WithSecretResolver(snapshotSecretResolver{})
-		world.KubernetesOutputProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
+		world.KubernetesOutputProfile = builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 	}
 
 	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies, workspace)
@@ -695,8 +695,8 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
 
-		endpoints:       make(map[string][]*basev0.Endpoint),
-		networkMappings: make(map[string][]*basev0.NetworkMapping),
+		endpoints:       make(map[string][]*basev1.Endpoint),
+		networkMappings: make(map[string][]*basev1.NetworkMapping),
 
 		excludedByEnvironment:      excludedByEnvironment,
 		excludedDependencyServices: excludedByEnvironment,
@@ -897,14 +897,14 @@ func (flow *Flow) classifyFreeBackends() ([]runtimeResolution, bool) {
 
 // firstSelectableBackend is the runtime context of the first backend this host
 // can actually run, in the plugin's own preference order.
-func (flow *Flow) firstSelectableBackend(backends []agentv0.Backend_Type) string {
+func (flow *Flow) firstSelectableBackend(backends []agentv1.Backend_Type) string {
 	for _, backend := range backends {
 		switch backend {
-		case agentv0.Backend_LOCAL:
+		case agentv1.Backend_LOCAL:
 			return resources.RuntimeContextNative
-		case agentv0.Backend_NIX:
+		case agentv1.Backend_NIX:
 			return resources.RuntimeContextNix
-		case agentv0.Backend_DOCKER:
+		case agentv1.Backend_DOCKER:
 			if !flow.dockerProbed || flow.docker.Running {
 				return resources.RuntimeContextContainer
 			}
@@ -1093,7 +1093,7 @@ func (flow *Flow) Test(ctx context.Context) error {
 // OriginTestResponse returns the structured TestResponse from the origin
 // service's Test RPC, or nil if it was never tested (e.g. the flow ran in a
 // non-test mode, or the RPC failed before returning a response).
-func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
+func (flow *Flow) OriginTestResponse() *runtimev1.TestResponse {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
@@ -1142,7 +1142,7 @@ func (flow *Flow) OriginTestSkipped() bool {
 // never reaches the service under test in those two modes. Resolved during
 // InitManagers, so it is meaningful from Load onwards.
 func (flow *Flow) OriginStartsForTest() bool {
-	return flow != nil && flow.testDependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK
+	return flow != nil && flow.testDependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK
 }
 
 // TestDependencyModeName names the resolved dependency mode, for diagnostics
@@ -1156,7 +1156,7 @@ func (flow *Flow) TestDependencyModeName() string {
 
 // OriginSyncResponse returns the structured SyncResponse from the origin
 // service's Builder.Sync RPC, or nil if it was never synchronized.
-func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
+func (flow *Flow) OriginSyncResponse() *builderv1.SyncResponse {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
@@ -1166,7 +1166,7 @@ func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
 			continue
 		}
 		if source, ok := manager.(interface {
-			BuilderSyncResponse() *builderv0.SyncResponse
+			BuilderSyncResponse() *builderv1.SyncResponse
 		}); ok {
 			return source.BuilderSyncResponse()
 		}
@@ -1198,14 +1198,14 @@ func (flow *Flow) OriginSyncSkipped() bool {
 	return false
 }
 
-func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
-	outputs := make(map[string]*builderv0.DeploymentOutput)
+func (flow *Flow) DeploymentOutputs() map[string]*builderv1.DeploymentOutput {
+	outputs := make(map[string]*builderv1.DeploymentOutput)
 	if flow == nil || flow.hub == nil {
 		return outputs
 	}
 	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
-			BuilderDeploymentOutput() *builderv0.DeploymentOutput
+			BuilderDeploymentOutput() *builderv1.DeploymentOutput
 		})
 		if !ok {
 			continue
@@ -1220,14 +1220,14 @@ func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
 // DeployedConfigurations returns, per deployed service unique, the
 // configuration its Deploy exposed to consumers — in a restricted render, keys
 // without values, some carrying the producer's template for assembling them.
-func (flow *Flow) DeployedConfigurations() map[string]*basev0.Configuration {
-	configurations := make(map[string]*basev0.Configuration)
+func (flow *Flow) DeployedConfigurations() map[string]*basev1.Configuration {
+	configurations := make(map[string]*basev1.Configuration)
 	if flow == nil || flow.hub == nil {
 		return configurations
 	}
 	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
-			BuilderDeployedConfiguration() *basev0.Configuration
+			BuilderDeployedConfiguration() *basev1.Configuration
 		})
 		if !ok {
 			continue
@@ -1310,7 +1310,7 @@ func (flow *Flow) OriginImageDigest() string {
 // OriginImageEvidence returns the digest-bound image SBOMs the origin service's
 // build collected. A build with dependencies collects evidence for each of
 // them; only the origin's is the caller's subject.
-func (flow *Flow) OriginImageEvidence() []*builderv0.ImageSBOM {
+func (flow *Flow) OriginImageEvidence() []*builderv1.ImageSBOM {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
@@ -1320,7 +1320,7 @@ func (flow *Flow) OriginImageEvidence() []*builderv0.ImageSBOM {
 			continue
 		}
 		source, ok := manager.(interface {
-			BuilderImageEvidence() []*builderv0.ImageSBOM
+			BuilderImageEvidence() []*builderv1.ImageSBOM
 		})
 		if !ok {
 			return nil
@@ -1856,7 +1856,7 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 	}
 }
 
-func (flow *Flow) GetDependenciesNetworkMappingsFor(ctx context.Context, service *resources.Service) ([]*basev0.NetworkMapping, error) {
+func (flow *Flow) GetDependenciesNetworkMappingsFor(ctx context.Context, service *resources.Service) ([]*basev1.NetworkMapping, error) {
 	if flow == nil {
 		return nil, nil
 	}
@@ -2360,7 +2360,7 @@ func (flow *Flow) validateDependencyEndpointDeclarations(uniques []string) error
 // selects with.
 func producerExposesReference(producer *resources.Service, reference *resources.EndpointReference) bool {
 	for _, endpoint := range producer.Endpoints {
-		if endpointMatchesReference(&basev0.Endpoint{Name: endpoint.Name, Api: endpoint.API}, reference) {
+		if endpointMatchesReference(&basev1.Endpoint{Name: endpoint.Name, Api: endpoint.API}, reference) {
 			return true
 		}
 	}
@@ -2389,9 +2389,9 @@ func (flow *Flow) configureTestExecution(runner *Runner) error {
 	}
 	flow.testRequest = execution.Request
 	flow.testDependencyMode = execution.DependencyMode
-	flow.standAlone = execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
+	flow.standAlone = execution.DependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE
 	runner.WithTestRequest(execution.Request)
-	runner.WithServiceRunningForTest(execution.DependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
+	runner.WithServiceRunningForTest(execution.DependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
 	if execution.skipped {
 		flow.output().Info("Agent for <%s> advertises no test suites; skipping tests", runner.Unique())
 		return nil
@@ -2468,7 +2468,7 @@ func (flow *Flow) CreateManager(ctx context.Context) error {
 	return nil
 }
 
-func reachableNetworkInstance(instances []*basev0.NetworkInstance) *basev0.NetworkInstance {
+func reachableNetworkInstance(instances []*basev1.NetworkInstance) *basev1.NetworkInstance {
 	for _, instance := range instances {
 		if instance.GetAccess().GetKind() == resources.NetworkAccessNative {
 			return instance
@@ -2485,7 +2485,7 @@ func reachableNetworkInstance(instances []*basev0.NetworkInstance) *basev0.Netwo
 	return instances[0]
 }
 
-func networkInstanceDialAddress(instance *basev0.NetworkInstance) string {
+func networkInstanceDialAddress(instance *basev1.NetworkInstance) string {
 	if instance.GetHost() != "" {
 		return instance.GetHost()
 	}
@@ -2532,7 +2532,7 @@ func (flow *Flow) WithPush(push bool) {
 	flow.world.Push = push
 }
 
-func (flow *Flow) WithBuildCache(cache *builderv0.BuildCacheOptions) {
+func (flow *Flow) WithBuildCache(cache *builderv1.BuildCacheOptions) {
 	flow.world.BuildCache = scopedBuildCache(cache)
 }
 
@@ -2702,13 +2702,13 @@ func (flow *Flow) WithLoadOnly(only bool) {
 
 // WithTestRequest sets the TestRequest forwarded to the origin runner's
 // Test RPC. Only relevant in TestMode; ignored otherwise.
-func (flow *Flow) WithTestRequest(req *runtimev0.TestRequest) {
+func (flow *Flow) WithTestRequest(req *runtimev1.TestRequest) {
 	flow.testRequest = req
 }
 
 // WithSyncRequest sets the request used by SyncMode builders. CI uses a
 // dry-run request so generated drift can be proven without mutating source.
-func (flow *Flow) WithSyncRequest(req *builderv0.SyncRequest) {
+func (flow *Flow) WithSyncRequest(req *builderv1.SyncRequest) {
 	flow.syncRequest = req
 	if flow.world != nil {
 		flow.world.SyncRequest = req

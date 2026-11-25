@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -43,7 +43,7 @@ func agentInfo(ctx context.Context, kind resources.AgentKind, label, input strin
 	}
 	cli.Header(2, "Successfully loaded %s agent <%s>", strings.ToLower(label), conf)
 
-	info, err := agent.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	info, err := agent.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	if err != nil {
 		return fmt.Errorf("cannot get agent information: %w", err)
 	}

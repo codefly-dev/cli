@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -77,7 +77,7 @@ func TestSourceSelectionUsesRunningAgentsWithoutCompiledPins(t *testing.T) {
 func TestSourceSelectionRequiresCompleteUnambiguousLanguageSupport(t *testing.T) {
 	first := Plugin{
 		Agent: &resources.Agent{Publisher: "example.test", Name: "unlisted", Version: "3.1.0"},
-		Info:  &agentv0.AgentInformation{Languages: []*agentv0.Language{{Type: agentv0.Language_GO}}},
+		Info:  &agentv1.AgentInformation{Languages: []*agentv1.Language{{Type: agentv1.Language_GO}}},
 	}
 	for _, languages := range [][]string{nil, {"unknown"}, {"go", "python"}} {
 		_, err := selectForLanguages([]Plugin{first}, languages)

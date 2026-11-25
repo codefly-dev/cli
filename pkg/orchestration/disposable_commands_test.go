@@ -13,8 +13,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	"github.com/codefly-dev/core/agents/manager"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/recoveryscope"
 	"github.com/stretchr/testify/require"
@@ -149,16 +149,16 @@ func assertDisposableCommandDelivery(t *testing.T, root, phase string, real bool
 			methods[call.Method] = true
 			switch call.Method {
 			case "Builder.EmittedPlan":
-				plan := &builderv0.DockerBuildPlan{}
+				plan := &builderv1.DockerBuildPlan{}
 				require.NoError(t, protojson.Unmarshal(call.Request, plan))
 				require.Len(t, plan.Recipes, 1)
 				require.Equal(t, "codefly-dev/app/subject:0.0.0", plan.Recipes[0].Image)
 			case "Runtime.Init":
-				request := &runtimev0.InitRequest{}
+				request := &runtimev1.InitRequest{}
 				require.NoError(t, protojson.Unmarshal(call.Request, request))
 				images = append(images, request.RuntimeImage)
 			case "Builder.SBOM":
-				request := &builderv0.SBOMRequest{}
+				request := &builderv1.SBOMRequest{}
 				require.NoError(t, protojson.Unmarshal(call.Request, request))
 				for _, subject := range request.Subjects {
 					images = append(images, subject.Reference)

@@ -13,12 +13,12 @@ import (
 	"github.com/creack/pty"
 	"github.com/google/uuid"
 
-	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cliv1 "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 )
 
 // TerminalServer implements TerminalServiceServer.
 type TerminalServer struct {
-	cliv0.UnimplementedTerminalServiceServer
+	cliv1.UnimplementedTerminalServiceServer
 
 	mu       sync.RWMutex
 	sessions map[string]*termSession
@@ -47,7 +47,7 @@ func NewTerminalServer(workspaceDir string) *TerminalServer {
 	}
 }
 
-func (s *TerminalServer) Open(_ context.Context, req *cliv0.OpenTerminalRequest) (*cliv0.OpenTerminalResponse, error) {
+func (s *TerminalServer) Open(_ context.Context, req *cliv1.OpenTerminalRequest) (*cliv1.OpenTerminalResponse, error) {
 	shell := req.Shell
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -112,14 +112,14 @@ func (s *TerminalServer) Open(_ context.Context, req *cliv0.OpenTerminalRequest)
 	s.sessions[sessionID] = sess
 	s.mu.Unlock()
 
-	return &cliv0.OpenTerminalResponse{
+	return &cliv1.OpenTerminalResponse{
 		SessionId:  sessionID,
 		Shell:      shell,
 		WorkingDir: workDir,
 	}, nil
 }
 
-func (s *TerminalServer) Attach(stream cliv0.TerminalService_AttachServer) error {
+func (s *TerminalServer) Attach(stream cliv1.TerminalService_AttachServer) error {
 	// Read first message to get session_id
 	firstMsg, err := stream.Recv()
 	if err != nil {
@@ -147,7 +147,7 @@ func (s *TerminalServer) Attach(stream cliv0.TerminalService_AttachServer) error
 		for {
 			n, err := sess.PTY.Read(buf)
 			if n > 0 {
-				if sendErr := stream.Send(&cliv0.TerminalOutput{
+				if sendErr := stream.Send(&cliv1.TerminalOutput{
 					SessionId: sess.ID,
 					Data:      buf[:n],
 				}); sendErr != nil {
@@ -157,7 +157,7 @@ func (s *TerminalServer) Attach(stream cliv0.TerminalService_AttachServer) error
 			}
 			if err != nil {
 				// PTY closed — send done signal
-				_ = stream.Send(&cliv0.TerminalOutput{
+				_ = stream.Send(&cliv1.TerminalOutput{
 					SessionId: sess.ID,
 					Done:      true,
 					ExitCode:  exitCode(sess.Cmd),
@@ -196,7 +196,7 @@ func (s *TerminalServer) Attach(stream cliv0.TerminalService_AttachServer) error
 	}
 }
 
-func (s *TerminalServer) Resize(_ context.Context, req *cliv0.ResizeTerminalRequest) (*cliv0.ResizeTerminalResponse, error) {
+func (s *TerminalServer) Resize(_ context.Context, req *cliv1.ResizeTerminalRequest) (*cliv1.ResizeTerminalResponse, error) {
 	s.mu.RLock()
 	sess, ok := s.sessions[req.SessionId]
 	s.mu.RUnlock()
@@ -211,10 +211,10 @@ func (s *TerminalServer) Resize(_ context.Context, req *cliv0.ResizeTerminalRequ
 		return nil, fmt.Errorf("cannot resize: %w", err)
 	}
 
-	return &cliv0.ResizeTerminalResponse{}, nil
+	return &cliv1.ResizeTerminalResponse{}, nil
 }
 
-func (s *TerminalServer) Close(_ context.Context, req *cliv0.CloseTerminalRequest) (*cliv0.CloseTerminalResponse, error) {
+func (s *TerminalServer) Close(_ context.Context, req *cliv1.CloseTerminalRequest) (*cliv1.CloseTerminalResponse, error) {
 	s.mu.Lock()
 	sess, ok := s.sessions[req.SessionId]
 	if ok {
@@ -237,16 +237,16 @@ func (s *TerminalServer) Close(_ context.Context, req *cliv0.CloseTerminalReques
 	}
 	_ = sess.PTY.Close()
 
-	return &cliv0.CloseTerminalResponse{}, nil
+	return &cliv1.CloseTerminalResponse{}, nil
 }
 
-func (s *TerminalServer) List(_ context.Context, _ *cliv0.ListTerminalsRequest) (*cliv0.ListTerminalsResponse, error) {
+func (s *TerminalServer) List(_ context.Context, _ *cliv1.ListTerminalsRequest) (*cliv1.ListTerminalsResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	terminals := make([]*cliv0.TerminalInfo, 0, len(s.sessions))
+	terminals := make([]*cliv1.TerminalInfo, 0, len(s.sessions))
 	for _, sess := range s.sessions {
-		terminals = append(terminals, &cliv0.TerminalInfo{
+		terminals = append(terminals, &cliv1.TerminalInfo{
 			SessionId:  sess.ID,
 			Shell:      sess.Shell,
 			WorkingDir: sess.WorkingDir,
@@ -254,7 +254,7 @@ func (s *TerminalServer) List(_ context.Context, _ *cliv0.ListTerminalsRequest) 
 			Service:    sess.Service,
 		})
 	}
-	return &cliv0.ListTerminalsResponse{Terminals: terminals}, nil
+	return &cliv1.ListTerminalsResponse{Terminals: terminals}, nil
 }
 
 // Cleanup removes all sessions where the process has exited.

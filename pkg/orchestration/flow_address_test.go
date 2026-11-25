@@ -4,16 +4,16 @@ import (
 	"context"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetAddressForEndpointPrefersHostNativeMapping(t *testing.T) {
-	flow := flowWithNetworkMappings("web/frontend", []*basev0.NetworkMapping{
+	flow := flowWithNetworkMappings("web/frontend", []*basev1.NetworkMapping{
 		{
-			Endpoint: &basev0.Endpoint{Name: "http"},
-			Instances: []*basev0.NetworkInstance{
+			Endpoint: &basev1.Endpoint{Name: "http"},
+			Instances: []*basev1.NetworkInstance{
 				networkInstance(resources.NetworkAccessContainer, "http://host.docker.internal:3000"),
 				networkInstance(resources.NetworkAccessPublic, "https://example.test"),
 				networkInstance(resources.NetworkAccessNative, "http://localhost:53231"),
@@ -27,10 +27,10 @@ func TestGetAddressForEndpointPrefersHostNativeMapping(t *testing.T) {
 }
 
 func TestGetAddressForEndpointFallsBackToPublicMapping(t *testing.T) {
-	flow := flowWithNetworkMappings("web/frontend", []*basev0.NetworkMapping{
+	flow := flowWithNetworkMappings("web/frontend", []*basev1.NetworkMapping{
 		{
-			Endpoint: &basev0.Endpoint{Name: "http"},
-			Instances: []*basev0.NetworkInstance{
+			Endpoint: &basev1.Endpoint{Name: "http"},
+			Instances: []*basev1.NetworkInstance{
 				networkInstance(resources.NetworkAccessContainer, "http://frontend:3000"),
 				networkInstance(resources.NetworkAccessPublic, "https://example.test"),
 			},
@@ -43,10 +43,10 @@ func TestGetAddressForEndpointFallsBackToPublicMapping(t *testing.T) {
 }
 
 func TestGetAddressForEndpointRejectsContainerOnlyMapping(t *testing.T) {
-	flow := flowWithNetworkMappings("web/frontend", []*basev0.NetworkMapping{
+	flow := flowWithNetworkMappings("web/frontend", []*basev1.NetworkMapping{
 		{
-			Endpoint: &basev0.Endpoint{Name: "http"},
-			Instances: []*basev0.NetworkInstance{
+			Endpoint: &basev1.Endpoint{Name: "http"},
+			Instances: []*basev1.NetworkInstance{
 				networkInstance(resources.NetworkAccessContainer, "http://frontend:3000"),
 			},
 		},
@@ -56,17 +56,17 @@ func TestGetAddressForEndpointRejectsContainerOnlyMapping(t *testing.T) {
 	require.ErrorContains(t, err, "cannot find network mappings for web/frontend")
 }
 
-func flowWithNetworkMappings(unique string, mappings []*basev0.NetworkMapping) *Flow {
+func flowWithNetworkMappings(unique string, mappings []*basev1.NetworkMapping) *Flow {
 	return &Flow{
 		SharedState: &StateManager{
-			networkMappings: map[string][]*basev0.NetworkMapping{unique: mappings},
+			networkMappings: map[string][]*basev1.NetworkMapping{unique: mappings},
 		},
 	}
 }
 
-func networkInstance(kind, address string) *basev0.NetworkInstance {
-	return &basev0.NetworkInstance{
-		Access:  &basev0.NetworkAccess{Kind: kind},
+func networkInstance(kind, address string) *basev1.NetworkInstance {
+	return &basev1.NetworkInstance{
+		Access:  &basev1.NetworkAccess{Kind: kind},
 		Address: address,
 	}
 }

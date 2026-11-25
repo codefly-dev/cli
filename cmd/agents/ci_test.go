@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/failures"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	civ1 "github.com/codefly-dev/core/generated/go/codefly/ci/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -198,16 +198,16 @@ func TestConformanceBaselineRecordsAllInitialOwnership(t *testing.T) {
 }
 
 func TestAgentAdvertisesCapabilityUsesInstalledAgentContract(t *testing.T) {
-	info := &agentv0.AgentInformation{Capabilities: []*agentv0.Capability{
-		{Type: agentv0.Capability_RUNTIME},
+	info := &agentv1.AgentInformation{Capabilities: []*agentv1.Capability{
+		{Type: agentv1.Capability_RUNTIME},
 	}}
-	if !agentAdvertisesCapability(info, agentv0.Capability_RUNTIME) {
+	if !agentAdvertisesCapability(info, agentv1.Capability_RUNTIME) {
 		t.Fatal("runtime capability was not recognized")
 	}
-	if agentAdvertisesCapability(info, agentv0.Capability_BUILDER) {
+	if agentAdvertisesCapability(info, agentv1.Capability_BUILDER) {
 		t.Fatal("absent Builder capability was invented")
 	}
-	if agentAdvertisesCapability(nil, agentv0.Capability_BUILDER) {
+	if agentAdvertisesCapability(nil, agentv1.Capability_BUILDER) {
 		t.Fatal("nil advertisement reported Builder support")
 	}
 }
@@ -482,11 +482,11 @@ func TestFinalizeAgentCIReport(t *testing.T) {
 	state := &agentCIState{
 		started:      started,
 		workspaceRaw: []byte(`{"schema_version":1,"status":"failed"}`),
-		report: &civ0.AgentCIReport{
+		report: &civ1.AgentCIReport{
 			Status:    "running",
 			StartedAt: started.Format(time.RFC3339Nano),
-			Summary:   &civ0.AgentCISummary{},
-			Stages: []*civ0.AgentCIStage{
+			Summary:   &civ1.AgentCISummary{},
+			Stages: []*civ1.AgentCIStage{
 				{Name: "manifest", Status: "passed"},
 				{Name: "source", Status: "failed"},
 				{Name: "build", Status: "pending"},
@@ -500,7 +500,7 @@ func TestFinalizeAgentCIReport(t *testing.T) {
 	if report.GetError() != context.Canceled.Error() {
 		t.Fatalf("report error = %q, want %q", report.GetError(), context.Canceled.Error())
 	}
-	if report.GetFailure().GetCode() != basev0.FailureCode_FAILURE_CODE_CANCELLED || report.GetFailure().GetOperation() != "agent-ci" {
+	if report.GetFailure().GetCode() != basev1.FailureCode_FAILURE_CODE_CANCELLED || report.GetFailure().GetOperation() != "agent-ci" {
 		t.Fatalf("report failure = %+v, want cancelled agent-ci failure", report.GetFailure())
 	}
 	if report.GetWorkspaceReport().AsMap()["status"] != "failed" {
@@ -509,10 +509,10 @@ func TestFinalizeAgentCIReport(t *testing.T) {
 }
 
 func TestAgentCIStagePreservesTypedFailure(t *testing.T) {
-	state := &agentCIState{report: &civ0.AgentCIReport{
-		Stages: []*civ0.AgentCIStage{{Name: "source", Status: "pending"}},
+	state := &agentCIState{report: &civ1.AgentCIReport{
+		Stages: []*civ1.AgentCIStage{{Name: "source", Status: "pending"}},
 	}}
-	want := basev0.FailureCode_FAILURE_CODE_VALIDATION_FAILED
+	want := basev1.FailureCode_FAILURE_CODE_VALIDATION_FAILED
 	err := state.runStage("source", func() error {
 		return failures.Wrap(want, "runtime.test", "source contract failed", nil)
 	})
@@ -568,13 +568,13 @@ func TestSeedAgentCISourcePackagerAllowsMissingSeed(t *testing.T) {
 }
 
 func TestMarshalAgentCIReportUsesGeneratedProtoFieldNamesAndDefaults(t *testing.T) {
-	report := &civ0.AgentCIReport{
+	report := &civ1.AgentCIReport{
 		SchemaVersion: 1,
 		Command:       "codefly agent ci",
-		Agent:         &civ0.AgentCIIdentity{},
-		Options:       &civ0.AgentCIOptions{},
-		Summary:       &civ0.AgentCISummary{},
-		Stages:        []*civ0.AgentCIStage{{Name: "audit", Status: "skipped"}},
+		Agent:         &civ1.AgentCIIdentity{},
+		Options:       &civ1.AgentCIOptions{},
+		Summary:       &civ1.AgentCISummary{},
+		Stages:        []*civ1.AgentCIStage{{Name: "audit", Status: "skipped"}},
 	}
 	payload, err := marshalAgentCIReport(report)
 	if err != nil {
@@ -621,7 +621,7 @@ func TestPersistAgentCIArtifactsSeparatesReleaseTargets(t *testing.T) {
 	writeFile(t, native, "native")
 	writeFile(t, container, "linux")
 	state := &agentCIState{
-		report: &civ0.AgentCIReport{},
+		report: &civ1.AgentCIReport{},
 		build:  &agentBuildResult{nativePath: native, containerPath: container},
 	}
 	output := t.TempDir()

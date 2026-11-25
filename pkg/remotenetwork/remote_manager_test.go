@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	corenetwork "github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
@@ -15,13 +15,13 @@ import (
 )
 
 type remoteDNSManager struct {
-	dns *basev0.DNS
+	dns *basev1.DNS
 }
 
 func TestKubernetesServicePreservesDeclaredTLS(t *testing.T) {
-	endpoint := &basev0.Endpoint{
+	endpoint := &basev1.Endpoint{
 		Api:        standards.HTTP,
-		ApiDetails: &basev0.API{Value: &basev0.API_Http{Http: &basev0.HttpAPI{Secured: true}}},
+		ApiDetails: &basev1.API{Value: &basev1.API_Http{Http: &basev1.HttpAPI{Secured: true}}},
 	}
 	instance := (&RemoteManager{}).KubernetesService(&resources.ServiceIdentity{Name: "model"}, endpoint, "namespace", 8443)
 	require.Equal(t, "https://model.namespace.svc.cluster.local:8443", instance.Address)
@@ -37,14 +37,14 @@ func TestPairingRejectsPortsBeforeStartingProcesses(t *testing.T) {
 			} else {
 				remote.Port = invalid
 			}
-			pairing := &Pairing{Local: &basev0.NetworkMapping{Instances: []*basev0.NetworkInstance{local}}, Remote: &basev0.NetworkMapping{Instances: []*basev0.NetworkInstance{remote}}}
+			pairing := &Pairing{Local: &basev1.NetworkMapping{Instances: []*basev1.NetworkInstance{local}}, Remote: &basev1.NetworkMapping{Instances: []*basev1.NetworkInstance{remote}}}
 			err := (&RemoteManager{}).StartPairing(t.Context(), nil, nil, &resources.ServiceIdentity{Name: "api"}, pairing, noopOutput{})
 			require.ErrorContains(t, err, side+" port")
 		}
 	}
 }
 
-func (manager remoteDNSManager) GetDNS(context.Context, *resources.ServiceIdentity, string) (*basev0.DNS, error) {
+func (manager remoteDNSManager) GetDNS(context.Context, *resources.ServiceIdentity, string) (*basev1.DNS, error) {
 	return manager.dns, nil
 }
 
@@ -91,7 +91,7 @@ func TestRemoteManagerSynthesizesLegacyNamespaceWhenUndeclared(t *testing.T) {
 
 func TestRemoteManagerUsesDeclaredInternalDNSForContainerAccess(t *testing.T) {
 	manager, err := NewRemoteManager(context.Background(), remoteDNSManager{
-		dns: &basev0.DNS{
+		dns: &basev1.DNS{
 			Host:    "store.platform.svc.cluster.local",
 			Port:    5432,
 			Secured: false,
@@ -103,21 +103,21 @@ func TestRemoteManagerUsesDeclaredInternalDNSForContainerAccess(t *testing.T) {
 	environment := &environments.Environment{Name: "aws", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "store"}
-	endpoint := &basev0.Endpoint{
+	endpoint := &basev1.Endpoint{
 		Module:  "users",
 		Service: "store",
 		Name:    "tcp",
 		Api:     standards.TCP,
 	}
 
-	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(mappings) != 1 || len(mappings[0].Instances) != 2 {
 		t.Fatalf("mappings = %#v, want one mapping with public and container instances", mappings)
 	}
-	for _, access := range []*basev0.NetworkAccess{
+	for _, access := range []*basev1.NetworkAccess{
 		resources.NewPublicNetworkAccess(),
 		resources.NewContainerNetworkAccess(),
 	} {
@@ -139,21 +139,21 @@ func TestRemoteManagerSynthesizesInternalDNSWhenUndeclared(t *testing.T) {
 	environment := &environments.Environment{Name: "aws", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-	endpoint := &basev0.Endpoint{
+	endpoint := &basev1.Endpoint{
 		Module:  "users",
 		Service: "accounts",
 		Name:    "grpc",
 		Api:     standards.GRPC,
 	}
 
-	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(mappings) != 1 || len(mappings[0].Instances) != 2 {
 		t.Fatalf("mappings = %#v, want one mapping with public and container instances", mappings)
 	}
-	for _, access := range []*basev0.NetworkAccess{
+	for _, access := range []*basev1.NetworkAccess{
 		resources.NewPublicNetworkAccess(),
 		resources.NewContainerNetworkAccess(),
 	} {
@@ -179,18 +179,18 @@ func TestRemoteManagerStartPairingAcceptsTwoInstanceRemoteMapping(t *testing.T) 
 	environment := &environments.Environment{Name: "aws", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-	endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "grpc", Api: standards.GRPC}
+	endpoint := &basev1.Endpoint{Module: "users", Service: "accounts", Name: "grpc", Api: standards.GRPC}
 
-	remotes, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	remotes, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(remotes[0].Instances) != 2 {
 		t.Fatalf("expected a two-instance synthesized remote mapping, got %#v", remotes[0].Instances)
 	}
-	local := &basev0.NetworkMapping{
+	local := &basev1.NetworkMapping{
 		Endpoint:  endpoint,
-		Instances: []*basev0.NetworkInstance{corenetwork.NativeInstance(resources.NewNetworkInstance("localhost", 12345))},
+		Instances: []*basev1.NetworkInstance{corenetwork.NativeInstance(resources.NewNetworkInstance("localhost", 12345))},
 	}
 	pairing := &Pairing{Local: local, Remote: remotes[0]}
 
@@ -213,7 +213,7 @@ func TestRemoteManagerAssignsSameAPIEndpointsIndependentPorts(t *testing.T) {
 	environment := &environments.Environment{Name: "aws", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "accounts"}
-	endpoints := []*basev0.Endpoint{
+	endpoints := []*basev1.Endpoint{
 		{Module: "saas", Service: "accounts", Name: "grpc", Api: standards.GRPC},
 		{Module: "saas", Service: "accounts", Name: "usage", Api: standards.GRPC},
 	}
@@ -243,18 +243,18 @@ func TestRemoteManagerAssignsCollidingAPIsIndependentStablePorts(t *testing.T) {
 	environment := &environments.Environment{Name: "aws", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "web", Name: "gateway"}
-	rest := &basev0.Endpoint{Module: "web", Service: "gateway", Name: standards.REST, Api: standards.REST}
-	http := &basev0.Endpoint{Module: "web", Service: "gateway", Name: standards.HTTP, Api: standards.HTTP}
+	rest := &basev1.Endpoint{Module: "web", Service: "gateway", Name: standards.REST, Api: standards.REST}
+	http := &basev1.Endpoint{Module: "web", Service: "gateway", Name: standards.HTTP, Api: standards.HTTP}
 
-	forward, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{rest, http})
+	forward, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{rest, http})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reverse, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{http, rest})
+	reverse, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{http, rest})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ports := func(mappings []*basev0.NetworkMapping) map[string]uint32 {
+	ports := func(mappings []*basev1.NetworkMapping) map[string]uint32 {
 		result := make(map[string]uint32, len(mappings))
 		for _, mapping := range mappings {
 			result[mapping.Endpoint.Name] = mapping.Instances[0].Port
@@ -269,7 +269,7 @@ func TestRemoteManagerAssignsCollidingAPIsIndependentStablePorts(t *testing.T) {
 
 type erroringDNSManager struct{}
 
-func (erroringDNSManager) GetDNS(context.Context, *resources.ServiceIdentity, string) (*basev0.DNS, error) {
+func (erroringDNSManager) GetDNS(context.Context, *resources.ServiceIdentity, string) (*basev1.DNS, error) {
 	return nil, fmt.Errorf("no DNS found")
 }
 
@@ -293,9 +293,9 @@ func TestRemoteManagerDerivesExternalHostFromAppHostSuffix(t *testing.T) {
 			}
 			workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 			service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-			endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+			endpoint := &basev1.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-			mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+			mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 			if err != nil {
 				t.Fatalf("derive external host: %v", err)
 			}
@@ -316,7 +316,7 @@ func TestRemoteManagerDerivesExternalHostFromAppHostSuffix(t *testing.T) {
 func TestRemoteManagerExternalHostPrefersDeclaredDNS(t *testing.T) {
 	// A declared dns.codefly.yaml entry wins over the derived suffix host.
 	rm, err := NewRemoteManager(context.Background(), remoteDNSManager{
-		dns: &basev0.DNS{Host: "api.declared.example.com", Port: 8443, Secured: true},
+		dns: &basev1.DNS{Host: "api.declared.example.com", Port: 8443, Secured: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -328,9 +328,9 @@ func TestRemoteManagerExternalHostPrefersDeclaredDNS(t *testing.T) {
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-	endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,11 +341,11 @@ func TestRemoteManagerExternalHostPrefersDeclaredDNS(t *testing.T) {
 
 // assertInClusterMapping checks that a mapping resolves both public and
 // container access to the synthesized in-cluster Service address.
-func assertInClusterMapping(t *testing.T, mappings []*basev0.NetworkMapping, host string, port uint32) {
+func assertInClusterMapping(t *testing.T, mappings []*basev1.NetworkMapping, host string, port uint32) {
 	t.Helper()
 	require.Len(t, mappings, 1)
 	require.Len(t, mappings[0].Instances, 2, "want public and container instances")
-	for _, access := range []*basev0.NetworkAccess{
+	for _, access := range []*basev1.NetworkAccess{
 		resources.NewPublicNetworkAccess(),
 		resources.NewContainerNetworkAccess(),
 	} {
@@ -371,9 +371,9 @@ func TestRemoteManagerSynthesizesInClusterAddressForRenderedExternalWithoutDNS(t
 			environment := &environments.Environment{Name: "azure", Namespace: "platform"}
 			workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 			service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-			endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+			endpoint := &basev1.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-			mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+			mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 			require.NoError(t, err)
 			assertInClusterMapping(t, mappings, "accounts.platform.svc.cluster.local", uint32(standards.Port(standards.REST)))
 		})
@@ -394,9 +394,9 @@ func TestRemoteManagerManagedServiceExternalFailsWithoutSuffixOrDNS(t *testing.T
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-	endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	require.Error(t, err, "expected a failure when a managed service declares no DNS and no app host suffix")
 }
 
@@ -416,9 +416,9 @@ func TestRemoteManagerDerivesGRPCExternalHost(t *testing.T) {
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-	endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "grpc", Api: standards.GRPC, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "users", Service: "accounts", Name: "grpc", Api: standards.GRPC, Location: resources.LocationExternal}
 
-	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	if err != nil {
 		t.Fatalf("derive gRPC external host: %v", err)
 	}
@@ -447,9 +447,9 @@ func TestRemoteManagerRenderedTCPExternalSynthesizesInClusterAddressNotAppEdgeHo
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
-	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "saas", Service: "store", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
 
-	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	require.NoError(t, err)
 	assertInClusterMapping(t, mappings, "store.platform.svc.cluster.local", uint32(standards.Port(standards.TCP)))
 	for _, instance := range mappings[0].Instances {
@@ -472,9 +472,9 @@ func TestRemoteManagerManagedTCPExternalStillRequiresDeclaredDNS(t *testing.T) {
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
-	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "saas", Service: "store", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
 
-	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	require.Error(t, err, "expected a failure: a managed TCP external must not derive an app-edge host or an in-cluster address")
 }
 
@@ -487,7 +487,7 @@ func TestRemoteManagerRenderedExternalWithoutDNSSharesCanonicalPortAllocation(t 
 	environment := &environments.Environment{Name: "azure", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "accounts"}
-	endpoints := []*basev0.Endpoint{
+	endpoints := []*basev1.Endpoint{
 		{Module: "saas", Service: "accounts", Name: "grpc", Api: standards.GRPC, Location: resources.LocationExternal},
 		{Module: "saas", Service: "accounts", Name: "usage", Api: standards.GRPC},
 	}
@@ -527,8 +527,8 @@ func TestRemoteManagerScopesNamespacePerModuleWhenWorkspaceComposesSeveral(t *te
 
 	// The provider's own mappings — the ones its consumers are handed.
 	provider := &resources.ServiceIdentity{Module: "documents", Name: "store"}
-	endpoint := &basev0.Endpoint{Module: "documents", Service: "store", Name: "grpc", Api: standards.GRPC}
-	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, provider, []*basev0.Endpoint{endpoint})
+	endpoint := &basev1.Endpoint{Module: "documents", Service: "store", Name: "grpc", Api: standards.GRPC}
+	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, provider, []*basev1.Endpoint{endpoint})
 	require.NoError(t, err)
 	assertInClusterMapping(t, mappings, "store.platform-documents.svc.cluster.local", uint32(standards.Port(standards.GRPC)))
 
@@ -553,9 +553,9 @@ func TestRemoteManagerManagedServiceOfAnotherModuleStaysInCluster(t *testing.T) 
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
-	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "saas", Service: "store", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	require.NoError(t, err)
 	assertInClusterMapping(t, mappings, "store.platform.svc.cluster.local", uint32(standards.Port(standards.REST)))
 }
@@ -572,8 +572,8 @@ func TestRemoteManagerManagedServiceOfTheNamedModuleIsNotInCluster(t *testing.T)
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
-	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+	endpoint := &basev1.Endpoint{Module: "saas", Service: "store", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev1.Endpoint{endpoint})
 	require.Error(t, err, "a managed service of the named module has no in-cluster address to fall back on")
 }

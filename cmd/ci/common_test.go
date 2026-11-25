@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -274,7 +274,7 @@ func TestCIWithPlanOptionsDrainsRunningTasksOnCancellation(t *testing.T) {
 // release; failing loudly keeps that from surfacing as a slow, network-bound
 // suite. Tests that need an install to succeed stub it themselves.
 func TestMain(m *testing.M) {
-	inspectTestAgent = func(context.Context, *resources.Agent) (*resources.Agent, *agentv0.AgentInformation, error) {
+	inspectTestAgent = func(context.Context, *resources.Agent) (*resources.Agent, *agentv1.AgentInformation, error) {
 		return nil, nil, errors.New("test attempted to inspect a released agent: stub inspectTestAgent")
 	}
 	installCacheAgent = func(_ context.Context, agent *resources.Agent) error {

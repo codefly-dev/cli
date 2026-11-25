@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -36,10 +36,10 @@ func TestVerifyBuildInputsRejectsEvidenceThatDoesNotMatchTheSource(t *testing.T)
 	inputDigest := writeFile(t, filepath.Join(dir, "lib", "helper.py"), []byte("VALUE = 1\n"))
 	inputs := []string{"lib/helper.py"}
 
-	build := func(handler string, input string) *basev0.RunnableBuild {
-		return &basev0.RunnableBuild{
-			Handler: &basev0.RunnableInputDigest{Path: "handler.py", Digest: handler},
-			Inputs:  []*basev0.RunnableInputDigest{{Path: "lib/helper.py", Digest: input}},
+	build := func(handler string, input string) *basev1.RunnableBuild {
+		return &basev1.RunnableBuild{
+			Handler: &basev1.RunnableInputDigest{Path: "handler.py", Digest: handler},
+			Inputs:  []*basev1.RunnableInputDigest{{Path: "lib/helper.py", Digest: input}},
 		}
 	}
 
@@ -61,42 +61,42 @@ func TestVerifyBuildInputsRejectsEvidenceThatDoesNotMatchTheSource(t *testing.T)
 func TestVerifyBuildInputsRejectsPathAndShapeMismatches(t *testing.T) {
 	dir := t.TempDir()
 	handlerDigest := writeFile(t, filepath.Join(dir, "handler.py"), []byte("x\n"))
-	handler := &basev0.RunnableInputDigest{Path: "handler.py", Digest: handlerDigest}
+	handler := &basev1.RunnableInputDigest{Path: "handler.py", Digest: handlerDigest}
 
-	require.ErrorContains(t, verifyBuildInputs(dir, &basev0.RunnableBuild{Handler: handler}, "other.py", nil),
+	require.ErrorContains(t, verifyBuildInputs(dir, &basev1.RunnableBuild{Handler: handler}, "other.py", nil),
 		"handler differs from the declaration")
-	require.ErrorContains(t, verifyBuildInputs(dir, &basev0.RunnableBuild{
+	require.ErrorContains(t, verifyBuildInputs(dir, &basev1.RunnableBuild{
 		Handler: handler,
-		Inputs:  []*basev0.RunnableInputDigest{{Path: "extra.py", Digest: handlerDigest}},
+		Inputs:  []*basev1.RunnableInputDigest{{Path: "extra.py", Digest: handlerDigest}},
 	}, "handler.py", nil), "build input paths differ from the declaration")
-	require.ErrorContains(t, verifyBuildInputs(dir, &basev0.RunnableBuild{Handler: handler}, "handler.py", []string{"missing.py"}),
+	require.ErrorContains(t, verifyBuildInputs(dir, &basev1.RunnableBuild{Handler: handler}, "handler.py", []string{"missing.py"}),
 		"build input paths differ from the declaration")
-	require.ErrorContains(t, verifyBuildInputs("", &basev0.RunnableBuild{Handler: handler}, "handler.py", nil),
+	require.ErrorContains(t, verifyBuildInputs("", &basev1.RunnableBuild{Handler: handler}, "handler.py", nil),
 		"not loaded from a directory")
 
 	// A declared input that vanished from the source must fail loudly rather
 	// than be silently treated as unchanged.
 	missingDigest := writeFile(t, filepath.Join(dir, "gone.py"), []byte("y\n"))
 	require.NoError(t, os.Remove(filepath.Join(dir, "gone.py")))
-	require.ErrorContains(t, verifyBuildInputs(dir, &basev0.RunnableBuild{
+	require.ErrorContains(t, verifyBuildInputs(dir, &basev1.RunnableBuild{
 		Handler: handler,
-		Inputs:  []*basev0.RunnableInputDigest{{Path: "gone.py", Digest: missingDigest}},
+		Inputs:  []*basev1.RunnableInputDigest{{Path: "gone.py", Digest: missingDigest}},
 	}, "handler.py", []string{"gone.py"}), "verify build input gone.py against the source")
 }
 
 // artifactFixture writes one archive and returns the matching descriptor and
 // emitted metadata, so each test below perturbs exactly one thing.
-func artifactFixture(t *testing.T, dir string, name string, content []byte) (*basev0.RunnableArtifact, *builderv0.PackageArtifact) {
+func artifactFixture(t *testing.T, dir string, name string, content []byte) (*basev1.RunnableArtifact, *builderv1.PackageArtifact) {
 	t.Helper()
 	digest := writeFile(t, filepath.Join(dir, name), content)
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	command := []string{"bin/python", "-m", "codefly_runnable"}
-	return &basev0.RunnableArtifact{
-		Kind: basev0.RunnableArtifact_ARCHIVE, Platform: platform,
+	return &basev1.RunnableArtifact{
+		Kind: basev1.RunnableArtifact_ARCHIVE, Platform: platform,
 		Reference: name, Digest: digest, Command: command,
-	}, &builderv0.PackageArtifact{
-		Kind: builderv0.PackageArtifact_ARCHIVE, Path: filepath.Join(dir, name),
-		Target: &builderv0.PackageTarget{Os: runtime.GOOS, Architecture: runtime.GOARCH},
+	}, &builderv1.PackageArtifact{
+		Kind: builderv1.PackageArtifact_ARCHIVE, Path: filepath.Join(dir, name),
+		Target: &builderv1.PackageTarget{Os: runtime.GOOS, Architecture: runtime.GOARCH},
 		Sha256: digest[len("sha256:"):], Command: command,
 	}
 }
@@ -116,40 +116,40 @@ func TestVerifyArtifactsAcceptsASymlinkedOutputDirectory(t *testing.T) {
 	artifact, emitted := artifactFixture(t, real, "word-count-0.0.1.tar.gz", []byte("archive bytes"))
 	emitted.Path = filepath.Join(link, "artifacts", "word-count-0.0.1.tar.gz")
 
-	require.NoError(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact}, []*builderv0.PackageArtifact{emitted}, filepath.Join(link, "artifacts")))
+	require.NoError(t, verifyArtifacts([]*basev1.RunnableArtifact{artifact}, []*builderv1.PackageArtifact{emitted}, filepath.Join(link, "artifacts")))
 }
 
 func TestVerifyArtifactsRejectsTamperedAndMismatchedArtifacts(t *testing.T) {
 	for _, test := range []struct {
 		name    string
-		perturb func(t *testing.T, dir string, artifact *basev0.RunnableArtifact, emitted *builderv0.PackageArtifact)
+		perturb func(t *testing.T, dir string, artifact *basev1.RunnableArtifact, emitted *builderv1.PackageArtifact)
 		message string
 	}{
-		{"content changed after packaging", func(t *testing.T, dir string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
+		{"content changed after packaging", func(t *testing.T, dir string, artifact *basev1.RunnableArtifact, _ *builderv1.PackageArtifact) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, artifact.GetReference()), []byte("changed"), 0600))
 		}, "content digest does not match"},
-		{"emitted digest disagrees", func(_ *testing.T, _ string, _ *basev0.RunnableArtifact, emitted *builderv0.PackageArtifact) {
+		{"emitted digest disagrees", func(_ *testing.T, _ string, _ *basev1.RunnableArtifact, emitted *builderv1.PackageArtifact) {
 			emitted.Sha256 = digestOfBytes([]byte("other"))[len("sha256:"):]
 		}, "does not match the emitted file metadata"},
-		{"emitted platform disagrees", func(_ *testing.T, _ string, _ *basev0.RunnableArtifact, emitted *builderv0.PackageArtifact) {
-			emitted.Target = &builderv0.PackageTarget{Os: "plan9", Architecture: "mips"}
+		{"emitted platform disagrees", func(_ *testing.T, _ string, _ *basev1.RunnableArtifact, emitted *builderv1.PackageArtifact) {
+			emitted.Target = &builderv1.PackageTarget{Os: "plan9", Architecture: "mips"}
 		}, "does not match the emitted file metadata"},
-		{"emitted command disagrees", func(_ *testing.T, _ string, _ *basev0.RunnableArtifact, emitted *builderv0.PackageArtifact) {
+		{"emitted command disagrees", func(_ *testing.T, _ string, _ *basev1.RunnableArtifact, emitted *builderv1.PackageArtifact) {
 			emitted.Command = []string{"sh", "-c", "curl evil"}
 		}, "does not match the emitted file metadata"},
-		{"emitted path points elsewhere", func(_ *testing.T, dir string, _ *basev0.RunnableArtifact, emitted *builderv0.PackageArtifact) {
+		{"emitted path points elsewhere", func(_ *testing.T, dir string, _ *basev1.RunnableArtifact, emitted *builderv1.PackageArtifact) {
 			emitted.Path = filepath.Join(dir, "somewhere-else.tar.gz")
 		}, "does not match the emitted file metadata"},
-		{"artifact kind is not an archive", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
-			artifact.Kind = basev0.RunnableArtifact_IMAGE
+		{"artifact kind is not an archive", func(_ *testing.T, _ string, artifact *basev1.RunnableArtifact, _ *builderv1.PackageArtifact) {
+			artifact.Kind = basev1.RunnableArtifact_IMAGE
 		}, "unsupported artifact kind"},
-		{"reference escapes the directory", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
+		{"reference escapes the directory", func(_ *testing.T, _ string, artifact *basev1.RunnableArtifact, _ *builderv1.PackageArtifact) {
 			artifact.Reference = "../escape.tar.gz"
 		}, "invalid or duplicate archive artifact filename"},
-		{"reference is the descriptor", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
+		{"reference is the descriptor", func(_ *testing.T, _ string, artifact *basev1.RunnableArtifact, _ *builderv1.PackageArtifact) {
 			artifact.Reference = PackageFile
 		}, "invalid or duplicate archive artifact filename"},
-		{"reference is a directory component", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
+		{"reference is a directory component", func(_ *testing.T, _ string, artifact *basev1.RunnableArtifact, _ *builderv1.PackageArtifact) {
 			artifact.Reference = "nested/archive.tar.gz"
 		}, "invalid or duplicate archive artifact filename"},
 	} {
@@ -157,7 +157,7 @@ func TestVerifyArtifactsRejectsTamperedAndMismatchedArtifacts(t *testing.T) {
 			dir := t.TempDir()
 			artifact, emitted := artifactFixture(t, dir, "word-count-0.0.1.tar.gz", []byte("archive bytes"))
 			test.perturb(t, dir, artifact, emitted)
-			require.ErrorContains(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact}, []*builderv0.PackageArtifact{emitted}, dir), test.message)
+			require.ErrorContains(t, verifyArtifacts([]*basev1.RunnableArtifact{artifact}, []*builderv1.PackageArtifact{emitted}, dir), test.message)
 		})
 	}
 }
@@ -171,17 +171,17 @@ func TestVerifyArtifactsRejectsSymlinkedAndIrregularArtifacts(t *testing.T) {
 	require.NoError(t, os.WriteFile(elsewhere, []byte("archive bytes"), 0600))
 	require.NoError(t, os.Remove(filepath.Join(dir, artifact.GetReference())))
 	require.NoError(t, os.Symlink(elsewhere, filepath.Join(dir, artifact.GetReference())))
-	require.ErrorContains(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact}, []*builderv0.PackageArtifact{emitted}, dir), "is not a regular file")
+	require.ErrorContains(t, verifyArtifacts([]*basev1.RunnableArtifact{artifact}, []*builderv1.PackageArtifact{emitted}, dir), "is not a regular file")
 }
 
 func TestVerifyArtifactsRejectsCountAndDuplicateMismatches(t *testing.T) {
 	dir := t.TempDir()
 	artifact, emitted := artifactFixture(t, dir, "word-count-0.0.1.tar.gz", []byte("archive bytes"))
 
-	require.ErrorContains(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact},
-		[]*builderv0.PackageArtifact{emitted, emitted}, dir), "package descriptor and emitted artifacts differ")
-	require.ErrorContains(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact, artifact},
-		[]*builderv0.PackageArtifact{emitted, emitted}, dir), "invalid or duplicate archive artifact filename")
+	require.ErrorContains(t, verifyArtifacts([]*basev1.RunnableArtifact{artifact},
+		[]*builderv1.PackageArtifact{emitted, emitted}, dir), "package descriptor and emitted artifacts differ")
+	require.ErrorContains(t, verifyArtifacts([]*basev1.RunnableArtifact{artifact, artifact},
+		[]*builderv1.PackageArtifact{emitted, emitted}, dir), "invalid or duplicate archive artifact filename")
 }
 
 // Everything the descriptor names gets digested; a file the agent never
@@ -190,8 +190,8 @@ func TestVerifyArtifactsRejectsCountAndDuplicateMismatches(t *testing.T) {
 func TestVerifyArtifactsRejectsUnreportedFiles(t *testing.T) {
 	dir := t.TempDir()
 	artifact, emitted := artifactFixture(t, dir, "word-count-0.0.1.tar.gz", []byte("archive bytes"))
-	artifacts := []*basev0.RunnableArtifact{artifact}
-	emittedFiles := []*builderv0.PackageArtifact{emitted}
+	artifacts := []*basev1.RunnableArtifact{artifact}
+	emittedFiles := []*builderv1.PackageArtifact{emitted}
 
 	require.NoError(t, verifyArtifacts(artifacts, emittedFiles, dir))
 

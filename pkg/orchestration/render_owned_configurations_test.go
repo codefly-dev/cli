@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -16,7 +16,7 @@ func TestEveryModeLeavesRenderOwnedConfigurationsToTheRender(t *testing.T) {
 	for _, mode := range []Mode{RunMode, CompileMode, LintMode, TestMode, BuildMode, SyncMode, DeployMode, SnapshotMode} {
 		t.Run(string(mode), func(t *testing.T) {
 			world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-				confs:       []*basev0.Configuration{workspaceConfiguration("ordinary", "MODE", "provided"), workspaceConfiguration("root", "MODE", "inherited")},
+				confs:       []*basev1.Configuration{workspaceConfiguration("ordinary", "MODE", "provided"), workspaceConfiguration("root", "MODE", "inherited")},
 				rootConfigs: []string{"root"},
 			})
 			world.Mode = mode
@@ -28,14 +28,14 @@ func TestEveryModeLeavesRenderOwnedConfigurationsToTheRender(t *testing.T) {
 			require.ElementsMatch(t, []string{"ordinary", "root"}, workspaceConfigurationNames(resolved))
 			// Build flows also initialize runtime peers through Runner.
 			runner := &Runner{world: world, instance: instance}
-			resolved, err = runner.workspaceConfigurations(t.Context(), nil, &basev0.RuntimeContext{})
+			resolved, err = runner.workspaceConfigurations(t.Context(), nil, &basev1.RuntimeContext{})
 			require.NoError(t, err)
 			require.ElementsMatch(t, []string{"ordinary", "root"}, workspaceConfigurationNames(resolved))
 			require.Equal(t, []string{"ordinary", "module-authority"}, service.WorkspaceConfigurationDependencies)
 			service.WorkspaceConfigurationDependencies = append(service.WorkspaceConfigurationDependencies, "unprovided")
 			_, err = builder.workspaceConfigurations(t.Context(), nil)
 			require.ErrorContains(t, err, "no configuration found for unprovided")
-			_, err = runner.workspaceConfigurations(t.Context(), nil, &basev0.RuntimeContext{})
+			_, err = runner.workspaceConfigurations(t.Context(), nil, &basev1.RuntimeContext{})
 			require.ErrorContains(t, err, "no configuration found for unprovided")
 		})
 	}
@@ -88,7 +88,7 @@ func TestRunNeverInheritsAuthoredRenderOwnedRootGroups(t *testing.T) {
 			world, service := referenceValidityWorld(t, workspace, func(world *World) { world.Mode = RunMode })
 			require.Equal(t, []string{"ordinary"}, world.effectiveWorkspaceConfigurationGroups(service.WorkspaceConfigurationDependencies))
 			runner := &Runner{world: world, instance: &coreservices.Instance{Service: service}}
-			resolved, err := runner.workspaceConfigurations(t.Context(), nil, &basev0.RuntimeContext{})
+			resolved, err := runner.workspaceConfigurations(t.Context(), nil, &basev1.RuntimeContext{})
 			require.NoError(t, err)
 			require.Equal(t, []string{"ordinary"}, workspaceConfigurationNames(resolved))
 			// The loaded root groups stay intact for the render's authored-file

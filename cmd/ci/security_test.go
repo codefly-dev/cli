@@ -7,21 +7,21 @@ import (
 	"testing"
 
 	coreaudit "github.com/codefly-dev/core/agents/services/audit"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 func TestSummarizeAuditResponseCountsTypedEvidence(t *testing.T) {
-	response := &builderv0.AuditResponse{
-		State:    &builderv0.AuditStatus{State: builderv0.AuditStatus_FINDINGS},
+	response := &builderv1.AuditResponse{
+		State:    &builderv1.AuditStatus{State: builderv1.AuditStatus_FINDINGS},
 		Tool:     "scanner",
 		Language: "typescript",
-		Findings: []*builderv0.AuditFinding{
-			{Severity: builderv0.AuditFinding_LOW},
-			{Severity: builderv0.AuditFinding_MEDIUM},
-			{Severity: builderv0.AuditFinding_HIGH},
-			{Severity: builderv0.AuditFinding_CRITICAL},
+		Findings: []*builderv1.AuditFinding{
+			{Severity: builderv1.AuditFinding_LOW},
+			{Severity: builderv1.AuditFinding_MEDIUM},
+			{Severity: builderv1.AuditFinding_HIGH},
+			{Severity: builderv1.AuditFinding_CRITICAL},
 		},
-		Outdated: []*builderv0.OutdatedDep{{Package: "one"}, {Package: "two"}},
+		Outdated: []*builderv1.OutdatedDep{{Package: "one"}, {Package: "two"}},
 	}
 	want := ReportAudit{
 		State: "FINDINGS", Tool: "scanner", Language: "typescript",
@@ -39,22 +39,22 @@ func TestAuditHasHighSeverityAllowsMediumAndNil(t *testing.T) {
 	if auditHasHighSeverity(nil) {
 		t.Fatal("nil audit response tripped the gate")
 	}
-	response := &builderv0.AuditResponse{Findings: []*builderv0.AuditFinding{{Severity: builderv0.AuditFinding_MEDIUM}}}
+	response := &builderv1.AuditResponse{Findings: []*builderv1.AuditFinding{{Severity: builderv1.AuditFinding_MEDIUM}}}
 	if auditHasHighSeverity(response) {
 		t.Fatal("medium finding tripped the high-severity gate")
 	}
 }
 
 func TestCoreTrivyDatabaseRecoveryContractReturnsFinalAuditResponse(t *testing.T) {
-	clean := &builderv0.AuditResponse{
-		State: &builderv0.AuditStatus{State: builderv0.AuditStatus_CLEAN},
+	clean := &builderv1.AuditResponse{
+		State: &builderv1.AuditStatus{State: builderv1.AuditStatus_CLEAN},
 		Tool:  "trivy",
 	}
-	audit := func(context.Context, *builderv0.AuditRequest) (*builderv0.AuditResponse, error) {
+	audit := func(context.Context, *builderv1.AuditRequest) (*builderv1.AuditResponse, error) {
 		return clean, nil
 	}
 
-	response, err := coreaudit.AuditWithTrivyDatabaseRecovery(context.Background(), &builderv0.AuditRequest{}, audit)
+	response, err := coreaudit.AuditWithTrivyDatabaseRecovery(context.Background(), &builderv1.AuditRequest{}, audit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,9 +72,9 @@ func TestSafeCIArtifactNameCannotEscapeOutputDirectory(t *testing.T) {
 func TestImageEvidenceFilenameKeysOnTheScanIdentity(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	other := "sha256:" + strings.Repeat("b", 64)
-	amd64 := &builderv0.ImageSBOM{Digest: digest, Platform: "linux/amd64"}
-	arm64 := &builderv0.ImageSBOM{Digest: digest, Platform: "linux/arm64"}
-	second := &builderv0.ImageSBOM{Digest: other, Platform: "linux/amd64"}
+	amd64 := &builderv1.ImageSBOM{Digest: digest, Platform: "linux/amd64"}
+	arm64 := &builderv1.ImageSBOM{Digest: digest, Platform: "linux/arm64"}
+	second := &builderv1.ImageSBOM{Digest: other, Platform: "linux/amd64"}
 
 	if imageEvidenceFilename(amd64) == imageEvidenceFilename(arm64) {
 		t.Fatal("two platforms of one multi-architecture image collided on one filename")
@@ -82,7 +82,7 @@ func TestImageEvidenceFilenameKeysOnTheScanIdentity(t *testing.T) {
 	if imageEvidenceFilename(amd64) == imageEvidenceFilename(second) {
 		t.Fatal("two service-owned images collided on one filename")
 	}
-	if got, want := imageEvidenceFilename(&builderv0.ImageSBOM{Digest: digest, Platform: "linux/amd64"}), imageEvidenceFilename(amd64); got != want {
+	if got, want := imageEvidenceFilename(&builderv1.ImageSBOM{Digest: digest, Platform: "linux/amd64"}), imageEvidenceFilename(amd64); got != want {
 		t.Fatalf("one scanned image did not deduplicate: %q vs %q", got, want)
 	}
 	if name := imageEvidenceFilename(amd64); strings.Contains(name, "/") {
@@ -91,7 +91,7 @@ func TestImageEvidenceFilenameKeysOnTheScanIdentity(t *testing.T) {
 }
 
 func TestImageEvidenceAssociationsKeepEveryServiceClaim(t *testing.T) {
-	image := &builderv0.ImageSBOM{Subjects: []*builderv0.ImageSubject{
+	image := &builderv1.ImageSBOM{Subjects: []*builderv1.ImageSubject{
 		{Service: "management/worker", Role: "runtime", Reference: "repo/worker:v1"},
 		{Service: "billing/accounts", Role: "migration"},
 	}}

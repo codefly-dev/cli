@@ -4377,7 +4377,7 @@ declares is also re-exported flat, so `import { Installation, AuditService }`
 keeps working. A name two packages declare (protobuf keeps names unique within a
 package, not across the dependency graph) is not exported flat: a comment at the
 top of the entry point lists it with each namespace that reaches it, for example
-`codefly_base_v0_pb.WorkContextV1` and `host_authority_v1_pb.WorkContextV1`.
+`codefly_base_v1_pb.WorkContextV1` and `host_authority_v1_pb.WorkContextV1`.
 Generation refuses, naming both, when two facades or package-less files would
 claim one name, since nothing else would reach either. The package barrels live
 in `src/packages/<package>.ts`. The scaffolded `package.json` exports only `.`,
@@ -4562,8 +4562,8 @@ mutation with `RECOVERY_RECEIPT`, attempted once — at-most-once until the SDK'
 receipt guard follows the derivation, an uncertain outcome surfaced as
 unknown. A receipt lookup (another operation's `lookup_method`, or
 `Lookup<Op>` beside `<Op>`) is never derived. The tool's name and description are the method's name and
-leading doc comment. The `codefly.runnable.v0.operation` option overrides
-those defaults, and `codefly.runnable.v0.exclude` keeps a method from every
+leading doc comment. The `codefly.runnable.v1.operation` option overrides
+those defaults, and `codefly.runnable.v1.exclude` keeps a method from every
 agent. Every operation is a tool, and who reaches it is a matter of grants: a
 caller offers a person only the tools whose binding the person's grants cover,
 so a runtime-only or administrative operation derives and never reaches a
@@ -4593,7 +4593,7 @@ fix, rather than leaving an empty index in silence.
 The run reports each operation with its origin (`option`, `default`, or
 `marker` for a route) and effect, lists the methods left plain calls and why, and — when any operation
 was derived by default — counts them, names the mutations, and points at
-`codefly.runnable.v0.exclude`. A release name longer than 50 characters is
+`codefly.runnable.v1.exclude`. A release name longer than 50 characters is
 shortened deterministically to a stable prefix and an eight-digit digest, so
 a long method name never fails generation.
 

@@ -8,8 +8,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -23,10 +23,10 @@ func installConfigurationResolvingAgents(t *testing.T) {
 	serviceFlow = func(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service,
 		env *environments.Environment, build renderBuild, sink orchestration.OutputSink,
 		destination func(*resources.Module, *resources.Service) string,
-		record func(map[string]*builderv0.DeploymentOutput), recordServices func(map[string]*resources.Service),
+		record func(map[string]*builderv1.DeploymentOutput), recordServices func(map[string]*resources.Service),
 		recordEndpoints func(map[string]map[string]string),
 		_ func(map[string]map[string]string),
-		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
+		recordConfigurations func(map[string]*basev1.Configuration, map[string][]string),
 		recordPorts func(map[string]map[string]uint32),
 		_ func(map[string]string),
 	) error {
@@ -46,7 +46,7 @@ func installConfigurationResolvingAgents(t *testing.T) {
 		writeConsumerTree(t, destination(module, service), env.Name, env.ModuleNamespace(workspace, module.Name), service.Name, "database.example:5432")
 		unique := resources.ServiceUnique(module.Name, service.Name)
 		if record != nil {
-			record(map[string]*builderv0.DeploymentOutput{unique: fakeRestrictedOutput()})
+			record(map[string]*builderv1.DeploymentOutput{unique: fakeRestrictedOutput()})
 		}
 		if recordServices != nil {
 			recordServices(map[string]*resources.Service{unique: service})

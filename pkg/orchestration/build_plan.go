@@ -22,7 +22,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/timings"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -55,7 +55,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv1.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := b.world.checkDisposableImagePolicy(); err != nil {
 		return err
@@ -129,8 +129,8 @@ func (b *Builder) decideImageReuse(
 	ctx context.Context,
 	w *wool.Wool,
 	outputDir, contextRoot string,
-	plan *builderv0.DockerBuildPlan,
-	recipe *builderv0.DockerBuildRecipe,
+	plan *builderv1.DockerBuildPlan,
+	recipe *builderv1.DockerBuildRecipe,
 	shouldPush bool,
 ) (imageReuse, error) {
 	defer timings.Start("image.reuse-decision")()
@@ -255,7 +255,7 @@ func (b *Builder) decideImageReuse(
 // rebuildDecision is --rebuild's: build again, and still never over a
 // published release — a release tag the registry holds is the release's
 // build, so the rebuild goes apart from it.
-func (b *Builder) rebuildDecision(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr error, shouldPush bool, probeBuilder string) (imageReuse, error) {
+func (b *Builder) rebuildDecision(ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, decision imageReuse, identityErr error, shouldPush bool, probeBuilder string) (imageReuse, error) {
 	if !shouldPush || decision.image != "" || !releasedVersionTag(recipe.GetImage()) {
 		return decision, nil
 	}
@@ -278,7 +278,7 @@ func (b *Builder) rebuildDecision(ctx context.Context, w *wool.Wool, recipe *bui
 // qualified by its input identity, as an agent override's build is
 // (override_build.go). The declared version stays the release's number; the
 // cell pins the digest, so the qualified tag is what the render delivers.
-func (b *Builder) publishedDecision(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr error, probeBuilder string) (*builderv0.DockerBuildRecipe, imageReuse, bool, error) {
+func (b *Builder) publishedDecision(ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, decision imageReuse, identityErr error, probeBuilder string) (*builderv1.DockerBuildRecipe, imageReuse, bool, error) {
 	adopt, other, err := b.adoptPublished(ctx, w, recipe, decision, probeBuilder)
 	if err != nil {
 		return recipe, decision, false, err
@@ -307,7 +307,7 @@ func (b *Builder) publishedDecision(ctx context.Context, w *wool.Wool, recipe *b
 // <version>-build.<input identity>, the tag an agent override's build takes
 // (override_build.go). A build with an input that cannot be bound has no
 // identity to be named by, and is refused rather than pushed over the release.
-func (b *Builder) buildApart(w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr, why error) (imageReuse, error) {
+func (b *Builder) buildApart(w *wool.Wool, recipe *builderv1.DockerBuildRecipe, decision imageReuse, identityErr, why error) (imageReuse, error) {
 	if decision.identity.Key == "" {
 		return decision, w.Wrapf(why, "%s holds a published build, and an image input cannot be bound to name this build apart from it (%v)", recipe.GetImage(), identityErr)
 	}
@@ -322,7 +322,7 @@ func (b *Builder) buildApart(w *wool.Wool, recipe *builderv0.DockerBuildRecipe, 
 // again, or — for a released tag — why it holds another build than this one
 // (other), which the caller builds apart from it. A build-qualified tag that
 // holds other inputs is refused outright: it names one identity.
-func (b *Builder) adoptPublished(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, probeBuilder string) (adopt *imageCacheEntry, other, err error) {
+func (b *Builder) adoptPublished(ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, decision imageReuse, probeBuilder string) (adopt *imageCacheEntry, other, err error) {
 	digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder)
 	if err != nil && !isImageNotFound(err) {
 		// Only the registry saying the tag does not exist means it is not
@@ -346,7 +346,7 @@ func (b *Builder) adoptPublished(ctx context.Context, w *wool.Wool, recipe *buil
 // holds at digest and returns the entry that adopts it, nothing when it is to
 // be built again (it records no inputs), why a released tag holds another
 // build (other), or the refusal.
-func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, decision imageReuse, digest, probeBuilder string) (*imageCacheEntry, error, error) {
+func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, decision imageReuse, digest, probeBuilder string) (*imageCacheEntry, error, error) {
 	identity := decision.identity
 	labels, labelErr := resolveImageBuildLabels(ctx, recipe.GetImage(), probeBuilder)
 	release := decision.image == ""
@@ -396,7 +396,7 @@ func (b *Builder) judgePublishedRelease(ctx context.Context, w *wool.Wool, recip
 // path to this same placeholder, so an identity computed over these equals the
 // one computed over the fetched paths — which is what lets the reuse decision
 // precede the fetch.
-func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
+func placeholderProxies(recipe *builderv1.DockerBuildRecipe) map[string]string {
 	downloads := recipe.GetGoModuleDownloads()
 	if len(downloads) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
 		return nil
@@ -417,7 +417,7 @@ func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
 // mirror. The reuse decision is taken on this form, so it binds the platforms
 // the build will actually run and probes the registry the image is pushed to;
 // the manifests keep the name the cell pulls, with the pushed digest.
-func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush bool) (*builderv0.DockerBuildRecipe, error) {
+func (b *Builder) recipeAsBuilt(recipe *builderv1.DockerBuildRecipe, shouldPush bool) (*builderv1.DockerBuildRecipe, error) {
 	if err := b.world.checkDisposableImagePolicy(); err != nil {
 		return nil, err
 	}
@@ -458,7 +458,7 @@ func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush 
 // the committed copy for a pinned release the CLI materialized
 // (pinnedContext), its files otherwise. The reuse decision and the build call
 // it alike, so both read one context.
-func (b *Builder) prepareContext(ctx context.Context, contextRoot, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*preparedRecipeContext, error) {
+func (b *Builder) prepareContext(ctx context.Context, contextRoot, contextDir, outputDir string, recipe *builderv1.DockerBuildRecipe) (*preparedRecipeContext, error) {
 	pinned, err := b.pinnedContext(contextRoot)
 	if err != nil {
 		return nil, err
@@ -475,7 +475,7 @@ func (b *Builder) prepareContext(ctx context.Context, contextRoot, contextDir, o
 // go.sum of its commit, which are what Docker is handed and what the identity
 // digests, never a working file a local run rewrote in the module cache. The
 // proxy outlives the context, which is removed once the fetch is done.
-func (b *Builder) prefetchGoModules(ctx context.Context, contextRoot, outputDir string, recipe *builderv0.DockerBuildRecipe) (map[string]string, error) {
+func (b *Builder) prefetchGoModules(ctx context.Context, contextRoot, outputDir string, recipe *builderv1.DockerBuildRecipe) (map[string]string, error) {
 	if len(recipe.GetGoModuleDownloads()) == 0 {
 		return nil, nil
 	}
@@ -522,8 +522,8 @@ func (b *Builder) pinnedContext(contextRoot string) (bool, error) {
 // An EMITTED plan claims only the files it wrote — the Dockerfile and its
 // ignore — and the application's inputs are the service's own tree, so the
 // context stays the service directory.
-func recipeContextRoot(serviceDir, outputDir string, plan *builderv0.DockerBuildPlan) string {
-	if plan.GetScope() == builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE && planAssembledAContext(plan) {
+func recipeContextRoot(serviceDir, outputDir string, plan *builderv1.DockerBuildPlan) string {
+	if plan.GetScope() == builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE && planAssembledAContext(plan) {
 		return outputDir
 	}
 	return serviceDir
@@ -548,7 +548,7 @@ func recipeContextRoot(serviceDir, outputDir string, plan *builderv0.DockerBuild
 // — those plans write two files and nothing else — so the fleet does not have
 // to be swept before this ships. Remove it once no released agent declares TREE
 // without assembling, and the field and the scope can stop disagreeing.
-func planAssembledAContext(plan *builderv0.DockerBuildPlan) bool {
+func planAssembledAContext(plan *builderv1.DockerBuildPlan) bool {
 	control := make(map[string]bool, 2*len(plan.GetRecipes()))
 	for _, recipe := range plan.GetRecipes() {
 		if path := recipe.GetDockerfile(); path != "" {
@@ -574,8 +574,8 @@ func (b *Builder) buildRecipe(
 	ctx context.Context,
 	w *wool.Wool,
 	outputDir, contextRoot string,
-	plan *builderv0.DockerBuildPlan,
-	recipe *builderv0.DockerBuildRecipe,
+	plan *builderv1.DockerBuildPlan,
+	recipe *builderv1.DockerBuildRecipe,
 	shouldPush bool,
 	prefetched map[string]string,
 	reuse *imageReuse,
@@ -724,7 +724,7 @@ func (b *Builder) buildRecipe(
 // streams woven into one terminal name no service and read as neither, while a
 // build that succeeded is already described by the completion line below.
 func (b *Builder) runImageBuild(
-	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, args []string,
+	ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, args []string,
 ) (time.Duration, error) {
 	// From the moment the build starts, pushed or not, finished or not, what the
 	// registry said about this reference is no longer something to rely on.
@@ -817,7 +817,7 @@ func (b *Builder) selectImageBuilder(ctx context.Context, multiArch bool, mirror
 // would wrongly signal that the push failed. Evidence derivation refuses the
 // unpinned subject on its own.
 func (b *Builder) resolvePushedDigest(
-	w *wool.Wool, metadataFile string, recipe *builderv0.DockerBuildRecipe, captureDigest bool,
+	w *wool.Wool, metadataFile string, recipe *builderv1.DockerBuildRecipe, captureDigest bool,
 ) (string, error) {
 	if metadataFile == "" {
 		return "", nil
@@ -843,7 +843,7 @@ func (b *Builder) resolvePushedDigest(
 // Fatal when evidence was asked for and merely noted otherwise: without an
 // identity there is nothing to record, so no later run may reuse this build.
 func (b *Builder) resolveLoadedImage(
-	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe,
+	ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe,
 	shouldPush, resolveEvidence, recordable bool,
 ) (string, error) {
 	if shouldPush || (!resolveEvidence && !recordable) {
@@ -868,7 +868,7 @@ func (b *Builder) resolveLoadedImage(
 // built, and the next run simply rebuilds, which is the behaviour without a
 // cache at all.
 func (b *Builder) recordImageForReuse(
-	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, scope imageBuildScope,
+	ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, scope imageBuildScope,
 	identity imageIdentity, imageCache *imageBuildCache, shouldPush bool,
 	pushedDigest, loadedImageID string, recordable bool,
 ) {
@@ -896,7 +896,7 @@ func (b *Builder) recordImageForReuse(
 // a revert, a branch switch, a stash pop. Nothing is recorded in that case. The
 // cost is one rebuild; the cost of the alternative is a stale image nobody can
 // see.
-func (b *Builder) contextHeldStill(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, scope imageBuildScope, identity imageIdentity) bool {
+func (b *Builder) contextHeldStill(ctx context.Context, w *wool.Wool, recipe *builderv1.DockerBuildRecipe, scope imageBuildScope, identity imageIdentity) bool {
 	after, err := contextDigest(ctx, recipe, scope)
 	if err != nil {
 		w.Debug("cannot re-read the build context after the build; recording no reuse entry",
@@ -915,7 +915,7 @@ func (b *Builder) contextHeldStill(ctx context.Context, w *wool.Wool, recipe *bu
 // flow from a build that just ran: the digest a snapshot pins and the resolved
 // image every SBOM subject is bound to come from the entry, which is only
 // adopted after the image it names has been proven to still exist.
-func (b *Builder) adoptCachedImage(recipe *builderv0.DockerBuildRecipe, entry *imageCacheEntry, captureDigest, resolveEvidence bool) {
+func (b *Builder) adoptCachedImage(recipe *builderv1.DockerBuildRecipe, entry *imageCacheEntry, captureDigest, resolveEvidence bool) {
 	if entry.Pushed {
 		if captureDigest {
 			b.imageDigest = entry.Digest
@@ -934,7 +934,7 @@ func (b *Builder) adoptCachedImage(recipe *builderv0.DockerBuildRecipe, entry *i
 // into the daemon. A caller-provided builder wins; otherwise multi-platform
 // builds run on the dedicated container-driver builder. A metadata file captures
 // the pushed manifest digest.
-func buildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string) []string {
+func buildxArgs(recipe *builderv1.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string) []string {
 	args := []string{buildxCommand, "build"}
 	switch {
 	case builderName != "":
@@ -991,7 +991,7 @@ func platformsIncludeDeploymentArch(platforms []string) bool {
 // tree, not the recipe fields, so an unconstrained dockerfile could point
 // buildx -f at an out-of-tree file — the same escape recipeContext guards for the
 // build context.
-func recipeDockerfile(outputDir string, recipe *builderv0.DockerBuildRecipe) (string, error) {
+func recipeDockerfile(outputDir string, recipe *builderv1.DockerBuildRecipe) (string, error) {
 	dockerfile := filepath.Join(outputDir, filepath.FromSlash(recipe.GetDockerfile()))
 	rel, err := filepath.Rel(outputDir, dockerfile)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -1002,7 +1002,7 @@ func recipeDockerfile(outputDir string, recipe *builderv0.DockerBuildRecipe) (st
 
 // recipeContext resolves a recipe's build context against the root the plan's
 // scope selects, and rejects a context that escapes it.
-func recipeContext(root string, recipe *builderv0.DockerBuildRecipe) (string, error) {
+func recipeContext(root string, recipe *builderv1.DockerBuildRecipe) (string, error) {
 	relative := recipe.GetContext()
 	if relative == "" || relative == "." {
 		return root, nil
@@ -1047,7 +1047,7 @@ func (p *preparedRecipeContext) scope(outputDir, workspaceDir string) imageBuild
 // the context is the code of a pinned release the CLI materialized
 // (pinnedContext): it is then read from its commit, not from its files
 // (committedSourceContext).
-func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe, pinned bool) (*preparedRecipeContext, error) {
+func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, recipe *builderv1.DockerBuildRecipe, pinned bool) (*preparedRecipeContext, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1315,7 +1315,7 @@ func underDirectory(dir, path string) bool {
 // environment that declares no cluster publishes a portable artifact rather
 // than an image for a cell: it keeps the recipe's platforms, which must still
 // include the architecture every deployment so far has run on.
-func (b *Builder) targetEnvironmentPlatforms(recipe *builderv0.DockerBuildRecipe) (*builderv0.DockerBuildRecipe, error) {
+func (b *Builder) targetEnvironmentPlatforms(recipe *builderv1.DockerBuildRecipe) (*builderv1.DockerBuildRecipe, error) {
 	env := b.world.Env
 	targetsCell := b.world.Mode == SnapshotMode || b.world.Mode == DeployMode
 	if env == nil || ((env.Cluster == nil || env.Cluster.Kind == "") && !targetsCell) {

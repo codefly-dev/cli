@@ -9,7 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -42,7 +42,7 @@ func TestSourceAttachmentPreservesSelectionAndBuilderIdentity(t *testing.T) {
 		if call.Method != "Builder.Load" {
 			continue
 		}
-		request := &builderv0.LoadRequest{}
+		request := &builderv1.LoadRequest{}
 		require.NoError(t, protojson.Unmarshal(call.Request, request))
 		require.Equal(t, instance.Identity.Name, request.GetIdentity().GetName())
 		require.Equal(t, instance.Identity.Module, request.GetIdentity().GetModule())

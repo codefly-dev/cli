@@ -24,7 +24,7 @@ func docWith(env string, bindings ...*hostprovider.Binding) *hostprovider.Docume
 		m[b.Name] = b
 	}
 	return &hostprovider.Document{
-		Schema:       hostprovider.BindingsSchemaV0,
+		Schema:       hostprovider.BindingsSchemaV1,
 		Environments: map[string]map[string]*hostprovider.Binding{env: m},
 	}
 }

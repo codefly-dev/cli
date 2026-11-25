@@ -9,7 +9,7 @@ import (
 
 	"github.com/asottile/dockerfile"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/services"
 	"google.golang.org/protobuf/proto"
 )
@@ -29,7 +29,7 @@ func (b *Builder) selectBuildImages(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	capabilities, err := client.BuildCapabilities(ctx, &builderv0.BuildCapabilitiesRequest{})
+	capabilities, err := client.BuildCapabilities(ctx, &builderv1.BuildCapabilitiesRequest{})
 	if err != nil {
 		return fmt.Errorf("cannot inspect image inputs for %s: %w", b.instance.Unique(), err)
 	}
@@ -43,7 +43,7 @@ func (b *Builder) selectBuildImages(ctx context.Context) error {
 // verifyBuildImages closes the producer/consumer boundary: a new getter or a
 // claimed capability cannot silently discard environment policy. It runs after
 // normal recipe integrity checks, before any prefetch or image execution.
-func verifyBuildImages(outputDir string, plan *builderv0.DockerBuildPlan, bindings []*builderv0.BuildImageInput) error {
+func verifyBuildImages(outputDir string, plan *builderv1.DockerBuildPlan, bindings []*builderv1.BuildImageInput) error {
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -156,7 +156,7 @@ func externalPolicyImages(path string) ([]string, error) {
 	return refs, nil
 }
 
-func withImageBindingsLabel(args []string, bindings []*builderv0.BuildImageInput) []string {
+func withImageBindingsLabel(args []string, bindings []*builderv1.BuildImageInput) []string {
 	if len(bindings) == 0 {
 		return args
 	}
@@ -165,7 +165,7 @@ func withImageBindingsLabel(args []string, bindings []*builderv0.BuildImageInput
 }
 
 // qualifyBoundImage keeps environment-specific inputs apart from owner releases.
-func qualifyBoundImage(recipe *builderv0.DockerBuildRecipe, decision imageReuse, identityErr error, shouldPush bool, bindings []*builderv0.BuildImageInput) (*builderv0.DockerBuildRecipe, imageReuse, error) {
+func qualifyBoundImage(recipe *builderv1.DockerBuildRecipe, decision imageReuse, identityErr error, shouldPush bool, bindings []*builderv1.BuildImageInput) (*builderv1.DockerBuildRecipe, imageReuse, error) {
 	if len(bindings) == 0 {
 		return recipe, decision, nil
 	}
@@ -180,7 +180,7 @@ func qualifyBoundImage(recipe *builderv0.DockerBuildRecipe, decision imageReuse,
 	return recipe, decision, nil
 }
 
-func (b *Builder) verifyImagePlan(outputDir string, plan *builderv0.DockerBuildPlan) error {
+func (b *Builder) verifyImagePlan(outputDir string, plan *builderv1.DockerBuildPlan) error {
 	if plan != nil {
 		if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 			return fmt.Errorf("cannot verify build recipe for %s: %w", b.instance.Unique(), err)

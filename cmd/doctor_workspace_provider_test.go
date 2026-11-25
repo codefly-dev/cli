@@ -24,7 +24,7 @@ func TestDoctorWorkspace_NoBindingsFileIsClean(t *testing.T) {
 }
 
 func TestDoctorWorkspace_ValidBindingReported(t *testing.T) {
-	dir := workspaceWithBindings(t, `schema: codefly.provider-bindings/v0
+	dir := workspaceWithBindings(t, `schema: codefly.provider-bindings/v1
 environments:
   local:
     billing:
@@ -50,7 +50,7 @@ environments:
 }
 
 func TestDoctorWorkspace_SecretInSpecFailsClosed(t *testing.T) {
-	dir := workspaceWithBindings(t, `schema: codefly.provider-bindings/v0
+	dir := workspaceWithBindings(t, `schema: codefly.provider-bindings/v1
 environments:
   local:
     billing:

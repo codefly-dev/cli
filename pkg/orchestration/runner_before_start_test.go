@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	agentservices "github.com/codefly-dev/core/agents/services"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -24,7 +24,7 @@ type beforeStartPeer struct {
 	fail       atomic.Bool
 }
 
-func (peer *beforeStartPeer) Start(context.Context, *runtimev0.StartRequest) (*runtimev0.StartResponse, error) {
+func (peer *beforeStartPeer) Start(context.Context, *runtimev1.StartRequest) (*runtimev1.StartResponse, error) {
 	count := peer.starts.Add(1)
 	if peer.admissions.Load() < count {
 		return nil, errors.New("Start arrived without its preceding admission")
@@ -32,7 +32,7 @@ func (peer *beforeStartPeer) Start(context.Context, *runtimev0.StartRequest) (*r
 	if peer.fail.Load() {
 		return nil, errors.New("controlled start failure")
 	}
-	return &runtimev0.StartResponse{Status: &runtimev0.StartStatus{State: runtimev0.StartStatus_STARTED}}, nil
+	return &runtimev1.StartResponse{Status: &runtimev1.StartStatus{State: runtimev1.StartStatus_STARTED}}, nil
 }
 
 func TestRuntimeStartCompletionReportsActualSuccess(t *testing.T) {
@@ -73,7 +73,7 @@ func beforeStartRunner(t *testing.T) (*Runner, *World, *beforeStartPeer) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
-	runtimev0.RegisterRuntimeServer(server, peer)
+	runtimev1.RegisterRuntimeServer(server, peer)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))

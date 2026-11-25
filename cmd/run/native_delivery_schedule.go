@@ -12,7 +12,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -28,14 +28,14 @@ import (
 
 // launcherFlow is what the launcher reads from the run's flow.
 type launcherFlow interface {
-	WorkspaceConfigurationsFor(context.Context, *resources.Service) ([]*basev0.Configuration, error)
+	WorkspaceConfigurationsFor(context.Context, *resources.Service) ([]*basev1.Configuration, error)
 	World() *orchestration.World
 	ServiceFromUnique(unique string) (*resources.Service, error)
 	GetAddressForEndpoint(ctx context.Context, module, service, endpoint string) (string, error)
 	GRPCEndpointTarget(ctx context.Context, module, service, endpoint string) (orchestration.GRPCTarget, error)
 	ServiceRuntimeContext(unique string) string
-	EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error)
-	ReadyEndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess, services []string) (map[string]string, error)
+	EndpointCarriers(ctx context.Context, module string, access *basev1.NetworkAccess) (map[string]string, error)
+	ReadyEndpointCarriers(ctx context.Context, module string, access *basev1.NetworkAccess, services []string) (map[string]string, error)
 	LocalAuthorityServices() []string
 	CheckRoutingSnapshot(ctx context.Context, workspace *resources.Workspace) error
 	ServiceReadiness(ctx context.Context, service string) *orchestration.ReadinessFailure

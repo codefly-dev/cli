@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -142,7 +142,7 @@ func TestNoCompositionAnswersAReferenceWithAnEndpointItDidNotName(t *testing.T) 
 			continue
 		}
 
-		var recorded []*basev0.NetworkMapping
+		var recorded []*basev1.NetworkMapping
 		for _, endpoint := range endpoints {
 			name, api := endpoint[0], endpoint[1]
 			switch modes[name] {

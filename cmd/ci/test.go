@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -151,8 +151,8 @@ func initTestService(ctx context.Context, workspace *resources.Workspace, module
 	return flow, nil
 }
 
-func testRequestForSuite(suite string, failFast bool) *runtimev0.TestRequest {
-	return &runtimev0.TestRequest{Suite: suite, FailFast: failFast}
+func testRequestForSuite(suite string, failFast bool) *runtimev1.TestRequest {
+	return &runtimev1.TestRequest{Suite: suite, FailFast: failFast}
 }
 
 func testService(ctx context.Context, flow *orchestration.Flow) error {

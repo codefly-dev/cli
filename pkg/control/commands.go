@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/engine"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 )
 
 // serviceBehavior resolves a service and binds it to the plane's shared host.
@@ -26,7 +26,7 @@ func (p *planeImpl) ListCommands(ctx context.Context, service string) ([]Command
 	if err != nil {
 		return nil, err
 	}
-	resp, err := behavior.ListCommands(ctx, &agentv0.ListCommandsRequest{})
+	resp, err := behavior.ListCommands(ctx, &agentv1.ListCommandsRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("list commands: %w", err)
 	}
@@ -54,7 +54,7 @@ func (p *planeImpl) RunCommand(ctx context.Context, req RunCommandRequest) (Comm
 	if err != nil {
 		return CommandResult{}, err
 	}
-	resp, err := behavior.RunCommand(ctx, &agentv0.RunPluginCommandRequest{
+	resp, err := behavior.RunCommand(ctx, &agentv1.RunPluginCommandRequest{
 		Command: req.Command,
 		Args:    req.Args,
 	})

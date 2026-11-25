@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/wool"
 	"github.com/moby/patternmatcher"
 )
@@ -61,7 +61,7 @@ type committedSource struct {
 // the verified-package cache holds no repository, and an assembled context
 // under an ignored directory is not in one — in which case the working tree is
 // the context, as for a checkout the developer owns.
-func committedSourceContext(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) (*committedSource, error) {
+func committedSourceContext(ctx context.Context, contextDir, outputDir string, recipe *builderv1.DockerBuildRecipe) (*committedSource, error) {
 	w := wool.Get(ctx).In("orchestration.committedSourceContext")
 	top, prefix, commit, ok := committedLocation(ctx, contextDir)
 	if !ok {
@@ -152,7 +152,7 @@ func (source *committedSource) checkout(ctx context.Context, top, prefix string)
 // working context and the recipe's ignore policy lets Docker send, recording
 // the outermost path each entry added so the digest can leave it out. An
 // ignored path is never a committed one, so nothing committed is overwritten.
-func (source *committedSource) carryIgnored(ctx context.Context, contextDir, outputDir string, recipe *builderv0.DockerBuildRecipe) error {
+func (source *committedSource) carryIgnored(ctx context.Context, contextDir, outputDir string, recipe *builderv1.DockerBuildRecipe) error {
 	ignored := sourceIgnoredPaths(ctx, contextDir)
 	if len(ignored) == 0 {
 		return nil

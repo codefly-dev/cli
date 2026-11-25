@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
-	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
+	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v1/cliv1connect"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +29,7 @@ func TestHandlerServesConnectUnary(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/codefly.cli.v0.CLI/Ping", strings.NewReader("{}"))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/codefly.cli.v1.CLI/Ping", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestHandlerServesConnectUnary(t *testing.T) {
 	graphSrv := httptest.NewServer(graphHandler)
 	defer graphSrv.Close()
 
-	graphReq, err := http.NewRequest(http.MethodPost, graphSrv.URL+"/codefly.cli.v0.CLI/GetWorkspaceServiceDependencyGraph", strings.NewReader("{}"))
+	graphReq, err := http.NewRequest(http.MethodPost, graphSrv.URL+"/codefly.cli.v1.CLI/GetWorkspaceServiceDependencyGraph", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/monorepo"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -595,12 +595,12 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	log.Info("  %s", moduleGraphLine(source.prepared, dir, standaloneModuleGraph))
 	command.Env = agentBuildChildEnvironment(source.home, goWorkFile, append([]string{childCIEnv, childNoColorEnv}, source.childAgentSource()...)...)
-	response := &builderv0.PackageResponse{}
+	response := &builderv1.PackageResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Package", response); err != nil {
 		res.err = err
 		return res
 	}
-	if response.GetState().GetState() != builderv0.PackageStatus_SUCCESS {
+	if response.GetState().GetState() != builderv1.PackageStatus_SUCCESS {
 		res.err = fmt.Errorf("Builder.Package failed: %s", response.GetState().GetMessage())
 		return res
 	}
@@ -803,25 +803,25 @@ func resolveSourcePluginHome() string {
 	return resources.CodeflyHomeDir()
 }
 
-func installAgentPackageArtifacts(artifacts []*builderv0.PackageArtifact, result *agentBuildResult) error {
+func installAgentPackageArtifacts(artifacts []*builderv1.PackageArtifact, result *agentBuildResult) error {
 	installedNative := false
 	installedLinux := result.containerPath == ""
 	for _, artifact := range artifacts {
 		target := artifact.GetTarget().GetOs() + "/" + artifact.GetTarget().GetArchitecture()
 		destinations := []string{}
 		if target == runtime.GOOS+"/"+runtime.GOARCH {
-			if artifact.GetKind() == builderv0.PackageArtifact_EXECUTABLE {
+			if artifact.GetKind() == builderv1.PackageArtifact_EXECUTABLE {
 				destinations = append(destinations, result.nativePath)
 				installedNative = true
-			} else if artifact.GetKind() == builderv0.PackageArtifact_SBOM {
+			} else if artifact.GetKind() == builderv1.PackageArtifact_SBOM {
 				destinations = append(destinations, result.nativePath+".cdx.json")
 			}
 		}
 		if result.containerPath != "" && target == containerPlatform {
-			if artifact.GetKind() == builderv0.PackageArtifact_EXECUTABLE {
+			if artifact.GetKind() == builderv1.PackageArtifact_EXECUTABLE {
 				destinations = append(destinations, result.containerPath)
 				installedLinux = true
-			} else if artifact.GetKind() == builderv0.PackageArtifact_SBOM {
+			} else if artifact.GetKind() == builderv1.PackageArtifact_SBOM {
 				destinations = append(destinations, result.containerPath+".cdx.json")
 			}
 		}
@@ -893,7 +893,7 @@ func runAudit(ctx context.Context, dir string, ag *agentYAML, failOnVuln bool) e
 	return applyAgentAuditPolicy(dir, ag, res, failOnVuln)
 }
 
-func applyAgentAuditPolicy(dir string, ag *agentYAML, res *builderv0.AuditResponse, failOnVuln bool) error {
+func applyAgentAuditPolicy(dir string, ag *agentYAML, res *builderv1.AuditResponse, failOnVuln bool) error {
 	if res == nil {
 		return fmt.Errorf("Builder.Audit returned no response")
 	}
@@ -904,7 +904,7 @@ func applyAgentAuditPolicy(dir string, ag *agentYAML, res *builderv0.AuditRespon
 	// Partition findings: suppressed (workspace policy), actionable
 	// (upstream has a patch), unpatched (upstream has no fix yet).
 	// --fail-on-vuln only blocks on actionable.
-	var actionable, unpatched, suppressed []*builderv0.AuditFinding
+	var actionable, unpatched, suppressed []*builderv1.AuditFinding
 	for _, f := range res.Findings {
 		if _, ok := suppressions[f.Id]; ok {
 			suppressed = append(suppressed, f)
@@ -955,8 +955,8 @@ func applyAgentAuditPolicy(dir string, ag *agentYAML, res *builderv0.AuditRespon
 		// development without improving security.
 		var blockers int
 		for _, f := range actionable {
-			if f.Severity == builderv0.AuditFinding_HIGH ||
-				f.Severity == builderv0.AuditFinding_CRITICAL {
+			if f.Severity == builderv1.AuditFinding_HIGH ||
+				f.Severity == builderv1.AuditFinding_CRITICAL {
 				blockers++
 			}
 		}
@@ -971,7 +971,7 @@ func applyAgentAuditPolicy(dir string, ag *agentYAML, res *builderv0.AuditRespon
 // runAgentSourceAudit adapts an agent repository into a normal Codefly source
 // resource and asks its selected plugin to perform Builder.Audit. No language
 // command or scanner is selected by the CLI.
-func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (*builderv0.AuditResponse, error) {
+func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (*builderv1.AuditResponse, error) {
 	prepared, err := prepareAgentSource(ctx, dir, manifest)
 	if err != nil {
 		return nil, err
@@ -996,13 +996,13 @@ func agentSourceAuditCommand(ctx context.Context, executable, directory, home st
 	return command
 }
 
-func runPreparedAgentSourceAudit(ctx context.Context, prepared *sourceworkspace.Prepared, home string, additional ...string) (*builderv0.AuditResponse, error) {
+func runPreparedAgentSourceAudit(ctx context.Context, prepared *sourceworkspace.Prepared, home string, additional ...string) (*builderv1.AuditResponse, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve Codefly executable: %w", err)
 	}
 	command := agentSourceAuditCommand(ctx, executable, prepared.Dir, home, additional...)
-	response := &builderv0.AuditResponse{}
+	response := &builderv1.AuditResponse{}
 	if err := runAgentSourceJSON(command, "Builder.Audit", response); err != nil {
 		return nil, err
 	}
@@ -1010,7 +1010,7 @@ func runPreparedAgentSourceAudit(ctx context.Context, prepared *sourceworkspace.
 		return nil, fmt.Errorf("Builder.Audit returned no status")
 	}
 	switch response.GetState().GetState() {
-	case builderv0.AuditStatus_CLEAN, builderv0.AuditStatus_FINDINGS:
+	case builderv1.AuditStatus_CLEAN, builderv1.AuditStatus_FINDINGS:
 		return response, nil
 	default:
 		return nil, fmt.Errorf("Builder.Audit failed: %s", response.GetState().GetMessage())
@@ -1049,15 +1049,15 @@ func loadSuppressions(dir string) map[string]struct{} {
 	}
 }
 
-func severityLabel(s builderv0.AuditFinding_Severity) string {
+func severityLabel(s builderv1.AuditFinding_Severity) string {
 	switch s {
-	case builderv0.AuditFinding_CRITICAL:
+	case builderv1.AuditFinding_CRITICAL:
 		return "CRITICAL"
-	case builderv0.AuditFinding_HIGH:
+	case builderv1.AuditFinding_HIGH:
 		return "HIGH"
-	case builderv0.AuditFinding_MEDIUM:
+	case builderv1.AuditFinding_MEDIUM:
 		return "MEDIUM"
-	case builderv0.AuditFinding_LOW:
+	case builderv1.AuditFinding_LOW:
 		return "LOW"
 	default:
 		return "UNKNOWN"

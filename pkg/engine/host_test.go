@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
 	"github.com/codefly-dev/core/resources"
 	runnersbase "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/wool"
@@ -384,23 +384,23 @@ func TestEnsureRuntimeGuardsIncompleteSessions(t *testing.T) {
 }
 
 func TestCodeRetryOnlyReplaysReadOnlyOperations(t *testing.T) {
-	if !codeRequestRetrySafe(&codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ReadFile{ReadFile: &codev0.ReadFileRequest{Path: "README.md"}},
+	if !codeRequestRetrySafe(&codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_ReadFile{ReadFile: &codev1.ReadFileRequest{Path: "README.md"}},
 	}) {
 		t.Fatal("ReadFile should be safe to retry")
 	}
-	if !codeRequestRetrySafe(&codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_GetSourceManifest{GetSourceManifest: &codev0.GetSourceManifestRequest{}},
+	if !codeRequestRetrySafe(&codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_GetSourceManifest{GetSourceManifest: &codev1.GetSourceManifestRequest{}},
 	}) {
 		t.Fatal("GetSourceManifest should be safe to retry")
 	}
-	if codeRequestRetrySafe(&codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{Path: "README.md"}},
+	if codeRequestRetrySafe(&codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_WriteFile{WriteFile: &codev1.WriteFileRequest{Path: "README.md"}},
 	}) {
 		t.Fatal("WriteFile must not be replayed")
 	}
-	if codeRequestRetrySafe(&codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_ShellExec{ShellExec: &codev0.ShellExecRequest{}},
+	if codeRequestRetrySafe(&codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_ShellExec{ShellExec: &codev1.ShellExecRequest{}},
 	}) {
 		t.Fatal("ShellExec must not be replayed")
 	}

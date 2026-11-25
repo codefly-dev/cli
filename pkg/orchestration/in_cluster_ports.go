@@ -3,7 +3,7 @@ package orchestration
 import (
 	"context"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -13,7 +13,7 @@ import (
 // its Kubernetes Service port. An endpoint with no container-access instance —
 // an external endpoint that resolves to a public host — is not rendered
 // in-cluster and is absent.
-func InClusterPorts(ctx context.Context, mappings []*basev0.NetworkMapping) map[string]uint32 {
+func InClusterPorts(ctx context.Context, mappings []*basev1.NetworkMapping) map[string]uint32 {
 	ports := make(map[string]uint32, len(mappings))
 	for _, mapping := range mappings {
 		endpoint := mapping.GetEndpoint()

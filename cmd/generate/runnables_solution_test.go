@@ -10,8 +10,8 @@ import (
 
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/standards"
@@ -186,13 +186,13 @@ func TestGenerateRunnablesDerivesASolutionsReads(t *testing.T) {
 	pkg := readDerivedPackage(t, moduleDir, history)
 	require.NoError(t, corerunnable.VerifyPackage(pkg))
 	require.Equal(t, history.Digest, pkg.GetDigest())
-	require.Equal(t, basev0.RunnableExecution_RECOVERY_RECOMPUTE, pkg.GetExecution().GetRecovery())
+	require.Equal(t, basev1.RunnableExecution_RECOVERY_RECOMPUTE, pkg.GetExecution().GetRecovery())
 	require.Len(t, pkg.GetContract().GetInput().GetFields(), 2, "the query is the input")
 
 	operation := readDerivedOperation(t, moduleDir, history)
 	require.Equal(t, "releases", operation.Audience)
 	require.Equal(t, []string{"503"}, operation.RetryableCodes)
-	require.Equal(t, runnablev0.ToolExposure_EFFECT_READ_ONLY, operation.Tool.GetEffect())
+	require.Equal(t, runnablev1.ToolExposure_EFFECT_READ_ONLY, operation.Tool.GetEffect())
 	require.Equal(t, "Read the recorded tags of one repository and the recorded pins of one component", operation.Tool.GetDescription())
 
 	// Idempotent: a second run is the same tree.
@@ -262,8 +262,8 @@ func TestGenerateRunnableBindingsPreparesASolutionsReads(t *testing.T) {
 		require.True(t, strings.HasPrefix(prepared.GetCall().GetAddress(), "http://localhost:"), prepared.GetCall().GetAddress())
 		tool, err := corerunnable.ToolFromPrepared(prepared)
 		require.NoError(t, err)
-		require.Equal(t, runnablev0.ToolExposure_EFFECT_READ_ONLY, tool.GetEffect())
-		require.Equal(t, basev0.RunnableExecution_RECOVERY_RECOMPUTE, prepared.GetPolicy().GetRecovery())
+		require.Equal(t, runnablev1.ToolExposure_EFFECT_READ_ONLY, tool.GetEffect())
+		require.Equal(t, basev1.RunnableExecution_RECOVERY_RECOMPUTE, prepared.GetPolicy().GetRecovery())
 	}
 }
 
@@ -360,7 +360,7 @@ func TestTheCommittedArtifactBecomesTools(t *testing.T) {
 		require.Equal(t, "GET", prepared.GetCall().GetRest().GetVerb())
 		tool, err := corerunnable.ToolFromPrepared(prepared)
 		require.NoError(t, err)
-		require.Equal(t, runnablev0.ToolExposure_EFFECT_READ_ONLY, tool.GetEffect())
+		require.Equal(t, runnablev1.ToolExposure_EFFECT_READ_ONLY, tool.GetEffect())
 	}
 	require.Equal(t, []string{
 		"RELEASES__BACKEND_HTTP_RELEASES_GET_V1_RELEASES_HISTORY",

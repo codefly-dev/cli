@@ -13,7 +13,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/portclaims"
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -155,7 +155,7 @@ func renderedContainerPorts(
 	env *environments.Environment,
 	remote *remotenetwork.RemoteManager,
 	id *resources.ServiceIdentity,
-	endpoints []*basev0.Endpoint,
+	endpoints []*basev1.Endpoint,
 ) (map[string]uint32, string, error) {
 	mappings, err := remote.GenerateNetworkMappings(ctx, env, workspace, id, endpoints)
 	if err != nil {

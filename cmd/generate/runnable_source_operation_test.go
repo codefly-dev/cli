@@ -14,7 +14,7 @@ import (
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/stretchr/testify/require"
@@ -50,7 +50,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	saveRunnablePublication(t, moduleDir, "saas-datasource", modulecontract.Destination{ID: "connect", Service: "accounts", Endpoint: "connect", Kind: "module"})
 	writeFixtureFile(t, filepath.Join(service.Dir(), "generated/surfaces.json"), surfaceBytes)
 	surfacePath := fixtureSurfacePath(t, moduleDir, service.Name, "generated/surfaces.json")
-	surfaces, err := loadContractSurfaces(service, []*basev0.Endpoint{{Name: "authority", Api: "grpc"}, {Name: "connect", Api: "connect"}}, surfacePath)
+	surfaces, err := loadContractSurfaces(service, []*basev1.Endpoint{{Name: "authority", Api: "grpc"}, {Name: "connect", Api: "connect"}}, surfacePath)
 	require.NoError(t, err)
 	const contractPath = "contracts/api/accounts/authority/contract.binpb"
 	writeFixtureFile(t, filepath.Join(moduleDir, contractPath), contract)
@@ -69,11 +69,11 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	data, err := catalog.CanonicalBytes()
 	require.NoError(t, err)
 	writeFixtureFile(t, filepath.Join(moduleDir, composition.APIContractCatalogFileName), data)
-	published := map[string]*basev0.RunnablePackage{}
+	published := map[string]*basev1.RunnablePackage{}
 	for _, method := range []string{"InvokeSourceOperation", "PruneSourceOperationReceipts"} {
 		data, err := os.ReadFile("testdata/source-operation/" + method + ".json")
 		require.NoError(t, err)
-		pkg := new(basev0.RunnablePackage)
+		pkg := new(basev1.RunnablePackage)
 		require.NoError(t, protojson.Unmarshal(data, pkg))
 		require.NoError(t, corerunnable.VerifyPackage(pkg))
 		published["/saas.accounts.v1.DatasourceService/"+method] = pkg
@@ -131,7 +131,7 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 // named by its JSON name, a 64-bit integer as a STRING of format int64 or
 // uint64 and nothing else, every non-required key optional, array items held
 // the same way. A stopgap: it goes when module-starterkit regenerates.
-func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev0.RunnableField) {
+func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev1.RunnableField) {
 	t.Helper()
 	require.Len(t, derived, len(committed))
 	for i, before := range committed {
@@ -139,7 +139,7 @@ func requireSameModuloWireSpelling(t *testing.T, committed, derived []*basev0.Ru
 	}
 }
 
-func requireFieldModuloWireSpelling(t *testing.T, before, after *basev0.RunnableField, member bool) {
+func requireFieldModuloWireSpelling(t *testing.T, before, after *basev1.RunnableField, member bool) {
 	t.Helper()
 	if member {
 		parts := strings.Split(before.GetName(), "_")
@@ -154,8 +154,8 @@ func requireFieldModuloWireSpelling(t *testing.T, before, after *basev0.Runnable
 	if before.GetType() == after.GetType() {
 		require.Equal(t, before.GetFormat(), after.GetFormat(), "%s", after.GetName())
 	} else {
-		require.Equal(t, basev0.RunnableField_INTEGER, before.GetType(), "%s", before.GetName())
-		require.Equal(t, basev0.RunnableField_STRING, after.GetType(), "%s", before.GetName())
+		require.Equal(t, basev1.RunnableField_INTEGER, before.GetType(), "%s", before.GetName())
+		require.Equal(t, basev1.RunnableField_STRING, after.GetType(), "%s", before.GetName())
 		require.Contains(t, []string{corerunnable.FormatInt64, corerunnable.FormatUint64}, after.GetFormat(), "%s", before.GetName())
 	}
 	requireSameModuloWireSpelling(t, before.GetFields(), after.GetFields())

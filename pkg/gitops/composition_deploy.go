@@ -11,8 +11,8 @@ import (
 
 	"github.com/google/uuid"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -71,11 +71,11 @@ func (deploy *CompositionDeploy) meshIndex(ctx context.Context, workspace *resou
 type moduleDeploy struct {
 	// members are the services of the module itself the deploy produced.
 	members          []string
-	outputs          map[string]*builderv0.DeploymentOutput
+	outputs          map[string]*builderv1.DeploymentOutput
 	selfEndpoints    map[string]map[string]string
 	hostRoutes       map[string]map[string]string
 	endpointCarriers map[string]string
-	deployed         map[string]*basev0.Configuration
+	deployed         map[string]*basev1.Configuration
 	secretKeys       map[string][]string
 	inClusterPorts   map[string]map[string]uint32
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -14,14 +14,14 @@ func gatewayIdentity() *resources.ServiceIdentity {
 	return &resources.ServiceIdentity{Module: "web", Name: "gateway"}
 }
 
-func gatewayEndpoint(name string) *basev0.Endpoint {
-	return &basev0.Endpoint{Module: "web", Service: "gateway", Name: name, Api: name}
+func gatewayEndpoint(name string) *basev1.Endpoint {
+	return &basev1.Endpoint{Module: "web", Service: "gateway", Name: name, Api: name}
 }
 
 // publicGatewayEndpoint is an endpoint the CLI itself proposes a Public
 // instance for: exposed, which since core v0.14.0 is the endpoint's exposure
 // and never its visibility (a public endpoint states one or the other).
-func publicGatewayEndpoint(name string) *basev0.Endpoint {
+func publicGatewayEndpoint(name string) *basev1.Endpoint {
 	endpoint := gatewayEndpoint(name)
 	endpoint.Visibility = resources.VisibilityPublic
 	endpoint.Exposure = resources.ExposurePublic
@@ -30,18 +30,18 @@ func publicGatewayEndpoint(name string) *basev0.Endpoint {
 
 // proposedMapping mirrors what network.RuntimeManager hands the agent: one
 // container view and one native view per endpoint, on the same port.
-func proposedMapping(name string, port uint16) *basev0.NetworkMapping {
+func proposedMapping(name string, port uint16) *basev1.NetworkMapping {
 	endpoint := gatewayEndpoint(name)
-	return &basev0.NetworkMapping{
+	return &basev1.NetworkMapping{
 		Endpoint: endpoint,
-		Instances: []*basev0.NetworkInstance{
+		Instances: []*basev1.NetworkInstance{
 			network.Container(endpoint, port),
 			network.Native(endpoint, port),
 		},
 	}
 }
 
-func acceptedPortOf(t *testing.T, mappings []*basev0.NetworkMapping, name, access string) uint32 {
+func acceptedPortOf(t *testing.T, mappings []*basev1.NetworkMapping, name, access string) uint32 {
 	t.Helper()
 	for _, mapping := range mappings {
 		if mapping.GetEndpoint().GetName() != name {
@@ -58,8 +58,8 @@ func acceptedPortOf(t *testing.T, mappings []*basev0.NetworkMapping, name, acces
 }
 
 func TestAcceptNetworkMappingsTakesTheAgentPort(t *testing.T) {
-	proposed := []*basev0.NetworkMapping{proposedMapping("grpc", 9000)}
-	returned := []*basev0.NetworkMapping{proposedMapping("grpc", 41337)}
+	proposed := []*basev1.NetworkMapping{proposedMapping("grpc", 9000)}
+	returned := []*basev1.NetworkMapping{proposedMapping("grpc", 41337)}
 
 	accepted, err := acceptNetworkMappings(context.Background(), gatewayIdentity(), proposed, returned)
 	require.NoError(t, err)
@@ -70,8 +70,8 @@ func TestAcceptNetworkMappingsTakesTheAgentPort(t *testing.T) {
 // The accepted set must not alias the response the agent sent nor the proposal:
 // both the runner and every shared-state consumer read from it.
 func TestAcceptNetworkMappingsOwnsItsResult(t *testing.T) {
-	proposed := []*basev0.NetworkMapping{proposedMapping("grpc", 9000)}
-	returned := []*basev0.NetworkMapping{proposedMapping("grpc", 41337)}
+	proposed := []*basev1.NetworkMapping{proposedMapping("grpc", 9000)}
+	returned := []*basev1.NetworkMapping{proposedMapping("grpc", 41337)}
 
 	accepted, err := acceptNetworkMappings(context.Background(), gatewayIdentity(), proposed, returned)
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestAcceptNetworkMappingsOwnsItsResult(t *testing.T) {
 // An agent that predates InitResponse.network_mappings returns none; the
 // proposal is then the accepted set, adopted whole and owned by the caller.
 func TestAcceptNetworkMappingsAdoptsProposalWhenAgentReturnsNone(t *testing.T) {
-	proposed := []*basev0.NetworkMapping{proposedMapping("grpc", 9000)}
+	proposed := []*basev1.NetworkMapping{proposedMapping("grpc", 9000)}
 
 	accepted, err := acceptNetworkMappings(context.Background(), gatewayIdentity(), proposed, nil)
 	require.NoError(t, err)
@@ -98,7 +98,7 @@ func TestAcceptNetworkMappingsAdoptsProposalWhenAgentReturnsNone(t *testing.T) {
 
 func TestAcceptNetworkMappingsRejectsInvalidResponses(t *testing.T) {
 	foreign := proposedMapping("grpc", 9000)
-	foreign.Endpoint = &basev0.Endpoint{Module: "billing", Service: "accounts", Name: "grpc", Api: "grpc"}
+	foreign.Endpoint = &basev1.Endpoint{Module: "billing", Service: "accounts", Name: "grpc", Api: "grpc"}
 
 	noAccess := proposedMapping("grpc", 9000)
 	noAccess.Instances[0].Access = nil
@@ -126,80 +126,80 @@ func TestAcceptNetworkMappingsRejectsInvalidResponses(t *testing.T) {
 
 	for _, test := range []struct {
 		name     string
-		proposed []*basev0.NetworkMapping
-		returned []*basev0.NetworkMapping
+		proposed []*basev1.NetworkMapping
+		returned []*basev1.NetworkMapping
 		message  string
 	}{
 		{
 			name:     "no endpoint",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{{Instances: proposedMapping("grpc", 41337).Instances}},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{{Instances: proposedMapping("grpc", 41337).Instances}},
 			message:  "has no endpoint",
 		},
 		{
 			name:     "foreign endpoint",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{foreign},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{foreign},
 			message:  "was never proposed to web/gateway",
 		},
 		{
 			name:     "unproposed endpoint",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{proposedMapping("rest", 41337)},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{proposedMapping("rest", 41337)},
 			message:  "was never proposed",
 		},
 		{
 			name:     "duplicate endpoint",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{proposedMapping("grpc", 41337), proposedMapping("grpc", 41338)},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{proposedMapping("grpc", 41337), proposedMapping("grpc", 41338)},
 			message:  "twice",
 		},
 		{
 			name:     "omitted endpoint",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000), proposedMapping("rest", 9001)},
-			returned: []*basev0.NetworkMapping{proposedMapping("grpc", 41337)},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000), proposedMapping("rest", 9001)},
+			returned: []*basev1.NetworkMapping{proposedMapping("grpc", 41337)},
 			message:  "omit proposed endpoint web/gateway/rest",
 		},
 		{
 			name:     "instance without access",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{noAccess},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{noAccess},
 			message:  "has no access kind",
 		},
 		{
 			name:     "port cleared by the agent",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{incomplete},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{incomplete},
 			message:  "has no port",
 		},
 		{
 			name:     "invented view is judged on its own",
-			proposed: []*basev0.NetworkMapping{{Endpoint: gatewayEndpoint("grpc"), Instances: proposedMapping("grpc", 9000).Instances[1:]}},
-			returned: []*basev0.NetworkMapping{incompleteNewView},
+			proposed: []*basev1.NetworkMapping{{Endpoint: gatewayEndpoint("grpc"), Instances: proposedMapping("grpc", 9000).Instances[1:]}},
+			returned: []*basev1.NetworkMapping{incompleteNewView},
 			message:  "has no port",
 		},
 		{
 			name:     "duplicate access view",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{duplicateView},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{duplicateView},
 			message:  "two native instances",
 		},
 		{
 			name:     "every access view dropped",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{noView},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{noView},
 			message:  "carries no address",
 		},
 		{
 			name:     "public address on a private endpoint",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{publicOnPrivate},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{publicOnPrivate},
 			message:  "adds a public address to an endpoint whose exposure is",
 		},
 		{
 			name:     "container view rewritten onto loopback",
-			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
-			returned: []*basev0.NetworkMapping{containerOnHost},
+			proposed: []*basev1.NetworkMapping{proposedMapping("grpc", 9000)},
+			returned: []*basev1.NetworkMapping{containerOnHost},
 			message:  "is the loopback address localhost",
 		},
 	} {
@@ -217,17 +217,17 @@ func TestAcceptNetworkMappingsRejectsInvalidResponses(t *testing.T) {
 // and would make acceptance depend on whether the agent echoes at all, since the
 // legacy path publishes the very same value.
 func TestAcceptNetworkMappingsEchoesBackTheCLIsOwnDNSAddresses(t *testing.T) {
-	endpoint := &basev0.Endpoint{Module: "web", Service: "gateway", Name: "rest", Api: "rest", Location: "external"}
+	endpoint := &basev1.Endpoint{Module: "web", Service: "gateway", Name: "rest", Api: "rest", Location: "external"}
 	identity := gatewayIdentity()
-	dnsInstances := func() []*basev0.NetworkInstance {
-		dns := &basev0.DNS{Host: "api.example.com", Secured: true, Endpoint: "rest"}
-		return []*basev0.NetworkInstance{
+	dnsInstances := func() []*basev1.NetworkInstance {
+		dns := &basev1.DNS{Host: "api.example.com", Secured: true, Endpoint: "rest"}
+		return []*basev1.NetworkInstance{
 			network.ContainerInstance(network.DNS(identity, endpoint, dns)),
 			network.NativeInstance(network.DNS(identity, endpoint, dns)),
 		}
 	}
-	proposed := []*basev0.NetworkMapping{{Endpoint: endpoint, Instances: dnsInstances()}}
-	echoed := []*basev0.NetworkMapping{{Endpoint: endpoint, Instances: dnsInstances()}}
+	proposed := []*basev1.NetworkMapping{{Endpoint: endpoint, Instances: dnsInstances()}}
+	echoed := []*basev1.NetworkMapping{{Endpoint: endpoint, Instances: dnsInstances()}}
 
 	accepted, err := acceptNetworkMappings(context.Background(), identity, proposed, echoed)
 	require.NoError(t, err)
@@ -244,10 +244,10 @@ func TestAcceptNetworkMappingsEchoesBackTheCLIsOwnDNSAddresses(t *testing.T) {
 // module is still this service's to serve, and rejecting it on the identity
 // alone would fail the CLI's own proposal.
 func TestAcceptNetworkMappingsAcceptsAProposedEndpointAttributedElsewhere(t *testing.T) {
-	endpoint := &basev0.Endpoint{Module: "billing", Service: "accounts", Name: "grpc", Api: "grpc"}
-	proposed := []*basev0.NetworkMapping{{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{
+	endpoint := &basev1.Endpoint{Module: "billing", Service: "accounts", Name: "grpc", Api: "grpc"}
+	proposed := []*basev1.NetworkMapping{{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{
 		network.Container(endpoint, 9000), network.Native(endpoint, 9000)}}}
-	returned := []*basev0.NetworkMapping{{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{
+	returned := []*basev1.NetworkMapping{{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{
 		network.Container(endpoint, 41337), network.Native(endpoint, 41337)}}}
 
 	accepted, err := acceptNetworkMappings(context.Background(), gatewayIdentity(), proposed, returned)
@@ -259,10 +259,10 @@ func TestAcceptNetworkMappingsAcceptsAProposedEndpointAttributedElsewhere(t *tes
 // propagates to every dependent. An agent that lists the same addresses in a
 // different order between Inits must not move the hash.
 func TestAcceptNetworkMappingsIsOrderInsensitive(t *testing.T) {
-	proposed := []*basev0.NetworkMapping{proposedMapping("grpc", 9000), proposedMapping("rest", 9001)}
+	proposed := []*basev1.NetworkMapping{proposedMapping("grpc", 9000), proposedMapping("rest", 9001)}
 
-	forward := []*basev0.NetworkMapping{proposedMapping("grpc", 41337), proposedMapping("rest", 41338)}
-	shuffled := []*basev0.NetworkMapping{proposedMapping("rest", 41338), proposedMapping("grpc", 41337)}
+	forward := []*basev1.NetworkMapping{proposedMapping("grpc", 41337), proposedMapping("rest", 41338)}
+	shuffled := []*basev1.NetworkMapping{proposedMapping("rest", 41338), proposedMapping("grpc", 41337)}
 	shuffled[0].Instances[0], shuffled[0].Instances[1] = shuffled[0].Instances[1], shuffled[0].Instances[0]
 
 	first, err := acceptNetworkMappings(context.Background(), gatewayIdentity(), proposed, forward)
@@ -280,18 +280,18 @@ func TestAcceptNetworkMappingsAllowsAgentChosenAccessViews(t *testing.T) {
 	dropped := proposedMapping("grpc", 41337)
 	dropped.Instances = dropped.Instances[1:]
 	accepted, err := acceptNetworkMappings(context.Background(), gatewayIdentity(),
-		[]*basev0.NetworkMapping{proposedMapping("grpc", 9000)}, []*basev0.NetworkMapping{dropped})
+		[]*basev1.NetworkMapping{proposedMapping("grpc", 9000)}, []*basev1.NetworkMapping{dropped})
 	require.NoError(t, err)
 	require.Len(t, accepted[0].Instances, 1)
 	require.Equal(t, resources.NetworkAccessNative, accepted[0].Instances[0].Access.Kind)
 
 	endpoint := publicGatewayEndpoint("rest")
-	proposal := &basev0.NetworkMapping{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{
+	proposal := &basev1.NetworkMapping{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{
 		network.Container(endpoint, 9000), network.Native(endpoint, 9000)}}
-	added := &basev0.NetworkMapping{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{
+	added := &basev1.NetworkMapping{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{
 		network.Container(endpoint, 41337), network.Native(endpoint, 41337), network.PublicDefault(endpoint, 41337)}}
 	accepted, err = acceptNetworkMappings(context.Background(), gatewayIdentity(),
-		[]*basev0.NetworkMapping{proposal}, []*basev0.NetworkMapping{added})
+		[]*basev1.NetworkMapping{proposal}, []*basev1.NetworkMapping{added})
 	require.NoError(t, err)
 	require.Equal(t, uint32(41337), acceptedPortOf(t, accepted, "rest", resources.NetworkAccessPublic))
 }
@@ -305,7 +305,7 @@ func TestAcceptNetworkMappingsKeepsTheProposedEndpoint(t *testing.T) {
 	relabelled.Endpoint.Visibility = resources.VisibilityPublic
 
 	accepted, err := acceptNetworkMappings(context.Background(), gatewayIdentity(),
-		[]*basev0.NetworkMapping{proposedMapping("grpc", 9000)}, []*basev0.NetworkMapping{relabelled})
+		[]*basev1.NetworkMapping{proposedMapping("grpc", 9000)}, []*basev1.NetworkMapping{relabelled})
 	require.NoError(t, err)
 	require.Empty(t, accepted[0].Endpoint.Visibility)
 }
@@ -314,6 +314,6 @@ func TestAcceptNetworkMappingsKeepsTheProposedEndpoint(t *testing.T) {
 // resources.EndpointDestination dereferences the endpoint it is given.
 func TestAcceptNetworkMappingsRejectsANilProposedEndpoint(t *testing.T) {
 	_, err := acceptNetworkMappings(context.Background(), gatewayIdentity(),
-		[]*basev0.NetworkMapping{{}}, []*basev0.NetworkMapping{proposedMapping("grpc", 41337)})
+		[]*basev1.NetworkMapping{{}}, []*basev1.NetworkMapping{proposedMapping("grpc", 41337)})
 	require.ErrorContains(t, err, "proposed network mapping has no endpoint")
 }

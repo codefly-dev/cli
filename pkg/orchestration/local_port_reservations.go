@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"sync"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -101,7 +101,7 @@ func (r *portReservations) close(port uint16) {
 
 // nativePorts is the host port of every mapping a local process binds: the
 // native instance of each, external addresses left out.
-func nativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []uint16 {
+func nativePorts(ctx context.Context, mappings []*basev1.NetworkMapping) []uint16 {
 	var ports []uint16
 	for _, mapping := range mappings {
 		if mapping == nil || mapping.Endpoint == nil || resources.IsExternalEndpoint(mapping.Endpoint) {
@@ -123,7 +123,7 @@ func nativePorts(ctx context.Context, mappings []*basev0.NetworkMapping) []uint1
 }
 
 // holdProposedPorts reserves the ports mappings propose (portReservations).
-func (world *World) holdProposedPorts(ctx context.Context, mappings []*basev0.NetworkMapping) {
+func (world *World) holdProposedPorts(ctx context.Context, mappings []*basev1.NetworkMapping) {
 	for _, port := range nativePorts(ctx, mappings) {
 		world.ports.reservations.hold(port)
 	}
@@ -131,7 +131,7 @@ func (world *World) holdProposedPorts(ctx context.Context, mappings []*basev0.Ne
 
 // releaseProposedPorts hands the ports mappings propose over to their service,
 // which is about to initialize.
-func (world *World) releaseProposedPorts(ctx context.Context, mappings []*basev0.NetworkMapping) {
+func (world *World) releaseProposedPorts(ctx context.Context, mappings []*basev1.NetworkMapping) {
 	for _, port := range nativePorts(ctx, mappings) {
 		world.ports.reservations.handOver(port)
 	}

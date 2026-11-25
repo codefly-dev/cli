@@ -19,7 +19,7 @@ import (
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -81,7 +81,7 @@ func TestStageBuildPackagesExactSourcesForIndependentInstances(t *testing.T) {
 	require.Len(t, result.Executions, 2)
 	identities := make(map[string]bool)
 	for _, execution := range result.Executions {
-		var receipt basev0.ArtifactExecutionReceipt
+		var receipt basev1.ArtifactExecutionReceipt
 		require.NoError(t, protojson.Unmarshal(execution.Receipt, &receipt))
 		require.Len(t, receipt.Outputs, 1)
 		require.False(t, identities[receipt.Identity])
@@ -310,7 +310,7 @@ func TestStagedBuildRequiresOwnerAuthorizedDerivedEvidenceBeforeRender(t *testin
 	require.NoError(t, err)
 	files := &DeploymentFiles{Bindings: map[string]string{"target": contentDigest([]byte("test target"))}}
 	for _, execution := range built.Executions {
-		var receipt basev0.ArtifactExecutionReceipt
+		var receipt basev1.ArtifactExecutionReceipt
 		require.NoError(t, protojson.Unmarshal(execution.Receipt, &receipt))
 		output := receipt.Outputs[0]
 		path := filepath.Join(execution.Directory, output.Path)

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/executionreceipt"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -137,7 +137,7 @@ func testReceipt() *executionv1.ExecutionReceiptV1 {
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.25",
 		},
 		Assurance: executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_GATEWAY_EXECUTED,
-		WorkContext: &basev0.WorkContextV1{
+		WorkContext: &basev1.WorkContextV1{
 			Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
 			KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
 			NotBeforeUnix: started.Add(-time.Minute).Unix(), IssuedAtUnix: started.Add(-time.Minute).Unix(),
@@ -147,7 +147,7 @@ func testReceipt() *executionv1.ExecutionReceiptV1 {
 			TaskId: "task-1", SessionId: "session-1",
 			// Core v0.9.1 requires the seal: a capability names the
 			// installation it is held through.
-			Seal: &basev0.WorkSealV1{
+			Seal: &basev1.WorkSealV1{
 				PrincipalEpoch:       1,
 				InstallationId:       "installation-warden",
 				InstallationRevision: 3,

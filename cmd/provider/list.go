@@ -48,7 +48,7 @@ func listBindings(s *session, bindings []*hostprovider.Binding) error {
 func emitSchema(envName string, jsonOut bool) error {
 	result := hostprovider.NewResult("list", envName)
 	result.Schema = &hostprovider.SchemaDoc{
-		Schema:           hostprovider.BindingsSchemaV0,
+		Schema:           hostprovider.BindingsSchemaV1,
 		Modes:            []string{string(hostprovider.ModeObserve), string(hostprovider.ModeManaged), string(hostprovider.ModeDisabled)},
 		DeletionPolicies: []string{string(hostprovider.DeletionRetain), string(hostprovider.DeletionDeleteOwned)},
 		OutputContracts:  registry.Contracts(),

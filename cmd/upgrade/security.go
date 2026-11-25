@@ -16,7 +16,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/monorepo"
 	"github.com/codefly-dev/core/agents/services/audit"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -226,7 +226,7 @@ type moduleBump struct {
 // a single toolchain bump to the highest fixed Go version; module findings each
 // become a `go get module@fixedVersion`, deduped to the highest fixed version
 // per module.
-func planFixes(findings []*builderv0.AuditFinding) (mods []moduleBump, toolchain string, unpatched []string) {
+func planFixes(findings []*builderv1.AuditFinding) (mods []moduleBump, toolchain string, unpatched []string) {
 	highestMod := map[string]string{}
 	unpatchedSet := map[string]struct{}{}
 	for _, f := range findings {

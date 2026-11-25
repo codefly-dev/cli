@@ -3,7 +3,7 @@ package orchestration
 import (
 	"slices"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -42,7 +42,7 @@ func (flow *Flow) selectedRuntimeServices() []string {
 	}
 	if flow.world.Mode == TestMode {
 		switch flow.testDependencyMode {
-		case agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK:
+		case agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK:
 		default:
 			return nil
 		}

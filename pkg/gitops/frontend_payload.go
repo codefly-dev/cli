@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -97,9 +97,9 @@ func artifactCacheInjection(service *resources.Service, env *environments.Enviro
 	if err != nil {
 		return serviceInjection{}, err
 	}
-	configuration := &basev0.Configuration{Origin: resources.ConfigurationWorkspace}
+	configuration := &basev1.Configuration{Origin: resources.ConfigurationWorkspace}
 	key := resources.ConfigurationValueEnvironmentKey(configuration, environments.ArtifactCacheConfiguration,
-		&basev0.ConfigurationValue{Key: environments.ArtifactCacheRepositoryKey})
+		&basev1.ConfigurationValue{Key: environments.ArtifactCacheRepositoryKey})
 	if _, exists := injection.Public[key]; exists {
 		return serviceInjection{}, fmt.Errorf("service %s already derives render-owned key %s", resources.ServiceUnique(scope.Module, service.Name), key)
 	}

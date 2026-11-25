@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	civ0 "github.com/codefly-dev/core/generated/go/codefly/ci/v0"
+	civ1 "github.com/codefly-dev/core/generated/go/codefly/ci/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -68,7 +68,7 @@ func TestAgentCIKeepsOnePrivateSourceSelection(t *testing.T) {
 			data, err = command.CombinedOutput()
 			require.Error(t, err, "controlled Package refusal must be reported")
 			require.NoError(t, ctx.Err(), "%s", data)
-			var report civ0.AgentCIReport
+			var report civ1.AgentCIReport
 			require.NoError(t, protojson.Unmarshal(data, &report), "%s", data)
 			require.Equal(t, "passed", report.Stages[1].Status, "%s", data)
 			require.Equal(t, "failed", report.Stages[2].Status, "%s", data)
@@ -170,7 +170,7 @@ func agentSourceFor(selection string) string {
 // the plugin calls the recording agent observed, in order. A run that fails
 // before reaching the agent records nothing; the report carries why. The
 // caller states the agent resolution the run starts under (agentSourceFor).
-func runAgentCIFixture(t *testing.T, cli, root, home, peer string, environment ...string) (*civ0.AgentCIReport, []string, error) {
+func runAgentCIFixture(t *testing.T, cli, root, home, peer string, environment ...string) (*civ1.AgentCIReport, []string, error) {
 	t.Helper()
 	calls := filepath.Join(t.TempDir(), "calls")
 	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
@@ -181,7 +181,7 @@ func runAgentCIFixture(t *testing.T, cli, root, home, peer string, environment .
 		"AGENT_REGISTRY=", "AGENT_NIX_FLAKE=", "HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1")...)
 	data, runErr := command.CombinedOutput()
 	require.NoError(t, ctx.Err(), "%s", data)
-	var report civ0.AgentCIReport
+	var report civ1.AgentCIReport
 	require.NoError(t, protojson.Unmarshal(data, &report), "%s", data)
 	recorded, err := os.ReadFile(calls)
 	if os.IsNotExist(err) {

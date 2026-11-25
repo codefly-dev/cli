@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/cli"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	cliv1 "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/wool"
 	"google.golang.org/grpc"
@@ -25,12 +25,12 @@ func TestServerCommandHasOpenFlag(t *testing.T) {
 }
 
 type fakeServerCLI struct {
-	cliv0.UnimplementedCLIServer
+	cliv1.UnimplementedCLIServer
 	name string
 }
 
-func (f *fakeServerCLI) GetWorkspaceInventory(context.Context, *emptypb.Empty) (*basev0.Workspace, error) {
-	return &basev0.Workspace{Name: f.name}, nil
+func (f *fakeServerCLI) GetWorkspaceInventory(context.Context, *emptypb.Empty) (*basev1.Workspace, error) {
+	return &basev1.Workspace{Name: f.name}, nil
 }
 
 // TestServerCommandAttachesInsteadOfStartingASecondServer exercises the
@@ -57,7 +57,7 @@ func TestServerCommandAttachesInsteadOfStartingASecondServer(t *testing.T) {
 		t.Fatalf("listen %s: %v", addr, err)
 	}
 	grpcServer := grpc.NewServer()
-	cliv0.RegisterCLIServer(grpcServer, &fakeServerCLI{name: workspaceName})
+	cliv1.RegisterCLIServer(grpcServer, &fakeServerCLI{name: workspaceName})
 	go func() { _ = grpcServer.Serve(lis) }()
 	t.Cleanup(grpcServer.Stop)
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/proto"
 )
@@ -94,7 +94,7 @@ func deploysAStoreServer(agent *resources.Agent) bool {
 // A managed service with no identity is refused by name: a Job with no identity
 // cannot log in, and the refusal belongs here, where the environment is, not in
 // the Job's logs.
-func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev0.Configuration, identity *resources.ServiceIdentity, agent *resources.Agent, world *World) (*basev0.Configuration, error) {
+func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev1.Configuration, identity *resources.ServiceIdentity, agent *resources.Agent, world *World) (*basev1.Configuration, error) {
 	if world == nil || world.Env == nil || identity == nil {
 		return configuration, nil
 	}
@@ -111,15 +111,15 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 	if declared && inCluster {
 		return nil, fmt.Errorf("environment %q declares %s both managed and in-cluster", env.Name, unique)
 	}
-	result := &basev0.Configuration{Origin: unique}
+	result := &basev1.Configuration{Origin: unique}
 	if configuration != nil {
 		result = proto.CloneOf(configuration)
 	}
 	if inCluster {
-		result.Infos = append(result.Infos, &basev0.ConfigurationInformation{Name: InClusterServiceInformation})
+		result.Infos = append(result.Infos, &basev1.ConfigurationInformation{Name: InClusterServiceInformation})
 		return result, nil
 	}
-	information := &basev0.ConfigurationInformation{Name: ManagedServiceInformation}
+	information := &basev1.ConfigurationInformation{Name: ManagedServiceInformation}
 	carried := make([]string, 0, len(managedCarriedKeys))
 	for key := range managedCarriedKeys {
 		carried = append(carried, key)
@@ -136,7 +136,7 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 			return nil, fmt.Errorf("environment %q managed service %s: %s is not a string: %w", env.Name, unique, key, err)
 		}
 		values[managedCarriedKeys[key]] = text
-		information.ConfigurationValues = append(information.ConfigurationValues, &basev0.ConfigurationValue{Key: managedCarriedKeys[key], Value: text})
+		information.ConfigurationValues = append(information.ConfigurationValues, &basev1.ConfigurationValue{Key: managedCarriedKeys[key], Value: text})
 	}
 	if values[managedLoginModeKey] == managedAuthModeValue {
 		owner := env.WorkloadIdentityFor(identity.Module, identity.Name)
@@ -148,8 +148,8 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 			return nil, err
 		}
 		information.ConfigurationValues = append(information.ConfigurationValues,
-			&basev0.ConfigurationValue{Key: managedOwnerKey, Value: owner.Principal},
-			&basev0.ConfigurationValue{Key: managedRuntimeKey, Value: strings.Join(principals, ",")},
+			&basev1.ConfigurationValue{Key: managedOwnerKey, Value: owner.Principal},
+			&basev1.ConfigurationValue{Key: managedRuntimeKey, Value: strings.Join(principals, ",")},
 		)
 	}
 	result.Infos = append(result.Infos, information)

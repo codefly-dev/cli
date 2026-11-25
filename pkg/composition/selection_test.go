@@ -19,8 +19,8 @@ import (
 
 	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	updatev0 "github.com/codefly-dev/core/generated/go/codefly/update/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	updatev1 "github.com/codefly-dev/core/generated/go/codefly/update/v1"
 	"github.com/codefly-dev/core/moduleupdate"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -328,10 +328,10 @@ func TestAcquisitionAuthenticatesCacheAndNeverCollectsSource(t *testing.T) {
 
 func TestCompatibilityAuthenticatesActualConsumerAndReportsUnknown(t *testing.T) {
 	r := newSelectionRegistry(t)
-	item := &updatev0.ContractItem{Id: "api", Digest: contentDigest([]byte("api contract"))}
-	baseline, err := moduleupdate.PrepareSnapshot(&updatev0.ContractSnapshot{SchemaVersion: 1, Module: "team/x", Version: "1.0.0", Complete: true, Items: []*updatev0.ContractItem{item}})
+	item := &updatev1.ContractItem{Id: "api", Digest: contentDigest([]byte("api contract"))}
+	baseline, err := moduleupdate.PrepareSnapshot(&updatev1.ContractSnapshot{SchemaVersion: 1, Module: "team/x", Version: "1.0.0", Complete: true, Items: []*updatev1.ContractItem{item}})
 	require.NoError(t, err)
-	publish := func(snapshot *updatev0.ContractSnapshot) core.ReleaseSelection {
+	publish := func(snapshot *updatev1.ContractSnapshot) core.ReleaseSelection {
 		data, err := protojson.Marshal(snapshot)
 		require.NoError(t, err)
 		manifest := selectionManifest(snapshot.Module, snapshot.Version)
@@ -339,7 +339,7 @@ func TestCompatibilityAuthenticatesActualConsumerAndReportsUnknown(t *testing.T)
 		return r.publish(t, manifest)
 	}
 	x1 := publish(baseline)
-	after, err := moduleupdate.PrepareSnapshot(&updatev0.ContractSnapshot{SchemaVersion: 1, Module: "team/x", Version: "1.1.0", Complete: true})
+	after, err := moduleupdate.PrepareSnapshot(&updatev1.ContractSnapshot{SchemaVersion: 1, Module: "team/x", Version: "1.1.0", Complete: true})
 	require.NoError(t, err)
 	x2 := publish(after)
 	rootManifest := selectionManifest("team/foo", "1.0.0")
@@ -350,7 +350,7 @@ func TestCompatibilityAuthenticatesActualConsumerAndReportsUnknown(t *testing.T)
 	require.NoError(t, err)
 	selected, err := session.Select(t.Context(), &core.Replacement{Target: "modules/x", Release: x2, Rationale: "candidate"})
 	require.NoError(t, err)
-	usagePin, err := protojson.Marshal(&updatev0.ConsumerPin{SchemaVersion: 1, Consumer: "product", Module: "team/x", Version: "1.0.0", SnapshotDigest: baseline.Digest, UsageComplete: true, Uses: []*updatev0.ContractUse{{Item: item.Id, Digest: item.Digest}}})
+	usagePin, err := protojson.Marshal(&updatev1.ConsumerPin{SchemaVersion: 1, Consumer: "product", Module: "team/x", Version: "1.0.0", SnapshotDigest: baseline.Digest, UsageComplete: true, Uses: []*updatev1.ContractUse{{Item: item.Id, Digest: item.Digest}}})
 	require.NoError(t, err)
 	now := time.Now()
 	statement, err := json.Marshal(core.ConsumerUsageStatement{Schema: "codefly/consumer-usage/v1", Instance: "modules/x", CompositionDigest: selected.Identity, Pin: usagePin, Signer: "consumer", ExpiresAt: now.Add(time.Hour)})
@@ -419,7 +419,7 @@ func TestAdmissionBindsActualRuntimeFilesEvidenceAndTarget(t *testing.T) {
 	require.ErrorContains(t, err, "different inputs")
 	files.Qualifications[0] = qualified
 
-	var receipt basev0.ArtifactExecutionReceipt
+	var receipt basev1.ArtifactExecutionReceipt
 	require.NoError(t, protojson.Unmarshal(files.Executions[0].Receipt, &receipt))
 	outputPath := filepath.Join(files.Executions[0].Directory, receipt.Outputs[0].Path)
 	originalOutput, err := os.ReadFile(outputPath)

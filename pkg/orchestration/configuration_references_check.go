@@ -9,7 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -394,7 +394,7 @@ func withoutEnvironmentExclusions(env *environments.Environment, lookup configur
 // already holds the value, and nothing of it is printed. What reaches the
 // reader is the group name and the producer this caller itself named on the
 // command line.
-func withExcludedProducerReasons(err error, excludedProducers map[string]bool, infos []*basev0.ConfigurationInformation) error {
+func withExcludedProducerReasons(err error, excludedProducers map[string]bool, infos []*basev1.ConfigurationInformation) error {
 	if err == nil || len(excludedProducers) == 0 {
 		return err
 	}
@@ -436,7 +436,7 @@ func withExcludedProducerReasons(err error, excludedProducers map[string]bool, i
 // which covers a templated value's literals and not only its Value — so the
 // position core reported indexes the same list. An unparseable or out-of-range
 // position yields nothing rather than a guess.
-func ReferenceProducerAt(infos []*basev0.ConfigurationInformation, group, key string, position int) string {
+func ReferenceProducerAt(infos []*basev1.ConfigurationInformation, group, key string, position int) string {
 	if position < 1 {
 		return ""
 	}
@@ -601,7 +601,7 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 // exactly what the resolution would refuse, by construction rather than by two
 // implementations being kept in step.
 func checkPlanReferencesPerConsumer(
-	_ context.Context, consumers []*resources.Service, infos []*basev0.ConfigurationInformation,
+	_ context.Context, consumers []*resources.Service, infos []*basev1.ConfigurationInformation,
 	rootGroups []string, profile resources.RunProfile, producers configurations.ProducerLookup,
 ) error {
 	if producers == nil {

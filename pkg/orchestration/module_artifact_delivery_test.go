@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +42,7 @@ modules:
 
 // loadBound reads the workspace configurations the way a run and a check both
 // do — through the CLI's own reader, which is where the resolver is bound.
-func loadBound(t *testing.T, workspace *resources.Workspace) []*basev0.Configuration {
+func loadBound(t *testing.T, workspace *resources.Workspace) []*basev1.Configuration {
 	t.Helper()
 	reader, err := NewWorkspaceConfigurationReader(context.Background(), workspace)
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func loadBound(t *testing.T, workspace *resources.Workspace) []*basev0.Configura
 }
 
 // boundValue finds the delivered value for the bound destination.
-func boundValue(confs []*basev0.Configuration) *basev0.ConfigurationValue {
+func boundValue(confs []*basev1.Configuration) *basev1.ConfigurationValue {
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
 			if info.GetName() != "docs" {
@@ -144,7 +144,7 @@ func TestACheckLoadAcquiresItsOwnObservation(t *testing.T) {
 
 	checked, _, err := WorkspaceConfigurationsForChecking(context.Background(), workspace, env)
 	require.NoError(t, err)
-	value := boundValue([]*basev0.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: checked.Infos}})
+	value := boundValue([]*basev1.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: checked.Infos}})
 	require.NotNil(t, value)
 	require.Equal(t, "A\n", value.GetValue())
 	require.NotNil(t, value.GetResolvedModuleArtifact())
@@ -160,9 +160,9 @@ func TestAnAdditionalOfferCannotTakeABoundDestination(t *testing.T) {
 	delivered := detachConfigurations(loadBound(t, workspace))
 	require.NotNil(t, boundValue(delivered))
 
-	offer := func(key, text string) []*basev0.Configuration {
-		return []*basev0.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
-			Name: "docs", ConfigurationValues: []*basev0.ConfigurationValue{{Key: key, Value: text}},
+	offer := func(key, text string) []*basev1.Configuration {
+		return []*basev1.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
+			Name: "docs", ConfigurationValues: []*basev1.ConfigurationValue{{Key: key, Value: text}},
 		}}}}
 	}
 
@@ -178,8 +178,8 @@ func TestAnAdditionalOfferCannotTakeABoundDestination(t *testing.T) {
 	// The override map is compared by carrier, not by value, including the
 	// hyphen and secret-namespace spellings the SDK accepts.
 	key := resources.ConfigurationValueEnvironmentKey(
-		&basev0.Configuration{Origin: resources.ConfigurationWorkspace},
-		"docs", &basev0.ConfigurationValue{Key: "README"})
+		&basev1.Configuration{Origin: resources.ConfigurationWorkspace},
+		"docs", &basev1.ConfigurationValue{Key: "README"})
 	require.Error(t, resources.ValidateModuleArtifactDelivery(delivered, nil, map[string]string{key: "via --set"}),
 		"a runtime override for the bound carrier refuses")
 	require.NoError(t, resources.ValidateModuleArtifactDelivery(delivered, nil, map[string]string{"CODEFLY__UNRELATED": "fine"}))
@@ -210,8 +210,8 @@ func TestTheExcludedRootExportChecksItsOwnPayload(t *testing.T) {
 	flow.WithOverrides(map[string]map[string]string{
 		resources.WithUnique(service).Unique(): {
 			resources.ConfigurationValueEnvironmentKey(
-				&basev0.Configuration{Origin: resources.ConfigurationWorkspace},
-				"docs", &basev0.ConfigurationValue{Key: "README"}): "substituted",
+				&basev1.Configuration{Origin: resources.ConfigurationWorkspace},
+				"docs", &basev1.ConfigurationValue{Key: "README"}): "substituted",
 		},
 	})
 	require.Error(t, flow.exportExcludedOriginEnvironment(ctx))

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	core "github.com/codefly-dev/core/composition"
-	updatev0 "github.com/codefly-dev/core/generated/go/codefly/update/v0"
+	updatev1 "github.com/codefly-dev/core/generated/go/codefly/update/v1"
 	"github.com/codefly-dev/core/moduleupdate"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -27,7 +27,7 @@ type CompatibilityInspection struct {
 func (session *SelectionSession) CheckCompatibility(ctx context.Context, target, artifact string, usage core.SignedConsumerUsage, authority core.ConsumerUsageAuthority, now time.Time, client *http.Client) (*CompatibilityInspection, error) {
 	var inspection *CompatibilityInspection
 	err := session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) error {
-		var result *updatev0.UpdateResult
+		var result *updatev1.UpdateResult
 		pin, err := core.VerifyConsumerUsage(usage, authority, target, resolved.Identity(), now)
 		if err != nil {
 			result = unknownCompatibility(err)
@@ -56,12 +56,12 @@ func (session *SelectionSession) CheckCompatibility(ctx context.Context, target,
 	return inspection, err
 }
 
-func unknownCompatibility(err error) *updatev0.UpdateResult {
-	return &updatev0.UpdateResult{Verdict: updatev0.Verdict_VERDICT_UNDETERMINED,
-		Undetermined: []*updatev0.AffectedItem{{Reason: err.Error()}}}
+func unknownCompatibility(err error) *updatev1.UpdateResult {
+	return &updatev1.UpdateResult{Verdict: updatev1.Verdict_VERDICT_UNDETERMINED,
+		Undetermined: []*updatev1.AffectedItem{{Reason: err.Error()}}}
 }
 
-func (session *SelectionSession) evaluateSelection(ctx context.Context, snapshot *selectionSnapshot, resolved *core.ResolvedComposition, target, artifact string, pin *updatev0.ConsumerPin, client *http.Client) (*updatev0.UpdateResult, error) {
+func (session *SelectionSession) evaluateSelection(ctx context.Context, snapshot *selectionSnapshot, resolved *core.ResolvedComposition, target, artifact string, pin *updatev1.ConsumerPin, client *http.Client) (*updatev1.UpdateResult, error) {
 	if len(snapshot.local) > 0 {
 		return nil, errors.New("released contract snapshots do not establish compatibility of local content")
 	}
@@ -90,7 +90,7 @@ func (session *SelectionSession) evaluateSelection(ctx context.Context, snapshot
 	return moduleupdate.Evaluate(diff, pin), nil
 }
 
-func (session *SelectionSession) contractSnapshot(ctx context.Context, resolved *core.ResolvedComposition, target, name string, client *http.Client) (*updatev0.ContractSnapshot, error) {
+func (session *SelectionSession) contractSnapshot(ctx context.Context, resolved *core.ResolvedComposition, target, name string, client *http.Client) (*updatev1.ContractSnapshot, error) {
 	acquisitions := resolved.Record().Acquisitions
 	for i := range acquisitions {
 		acquisition := &acquisitions[i]
@@ -109,7 +109,7 @@ func (session *SelectionSession) contractSnapshot(ctx context.Context, resolved 
 		if contentDigest(data) != acquisition.Artifact.Digest {
 			return nil, core.ErrDigestMismatch
 		}
-		var snapshot updatev0.ContractSnapshot
+		var snapshot updatev1.ContractSnapshot
 		if err := protojson.Unmarshal(data, &snapshot); err != nil {
 			return nil, err
 		}

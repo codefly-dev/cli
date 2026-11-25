@@ -13,7 +13,7 @@ import (
 	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ import (
 )
 
 func TestBuildxArgsPushIsMultiArchManifestListOnContainerBuilder(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{
+	recipe := &builderv1.DockerBuildRecipe{
 		Image:     "repo/app:v1",
 		Platforms: []string{"linux/amd64", "linux/arm64"},
 		Target:    "final",
@@ -45,7 +45,7 @@ func TestBuildxArgsPushIsMultiArchManifestListOnContainerBuilder(t *testing.T) {
 }
 
 func TestBuildxArgsLocalBuildIsSinglePlatformLoadOnDefaultBuilder(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{
+	recipe := &builderv1.DockerBuildRecipe{
 		Image:     "repo/app:v1",
 		Platforms: []string{"linux/amd64", "linux/arm64"},
 	}
@@ -63,7 +63,7 @@ func TestBuildxArgsLocalBuildIsSinglePlatformLoadOnDefaultBuilder(t *testing.T) 
 }
 
 func TestBuildxArgsCallerBuilderWinsOverContainerBuilder(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{
+	recipe := &builderv1.DockerBuildRecipe{
 		Image:     "repo/app:v1",
 		Platforms: []string{"linux/amd64", "linux/arm64"},
 	}
@@ -78,7 +78,7 @@ func TestBuildxArgsCallerBuilderWinsOverContainerBuilder(t *testing.T) {
 }
 
 func TestBuildxArgsSinglePlatformPushOnCallerBuilder(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{
+	recipe := &builderv1.DockerBuildRecipe{
 		Image:     "repo/app:v1",
 		Platforms: []string{"linux/amd64"},
 	}
@@ -138,12 +138,12 @@ func TestPlatformsIncludeDeploymentArch(t *testing.T) {
 func TestRecipeDockerfileResolvesAndContains(t *testing.T) {
 	outputDir := filepath.FromSlash("/work/services/store/builder")
 
-	got, err := recipeDockerfile(outputDir, &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile"})
+	got, err := recipeDockerfile(outputDir, &builderv1.DockerBuildRecipe{Dockerfile: "Dockerfile"})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(outputDir, "Dockerfile"), got)
 
 	// A recipe must not point buildx -f at a file outside the recipe tree.
-	_, err = recipeDockerfile(outputDir, &builderv0.DockerBuildRecipe{Dockerfile: "../../../../etc/passwd"})
+	_, err = recipeDockerfile(outputDir, &builderv1.DockerBuildRecipe{Dockerfile: "../../../../etc/passwd"})
 	require.Error(t, err)
 }
 
@@ -159,14 +159,14 @@ func TestRecipeContextRootFollowsTheInventoryScope(t *testing.T) {
 	serviceDir := "/work/services/store"
 	outputDir := "/work/.codefly/build/mod/store/builder"
 
-	recipes := []*builderv0.DockerBuildRecipe{{Dockerfile: "Dockerfile", Dockerignore: ".dockerignore"}}
-	assembled := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: "code/go.mod"}}
-	controlOnly := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: ".dockerignore"}}
+	recipes := []*builderv1.DockerBuildRecipe{{Dockerfile: "Dockerfile", Dockerignore: ".dockerignore"}}
+	assembled := []*builderv1.RecipeFile{{Path: "Dockerfile"}, {Path: "code/go.mod"}}
+	controlOnly := []*builderv1.RecipeFile{{Path: "Dockerfile"}, {Path: ".dockerignore"}}
 
-	tree := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, Recipes: recipes, Files: assembled}
+	tree := &builderv1.DockerBuildPlan{Scope: builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, Recipes: recipes, Files: assembled}
 	require.Equal(t, outputDir, recipeContextRoot(serviceDir, outputDir, tree))
 
-	emitted := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, Recipes: recipes, Files: controlOnly}
+	emitted := &builderv1.DockerBuildPlan{Scope: builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, Recipes: recipes, Files: controlOnly}
 	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, emitted))
 
 	// The transition: an emitter that declared TREE while writing only its own
@@ -174,27 +174,27 @@ func TestRecipeContextRootFollowsTheInventoryScope(t *testing.T) {
 	// service directory — is the only one its Dockerfile can be evaluated
 	// against. This is what lets the CLI ship before every agent's declaration
 	// is corrected; drop it once none is wrong.
-	declaredTreeAssembledNothing := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, Recipes: recipes, Files: controlOnly}
+	declaredTreeAssembledNothing := &builderv1.DockerBuildPlan{Scope: builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, Recipes: recipes, Files: controlOnly}
 	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, declaredTreeAssembledNothing))
 
 	// An unspecified scope never reaches here — VerifyDockerBuildPlan rejects
 	// it — and it must not be read as a licence to build the recipe tree.
-	unspecified := &builderv0.DockerBuildPlan{}
+	unspecified := &builderv1.DockerBuildPlan{}
 	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, unspecified))
 }
 
 func TestRecipeContextResolvesAndContains(t *testing.T) {
 	serviceDir := "/work/services/store"
 
-	got, err := recipeContext(serviceDir, &builderv0.DockerBuildRecipe{Context: ""})
+	got, err := recipeContext(serviceDir, &builderv1.DockerBuildRecipe{Context: ""})
 	require.NoError(t, err)
 	require.Equal(t, serviceDir, got)
 
-	got, err = recipeContext(serviceDir, &builderv0.DockerBuildRecipe{Context: "code"})
+	got, err = recipeContext(serviceDir, &builderv1.DockerBuildRecipe{Context: "code"})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(serviceDir, "code"), got)
 
-	_, err = recipeContext(serviceDir, &builderv0.DockerBuildRecipe{Context: "../other"})
+	_, err = recipeContext(serviceDir, &builderv1.DockerBuildRecipe{Context: "../other"})
 	require.Error(t, err)
 }
 
@@ -225,7 +225,7 @@ func TestBuildRecipeOutputDirectoryIsAbsoluteAndDoesNotCreate(t *testing.T) {
 }
 
 func TestBuildCacheSeparatesServicesRecipesAndWorkspaces(t *testing.T) {
-	cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "protected/app", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}, Mode: "max"}
+	cache := &builderv1.BuildCacheOptions{Backend: "registry", Scope: "protected/app", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}, Mode: "max"}
 	references := map[string]bool{}
 	for _, identity := range [][3]string{
 		{"workspace", "app/api", "app"}, {"workspace", "app/worker", "app"},
@@ -236,7 +236,7 @@ func TestBuildCacheSeparatesServicesRecipesAndWorkspaces(t *testing.T) {
 		require.Equal(t, cache.Imports, scoped.Imports)
 		require.Equal(t, cache.Exports, scoped.Exports)
 		require.Equal(t, cache.Mode, scoped.Mode)
-		recipe := &builderv0.DockerBuildRecipe{Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64"}}
+		recipe := &builderv1.DockerBuildRecipe{Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64"}}
 		args, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scoped, privateModuleBuild{})
 		require.NoError(t, err)
 		export := args[slices.Index(args, "--cache-to")+1]
@@ -354,11 +354,11 @@ func TestBuildOfMaterializedServiceLeavesItsTreeByteIdentical(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, &recipeProtocolPeer{})
+	builderv1.RegisterBuilderServer(server, &recipeProtocolPeer{})
 	conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
-	observed := &observedRecipeClient{BuilderClient: builderv0.NewBuilderClient(conn)}
+	observed := &observedRecipeClient{BuilderClient: builderv1.NewBuilderClient(conn)}
 
 	workspaceDir := t.TempDir()
 	workspace := &resources.Workspace{Name: "platform"}
@@ -403,7 +403,7 @@ func TestRecordBuildRecipeOfMaterializedServiceArchivesUnderWorkspaceScratch(t *
 	require.NoError(t, os.MkdirAll(emitted, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(emitted, "Dockerfile"), []byte("FROM scratch\nLABEL fresh=true\n"), 0o644))
 
-	plan := &builderv0.DockerBuildPlan{Recipes: []*builderv0.DockerBuildRecipe{{Name: "store", Image: "example.test/store:v1", Dockerfile: "Dockerfile", Context: "."}}}
+	plan := &builderv1.DockerBuildPlan{Recipes: []*builderv1.DockerBuildRecipe{{Name: "store", Image: "example.test/store:v1", Dockerfile: "Dockerfile", Context: "."}}}
 	require.NoError(t, recordBuildRecipe(context.Background(), service, root, plan))
 
 	archive := filepath.Join(workspaceDir, ".codefly", "build", "saas", "store", buildRecipeArchiveDir, "0.3.5")

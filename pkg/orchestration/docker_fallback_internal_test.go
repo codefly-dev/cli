@@ -5,19 +5,19 @@ import (
 	"strings"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 )
 
-func fakeManager(module, name, runtimeContext string, backends ...agentv0.Backend_Type) *Manager {
-	supported := make([]*agentv0.Backend, 0, len(backends))
+func fakeManager(module, name, runtimeContext string, backends ...agentv1.Backend_Type) *Manager {
+	supported := make([]*agentv1.Backend, 0, len(backends))
 	for _, t := range backends {
-		supported = append(supported, &agentv0.Backend{Type: t})
+		supported = append(supported, &agentv1.Backend{Type: t})
 	}
 	instance := &services.Instance{
 		Identity: &resources.ServiceIdentity{Module: module, Name: name},
-		Info:     &agentv0.AgentInformation{SupportedBackends: supported},
+		Info:     &agentv1.AgentInformation{SupportedBackends: supported},
 	}
 	return &Manager{Runner: &Runner{instance: instance, runtimeContext: runtimeContext}}
 }
@@ -27,7 +27,7 @@ func flowWith(docker DockerStatus, managers ...IManager) *Flow {
 }
 
 func TestResolveDockerFallback_DockerRunning_SelectsFirstAdvertisedBackend(t *testing.T) {
-	m := fakeManager("mind", "mind", resources.RuntimeContextFree, agentv0.Backend_LOCAL, agentv0.Backend_NIX, agentv0.Backend_DOCKER)
+	m := fakeManager("mind", "mind", resources.RuntimeContextFree, agentv1.Backend_LOCAL, agentv1.Backend_NIX, agentv1.Backend_DOCKER)
 	flow := flowWith(DockerStatus{Running: true}, m)
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
@@ -39,7 +39,7 @@ func TestResolveDockerFallback_DockerRunning_SelectsFirstAdvertisedBackend(t *te
 }
 
 func TestResolveDockerFallback_DockerRunning_SelectsContainerWhenOnlyBackend(t *testing.T) {
-	m := fakeManager("infra", "postgres", resources.RuntimeContextFree, agentv0.Backend_DOCKER)
+	m := fakeManager("infra", "postgres", resources.RuntimeContextFree, agentv1.Backend_DOCKER)
 	flow := flowWith(DockerStatus{Running: true}, m)
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
@@ -53,7 +53,7 @@ func TestResolveDockerFallback_DockerRunning_SelectsContainerWhenOnlyBackend(t *
 func TestResolveDockerFallback_DockerDown_DockerOnlyServiceStops(t *testing.T) {
 	// A container-only agent advertises DOCKER as its only backend — nothing to
 	// fall back to when Docker is down.
-	m := fakeManager("infra", "postgres", resources.RuntimeContextFree, agentv0.Backend_DOCKER)
+	m := fakeManager("infra", "postgres", resources.RuntimeContextFree, agentv1.Backend_DOCKER)
 	flow := flowWith(DockerStatus{Running: false, Context: "orbstack", Endpoint: "unix:///orb.sock"}, m)
 
 	err := flow.resolveDockerFallback(context.Background())
@@ -71,7 +71,7 @@ func TestResolveDockerFallback_DockerDown_DockerOnlyServiceStops(t *testing.T) {
 func TestResolveDockerFallback_Unprobed_StillResolvesFirstBackend(t *testing.T) {
 	// Test/build/deploy/sync flows do not probe Docker, but their downstream
 	// boundaries still require a concrete context rather than the "free" hint.
-	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX, agentv0.Backend_DOCKER)
+	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv1.Backend_NIX, agentv1.Backend_DOCKER)
 	flow := &Flow{hub: &Hub{managers: []IManager{m}}} // dockerProbed == false
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
@@ -126,7 +126,7 @@ func TestResolveDockerFallback_DockerDown_ExplicitContextHonored(t *testing.T) {
 func TestResolveDockerFallback_DockerDown_NixServiceFallsBack(t *testing.T) {
 	// SupportedBackends is already filtered by the agent, so the orchestrator
 	// must trust an advertised Nix backend without probing the host again.
-	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX)
+	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv1.Backend_NIX)
 	flow := flowWith(DockerStatus{Running: false}, m)
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
@@ -141,7 +141,7 @@ func TestResolveDockerFallback_DockerDown_PrefersLocalOverNix(t *testing.T) {
 	// A LOCAL-first service with no host toolchain requirement (LOCAL is always
 	// available) resolves to native — honoring preference order — even when nix
 	// is installed, rather than being forced onto nix.
-	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_LOCAL, agentv0.Backend_NIX)
+	m := fakeManager("svc", "api", resources.RuntimeContextFree, agentv1.Backend_LOCAL, agentv1.Backend_NIX)
 	flow := flowWith(DockerStatus{Running: false}, m)
 
 	if err := flow.resolveDockerFallback(context.Background()); err != nil {
@@ -153,7 +153,7 @@ func TestResolveDockerFallback_DockerDown_PrefersLocalOverNix(t *testing.T) {
 }
 
 func TestRunnerSupportsNix(t *testing.T) {
-	withNix := fakeManager("svc", "api", resources.RuntimeContextFree, agentv0.Backend_NIX).Runner
+	withNix := fakeManager("svc", "api", resources.RuntimeContextFree, agentv1.Backend_NIX).Runner
 	if !withNix.SupportsNix() {
 		t.Fatal("expected SupportsNix() = true when NIX is advertised")
 	}

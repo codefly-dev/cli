@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -230,15 +230,15 @@ func TestAStructuredConfigurationDocumentIsExported(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "runtime.env")
 	native := resources.NewRuntimeContextNative()
-	document := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, RuntimeContext: native, Infos: []*basev0.ConfigurationInformation{{
+	document := &basev1.Configuration{Origin: resources.ConfigurationWorkspace, RuntimeContext: native, Infos: []*basev1.ConfigurationInformation{{
 		Name: "fixture-composition",
-		Data: &basev0.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v1\ninstallations: []\n")},
+		Data: &basev1.ConfigurationData{Kind: "yaml", Content: []byte("schema: codefly.dev/authority/fixture-composition/v1\ninstallations: []\n")},
 	}}}
 	key := resources.ConfigurationDocumentKey(resources.ConfigurationWorkspace, "fixture-composition", "local", false)
 	require.NoError(t, validOutputKey(key))
 
 	require.NoError(t, AppendServiceProcessConfigurationsToFile(ctx, path, localRunEnvironment(), native, nil,
-		[]*basev0.Configuration{document}, nil, nil))
+		[]*basev1.Configuration{document}, nil, nil))
 	body, err := os.ReadFile(path)
 	require.NoError(t, err)
 	values := map[string]string{}

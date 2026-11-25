@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
+	providerv1 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v1"
 	"github.com/codefly-dev/core/network/urlguard"
 	"github.com/codefly-dev/core/provider/broker"
 	"github.com/codefly-dev/core/provider/canonical"
@@ -137,8 +137,8 @@ type operationProbe struct {
 	operation        Operation
 	descriptor       *manifest.RequestDescriptor
 	descriptorDigest string
-	origin           *providerv0.AdmittedOrigin
-	planned          *providerv0.PlannedRequest
+	origin           *providerv1.AdmittedOrigin
+	planned          *providerv1.PlannedRequest
 	vault            *credentials.Vault
 	urlOrigin        urlguard.Origin
 	remoteID         string
@@ -176,7 +176,7 @@ func newOperationProbe(providerManifest *manifest.Manifest, operation Operation)
 	if err != nil {
 		return nil, fmt.Errorf("provider conformance operation %q: %w", operation.Name, err)
 	}
-	planned := &providerv0.PlannedRequest{
+	planned := &providerv1.PlannedRequest{
 		RequestDescriptorId:     descriptor.ID,
 		RequestDescriptorDigest: descriptorDigest,
 		Method:                  method,
@@ -295,12 +295,12 @@ func (p *operationProbe) assertNegativePaths(ctx context.Context) (string, error
 // request. Replay is enforcement-identical to live delivery but performs no
 // network I/O, so the whole admission path runs against a provider's declared
 // origin without contacting it.
-func (p *operationProbe) sealedCassette(planned *providerv0.PlannedRequest) (*cassette.Cassette, error) {
+func (p *operationProbe) sealedCassette(planned *providerv1.PlannedRequest) (*cassette.Cassette, error) {
 	recorder := cassette.New(cassette.ModeRecord, p.providerManifest.Agent.Version)
 	if err := recorder.Record(
 		cassette.NewKey(planned, p.origin),
 		http.StatusOK, nil,
-		&providerv0.ExecuteRequestResponse{},
+		&providerv1.ExecuteRequestResponse{},
 	); err != nil {
 		return nil, fmt.Errorf("seal conformance response: %w", err)
 	}
@@ -314,8 +314,8 @@ func (p *operationProbe) sealedCassette(planned *providerv0.PlannedRequest) (*ca
 // execute composes the complete host-side call and runs it through the real
 // broker, delivering from a sealed cassette. Replay never touches the network,
 // so a provider's own upstream API is never contacted.
-func (p *operationProbe) execute(ctx context.Context, planned *providerv0.PlannedRequest, readOnly bool) (*providerv0.ExecuteRequestResponse, error) {
-	budget := &providerv0.RequestBudget{
+func (p *operationProbe) execute(ctx context.Context, planned *providerv1.PlannedRequest, readOnly bool) (*providerv1.ExecuteRequestResponse, error) {
+	budget := &providerv1.RequestBudget{
 		RequestCount:  1,
 		RequestBytes:  p.descriptor.RequestByteBudget,
 		ResponseBytes: p.descriptor.ResponseByteBudget,
@@ -340,7 +340,7 @@ func (p *operationProbe) execute(ctx context.Context, planned *providerv0.Planne
 	if err != nil {
 		return nil, fmt.Errorf("compose broker session: %w", err)
 	}
-	handles := make([]*providerv0.CredentialHandle, 0, len(planned.GetCredentialPurposes()))
+	handles := make([]*providerv1.CredentialHandle, 0, len(planned.GetCredentialPurposes()))
 	for _, purpose := range planned.GetCredentialPurposes() {
 		handle, err := p.vault.Mint(qualificationCredential, credentials.Scope{
 			Principal:      qualificationTenant,
@@ -362,11 +362,11 @@ func (p *operationProbe) execute(ctx context.Context, planned *providerv0.Planne
 		}
 		handles = append(handles, handle)
 	}
-	return session.Execute(ctx, &providerv0.ExecuteRequestRequest{
-		Context: &providerv0.ProviderContext{
-			Offline:     &providerv0.OfflineProviderContext{Binding: qualificationBinding()},
+	return session.Execute(ctx, &providerv1.ExecuteRequestRequest{
+		Context: &providerv1.ProviderContext{
+			Offline:     &providerv1.OfflineProviderContext{Binding: qualificationBinding()},
 			Credentials: handles,
-			Operation: &providerv0.OperationIdentity{
+			Operation: &providerv1.OperationIdentity{
 				OperationId: qualificationActionID, AttemptId: "1",
 				ActionId: qualificationActionID, PlanId: qualificationPlanID,
 			},
@@ -398,14 +398,14 @@ func assertOriginRulesAdmitTheirDefaults(providerManifest *manifest.Manifest) er
 // planAction is the single-action plan the harness admits the request under.
 // The broker binds a request to its action by digest, so each probe carries the
 // exact request it executes.
-func planAction(descriptor *manifest.RequestDescriptor, remoteID string, planned *providerv0.PlannedRequest) *providerv0.PlanAction {
-	return &providerv0.PlanAction{
+func planAction(descriptor *manifest.RequestDescriptor, remoteID string, planned *providerv1.PlannedRequest) *providerv1.PlanAction {
+	return &providerv1.PlanAction{
 		ActionId:            qualificationActionID,
-		Type:                providerv0.ActionType_ACTION_TYPE_CREATE,
+		Type:                providerv1.ActionType_ACTION_TYPE_CREATE,
 		ResourceType:        descriptor.ResourceType,
 		ProspectiveRemoteId: remoteID,
-		Ownership:           providerv0.Ownership_OWNERSHIP_OWNED,
-		Requests:            []*providerv0.PlannedRequest{planned},
+		Ownership:           providerv1.Ownership_OWNERSHIP_OWNED,
+		Requests:            []*providerv1.PlannedRequest{planned},
 	}
 }
 
@@ -434,7 +434,7 @@ func packagedOriginRule(providerManifest *manifest.Manifest, descriptor *manifes
 
 // admittedOrigin attests the rule's own first default, which is the origin the
 // host binds when the operator declares no override.
-func admittedOrigin(rule *manifest.OriginRule) (urlguard.Origin, *providerv0.AdmittedOrigin, error) {
+func admittedOrigin(rule *manifest.OriginRule) (urlguard.Origin, *providerv1.AdmittedOrigin, error) {
 	if len(rule.Defaults) == 0 {
 		return urlguard.Origin{}, nil, fmt.Errorf("origin rule %q declares no default origin", rule.ID)
 	}
@@ -442,7 +442,7 @@ func admittedOrigin(rule *manifest.OriginRule) (urlguard.Origin, *providerv0.Adm
 	if err != nil {
 		return urlguard.Origin{}, nil, err
 	}
-	admitted := &providerv0.AdmittedOrigin{
+	admitted := &providerv1.AdmittedOrigin{
 		OriginRuleId:        rule.ID,
 		Scheme:              origin.Scheme,
 		Host:                origin.Host,
@@ -479,50 +479,50 @@ func ceilingFor(rule *manifest.OriginRule) urlguard.Ceiling {
 	}
 }
 
-func privateNetworkClass(rule *manifest.OriginRule) providerv0.PrivateNetworkClass {
+func privateNetworkClass(rule *manifest.OriginRule) providerv1.PrivateNetworkClass {
 	if len(rule.PrivateNetworkClasses) == 0 {
-		return providerv0.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_PUBLIC
+		return providerv1.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_PUBLIC
 	}
 	switch rule.PrivateNetworkClasses[0] {
 	case "loopback":
-		return providerv0.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_LOOPBACK
+		return providerv1.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_LOOPBACK
 	case "link-local":
-		return providerv0.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_LINK_LOCAL
+		return providerv1.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_LINK_LOCAL
 	case "private":
-		return providerv0.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_PRIVATE
+		return providerv1.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_PRIVATE
 	default:
-		return providerv0.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_PUBLIC
+		return providerv1.PrivateNetworkClass_PRIVATE_NETWORK_CLASS_PUBLIC
 	}
 }
 
-func httpMethod(method string) (providerv0.HTTPMethod, error) {
-	value, ok := providerv0.HTTPMethod_value["HTTP_METHOD_"+strings.ToUpper(strings.TrimSpace(method))]
-	if !ok || value == int32(providerv0.HTTPMethod_HTTP_METHOD_UNSPECIFIED) {
-		return providerv0.HTTPMethod_HTTP_METHOD_UNSPECIFIED, fmt.Errorf("request method %q is not an admitted HTTP method", method)
+func httpMethod(method string) (providerv1.HTTPMethod, error) {
+	value, ok := providerv1.HTTPMethod_value["HTTP_METHOD_"+strings.ToUpper(strings.TrimSpace(method))]
+	if !ok || value == int32(providerv1.HTTPMethod_HTTP_METHOD_UNSPECIFIED) {
+		return providerv1.HTTPMethod_HTTP_METHOD_UNSPECIFIED, fmt.Errorf("request method %q is not an admitted HTTP method", method)
 	}
-	return providerv0.HTTPMethod(value), nil
+	return providerv1.HTTPMethod(value), nil
 }
 
-func credentialPurposes(descriptor *manifest.RequestDescriptor) ([]providerv0.CredentialPurpose, error) {
-	purposes := make([]providerv0.CredentialPurpose, 0, len(descriptor.CredentialPurposes))
+func credentialPurposes(descriptor *manifest.RequestDescriptor) ([]providerv1.CredentialPurpose, error) {
+	purposes := make([]providerv1.CredentialPurpose, 0, len(descriptor.CredentialPurposes))
 	for _, purpose := range descriptor.CredentialPurposes {
 		name := "CREDENTIAL_PURPOSE_" + strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(purpose), "-", "_"))
-		value, ok := providerv0.CredentialPurpose_value[name]
-		if !ok || value == int32(providerv0.CredentialPurpose_CREDENTIAL_PURPOSE_UNSPECIFIED) {
+		value, ok := providerv1.CredentialPurpose_value[name]
+		if !ok || value == int32(providerv1.CredentialPurpose_CREDENTIAL_PURPOSE_UNSPECIFIED) {
 			return nil, fmt.Errorf("credential purpose %q is not an admitted purpose", purpose)
 		}
-		purposes = append(purposes, providerv0.CredentialPurpose(value))
+		purposes = append(purposes, providerv1.CredentialPurpose(value))
 	}
 	return purposes, nil
 }
 
-func publicValues(declared map[string]string) map[string]*providerv0.PublicValue {
+func publicValues(declared map[string]string) map[string]*providerv1.PublicValue {
 	if len(declared) == 0 {
 		return nil
 	}
-	values := make(map[string]*providerv0.PublicValue, len(declared))
+	values := make(map[string]*providerv1.PublicValue, len(declared))
 	for name, value := range declared {
-		values[name] = &providerv0.PublicValue{Kind: &providerv0.PublicValue_StringValue{StringValue: value}}
+		values[name] = &providerv1.PublicValue{Kind: &providerv1.PublicValue_StringValue{StringValue: value}}
 	}
 	return values
 }
@@ -538,8 +538,8 @@ func responsePolicyDigest(descriptor *manifest.RequestDescriptor) string {
 
 // tamperedDescriptorDigest returns the same request carrying a descriptor
 // digest that no packaged descriptor can produce.
-func tamperedDescriptorDigest(planned *providerv0.PlannedRequest) (*providerv0.PlannedRequest, error) {
-	tampered, ok := proto.Clone(planned).(*providerv0.PlannedRequest)
+func tamperedDescriptorDigest(planned *providerv1.PlannedRequest) (*providerv1.PlannedRequest, error) {
+	tampered, ok := proto.Clone(planned).(*providerv1.PlannedRequest)
 	if !ok {
 		return nil, fmt.Errorf("clone planned request")
 	}
@@ -557,14 +557,14 @@ func digestOf(seed string) string {
 
 type qualificationCheckpoint struct{}
 
-func (qualificationCheckpoint) Latest(context.Context, *providerv0.OperationIdentity) (*providerv0.ActionCheckpoint, error) {
-	return &providerv0.ActionCheckpoint{
+func (qualificationCheckpoint) Latest(context.Context, *providerv1.OperationIdentity) (*providerv1.ActionCheckpoint, error) {
+	return &providerv1.ActionCheckpoint{
 		CheckpointId: qualificationCheckpointID,
-		Operation: &providerv0.OperationIdentity{
+		Operation: &providerv1.OperationIdentity{
 			OperationId: qualificationActionID, AttemptId: "1",
 			ActionId: qualificationActionID, PlanId: qualificationPlanID,
 		},
-		Delivery:       providerv0.DeliveryState_DELIVERY_STATE_NOT_SENT,
+		Delivery:       providerv1.DeliveryState_DELIVERY_STATE_NOT_SENT,
 		IdempotencyKey: qualificationIdempotencyKey,
 	}, nil
 }
@@ -573,12 +573,12 @@ func (qualificationCheckpoint) Latest(context.Context, *providerv0.OperationIden
 // reaches delivery, so nothing is ever offered to it.
 type discardingSink struct{}
 
-func (discardingSink) Put(_ context.Context, target responsepolicy.SinkTarget, _ string) (*providerv0.OpaqueReference, error) {
-	return &providerv0.OpaqueReference{Reference: "capture://" + target.Key, Purpose: target.Purpose}, nil
+func (discardingSink) Put(_ context.Context, target responsepolicy.SinkTarget, _ string) (*providerv1.OpaqueReference, error) {
+	return &providerv1.OpaqueReference{Reference: "capture://" + target.Key, Purpose: target.Purpose}, nil
 }
 
-func qualificationBinding() *providerv0.BindingAddress {
-	return &providerv0.BindingAddress{
+func qualificationBinding() *providerv1.BindingAddress {
+	return &providerv1.BindingAddress{
 		WorkspaceId: qualificationTenant, EnvironmentId: "conformance", BindingId: qualificationActionID,
 	}
 }

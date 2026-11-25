@@ -17,7 +17,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/require"
@@ -188,7 +188,7 @@ func TestBuildPublicationRealRegistryAndSignedRenderHandoff(t *testing.T) {
 
 func TestBuildPublicationRejectsChangedBytesEvenWithMatchingUpdatedReceipt(t *testing.T) {
 	session, _, built, files, options := publicationFixture(t)
-	var receipt basev0.ArtifactExecutionReceipt
+	var receipt basev1.ArtifactExecutionReceipt
 	require.NoError(t, protojson.Unmarshal(built.Executions[0].Receipt, &receipt))
 	data := []byte("private bytes unrelated to the observed source build")
 	require.NoError(t, os.WriteFile(filepath.Join(built.Executions[0].Directory, receipt.Outputs[0].Path), data, 0o600))
@@ -269,7 +269,7 @@ func TestBuildPublicationKeepsRemoteBytesAndReportsPostUploadUncertainty(t *test
 	session, _, built, files, options := publicationFixture(t)
 	endpoint, client, repository, _, _ := startArtifactRegistry(t)
 	options.Repository = endpoint + "/team/app"
-	var receipt basev0.ArtifactExecutionReceipt
+	var receipt basev1.ArtifactExecutionReceipt
 	require.NoError(t, protojson.Unmarshal(built.Executions[0].Receipt, &receipt))
 	for _, failure := range []string{"cancel", "occupied"} {
 		t.Run(failure, func(t *testing.T) {

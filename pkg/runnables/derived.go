@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -156,7 +156,7 @@ type Operation struct {
 	MaxInputBytes  uint64 `json:"max_input_bytes,omitempty"`
 	MaxOutputBytes uint64 `json:"max_output_bytes,omitempty"`
 	// Completion is how the answer arrives, spelled as the
-	// codefly.base.v0.RunnableExecution.Completion enum name
+	// codefly.base.v1.RunnableExecution.Completion enum name
 	// ("COMPLETION_CALL", "COMPLETION_SUBMIT"). It is required and carries no
 	// omitempty: core refuses a policy that names no mode, and a document that
 	// simply omitted it would install as the one nobody chose. An operation
@@ -165,10 +165,10 @@ type Operation struct {
 	Completion string `json:"completion"`
 	// Keep Core's metadata types: these are owner declarations, not a CLI
 	// policy vocabulary. Slots remain unresolved until the composition binds.
-	Tool               *runnablev0.ToolExposure `json:"tool,omitempty"`
-	RequiredScopeSlots []*runnablev0.ScopeSlot  `json:"required_scope_slots,omitempty"`
+	Tool               *runnablev1.ToolExposure `json:"tool,omitempty"`
+	RequiredScopeSlots []*runnablev1.ScopeSlot  `json:"required_scope_slots,omitempty"`
 	// Recovery is how an uncertain outcome is resolved, spelled as the
-	// codefly.base.v0.RunnableExecution.Recovery enum name. RECOVERY_RECOMPUTE
+	// codefly.base.v1.RunnableExecution.Recovery enum name. RECOVERY_RECOMPUTE
 	// is a read, which carries no receipt; empty is RECOVERY_RECEIPT.
 	Recovery string `json:"recovery,omitempty"`
 }
@@ -210,13 +210,13 @@ func (o *Operation) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if len(document.Tool) > 0 && string(document.Tool) != "null" {
-		decoded.Tool = new(runnablev0.ToolExposure)
+		decoded.Tool = new(runnablev1.ToolExposure)
 		if err := protojson.Unmarshal(document.Tool, decoded.Tool); err != nil {
 			return fmt.Errorf("tool: %w", err)
 		}
 	}
 	for i, raw := range document.RequiredScopeSlots {
-		slot := new(runnablev0.ScopeSlot)
+		slot := new(runnablev1.ScopeSlot)
 		if err := protojson.Unmarshal(raw, slot); err != nil {
 			return fmt.Errorf("required_scope_slots[%d]: %w", i, err)
 		}
@@ -238,7 +238,7 @@ type Scope struct {
 // owner agent that package records.
 type Derived struct {
 	Entry     IndexEntry
-	Package   *basev0.RunnablePackage
+	Package   *basev1.RunnablePackage
 	Operation *Operation
 	// Agent is the owner agent's identifier, resolved when the package is
 	// read. A package whose agent cannot be read fails the load rather than
@@ -276,7 +276,7 @@ func LoadDerived(moduleDir string, entry *IndexEntry) (Derived, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	pkg := &basev0.RunnablePackage{}
+	pkg := &basev1.RunnablePackage{}
 	if err = readDerivedFile(root, entry, PackageFileName, func(data []byte) error {
 		return protojson.Unmarshal(data, pkg)
 	}); err != nil {
@@ -336,7 +336,7 @@ func (d *Derived) Identity() Identity {
 	}
 }
 
-func newPackageExecution(execution *basev0.RunnableExecution) Execution {
+func newPackageExecution(execution *basev1.RunnableExecution) Execution {
 	facilities := make([]string, 0, len(execution.GetFacilities()))
 	for _, facility := range execution.GetFacilities() {
 		spelling, known := resources.RunnableFacilityOf(facility.GetKind())
@@ -356,15 +356,15 @@ func newPackageExecution(execution *basev0.RunnableExecution) Execution {
 	}
 }
 
-func cancellationSpelling(cancellation basev0.RunnableExecution_Cancellation) string {
-	if cancellation == basev0.RunnableExecution_CANCELLATION_SIGNAL {
+func cancellationSpelling(cancellation basev1.RunnableExecution_Cancellation) string {
+	if cancellation == basev1.RunnableExecution_CANCELLATION_SIGNAL {
 		return string(resources.RunnableCancellationSignal)
 	}
 	return string(resources.RunnableCancellationNone)
 }
 
-func recoverySpelling(recovery basev0.RunnableExecution_Recovery) string {
-	if recovery == basev0.RunnableExecution_RECOVERY_RECEIPT {
+func recoverySpelling(recovery basev1.RunnableExecution_Recovery) string {
+	if recovery == basev1.RunnableExecution_RECOVERY_RECEIPT {
 		return string(resources.RunnableRecoveryReceipt)
 	}
 	return string(resources.RunnableRecoveryRecompute)

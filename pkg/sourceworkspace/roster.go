@@ -10,8 +10,8 @@ import (
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	codecore "github.com/codefly-dev/core/code"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 )
@@ -20,7 +20,7 @@ import (
 // compiled catalog or an assertion that an artifact version is compatible.
 type Plugin struct {
 	Agent *resources.Agent
-	Info  *agentv0.AgentInformation
+	Info  *agentv1.AgentInformation
 }
 
 // DiscoverPlugins inspects installed service agents without invoking lifecycle
@@ -68,8 +68,8 @@ func selectPlugin(ctx context.Context, sourceDir string) (*resources.Agent, erro
 	}
 	server := codecore.NewDefaultCodeServer(physicalSource)
 	defer server.Close()
-	response, err := server.Execute(ctx, &codev0.CodeRequest{
-		Operation: &codev0.CodeRequest_DiscoverCodeUnits{DiscoverCodeUnits: &codev0.DiscoverCodeUnitsRequest{}},
+	response, err := server.Execute(ctx, &codev1.CodeRequest{
+		Operation: &codev1.CodeRequest_DiscoverCodeUnits{DiscoverCodeUnits: &codev1.DiscoverCodeUnitsRequest{}},
 	})
 	if err != nil {
 		return nil, err

@@ -9,7 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/modulecache"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -59,7 +59,7 @@ func dirtyPinnedService(t *testing.T, service string) {
 
 type pinnedFixture struct {
 	service, output, workspace string
-	recipe                     *builderv0.DockerBuildRecipe
+	recipe                     *builderv1.DockerBuildRecipe
 }
 
 func newPinnedFixture(t *testing.T, ignorePolicy string) *pinnedFixture {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -16,13 +16,13 @@ type digestManager struct {
 	IManager
 	unique   string
 	digest   string
-	evidence []*builderv0.ImageSBOM
+	evidence []*builderv1.ImageSBOM
 }
 
 func (m *digestManager) Unique() string             { return m.unique }
 func (m *digestManager) BuilderImageDigest() string { return m.digest }
 
-func (m *digestManager) BuilderImageEvidence() []*builderv0.ImageSBOM { return m.evidence }
+func (m *digestManager) BuilderImageEvidence() []*builderv1.ImageSBOM { return m.evidence }
 
 func TestOriginImageDigestReturnsOriginBuildersDigest(t *testing.T) {
 	service := &resources.Service{Name: "frontend"}
@@ -61,13 +61,13 @@ func TestOriginImageEvidenceReturnsOriginBuildersEvidence(t *testing.T) {
 	service := &resources.Service{Name: "frontend"}
 	service.WithModule("web")
 	origin := resources.WithUnique(service).Unique()
-	evidence := []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("a", 64), Platform: "linux/amd64"}}
+	evidence := []*builderv1.ImageSBOM{{Digest: "sha256:" + strings.Repeat("a", 64), Platform: "linux/amd64"}}
 
 	// Dependencies are built and scanned too; the caller's subject is the origin.
 	flow := &Flow{
 		originService: service,
 		hub: &Hub{managers: []IManager{
-			&digestManager{unique: "web/api", evidence: []*builderv0.ImageSBOM{{Digest: "sha256:" + strings.Repeat("b", 64)}}},
+			&digestManager{unique: "web/api", evidence: []*builderv1.ImageSBOM{{Digest: "sha256:" + strings.Repeat("b", 64)}}},
 			&digestManager{unique: origin, evidence: evidence},
 		}},
 	}

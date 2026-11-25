@@ -10,7 +10,7 @@ import (
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -30,26 +30,26 @@ const (
 
 // connectionTemplate is the shape a Postgres producer declares: literals around
 // a reference to one of its own passwords.
-func connectionTemplate(role, passwordKey string) *basev0.ConfigurationValueTemplate {
-	return &basev0.ConfigurationValueTemplate{Segments: []*basev0.ConfigurationValueTemplateSegment{
-		{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://" + role + ":"}},
-		{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+func connectionTemplate(role, passwordKey string) *basev1.ConfigurationValueTemplate {
+	return &basev1.ConfigurationValueTemplate{Segments: []*basev1.ConfigurationValueTemplateSegment{
+		{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://" + role + ":"}},
+		{Content: &basev1.ConfigurationValueTemplateSegment_Reference{Reference: &basev1.ConfigurationValueReference{
 			Configuration: "postgres",
 			Key:           passwordKey,
-			Escape:        basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
+			Escape:        basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
 		}}},
-		{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: inClusterTarget}},
+		{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: inClusterTarget}},
 	}}
 }
 
 // producerConfiguration is what a Postgres producer's restricted Deploy exposes:
 // its two connections as keys without values, each with its assembly.
-func producerConfiguration() map[string]*basev0.Configuration {
-	return map[string]*basev0.Configuration{producerUnique: {
+func producerConfiguration() map[string]*basev1.Configuration {
+	return map[string]*basev1.Configuration{producerUnique: {
 		Origin: producerUnique,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "postgres",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "read-only-connection", Secret: true, Template: connectionTemplate("codefly_runtime_ro", "POSTGRES_READ_ONLY_PASSWORD")},
 				{Key: "read-write-connection", Secret: true, Template: connectionTemplate("codefly_runtime_rw", "POSTGRES_READ_WRITE_PASSWORD")},
 			},
@@ -175,11 +175,11 @@ func TestExternalSecretTemplateRoundTripsPasswords(t *testing.T) {
 }
 
 func TestExternalSecretTemplateQuotesLiteralDelimiters(t *testing.T) {
-	delivered := deliveredTemplate{producer: producerUnique, template: &basev0.ConfigurationValueTemplate{Segments: []*basev0.ConfigurationValueTemplateSegment{
-		{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: `a{{ .x }}"b`}},
-		{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+	delivered := deliveredTemplate{producer: producerUnique, template: &basev1.ConfigurationValueTemplate{Segments: []*basev1.ConfigurationValueTemplateSegment{
+		{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: `a{{ .x }}"b`}},
+		{Content: &basev1.ConfigurationValueTemplateSegment_Reference{Reference: &basev1.ConfigurationValueReference{
 			Configuration: "postgres", Key: "K",
-			Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_NONE,
+			Escape: basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_NONE,
 		}}},
 	}}}
 	expression, primitives, err := externalSecretTemplateExpression(delivered)
@@ -247,8 +247,8 @@ func TestRenderStillRefusesLiteralsAndPlaceholdersOutsideTheTemplate(t *testing.
 
 func TestCollectRenderTemplatesRefusesMalformedDeclarations(t *testing.T) {
 	literalOnly := producerConfiguration()
-	literalOnly[producerUnique].Infos[0].ConfigurationValues[0].Template = &basev0.ConfigurationValueTemplate{
-		Segments: []*basev0.ConfigurationValueTemplateSegment{{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://x@y/z"}}},
+	literalOnly[producerUnique].Infos[0].ConfigurationValues[0].Template = &basev1.ConfigurationValueTemplate{
+		Segments: []*basev1.ConfigurationValueTemplateSegment{{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://x@y/z"}}},
 	}
 	require.ErrorContains(t, collectRenderTemplates(renderTemplates{}, literalOnly, producerSecretKeys()), "references none of its secrets")
 
@@ -366,17 +366,17 @@ func TestProducerResolvingThroughAnotherStoreIsRefused(t *testing.T) {
 // remote key the store was never asked to hold.
 func TestTemplateReferencingAKeyTheProducerDoesNotReadIsRefused(t *testing.T) {
 	plain := producerConfiguration()
-	plain[producerUnique].Infos[0].ConfigurationValues[1].Template = &basev0.ConfigurationValueTemplate{
-		Segments: []*basev0.ConfigurationValueTemplateSegment{
-			{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://codefly_runtime_rw:"}},
-			{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+	plain[producerUnique].Infos[0].ConfigurationValues[1].Template = &basev1.ConfigurationValueTemplate{
+		Segments: []*basev1.ConfigurationValueTemplateSegment{
+			{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://codefly_runtime_rw:"}},
+			{Content: &basev1.ConfigurationValueTemplateSegment_Reference{Reference: &basev1.ConfigurationValueReference{
 				Configuration: "postgres", Key: "POSTGRES_READ_WRITE_PASSWORD",
-				Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
+				Escape: basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
 			}}},
-			{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "@"}},
-			{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+			{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: "@"}},
+			{Content: &basev1.ConfigurationValueTemplateSegment_Reference{Reference: &basev1.ConfigurationValueReference{
 				Configuration: "postgres", Key: "DATABASE_HOST",
-				Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
+				Escape: basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
 			}}},
 		},
 	}
@@ -410,13 +410,13 @@ func TestTemplateReferencingAnotherAssembledValueIsRefused(t *testing.T) {
 	nested := producerConfiguration()
 	nested[producerUnique].Infos[0].ConfigurationValues = append(
 		nested[producerUnique].Infos[0].ConfigurationValues,
-		&basev0.ConfigurationValue{
+		&basev1.ConfigurationValue{
 			Key: "read-write-url", Secret: true,
-			Template: &basev0.ConfigurationValueTemplate{Segments: []*basev0.ConfigurationValueTemplateSegment{
-				{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "jdbc:"}},
-				{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+			Template: &basev1.ConfigurationValueTemplate{Segments: []*basev1.ConfigurationValueTemplateSegment{
+				{Content: &basev1.ConfigurationValueTemplateSegment_Literal{Literal: "jdbc:"}},
+				{Content: &basev1.ConfigurationValueTemplateSegment_Reference{Reference: &basev1.ConfigurationValueReference{
 					Configuration: "postgres", Key: "read-write-connection",
-					Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
+					Escape: basev1.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
 				}}},
 			}},
 		})

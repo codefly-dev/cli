@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/sdk/session"
 	"github.com/stretchr/testify/require"

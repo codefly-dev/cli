@@ -233,8 +233,8 @@ func parseConsumedAPI(value string) (manifest.APIDeclaration, error) {
 // document: a field core adds arrives here by recompiling.
 func solutionManifest(consumes []manifest.APIDeclaration, executor *resources.Agent) *manifest.Manifest {
 	built := &manifest.Manifest{
-		SchemaVersion:   manifest.SchemaVersionV0,
-		ProtocolVersion: manifest.ProtocolVersionV0,
+		SchemaVersion:   manifest.SchemaVersionV1,
+		ProtocolVersion: manifest.ProtocolVersionV1,
 		// The schema calls a Service "one service the solution scaffolds", so
 		// the manifest names what was scaffolded rather than leaving a reader
 		// to guess. The shell is one of them: the package does not publish it,

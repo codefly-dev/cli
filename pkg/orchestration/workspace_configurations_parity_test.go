@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
@@ -50,7 +50,7 @@ func parityWorld(t *testing.T, mode Mode, origins ...string) (*World, *resources
 	manager.WithLoader(localReader)
 	// `payments-store` is not named as composition-root: it is the group a
 	// composed module ships for the one service that declares it.
-	composedLoader := staticWorkspaceLoader{confs: []*basev0.Configuration{
+	composedLoader := staticWorkspaceLoader{confs: []*basev1.Configuration{
 		workspaceConfiguration("payments-store", "gateway-endpoint", "${endpoint:platform/gateway/rest}"),
 	}}
 	manager.WithLoader(composedLoader)
@@ -76,7 +76,7 @@ func parityWorld(t *testing.T, mode Mode, origins ...string) (*World, *resources
 		compositionRootGroups: localReader.CompositionRootWorkspaceConfigurationNames,
 		// The same binding NewFlow makes from the same loader: the groups as
 		// loaded, so a reference can be validated and a dropped value noticed.
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return append(workspaceConfigurationInfos(localReader.Configurations()),
 				workspaceConfigurationInfos(composedLoader.Configurations())...)
 		},
@@ -169,7 +169,7 @@ func parityInstance(t *testing.T, workspace *resources.Workspace, service *resou
 // It deduplicates, so it is the wrong instrument for the delivered-once claim:
 // a group emitted twice reads here exactly like a group emitted once. Use
 // groupCounts for that.
-func groupSet(confs []*basev0.Configuration) []string {
+func groupSet(confs []*basev1.Configuration) []string {
 	names := make([]string, 0, len(confs))
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
@@ -185,7 +185,7 @@ func groupSet(confs []*basev0.Configuration) []string {
 // groupCounts is how many times each group name was delivered. A name the
 // service both declares and the composition root provides is resolved from two
 // sets, so "delivered once" is a claim about this map and not about groupSet.
-func groupCounts(confs []*basev0.Configuration) map[string]int {
+func groupCounts(confs []*basev1.Configuration) map[string]int {
 	counts := map[string]int{}
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
@@ -201,7 +201,7 @@ func groupCounts(confs []*basev0.Configuration) map[string]int {
 // about: it cannot tell a dropped value from an empty one.
 // groupNames is the group names a service received, in the order they came, so
 // a test can tell "the group dropped" from "one of its values dropped".
-func groupNames(confs []*basev0.Configuration) []string {
+func groupNames(confs []*basev1.Configuration) []string {
 	var names []string
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
@@ -211,7 +211,7 @@ func groupNames(confs []*basev0.Configuration) []string {
 	return names
 }
 
-func groupValue(confs []*basev0.Configuration, group, key string) (string, bool) {
+func groupValue(confs []*basev1.Configuration, group, key string) (string, bool) {
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
 			if info.GetName() != group {
@@ -512,19 +512,19 @@ func TestRenderAndRunDifferOnlyInTheAddressFamily(t *testing.T) {
 // rootGroupWorld resolves one composition-root group, named `work-context`, into
 // a bare service's deployed set — the render's own entry point, so what comes
 // back is what the restricted render is handed.
-func rootGroupWorld(t *testing.T, declared []string, values ...*basev0.ConfigurationValue) []*basev0.Configuration {
+func rootGroupWorld(t *testing.T, declared []string, values ...*basev1.ConfigurationValue) []*basev1.Configuration {
 	t.Helper()
 	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{{
+		confs: []*basev1.Configuration{{
 			Origin: resources.ConfigurationWorkspace,
-			Infos:  []*basev0.ConfigurationInformation{{Name: "work-context", ConfigurationValues: values}},
+			Infos:  []*basev1.ConfigurationInformation{{Name: "work-context", ConfigurationValues: values}},
 		}},
 		rootConfigs: []string{"work-context"},
 	})
 	world := &World{Mode: SnapshotMode, ConfigurationManager: manager}
 	world.compositionRootGroups = func() []string { return []string{"work-context"} }
-	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
-		return []*basev0.ConfigurationInformation{{Name: "work-context", ConfigurationValues: values}}
+	world.providedWorkspaceConfigurationInfos = func() []*basev1.ConfigurationInformation {
+		return []*basev1.ConfigurationInformation{{Name: "work-context", ConfigurationValues: values}}
 	}
 	builder := &Builder{
 		instance: &coreservices.Instance{
@@ -567,29 +567,29 @@ func rootGroupWorld(t *testing.T, declared []string, values ...*basev0.Configura
 func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 	for _, test := range []struct {
 		name     string
-		secret   *basev0.ConfigurationValue
+		secret   *basev1.ConfigurationValue
 		storeKey string
 	}{
 		{
 			"credential-named, no declaration",
-			&basev0.ConfigurationValue{Key: "authority-token", Value: "plaintext"},
+			&basev1.ConfigurationValue{Key: "authority-token", Value: "plaintext"},
 			"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORK_CONTEXT__AUTHORITY_TOKEN",
 		},
 		{
 			"declared secret under a key no marker recognizes",
-			&basev0.ConfigurationValue{Key: "opaque", Value: "plaintext", Secret: true},
+			&basev1.ConfigurationValue{Key: "opaque", Value: "plaintext", Secret: true},
 			"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORK_CONTEXT__OPAQUE",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			render := rootGroupWorld(t, []string{"work-context"},
-				&basev0.ConfigurationValue{Key: "authority-url", Value: "https://authority.example"},
+				&basev1.ConfigurationValue{Key: "authority-url", Value: "https://authority.example"},
 				test.secret,
 			)
 			require.Equal(t, []string{"work-context"}, groupSet(render),
 				"the root group must reach the render at all")
 
-			_, safe, references, err := promotableDeploymentConfigurations(&basev0.Configuration{}, render, "secret-api")
+			_, safe, references, err := promotableDeploymentConfigurations(&basev1.Configuration{}, render, "secret-api")
 			require.NoError(t, err)
 
 			// The exact reference, keyed by the environment variable the workload
@@ -637,7 +637,7 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 			// run-wide — and the credential is not there to promote, so no
 			// reference is rendered and no store entry is planned for it.
 			undeclared := rootGroupWorld(t, nil,
-				&basev0.ConfigurationValue{Key: "authority-url", Value: "https://authority.example"},
+				&basev1.ConfigurationValue{Key: "authority-url", Value: "https://authority.example"},
 				test.secret,
 			)
 			require.Equal(t, []string{"work-context"}, groupSet(undeclared),
@@ -645,7 +645,7 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 			_, hasCredential := groupValue(undeclared, "work-context", test.secret.GetKey())
 			require.False(t, hasCredential,
 				"a composition root's credential must not reach a service that does not declare its group")
-			_, _, undeclaredReferences, err := promotableDeploymentConfigurations(&basev0.Configuration{}, undeclared, "secret-worker")
+			_, _, undeclaredReferences, err := promotableDeploymentConfigurations(&basev1.Configuration{}, undeclared, "secret-worker")
 			require.NoError(t, err)
 			require.Empty(t, undeclaredReferences,
 				"no secretKeyRef may be rendered for a credential this service does not receive")
@@ -659,11 +659,11 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 // promotableConfiguration makes to name a reference.
 func workspaceSecretEnvironmentKey(t *testing.T, group, key string) string {
 	t.Helper()
-	variables, err := resources.ConfigurationAsEnvironmentVariables(&basev0.Configuration{
+	variables, err := resources.ConfigurationAsEnvironmentVariables(&basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name:                group,
-			ConfigurationValues: []*basev0.ConfigurationValue{{Key: key, Secret: true}},
+			ConfigurationValues: []*basev1.ConfigurationValue{{Key: key, Secret: true}},
 		}},
 	}, "", true)
 	require.NoError(t, err)

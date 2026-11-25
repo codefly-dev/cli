@@ -5,10 +5,10 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/cli/models"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 )
 
-func Choice(ctx context.Context, msg *agentv0.Message, c *agentv0.Choice) (*agentv0.Answer, error) {
+func Choice(ctx context.Context, msg *agentv1.Message, c *agentv1.Choice) (*agentv1.Answer, error) {
 	cli.Header(2, "%s", msg.Description)
 	entries := make([]*models.Entry, 0, len(c.Options))
 	toNames := make(map[string]string)
@@ -25,9 +25,9 @@ func Choice(ctx context.Context, msg *agentv0.Message, c *agentv0.Choice) (*agen
 	if err != nil {
 		return nil, err
 	}
-	return &agentv0.Answer{
-		Value: &agentv0.Answer_Choice{
-			Choice: &agentv0.ChoiceAnswer{
+	return &agentv1.Answer{
+		Value: &agentv1.Answer_Choice{
+			Choice: &agentv1.ChoiceAnswer{
 				Option: toNames[input.Identifier],
 			},
 		},

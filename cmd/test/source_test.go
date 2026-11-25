@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/agents/contract"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
-	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
+	toolingv1 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v1"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -19,32 +19,32 @@ import (
 )
 
 type sourceHandshakeAgent struct {
-	agentv0.UnimplementedAgentServer
+	agentv1.UnimplementedAgentServer
 	runtime bool
 }
 
-func (s sourceHandshakeAgent) GetAgentInformation(context.Context, *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
-	info := &agentv0.AgentInformation{Contract: contract.Current()}
+func (s sourceHandshakeAgent) GetAgentInformation(context.Context, *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
+	info := &agentv1.AgentInformation{Contract: contract.Current()}
 	if s.runtime {
-		info.Capabilities = []*agentv0.Capability{{Type: agentv0.Capability_RUNTIME}}
+		info.Capabilities = []*agentv1.Capability{{Type: agentv1.Capability_RUNTIME}}
 	}
 	return info, nil
 }
 
 type sourceHandshakeCode struct {
-	codev0.UnimplementedCodeServer
+	codev1.UnimplementedCodeServer
 }
 
-func (sourceHandshakeCode) Execute(context.Context, *codev0.CodeRequest) (*codev0.CodeResponse, error) {
-	return &codev0.CodeResponse{}, nil
+func (sourceHandshakeCode) Execute(context.Context, *codev1.CodeRequest) (*codev1.CodeResponse, error) {
+	return &codev1.CodeResponse{}, nil
 }
 
 type sourceHandshakeTooling struct {
-	toolingv0.UnimplementedToolingServer
+	toolingv1.UnimplementedToolingServer
 }
 
-func (sourceHandshakeTooling) GetProjectInfo(context.Context, *toolingv0.GetProjectInfoRequest) (*toolingv0.GetProjectInfoResponse, error) {
-	return &toolingv0.GetProjectInfoResponse{}, nil
+func (sourceHandshakeTooling) GetProjectInfo(context.Context, *toolingv1.GetProjectInfoRequest) (*toolingv1.GetProjectInfoResponse, error) {
+	return &toolingv1.GetProjectInfoResponse{}, nil
 }
 
 func TestPrepareSourceWorkspaceUsesExactAgentOverride(t *testing.T) {
@@ -104,12 +104,12 @@ func TestVerifySourceCapabilityClientsRequiresRuntimeCodeAndTooling(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			listener := bufconn.Listen(1024 * 1024)
 			server := grpc.NewServer()
-			agentv0.RegisterAgentServer(server, sourceHandshakeAgent{runtime: test.runtime})
+			agentv1.RegisterAgentServer(server, sourceHandshakeAgent{runtime: test.runtime})
 			if test.registerCode {
-				codev0.RegisterCodeServer(server, sourceHandshakeCode{})
+				codev1.RegisterCodeServer(server, sourceHandshakeCode{})
 			}
 			if test.registerTooling {
-				toolingv0.RegisterToolingServer(server, sourceHandshakeTooling{})
+				toolingv1.RegisterToolingServer(server, sourceHandshakeTooling{})
 			}
 			go func() { _ = server.Serve(listener) }()
 			defer server.Stop()

@@ -3,7 +3,7 @@ package orchestration
 import (
 	"context"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -12,7 +12,7 @@ import (
 // - endpoints
 
 type RunnerLoadOutput struct {
-	Endpoints []*basev0.Endpoint
+	Endpoints []*basev1.Endpoint
 	Err       string
 }
 
@@ -72,8 +72,8 @@ func (b *RunnerLoadManager) Set(ctx context.Context, output *RunnerLoadOutput) e
 // - network mappings
 // - ConfigurationManager infos
 type RunnerInitOutput struct {
-	networkMappings []*basev0.NetworkMapping
-	configurations  []*basev0.Configuration
+	networkMappings []*basev1.NetworkMapping
+	configurations  []*basev1.Configuration
 	failing         bool
 }
 

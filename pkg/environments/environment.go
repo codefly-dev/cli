@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/secretgen"
 
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
@@ -1683,7 +1683,7 @@ func (env *Environment) Runtime() *resources.Environment {
 	}
 }
 
-func (env *Environment) Proto() (*basev0.Environment, error) { return env.Runtime().Proto() }
+func (env *Environment) Proto() (*basev1.Environment, error) { return env.Runtime().Proto() }
 func (env *Environment) ConfigurationProfileName() (string, error) {
 	return env.Runtime().ConfigurationProfileName()
 }
@@ -1861,15 +1861,15 @@ const EgressHostsKey = "HOSTS"
 // EgressGroup is the EgressConfiguration group one service receives. It is
 // always the group, HOSTS empty when nothing is declared, so a service reads
 // "this environment declares no egress for me" rather than an absent group.
-func (env *Environment) EgressGroup(module, service string) *basev0.Configuration {
+func (env *Environment) EgressGroup(module, service string) *basev1.Configuration {
 	hosts := env.EgressHosts(module, service)
 	entries := make([]string, 0, len(hosts))
 	for _, host := range hosts {
 		entries = append(entries, fmt.Sprintf("%s:%d", host.Name, host.Port))
 	}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+	return &basev1.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev1.ConfigurationInformation{{
 		Name:                EgressConfiguration,
-		ConfigurationValues: []*basev0.ConfigurationValue{{Key: EgressHostsKey, Value: strings.Join(entries, ",")}},
+		ConfigurationValues: []*basev1.ConfigurationValue{{Key: EgressHostsKey, Value: strings.Join(entries, ",")}},
 	}}}
 }
 

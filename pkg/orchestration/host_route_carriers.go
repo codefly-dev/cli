@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/solutionrun"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 )
@@ -45,7 +45,7 @@ import (
 // a route with no answer is reported in problems and never takes another
 // route's carrier with it. err is a refusal of the composition itself (see
 // hostRoutes), which no route can be derived past.
-func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Service, access *basev0.NetworkAccess) (map[string]string, []error, error) {
+func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Service, access *basev1.NetworkAccess) (map[string]string, []error, error) {
 	if world == nil || world.Env == nil || world.Env.Host == nil || world.Env.Host.Gateway == "" || service == nil {
 		return nil, nil, nil
 	}
@@ -75,7 +75,7 @@ func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Se
 
 // hostRouteCarrier is one route's carrier, or why it has none.
 func (world *World) hostRouteCarrier(
-	ctx context.Context, gateway *resources.Service, hostModule string, route hostRoute, access *basev0.NetworkAccess,
+	ctx context.Context, gateway *resources.Service, hostModule string, route hostRoute, access *basev1.NetworkAccess,
 ) (string, string, error) {
 	producer, err := world.Dependencies.ServiceFromUnique(route.producer())
 	if err != nil {
@@ -88,7 +88,7 @@ func (world *World) hostRouteCarrier(
 	if err != nil {
 		return "", "", fmt.Errorf("derive its address: %w", err)
 	}
-	var consumed []*basev0.NetworkMapping
+	var consumed []*basev1.NetworkMapping
 	for _, mapping := range mappings {
 		if mapping.GetEndpoint().GetName() == route.endpoint {
 			consumed = append(consumed, mapping)

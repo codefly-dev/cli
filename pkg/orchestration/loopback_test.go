@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +15,7 @@ import (
 // listenOn opens a TCP listener on host (loopback only, or every interface
 // for "") and returns its mappings as a native run records them: one http
 // endpoint, its native instance at the listener's port.
-func listenOn(t *testing.T, host string) ([]*basev0.NetworkMapping, uint16) {
+func listenOn(t *testing.T, host string) ([]*basev1.NetworkMapping, uint16) {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	require.NoError(t, err)
@@ -32,9 +32,9 @@ func listenOn(t *testing.T, host string) ([]*basev0.NetworkMapping, uint16) {
 	port := uint16(listener.Addr().(*net.TCPAddr).Port)
 	instance := resources.NewHTTPNetworkInstance("localhost", port, false)
 	instance.Access = resources.NewNativeNetworkAccess()
-	return []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Name: "http", Api: "http"},
-		Instances: []*basev0.NetworkInstance{instance},
+	return []*basev1.NetworkMapping{{
+		Endpoint:  &basev1.Endpoint{Name: "http", Api: "http"},
+		Instances: []*basev1.NetworkInstance{instance},
 	}}, port
 }
 

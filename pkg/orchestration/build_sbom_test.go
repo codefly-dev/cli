@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,8 +13,8 @@ const (
 	loadedImageID     = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 )
 
-func multiPlatformPlan() *builderv0.DockerBuildPlan {
-	return &builderv0.DockerBuildPlan{Recipes: []*builderv0.DockerBuildRecipe{
+func multiPlatformPlan() *builderv1.DockerBuildPlan {
+	return &builderv1.DockerBuildPlan{Recipes: []*builderv1.DockerBuildRecipe{
 		{Name: "app", Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64", "linux/arm64"}},
 		{Name: "migration", Image: "ghcr.io/org/migration:v1", Platforms: []string{"linux/amd64"}},
 	}}
@@ -75,7 +75,7 @@ func TestProducedSubjectsCoverOnlyTheLoadedPlatformOfALocalBuild(t *testing.T) {
 // A recipe that states no platform is built for the host's own, and the plan
 // says nothing about which that is, so the subject survives either way.
 func TestProducedSubjectsKeepARecipeThatStatesNoPlatform(t *testing.T) {
-	plan := &builderv0.DockerBuildPlan{Recipes: []*builderv0.DockerBuildRecipe{
+	plan := &builderv1.DockerBuildPlan{Recipes: []*builderv1.DockerBuildRecipe{
 		{Name: "app", Image: "ghcr.io/org/app:v1"},
 	}}
 

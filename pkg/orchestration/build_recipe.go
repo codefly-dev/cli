@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -66,7 +66,7 @@ const redactedBuildArgValue = "****"
 
 // recipeSpecs projects the emitted build plan's recipes into their durable
 // manifest form.
-func recipeSpecs(plan *builderv0.DockerBuildPlan) []RecipeSpec {
+func recipeSpecs(plan *builderv1.DockerBuildPlan) []RecipeSpec {
 	recipes := plan.GetRecipes()
 	if len(recipes) == 0 {
 		return nil
@@ -116,7 +116,7 @@ func durableBuildArgs(args map[string]string) map[string]string {
 // is re-rendered per agent version. The archive preserves the recipe per
 // producing agent version so a consumer can inspect and rebuild the exact recipe
 // that shipped an image even after the live tree moved on.
-func recordBuildRecipe(ctx context.Context, service *resources.Service, root string, plan *builderv0.DockerBuildPlan) error {
+func recordBuildRecipe(ctx context.Context, service *resources.Service, root string, plan *builderv1.DockerBuildPlan) error {
 	w := wool.Get(ctx).In("recordBuildRecipe", wool.NameField(service.Name))
 	source := filepath.Join(root, buildRecipeSourceDir)
 	info, err := os.Stat(source)

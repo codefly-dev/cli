@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/executionreceipt"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -393,7 +393,7 @@ func receiptForStage(stage executionv1.ExecutionStage) *executionv1.ExecutionRec
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.24",
 		},
 		Assurance: executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
-		WorkContext: &basev0.WorkContextV1{
+		WorkContext: &basev1.WorkContextV1{
 			Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
 			KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
 			NotBeforeUnix: started.Add(-time.Minute).Unix(), IssuedAtUnix: started.Add(-time.Minute).Unix(),
@@ -401,22 +401,22 @@ func receiptForStage(stage executionv1.ExecutionStage) *executionv1.ExecutionRec
 			AuthorizationRevision: 4, ReplayPolicy: "idempotent",
 			TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 			TaskId: "task-1", SessionId: "session-child", ParentSessionId: &parentSessionID,
-			AuthorityScopes: []*basev0.WorkScopeV1{{
+			AuthorityScopes: []*basev1.WorkScopeV1{{
 				ResourceKind: "evidence", Actions: []string{"append"}, ResourceIds: []string{"codefly.execution"},
 			}},
-			ActorChain: []*basev0.WorkActorV1{{
+			ActorChain: []*basev1.WorkActorV1{{
 				PrincipalId: "principal-claude", PrincipalKind: "agent", DelegationId: "delegation-1",
 				// Each hop of the chain carries its own epoch, so advancing one
 				// principal's epoch cuts off only that hop's capabilities.
 				PrincipalEpoch: 1,
-				GrantedScopes: []*basev0.WorkScopeV1{{
+				GrantedScopes: []*basev1.WorkScopeV1{{
 					ResourceKind: "evidence", Actions: []string{"append"}, ResourceIds: []string{"codefly.execution"},
 				}},
 			}},
 			WorkspaceId: &workspaceID, ProjectId: &projectID,
 			// Core v0.9.1 requires the seal: a capability names the
 			// installation it is held through.
-			Seal: &basev0.WorkSealV1{
+			Seal: &basev1.WorkSealV1{
 				PrincipalEpoch:       1,
 				InstallationId:       "installation-warden",
 				InstallationRevision: 3,

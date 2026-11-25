@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -14,15 +14,15 @@ import (
 // chosen by the caller. The World is bound the way NewFlow binds one, including
 // the loaded configurations, so the resolution can both validate a reference and
 // notice a value that did not survive.
-func droppedValueWorld(t *testing.T, mode Mode, reference string, mappings []*basev0.NetworkMapping) ([]*basev0.Configuration, error) {
+func droppedValueWorld(t *testing.T, mode Mode, reference string, mappings []*basev1.NetworkMapping) ([]*basev1.Configuration, error) {
 	t.Helper()
 	world, workspace := parityWorld(t, mode)
 	loader := staticWorkspaceLoader{
-		confs: []*basev0.Configuration{{
+		confs: []*basev1.Configuration{{
 			Origin: resources.ConfigurationWorkspace,
-			Infos: []*basev0.ConfigurationInformation{{
+			Infos: []*basev1.ConfigurationInformation{{
 				Name: "work-context",
-				ConfigurationValues: []*basev0.ConfigurationValue{
+				ConfigurationValues: []*basev1.ConfigurationValue{
 					// A literal beside the reference, so the group keeps its name
 					// even when every reference of it is dropped: that is what
 					// makes the loss invisible to an assertion over group names.
@@ -35,7 +35,7 @@ func droppedValueWorld(t *testing.T, mode Mode, reference string, mappings []*ba
 	}
 	world.ConfigurationManager = loadedWorkspaceManager(t, loader)
 	world.compositionRootGroups = loader.CompositionRootWorkspaceConfigurationNames
-	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
+	world.providedWorkspaceConfigurationInfos = func() []*basev1.ConfigurationInformation {
 		return workspaceConfigurationInfos(loader.Configurations())
 	}
 	// The run set a real flow of this origin computes: payments/worker alone. A
@@ -74,20 +74,20 @@ func droppedValueWorld(t *testing.T, mode Mode, reference string, mappings []*ba
 // The fix does not predict core's interpolation; it reads the outcome. So a
 // fourth shape nobody has thought of yet is covered by the same assertion.
 func TestARenderRefusesARootValueThatDidNotSurviveResolution(t *testing.T) {
-	endpoint := &basev0.Endpoint{Module: "platform", Service: "authority", Name: "rest", Api: "rest"}
+	endpoint := &basev1.Endpoint{Module: "platform", Service: "authority", Name: "rest", Api: "rest"}
 	for _, test := range []struct {
 		name, reference string
-		mappings        []*basev0.NetworkMapping
+		mappings        []*basev1.NetworkMapping
 	}{
 		{
 			"a mapping with no instance for the consumer's access",
 			"${endpoint:platform/authority/rest}",
-			[]*basev0.NetworkMapping{{Endpoint: endpoint}},
+			[]*basev1.NetworkMapping{{Endpoint: endpoint}},
 		},
 		{
 			"an instance whose address is empty",
 			"${endpoint:platform/authority/rest}",
-			[]*basev0.NetworkMapping{{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{
+			[]*basev1.NetworkMapping{{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{
 				{Access: resources.NewContainerNetworkAccess(), Address: ""},
 			}}},
 		},
@@ -131,7 +131,7 @@ func TestARootReferenceMissingItsEndpointComponentIsRefusedAsMalformed(t *testin
 // flipped, so the change is recorded rather than deleted.
 func TestARunRefusesARootValueWhoseEndpointHasNoInstanceForItsAccess(t *testing.T) {
 	_, err := droppedValueWorld(t, RunMode, "${endpoint:platform/authority/rest}",
-		[]*basev0.NetworkMapping{{Endpoint: &basev0.Endpoint{Module: "platform", Service: "authority", Name: "rest", Api: "rest"}}})
+		[]*basev1.NetworkMapping{{Endpoint: &basev1.Endpoint{Module: "platform", Service: "authority", Name: "rest", Api: "rest"}}})
 	require.Error(t, err,
 		"a composition fault in a root group fails every receiver, in a run as in a render")
 	require.Contains(t, err.Error(), "work-context/authority-endpoint")
@@ -145,7 +145,7 @@ func TestARunRefusesARootValueWhoseEndpointHasNoInstanceForItsAccess(t *testing.
 // this fix passed its own tests.
 func TestAWorldThatCannotValidateItsReferencesRefusesToResolveThem(t *testing.T) {
 	loader := staticWorkspaceLoader{
-		confs:       []*basev0.Configuration{workspaceConfiguration("work-context", "authority-endpoint", "${endpoint:platform/authority/rest}")},
+		confs:       []*basev1.Configuration{workspaceConfiguration("work-context", "authority-endpoint", "${endpoint:platform/authority/rest}")},
 		rootConfigs: []string{"work-context"},
 	}
 	world := &World{
@@ -161,7 +161,7 @@ func TestAWorldThatCannotValidateItsReferencesRefusesToResolveThem(t *testing.T)
 
 	// A group with no reference at all needs no validation, so it still resolves.
 	plain := staticWorkspaceLoader{
-		confs:       []*basev0.Configuration{workspaceConfiguration("work-context", "authority-url", "https://authority.example")},
+		confs:       []*basev1.Configuration{workspaceConfiguration("work-context", "authority-url", "https://authority.example")},
 		rootConfigs: []string{"work-context"},
 	}
 	world.ConfigurationManager = loadedWorkspaceManager(t, plain)

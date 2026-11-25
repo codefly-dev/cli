@@ -11,7 +11,7 @@ import (
 
 	"github.com/codefly-dev/core/agents/manager"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -51,7 +51,7 @@ func TestStageBuildIndependentLocalCheckoutsPreserveReleases(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, built.Executions, 2)
 	for _, execution := range built.Executions {
-		var receipt basev0.ArtifactExecutionReceipt
+		var receipt basev1.ArtifactExecutionReceipt
 		require.NoError(t, protojson.Unmarshal(execution.Receipt, &receipt))
 		data, readErr := os.ReadFile(filepath.Join(execution.Directory, receipt.Outputs[0].Path))
 		require.NoError(t, readErr)

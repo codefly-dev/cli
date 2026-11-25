@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -80,9 +80,9 @@ func TestVocabularyIsACopy(t *testing.T) {
 // kinds listed in full.
 func TestCollidingShortFormsResolveToNothing(t *testing.T) {
 	registry := []resources.AgentKindRegistration{
-		{ProtoKind: basev0.Agent_SERVICE, Resource: resources.ServiceAgent},
-		{ProtoKind: basev0.Agent_RUNNABLE, Resource: resources.RunnableAgent},
-		{ProtoKind: basev0.Agent_PROVIDER, Resource: "service"},
+		{ProtoKind: basev1.Agent_SERVICE, Resource: resources.ServiceAgent},
+		{ProtoKind: basev1.Agent_RUNNABLE, Resource: resources.RunnableAgent},
+		{ProtoKind: basev1.Agent_PROVIDER, Resource: "service"},
 	}
 	byShort, collisions, words := build(registry)
 

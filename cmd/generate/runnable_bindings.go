@@ -21,8 +21,8 @@ import (
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/standards"
@@ -279,7 +279,7 @@ type preparedRunnableBindings struct {
 // the same preparation used by generate. It reads only; the caller supplies
 // the effective configuration, including profile and composed-module selection.
 // Comments and ordering are immaterial here; --check also checks file layout.
-func CheckRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, info *basev0.ConfigurationInformation) error {
+func CheckRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, info *basev1.ConfigurationInformation) error {
 	prepared, err := prepareRunnableBindings(ctx, workspace, env, env.RunnableCallEndpoint)
 	if err != nil {
 		return err
@@ -499,7 +499,7 @@ func RunnableBindingKey(module, name string) string {
 
 // prepareRunnable prepares one derived operation for the environment the
 // resolver answers for.
-func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver) (*runnablev0.PreparedBinding, error) {
+func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver) (*runnablev1.PreparedBinding, error) {
 	pkg := operation.Package
 	if len(pkg.GetServiceOperations()) != 1 {
 		return nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
@@ -530,8 +530,8 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 	if err != nil {
 		return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml: %w", resolver.env.Name, key, err)
 	}
-	return &runnablev0.PreparedBinding{
-		Operation: &runnablev0.PreparedOperation{
+	return &runnablev1.PreparedBinding{
+		Operation: &runnablev1.PreparedOperation{
 			Module:   descriptor.GetModule(),
 			Service:  descriptor.GetName(),
 			Endpoint: descriptor.GetEndpoint(),
@@ -562,19 +562,19 @@ func operationSpec(declared *runnablespkg.Operation, spelling string, codes core
 		}
 		durations[field] = parsed
 	}
-	completion, named := basev0.RunnableExecution_Completion_value[declared.Completion]
-	if !named || basev0.RunnableExecution_Completion(completion) == basev0.RunnableExecution_COMPLETION_UNKNOWN {
+	completion, named := basev1.RunnableExecution_Completion_value[declared.Completion]
+	if !named || basev1.RunnableExecution_Completion(completion) == basev1.RunnableExecution_COMPLETION_UNKNOWN {
 		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
-			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
+			declared.Completion, basev1.RunnableExecution_COMPLETION_CALL, basev1.RunnableExecution_COMPLETION_SUBMIT)
 	}
-	var recovery basev0.RunnableExecution_Recovery
+	var recovery basev1.RunnableExecution_Recovery
 	if declared.Recovery != "" {
-		value, known := basev0.RunnableExecution_Recovery_value[declared.Recovery]
-		if !known || basev0.RunnableExecution_Recovery(value) == basev0.RunnableExecution_RECOVERY_UNKNOWN {
+		value, known := basev1.RunnableExecution_Recovery_value[declared.Recovery]
+		if !known || basev1.RunnableExecution_Recovery(value) == basev1.RunnableExecution_RECOVERY_UNKNOWN {
 			return nil, fmt.Errorf("recovery %q is not a recovery; %s and %s are the two",
-				declared.Recovery, basev0.RunnableExecution_RECOVERY_RECOMPUTE, basev0.RunnableExecution_RECOVERY_RECEIPT)
+				declared.Recovery, basev1.RunnableExecution_RECOVERY_RECOMPUTE, basev1.RunnableExecution_RECOVERY_RECEIPT)
 		}
-		recovery = basev0.RunnableExecution_Recovery(value)
+		recovery = basev1.RunnableExecution_Recovery(value)
 	}
 	return &corerunnable.OperationSpec{
 		Method:             spelling,
@@ -590,17 +590,17 @@ func operationSpec(declared *runnablespkg.Operation, spelling string, codes core
 		LookupMethod:       declared.LookupMethod,
 		MaxInputBytes:      declared.MaxInputBytes,
 		MaxOutputBytes:     declared.MaxOutputBytes,
-		Completion:         basev0.RunnableExecution_Completion(completion),
+		Completion:         basev1.RunnableExecution_Completion(completion),
 		Tool:               declared.Tool,
 		RequiredScopeSlots: declared.RequiredScopeSlots,
 		Recovery:           recovery,
 	}, nil
 }
 
-func preparedScopes(declared []runnablespkg.Scope) []*basev0.WorkScopeV1 {
-	scopes := make([]*basev0.WorkScopeV1, 0, len(declared))
+func preparedScopes(declared []runnablespkg.Scope) []*basev1.WorkScopeV1 {
+	scopes := make([]*basev1.WorkScopeV1, 0, len(declared))
 	for _, scope := range declared {
-		scopes = append(scopes, &basev0.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: scope.Actions, ResourceIds: scope.ResourceIDs})
+		scopes = append(scopes, &basev1.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: scope.Actions, ResourceIds: scope.ResourceIDs})
 	}
 	return scopes
 }
@@ -706,7 +706,7 @@ func newEndpointResolver(ctx context.Context, workspace *resources.Workspace, en
 // service that publishes a runnable-marked method and declares no connect
 // endpoint is refused here rather than at a call — the address a caller would
 // otherwise be handed is one that answers nothing it can send.
-func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling, lookup string) (*runnablev0.PreparedCall, string, error) {
+func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling, lookup string) (*runnablev1.PreparedCall, string, error) {
 	identity, endpoints, err := r.load(ctx, module, serviceName)
 	if err != nil {
 		return nil, "", err
@@ -725,9 +725,9 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 		if err != nil {
 			return nil, "", err
 		}
-		return &runnablev0.PreparedCall{
+		return &runnablev1.PreparedCall{
 			Address: address,
-			Route:   &runnablev0.PreparedCall_Connect{Connect: &runnablev0.ConnectProcedure{Procedure: spelling}},
+			Route:   &runnablev1.PreparedCall_Connect{Connect: &runnablev1.ConnectProcedure{Procedure: spelling}},
 		}, composition.APIContractKindProtobuf, nil
 	case standards.REST, standards.HTTP:
 		// A solution's backend serves its routes on an http endpoint and
@@ -741,9 +741,9 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 		if !spelled {
 			return nil, "", fmt.Errorf("%s/%s publishes %q, which is not a route a REST owner is called on", module.Name, serviceName, spelling)
 		}
-		return &runnablev0.PreparedCall{
+		return &runnablev1.PreparedCall{
 			Address: address,
-			Route:   &runnablev0.PreparedCall_Rest{Rest: &runnablev0.HTTPRoute{Verb: verb, Path: path}},
+			Route:   &runnablev1.PreparedCall_Rest{Rest: &runnablev1.HTTPRoute{Verb: verb, Path: path}},
 		}, composition.APIContractKindOpenAPI, nil
 	default:
 		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s, %s, %s or %s",
@@ -799,7 +799,7 @@ func (r *endpointResolver) callThrough(ctx context.Context, coordinate string) e
 	return nil
 }
 
-func endpointNamed(endpoints []*basev0.Endpoint, name string) *basev0.Endpoint {
+func endpointNamed(endpoints []*basev1.Endpoint, name string) *basev1.Endpoint {
 	for _, candidate := range endpoints {
 		if candidate.GetName() == name {
 			return candidate
@@ -810,13 +810,13 @@ func endpointNamed(endpoints []*basev0.Endpoint, name string) *basev0.Endpoint {
 
 // Select from the published served surface, including the paired lookup.
 // The first declared Connect listener is not evidence that it serves a method.
-func servedConnectEndpoint(module *resources.Module, service string, published *basev0.Endpoint, endpoints []*basev0.Endpoint, spelling, lookup string) (*basev0.Endpoint, error) {
+func servedConnectEndpoint(module *resources.Module, service string, published *basev1.Endpoint, endpoints []*basev1.Endpoint, spelling, lookup string) (*basev1.Endpoint, error) {
 	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
 	if err != nil {
 		return nil, err
 	}
 	var candidates, eligible []string
-	var selected *basev0.Endpoint
+	var selected *basev1.Endpoint
 	for _, endpoint := range endpoints {
 		if endpoint.GetApi() != standards.CONNECT || (published.GetApi() == standards.CONNECT && endpoint.Name != published.Name) {
 			continue
@@ -853,7 +853,7 @@ func servedConnectEndpoint(module *resources.Module, service string, published *
 	return selected, nil
 }
 
-func (r *endpointResolver) load(ctx context.Context, module *resources.Module, serviceName string) (*resources.ServiceIdentity, []*basev0.Endpoint, error) {
+func (r *endpointResolver) load(ctx context.Context, module *resources.Module, serviceName string) (*resources.ServiceIdentity, []*basev1.Endpoint, error) {
 	service, err := module.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
 		return nil, nil, err
@@ -878,7 +878,7 @@ func (r *endpointResolver) load(ctx context.Context, module *resources.Module, s
 // concrete allocation of a live run of that scope when one answers, else the
 // one a run of it binds (common.ResolvePreferredNative, the resolver
 // `codefly endpoint` uses).
-func (r *endpointResolver) address(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint, endpoint *basev0.Endpoint) (string, error) {
+func (r *endpointResolver) address(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev1.Endpoint, endpoint *basev1.Endpoint) (string, error) {
 	if r.env.Local() {
 		resolved, err := common.ResolvePreferredNative(ctx, r.workspace.Name, identity.Module, identity.Name, r.env.NamingScope, resources.EndpointFromProto(endpoint))
 		if err != nil {

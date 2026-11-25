@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 func TestWithinKeepsOnlyTheClosure(t *testing.T) {
@@ -39,20 +39,20 @@ func TestStageIntoCopiesTheModulesServicesAndReadsItsShare(t *testing.T) {
 	require.NoError(t, err)
 	defer tree.Close()
 
-	output := &builderv0.DeploymentOutput{}
+	output := &builderv1.DeploymentOutput{}
 	deploy := &CompositionDeploy{scratch: scratch, scratchRoot: scratchRoot, modules: map[string]*moduleDeploy{
 		"records": {
 			members:        []string{"api", "gone"},
-			outputs:        map[string]*builderv0.DeploymentOutput{"records/api": output},
+			outputs:        map[string]*builderv1.DeploymentOutput{"records/api": output},
 			inClusterPorts: map[string]map[string]uint32{"records/api": {"grpc": 9000}},
 		},
 	}}
 	rendered := &renderedRoots{
-		outputs:          map[string]*builderv0.DeploymentOutput{},
+		outputs:          map[string]*builderv1.DeploymentOutput{},
 		selfEndpoints:    map[string]map[string]string{},
 		hostRoutes:       map[string]map[string]string{},
 		endpointCarriers: map[string]string{},
-		deployed:         map[string]*basev0.Configuration{},
+		deployed:         map[string]*basev1.Configuration{},
 		secretKeys:       map[string][]string{},
 		inClusterPorts:   map[string]map[string]uint32{},
 	}
@@ -95,9 +95,9 @@ func TestStageIntoKeepsTheModesTheAgentGave(t *testing.T) {
 		"records": {members: []string{"api"}},
 	}}
 	rendered := &renderedRoots{
-		outputs: map[string]*builderv0.DeploymentOutput{}, selfEndpoints: map[string]map[string]string{},
+		outputs: map[string]*builderv1.DeploymentOutput{}, selfEndpoints: map[string]map[string]string{},
 		hostRoutes: map[string]map[string]string{}, endpointCarriers: map[string]string{},
-		deployed: map[string]*basev0.Configuration{}, secretKeys: map[string][]string{}, inClusterPorts: map[string]map[string]uint32{},
+		deployed: map[string]*basev1.Configuration{}, secretKeys: map[string][]string{}, inClusterPorts: map[string]map[string]uint32{},
 	}
 	require.NoError(t, deploy.stageInto("records", stage, tree, rendered))
 	for name, want := range map[string]os.FileMode{"readable.yaml": 0o644, "private.yaml": 0o600} {

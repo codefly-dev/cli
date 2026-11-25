@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/cmd/config"
@@ -112,7 +112,7 @@ func composedWorkspaceDeclaring(ctx context.Context, workspace *resources.Worksp
 		if err != nil {
 			return "", err
 		}
-		if slices.ContainsFunc(provided.Infos, func(info *basev0.ConfigurationInformation) bool { return info.GetName() == name }) {
+		if slices.ContainsFunc(provided.Infos, func(info *basev1.ConfigurationInformation) bool { return info.GetName() == name }) {
 			return child.Name, nil
 		}
 		if found, err := composedWorkspaceDeclaring(ctx, child, profiles, name); err != nil || found != "" {

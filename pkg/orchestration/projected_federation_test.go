@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -18,19 +18,19 @@ func TestProjectedFederationResolvesWithoutAnAuthoredFile(t *testing.T) {
 			if authored {
 				secret := workspaceConfiguration("federation", "REGISTRATION_SECRET", "fixture-secret")
 				secret.Infos[0].ConfigurationValues[0].Secret = true
-				loader.confs = []*basev0.Configuration{secret}
+				loader.confs = []*basev1.Configuration{secret}
 			}
 			world := loadedWorkspaceWorld(t, loader)
 			calls := 0
-			world.RenderOwnedGroups = func(context.Context, *resources.Service) ([]*basev0.Configuration, error) {
+			world.RenderOwnedGroups = func(context.Context, *resources.Service) ([]*basev1.Configuration, error) {
 				calls++
-				return []*basev0.Configuration{workspaceConfiguration("federation", environments.FederationHostCoordinateKey, "owner/local/host")}, nil
+				return []*basev1.Configuration{workspaceConfiguration("federation", environments.FederationHostCoordinateKey, "owner/local/host")}, nil
 			}
 			service := &resources.Service{WorkspaceConfigurationDependencies: []string{"federation"}}
 			confs, err := world.workspaceConfigurationsFor(t.Context(), service, nil, resources.NewNativeNetworkAccess())
 			require.NoError(t, err)
 			require.Equal(t, 1, calls)
-			values := map[string]*basev0.ConfigurationValue{}
+			values := map[string]*basev1.ConfigurationValue{}
 			for _, conf := range confs {
 				for _, info := range conf.Infos {
 					for _, value := range info.ConfigurationValues {
@@ -51,14 +51,14 @@ func TestProjectedFederationDoesNotRelaxRequiredConfigurations(t *testing.T) {
 	for _, scenario := range []string{"no hook", "no projection", "other group", "unknown loader", "ambiguous", "projection failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			world := loadedWorkspaceWorld(t, staticWorkspaceLoader{})
-			world.RenderOwnedGroups = func(context.Context, *resources.Service) ([]*basev0.Configuration, error) {
+			world.RenderOwnedGroups = func(context.Context, *resources.Service) ([]*basev1.Configuration, error) {
 				if scenario == "projection failure" {
 					return nil, errors.New("host projection failed")
 				}
 				if scenario == "no projection" {
 					return nil, nil
 				}
-				return []*basev0.Configuration{workspaceConfiguration("federation", environments.FederationHostCoordinateKey, "owner/local/host")}, nil
+				return []*basev1.Configuration{workspaceConfiguration("federation", environments.FederationHostCoordinateKey, "owner/local/host")}, nil
 			}
 			group := "federation"
 			if scenario == "no hook" {
@@ -85,15 +85,15 @@ func TestNativeFederationProjectionThroughConfigurationResolver(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			loader := staticWorkspaceLoader{}
 			if scenario == "authored invalid reference" {
-				loader.confs = []*basev0.Configuration{workspaceConfiguration("federation", "registration", "${endpoint:missing/service/grpc}")}
+				loader.confs = []*basev1.Configuration{workspaceConfiguration("federation", "registration", "${endpoint:missing/service/grpc}")}
 			}
 			world := loadedWorkspaceWorld(t, loader)
-			world.RenderOwnedGroups = func(_ context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+			world.RenderOwnedGroups = func(_ context.Context, service *resources.Service) ([]*basev1.Configuration, error) {
 				group, err := environments.NativeHostFederation(host, service)
 				if group == nil || err != nil {
 					return nil, err
 				}
-				return []*basev0.Configuration{group}, nil
+				return []*basev1.Configuration{group}, nil
 			}
 			service := &resources.Service{Name: "local", WorkspaceConfigurationDependencies: []string{"federation"}}
 			service.WithModule("authority")

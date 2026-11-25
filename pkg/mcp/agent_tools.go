@@ -8,7 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/agentkinds"
 	"github.com/codefly-dev/core/agents/manager"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 )
@@ -88,7 +88,7 @@ func (s *Server) agentInfo(ctx context.Context, args map[string]string) ([]Conte
 		return nil, fmt.Errorf("cannot load agent: %w", err)
 	}
 
-	info, err := loaded.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	info, err := loaded.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("cannot get agent information: %w", err)
 	}
@@ -151,7 +151,7 @@ type agentInfoTechnique struct {
 }
 
 // mapAgentInformation renders an AgentInformation proto as the agent_info JSON shape.
-func mapAgentInformation(agentRef string, info *agentv0.AgentInformation, includePrompts bool) map[string]any {
+func mapAgentInformation(agentRef string, info *agentv1.AgentInformation, includePrompts bool) map[string]any {
 	capabilities := make([]string, 0, len(info.GetCapabilities()))
 	for _, c := range info.GetCapabilities() {
 		capabilities = append(capabilities, strings.ToLower(c.GetType().String()))
@@ -232,7 +232,7 @@ func mapAgentInformation(agentRef string, info *agentv0.AgentInformation, includ
 	}
 }
 
-func mapValidationOp(op *agentv0.ValidationOperationCapability) *agentInfoValidationOp {
+func mapValidationOp(op *agentv1.ValidationOperationCapability) *agentInfoValidationOp {
 	scopes := make([]string, 0, len(op.GetScopes()))
 	for _, scope := range op.GetScopes() {
 		scopes = append(scopes, validationScopeString(scope))
@@ -240,7 +240,7 @@ func mapValidationOp(op *agentv0.ValidationOperationCapability) *agentInfoValida
 	return &agentInfoValidationOp{Supported: op.GetSupported(), Scopes: scopes}
 }
 
-func mapTestValidation(t *agentv0.TestValidationCapability) *agentInfoTestValidation {
+func mapTestValidation(t *agentv1.TestValidationCapability) *agentInfoTestValidation {
 	scopes := make([]string, 0, len(t.GetScopes()))
 	for _, scope := range t.GetScopes() {
 		scopes = append(scopes, validationScopeString(scope))
@@ -256,10 +256,10 @@ func mapTestValidation(t *agentv0.TestValidationCapability) *agentInfoTestValida
 	return &agentInfoTestValidation{Supported: t.GetSupported(), Scopes: scopes, Suites: suites}
 }
 
-func validationScopeString(scope agentv0.ValidationScope) string {
+func validationScopeString(scope agentv1.ValidationScope) string {
 	return strings.ToLower(strings.TrimPrefix(scope.String(), "VALIDATION_SCOPE_"))
 }
 
-func testDependencyModeString(mode agentv0.TestDependencyMode) string {
+func testDependencyModeString(mode agentv1.TestDependencyMode) string {
 	return strings.ToLower(strings.TrimPrefix(mode.String(), "TEST_DEPENDENCY_MODE_"))
 }

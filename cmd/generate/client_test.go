@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/standards"
 	"io"
 	"os"
@@ -404,9 +404,9 @@ func localProtoEntry(t *testing.T, content string) generators.ContractEntry {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint := &basev0.Endpoint{
+	endpoint := &basev1.Endpoint{
 		Name: "grpc", Service: "api", Api: standards.GRPC,
-		ApiDetails: &basev0.API{Value: &basev0.API_Grpc{Grpc: &basev0.GrpcAPI{}}},
+		ApiDetails: &basev1.API{Value: &basev1.API_Grpc{Grpc: &basev1.GrpcAPI{}}},
 	}
 	descriptorSet, contract, sources, err := buildLocalContractEndpoint(ctx, service, endpoint)
 	if err != nil {
@@ -1059,20 +1059,20 @@ func writeContractsCatalog(t *testing.T, moduleDir, packageID string, contractBy
 // module/service/connect selects it.
 func TestPickContractEndpointAcceptsConnect(t *testing.T) {
 	ctx := context.Background()
-	connect := &basev0.Endpoint{Name: "connect", Api: standards.CONNECT}
-	tcp := &basev0.Endpoint{Name: "tcp", Api: standards.TCP}
-	e, err := pickContractEndpoint(ctx, []*basev0.Endpoint{connect, tcp}, "connect", "evaluation", "registry")
+	connect := &basev1.Endpoint{Name: "connect", Api: standards.CONNECT}
+	tcp := &basev1.Endpoint{Name: "tcp", Api: standards.TCP}
+	e, err := pickContractEndpoint(ctx, []*basev1.Endpoint{connect, tcp}, "connect", "evaluation", "registry")
 	if err != nil || e.Name != "connect" {
 		t.Fatalf("connect by name: %v %v", e, err)
 	}
-	if e, err := pickContractEndpoint(ctx, []*basev0.Endpoint{connect, tcp}, "", "evaluation", "registry"); err != nil || e.Name != "connect" {
+	if e, err := pickContractEndpoint(ctx, []*basev1.Endpoint{connect, tcp}, "", "evaluation", "registry"); err != nil || e.Name != "connect" {
 		t.Fatalf("the one contract endpoint is picked without a hint: %v %v", e, err)
 	}
-	two := []*basev0.Endpoint{connect, {Name: "connect-admin", Api: standards.CONNECT}}
+	two := []*basev1.Endpoint{connect, {Name: "connect-admin", Api: standards.CONNECT}}
 	if _, err := pickContractEndpoint(ctx, two, "", "evaluation", "registry"); err == nil || !strings.Contains(err.Error(), "multiple") {
 		t.Fatalf("two contract endpoints need a hint: %v", err)
 	}
-	if _, err := pickContractEndpoint(ctx, []*basev0.Endpoint{connect, tcp}, "tcp", "evaluation", "registry"); err == nil {
+	if _, err := pickContractEndpoint(ctx, []*basev1.Endpoint{connect, tcp}, "tcp", "evaluation", "registry"); err == nil {
 		t.Fatal("tcp serves no contract")
 	}
 }

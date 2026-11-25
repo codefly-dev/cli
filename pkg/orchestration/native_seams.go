@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -59,13 +59,13 @@ func (flow *Flow) ProposedEndpointPort(ctx context.Context, producer, endpoint, 
 	return 0, fmt.Errorf("%s proposes no %s/%s endpoint", producer, endpoint, api)
 }
 
-var _ = basev0.NetworkAccess{}
+var _ = basev1.NetworkAccess{}
 
 // ResolveWorkspaceGroupFor resolves one workspace configuration group as the
 // given service would receive it: through the same manager, scoped to the
 // same consumer module. A native run standing in for a cluster uses it to
 // alias one service's secret to another, as a cell's render aliases a Secret.
-func (world *World) ResolveWorkspaceGroupFor(ctx context.Context, service *resources.Service, group string) (*basev0.ConfigurationInformation, error) {
+func (world *World) ResolveWorkspaceGroupFor(ctx context.Context, service *resources.Service, group string) (*basev1.ConfigurationInformation, error) {
 	if world == nil || world.ConfigurationManager == nil {
 		return nil, fmt.Errorf("no configuration manager")
 	}

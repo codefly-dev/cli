@@ -14,7 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/generators"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -147,7 +147,7 @@ func TestGenerateRunnablesDerivesMarkedMethodsAndRefusesTheRest(t *testing.T) {
 	if pkg.GetDigest() != entry.Digest {
 		t.Fatalf("index digest %s does not match the package's %s", entry.Digest, pkg.GetDigest())
 	}
-	if len(pkg.GetExecution().GetFacilities()) != 1 || pkg.GetExecution().GetFacilities()[0].GetKind() != basev0.RunnableFacility_SERVICE {
+	if len(pkg.GetExecution().GetFacilities()) != 1 || pkg.GetExecution().GetFacilities()[0].GetKind() != basev1.RunnableFacility_SERVICE {
 		t.Fatalf("facilities = %v, want one SERVICE", pkg.GetExecution().GetFacilities())
 	}
 
@@ -504,47 +504,47 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 	}
 	derived := readDerivedPackage(t, moduleDir, readIndex(t, moduleDir).Operations[0])
 
-	handWritten, err := corerunnable.PreparePackage(&basev0.RunnablePackage{
+	handWritten, err := corerunnable.PreparePackage(&basev1.RunnablePackage{
 		Schema:   corerunnable.PackageSchemaV1,
-		Identity: &basev0.RunnableIdentity{Workspace: "module-document-store", Module: "documents", Name: "ingest-text", Version: "0.1.0"},
-		Agent:    &basev0.Agent{Kind: basev0.Agent_SERVICE, Name: "go", Version: "0.0.48", Publisher: "codefly.dev"},
-		Contract: &basev0.RunnableContract{
+		Identity: &basev1.RunnableIdentity{Workspace: "module-document-store", Module: "documents", Name: "ingest-text", Version: "0.1.0"},
+		Agent:    &basev1.Agent{Kind: basev1.Agent_SERVICE, Name: "go", Version: "0.0.48", Publisher: "codefly.dev"},
+		Contract: &basev1.RunnableContract{
 			Protocol: resources.RunnableServiceProtocolV1,
-			Input: &basev0.RunnableSchema{Fields: []*basev0.RunnableField{
-				{Name: "origin", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "container", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "ref", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "path", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "revision", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "commit", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "cursor", Type: basev0.RunnableField_STRING, Format: corerunnable.FormatInt64, Optional: true},
-				{Name: "contentType", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "text", Type: basev0.RunnableField_STRING, Optional: true},
+			Input: &basev1.RunnableSchema{Fields: []*basev1.RunnableField{
+				{Name: "origin", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "container", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "ref", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "path", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "revision", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "commit", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "cursor", Type: basev1.RunnableField_STRING, Format: corerunnable.FormatInt64, Optional: true},
+				{Name: "contentType", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "text", Type: basev1.RunnableField_STRING, Optional: true},
 			}},
-			Output: &basev0.RunnableSchema{Fields: []*basev0.RunnableField{
-				{Name: "reference", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "contentHash", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "effectDigest", Type: basev0.RunnableField_STRING, Optional: true},
-				{Name: "minted", Type: basev0.RunnableField_BOOLEAN, Optional: true},
-				{Name: "skipped", Type: basev0.RunnableField_BOOLEAN, Optional: true},
-				{Name: "quarantined", Type: basev0.RunnableField_BOOLEAN, Optional: true},
+			Output: &basev1.RunnableSchema{Fields: []*basev1.RunnableField{
+				{Name: "reference", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "contentHash", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "effectDigest", Type: basev1.RunnableField_STRING, Optional: true},
+				{Name: "minted", Type: basev1.RunnableField_BOOLEAN, Optional: true},
+				{Name: "skipped", Type: basev1.RunnableField_BOOLEAN, Optional: true},
+				{Name: "quarantined", Type: basev1.RunnableField_BOOLEAN, Optional: true},
 			}},
 		},
-		Execution: &basev0.RunnableExecution{
-			Facilities:     []*basev0.RunnableFacility{{Kind: basev0.RunnableFacility_SERVICE}},
+		Execution: &basev1.RunnableExecution{
+			Facilities:     []*basev1.RunnableFacility{{Kind: basev1.RunnableFacility_SERVICE}},
 			Timeout:        durationpb.New(time.Minute),
-			Cancellation:   basev0.RunnableExecution_CANCELLATION_NONE,
-			Recovery:       basev0.RunnableExecution_RECOVERY_RECEIPT,
-			Completion:     basev0.RunnableExecution_COMPLETION_CALL,
+			Cancellation:   basev1.RunnableExecution_CANCELLATION_NONE,
+			Recovery:       basev1.RunnableExecution_RECOVERY_RECEIPT,
+			Completion:     basev1.RunnableExecution_COMPLETION_CALL,
 			MaxInputBytes:  resources.DefaultRunnablePayloadBytes,
 			MaxOutputBytes: resources.DefaultRunnablePayloadBytes,
 		},
-		ServiceOperations: []*basev0.RunnableServiceOperation{{
+		ServiceOperations: []*basev1.RunnableServiceOperation{{
 			Module: "documents", Name: "runtime-worker", Endpoint: "grpc",
 			Operation:     applyTextMethod,
 			InputMessage:  "documents.ingest.v1.ApplyTextRequest",
 			OutputMessage: "documents.ingest.v1.ApplyTextResponse",
-			Adaptation:    basev0.RunnableServiceOperation_ADAPTATION_BOUNDED_JSON_V1,
+			Adaptation:    basev1.RunnableServiceOperation_ADAPTATION_BOUNDED_JSON_V1,
 		}},
 	})
 	if err != nil {
@@ -575,9 +575,9 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 	}
 }
 
-func readDerivedPackage(t *testing.T, moduleDir string, entry runnablespkg.IndexEntry) *basev0.RunnablePackage {
+func readDerivedPackage(t *testing.T, moduleDir string, entry runnablespkg.IndexEntry) *basev1.RunnablePackage {
 	t.Helper()
-	pkg := &basev0.RunnablePackage{}
+	pkg := &basev1.RunnablePackage{}
 	data := mustRead(t, filepath.Join(moduleDir, filepath.FromSlash(entry.Path), runnablespkg.PackageFileName))
 	if err := protojson.Unmarshal(data, pkg); err != nil {
 		t.Fatal(err)

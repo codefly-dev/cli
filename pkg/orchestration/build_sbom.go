@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	coresbom "github.com/codefly-dev/core/agents/services/sbom"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/wool"
 	"google.golang.org/protobuf/proto"
 )
@@ -20,11 +20,11 @@ import (
 // A service that emits neither is asked with no subjects: the agent then has to
 // declare a no-image reason, which keeps "this service ships nothing" distinct
 // from "nobody implemented this" instead of both reading as success.
-func (b *Builder) collectImageEvidence(ctx context.Context, plan *builderv0.DockerBuildPlan, result *builderv0.DockerBuildResult) error {
+func (b *Builder) collectImageEvidence(ctx context.Context, plan *builderv1.DockerBuildPlan, result *builderv1.DockerBuildResult) error {
 	w := wool.Get(ctx).In("Builder.collectImageEvidence", wool.ThisField(b.instance))
 	service := b.instance.Unique()
 
-	var expected []*builderv0.ImageSubject
+	var expected []*builderv1.ImageSubject
 	switch {
 	case plan != nil:
 		var err error
@@ -35,8 +35,8 @@ func (b *Builder) collectImageEvidence(ctx context.Context, plan *builderv0.Dock
 		expected = coresbom.ExpectedFromBuildResult(service, result)
 	}
 
-	response, err := b.instance.Builder.SBOM(ctx, &builderv0.SBOMRequest{
-		Scope:    builderv0.SBOMScope_SBOM_SCOPE_IMAGE,
+	response, err := b.instance.Builder.SBOM(ctx, &builderv1.SBOMRequest{
+		Scope:    builderv1.SBOMScope_SBOM_SCOPE_IMAGE,
 		Subjects: expected,
 	})
 	if err != nil {
@@ -54,7 +54,7 @@ func (b *Builder) collectImageEvidence(ctx context.Context, plan *builderv0.Dock
 // carrying only a tag would bind evidence to whatever that tag serves rather
 // than to the image that was built, so a recipe the build resolved nothing for
 // is refused here rather than answered with evidence about something else.
-func producedSubjects(service string, plan *builderv0.DockerBuildPlan, push bool, resolved []coresbom.ResolvedImage) ([]*builderv0.ImageSubject, error) {
+func producedSubjects(service string, plan *builderv1.DockerBuildPlan, push bool, resolved []coresbom.ResolvedImage) ([]*builderv1.ImageSubject, error) {
 	return coresbom.ExpectedFromBuildPlan(service, producedPlan(plan, push), resolved)
 }
 
@@ -63,26 +63,26 @@ func producedSubjects(service string, plan *builderv0.DockerBuildPlan, push bool
 // owed evidence. A local build loads a single platform per recipe — the same
 // first one buildxArgs selects — and demanding evidence for the rest fails the
 // build over images that were never built.
-func producedPlan(plan *builderv0.DockerBuildPlan, push bool) *builderv0.DockerBuildPlan {
+func producedPlan(plan *builderv1.DockerBuildPlan, push bool) *builderv1.DockerBuildPlan {
 	if push {
 		return plan
 	}
-	recipes := make([]*builderv0.DockerBuildRecipe, 0, len(plan.GetRecipes()))
+	recipes := make([]*builderv1.DockerBuildRecipe, 0, len(plan.GetRecipes()))
 	for _, recipe := range plan.GetRecipes() {
 		if len(recipe.GetPlatforms()) > 1 {
-			loaded, _ := proto.Clone(recipe).(*builderv0.DockerBuildRecipe)
+			loaded, _ := proto.Clone(recipe).(*builderv1.DockerBuildRecipe)
 			loaded.Platforms = recipe.GetPlatforms()[:1]
 			recipe = loaded
 		}
 		recipes = append(recipes, recipe)
 	}
-	return &builderv0.DockerBuildPlan{Recipes: recipes}
+	return &builderv1.DockerBuildPlan{Recipes: recipes}
 }
 
 // recordPushedImage binds every platform of a pushed recipe to the manifest
 // list the push produced: buildx writes all of them into one index, whose
 // digest is the identity a scan resolves each platform's image out of.
-func (b *Builder) recordPushedImage(recipe *builderv0.DockerBuildRecipe, digest string) {
+func (b *Builder) recordPushedImage(recipe *builderv1.DockerBuildRecipe, digest string) {
 	for _, platform := range recipePlatforms(recipe) {
 		b.resolvedImages = append(b.resolvedImages, coresbom.ResolvedImage{
 			Recipe:   recipe.GetName(),
@@ -95,7 +95,7 @@ func (b *Builder) recordPushedImage(recipe *builderv0.DockerBuildRecipe, digest 
 // recordLoadedImage binds the one platform a local build loads to the image ID
 // the daemon holds. A never-pushed image has no registry manifest, so that ID
 // is the only immutable identity evidence about it can be bound to.
-func (b *Builder) recordLoadedImage(recipe *builderv0.DockerBuildRecipe, imageID string) {
+func (b *Builder) recordLoadedImage(recipe *builderv1.DockerBuildRecipe, imageID string) {
 	b.resolvedImages = append(b.resolvedImages, coresbom.ResolvedImage{
 		Recipe:   recipe.GetName(),
 		Platform: recipePlatforms(recipe)[0],
@@ -106,7 +106,7 @@ func (b *Builder) recordLoadedImage(recipe *builderv0.DockerBuildRecipe, imageID
 
 // recipePlatforms is the recipe's declared platforms, or the single unnamed one
 // a recipe that declares none is built for.
-func recipePlatforms(recipe *builderv0.DockerBuildRecipe) []string {
+func recipePlatforms(recipe *builderv1.DockerBuildRecipe) []string {
 	if platforms := recipe.GetPlatforms(); len(platforms) > 0 {
 		return platforms
 	}

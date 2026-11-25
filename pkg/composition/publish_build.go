@@ -16,7 +16,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -343,7 +343,7 @@ func (session *SelectionSession) prepareBuildPublication(ctx context.Context, re
 			return nil, nil, err
 		}
 		directories = append(directories, directory)
-		var receipt basev0.ArtifactExecutionReceipt
+		var receipt basev1.ArtifactExecutionReceipt
 		if err = protojson.Unmarshal(execution.Receipt, &receipt); err != nil {
 			return nil, nil, err
 		}
@@ -363,7 +363,7 @@ func (session *SelectionSession) prepareBuildPublication(ctx context.Context, re
 	return result, outputs, nil
 }
 
-func (session *SelectionSession) prepareDerivedOutput(ctx context.Context, resolved *core.ResolvedComposition, execution *ExecutionFiles, output *basev0.ArtifactExecutionOutput, identity string, options *BuildPublicationOptions, destination *os.Root, index int) (*derivedPublication, *core.SignedDerivedOutput, error) {
+func (session *SelectionSession) prepareDerivedOutput(ctx context.Context, resolved *core.ResolvedComposition, execution *ExecutionFiles, output *basev1.ArtifactExecutionOutput, identity string, options *BuildPublicationOptions, destination *os.Root, index int) (*derivedPublication, *core.SignedDerivedOutput, error) {
 	record := resolved.Record()
 	buildIndex := slices.IndexFunc(record.Builds, func(b core.BuildRequirement) bool {
 		return b.Target == execution.Target && b.Service == execution.Service && b.ReplacesArtifact == output.Name

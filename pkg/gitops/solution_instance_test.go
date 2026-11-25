@@ -16,8 +16,8 @@ import (
 )
 
 const crmSolutionManifest = `
-schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 agent:
   kind: codefly:solution
   publisher: northwind

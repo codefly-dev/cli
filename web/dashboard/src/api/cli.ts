@@ -1,6 +1,6 @@
-// Typed wrappers over the codefly.cli.v0.CLI Connect service. Types mirror the
+// Typed wrappers over the codefly.cli.v1.CLI Connect service. Types mirror the
 // proto3 JSON shape (camelCase fields) of the messages defined in
-// core/proto/codefly/{cli,observability,base}/v0. Only the fields the dashboard
+// core/proto/codefly/{cli,observability,base}/v1. Only the fields the dashboard
 // renders are declared; unused fields are intentionally omitted.
 
 import { serverStream, unary } from "./connect";

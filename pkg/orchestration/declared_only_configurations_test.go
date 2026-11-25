@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -40,7 +40,7 @@ func TestRunnableBindingsReachOnlyTheServicesThatDeclareThem(t *testing.T) {
 		service, err := loadService(ctx, t, workspace, "payments", name)
 		require.NoError(t, err)
 		instance := &coreservices.Instance{Service: service}
-		runConfs, err := (&Runner{world: world, instance: instance}).workspaceConfigurations(ctx, nil, &basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+		runConfs, err := (&Runner{world: world, instance: instance}).workspaceConfigurations(ctx, nil, &basev1.RuntimeContext{Kind: resources.RuntimeContextNative})
 		require.NoError(t, err)
 		buildConfs, err := (&Builder{world: world, instance: instance}).workspaceConfigurations(ctx, nil)
 		require.NoError(t, err)

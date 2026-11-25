@@ -9,8 +9,8 @@ import (
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/artifactexecution"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	solutionv1 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,13 +35,13 @@ func TestEngineRenderBindsOneLoadedCompositionToEveryBuilder(t *testing.T) {
 	write("product/workspace.codefly.yaml", "name: platform-northwind\nlayout: modules\nworkspaces:\n  - name: platform-base\n    path: ../platform\nsolutions:\n  - name: beacon-go\n    path: solutions/beacon-go\n")
 	write("product/solutions/beacon-go/module.codefly.yaml", "kind: module\nname: beacon-go\nservices: []\n")
 	session := &SelectionSession{trustPath: filepath.Join(root, "product/workspace.codefly.yaml")}
-	first, second := &builderv0.DeploymentRequest{}, &builderv0.DeploymentRequest{}
+	first, second := &builderv1.DeploymentRequest{}, &builderv1.DeploymentRequest{}
 	require.NoError(t, session.bindRenderProvenance(t.Context(), []renderInput{
-		{request: first}, {request: &solutionv0.RenderRequest{}}, {request: second},
+		{request: first}, {request: &solutionv1.RenderRequest{}}, {request: second},
 	}))
-	require.Equal(t, []*builderv0.CompositionMember{
-		{Name: "saas", Role: builderv0.CompositionMember_ROLE_MODULE, Workspace: "platform-base"},
-		{Name: "beacon-go", Role: builderv0.CompositionMember_ROLE_SOLUTION, Workspace: "platform-northwind"},
+	require.Equal(t, []*builderv1.CompositionMember{
+		{Name: "saas", Role: builderv1.CompositionMember_ROLE_MODULE, Workspace: "platform-base"},
+		{Name: "beacon-go", Role: builderv1.CompositionMember_ROLE_SOLUTION, Workspace: "platform-northwind"},
 	}, first.GetCompositionProvenance().GetMembers())
 	require.Equal(t, first.GetCompositionProvenance(), second.GetCompositionProvenance())
 	first.CompositionProvenance.Members[0].Name = "mutated"

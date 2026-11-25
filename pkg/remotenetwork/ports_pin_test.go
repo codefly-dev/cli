@@ -7,23 +7,23 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/stretchr/testify/require"
 )
 
 // selectiveDNSManager declares DNS for the named endpoints only.
-type selectiveDNSManager map[string]*basev0.DNS
+type selectiveDNSManager map[string]*basev1.DNS
 
-func (m selectiveDNSManager) GetDNS(_ context.Context, _ *resources.ServiceIdentity, endpoint string) (*basev0.DNS, error) {
+func (m selectiveDNSManager) GetDNS(_ context.Context, _ *resources.ServiceIdentity, endpoint string) (*basev1.DNS, error) {
 	if dns, ok := m[endpoint]; ok {
 		return dns, nil
 	}
 	return nil, fmt.Errorf("no DNS for %s", endpoint)
 }
 
-func renderedMappings(mappings []*basev0.NetworkMapping) string {
+func renderedMappings(mappings []*basev1.NetworkMapping) string {
 	var lines []string
 	for _, mapping := range mappings {
 		for _, instance := range mapping.Instances {
@@ -48,12 +48,12 @@ func TestRemoteManagerPinsMultiEndpointPorts(t *testing.T) {
 	environment := &environments.Environment{Name: "staging", Namespace: "platform"}
 	workspace := &resources.Workspace{Name: "acme", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "saas", Name: "accounts"}
-	endpoint := func(name, api string) *basev0.Endpoint {
-		return &basev0.Endpoint{Module: "saas", Service: "accounts", Name: name, Api: api}
+	endpoint := func(name, api string) *basev1.Endpoint {
+		return &basev1.Endpoint{Module: "saas", Service: "accounts", Name: name, Api: api}
 	}
 	public := endpoint("public", standards.REST)
 	public.Location = resources.LocationExternal
-	endpoints := []*basev0.Endpoint{
+	endpoints := []*basev1.Endpoint{
 		endpoint("authority", standards.GRPC),
 		endpoint("connect", standards.CONNECT),
 		endpoint("grpc", standards.GRPC),

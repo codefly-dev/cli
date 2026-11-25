@@ -10,18 +10,18 @@ It is served by the CLI at its local REST port (default
 
 ## How it fits together
 
-- **Backend:** the CLI exposes the `codefly.cli.v0.CLI` service over the
+- **Backend:** the CLI exposes the `codefly.cli.v1.CLI` service over the
   [Connect](https://connectrpc.com) protocol (`pkg/web/go-grpc/connect.go`).
 - **Client:** this app talks Connect directly over `fetch`
   (`src/api/connect.ts`) — a small, dependency-free client for the CLI's narrow,
   stable API. Typed method wrappers and message types live in `src/api/cli.ts`,
   mirroring the proto3 JSON shape of the messages in
-  `core/proto/codefly/{cli,observability,base}/v0`.
+  `core/proto/codefly/{cli,observability,base}/v1`.
 - **Embedding:** the production build is written to `pkg/web/go-grpc/out/`,
   which the Go package embeds with `//go:embed out/*` and serves at `/`.
 
 Because the client speaks Connect over plain `fetch`, there is no proto codegen
-step. If the `codefly.cli.v0.CLI` contract changes, update the types in
+step. If the `codefly.cli.v1.CLI` contract changes, update the types in
 `src/api/cli.ts` accordingly.
 
 ## Develop
@@ -32,7 +32,7 @@ npm install
 npm run dev            # Vite dev server on http://localhost:5173
 ```
 
-`vite dev` proxies `/codefly.cli.v0.CLI/*` to a locally running CLI server
+`vite dev` proxies `/codefly.cli.v1.CLI/*` to a locally running CLI server
 (default `http://localhost:10001`). Start one in another terminal with
 `codefly server` (or `codefly run service`) from a workspace. Point the proxy at
 a different server with `CODEFLY_CLI_SERVER=http://localhost:PORT npm run dev`.

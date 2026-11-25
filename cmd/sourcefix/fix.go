@@ -13,21 +13,21 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"google.golang.org/grpc"
 )
 
 type Executor interface {
-	Execute(context.Context, *codev0.CodeRequest, ...grpc.CallOption) (*codev0.CodeResponse, error)
+	Execute(context.Context, *codev1.CodeRequest, ...grpc.CallOption) (*codev1.CodeResponse, error)
 }
 
 type Options struct {
 	Files  []string
 	Paths  []string
-	Mode   basev0.FixMode
+	Mode   basev1.FixMode
 	DryRun bool
 }
 
@@ -113,7 +113,7 @@ func ResolveFiles(ctx context.Context, client Executor, service *resources.Servi
 		if err != nil {
 			return nil, err
 		}
-		response, err := client.Execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ListFiles{ListFiles: &codev0.ListFilesRequest{
+		response, err := client.Execute(ctx, &codev1.CodeRequest{Operation: &codev1.CodeRequest_ListFiles{ListFiles: &codev1.ListFilesRequest{
 			Path: clean, Extensions: extensions, Recursive: true,
 		}}})
 		if err != nil {
@@ -150,7 +150,7 @@ func FixFiles(ctx context.Context, client Executor, service string, files []stri
 		if err != nil {
 			return nil, err
 		}
-		response, err := client.Execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_Fix{Fix: &codev0.FixRequest{
+		response, err := client.Execute(ctx, &codev1.CodeRequest{Operation: &codev1.CodeRequest_Fix{Fix: &codev1.FixRequest{
 			File: file, Mode: options.Mode, DryRun: true,
 		}}})
 		if err != nil {
@@ -270,7 +270,7 @@ func restoreStagedFile(ctx context.Context, client Executor, staged *stagedFile)
 }
 
 func readFile(ctx context.Context, client Executor, path string) (string, error) {
-	response, err := client.Execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ReadFile{ReadFile: &codev0.ReadFileRequest{Path: path}}})
+	response, err := client.Execute(ctx, &codev1.CodeRequest{Operation: &codev1.CodeRequest_ReadFile{ReadFile: &codev1.ReadFileRequest{Path: path}}})
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
@@ -282,7 +282,7 @@ func readFile(ctx context.Context, client Executor, path string) (string, error)
 }
 
 func writeFile(ctx context.Context, client Executor, path, content string) error {
-	response, err := client.Execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{Path: path, Content: content}}})
+	response, err := client.Execute(ctx, &codev1.CodeRequest{Operation: &codev1.CodeRequest_WriteFile{WriteFile: &codev1.WriteFileRequest{Path: path, Content: content}}})
 	if err != nil {
 		return err
 	}
@@ -342,7 +342,7 @@ func digest(content string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func codeResponseError(response *codev0.CodeResponse, fallback string) error {
+func codeResponseError(response *codev1.CodeResponse, fallback string) error {
 	if response != nil && response.GetFailure() != nil && response.GetFailure().GetMessage() != "" {
 		return fmt.Errorf("%s", response.GetFailure().GetMessage())
 	}

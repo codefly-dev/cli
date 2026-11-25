@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -100,11 +100,11 @@ func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 			require.Equal(t, "payments", identity.Module)
 
 			world := &World{Workspace: workspace}
-			mappings := []*basev0.NetworkMapping{{
-				Endpoint: &basev0.Endpoint{
+			mappings := []*basev1.NetworkMapping{{
+				Endpoint: &basev1.Endpoint{
 					Module: "platform", Service: "authority", Name: "api", Api: "rest",
 				},
-				Instances: []*basev0.NetworkInstance{{
+				Instances: []*basev1.NetworkInstance{{
 					Address: "localhost:14311", Access: resources.NewNativeNetworkAccess(),
 				}},
 			}}

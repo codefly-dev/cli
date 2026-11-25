@@ -11,8 +11,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -20,22 +20,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func slotOperation(fixed bool) *runnablev0.Operation {
+func slotOperation(fixed bool) *runnablev1.Operation {
 	declared := conformingOperation()
 	if !fixed {
 		declared.InvokeScopes, declared.LookupScopes = nil, nil
 	}
-	declared.RequiredScopeSlots = []*runnablev0.ScopeSlot{{Name: "source", RequiredActions: []string{"invoke", "read"}, Lookup: true}}
-	declared.Tool = &runnablev0.ToolExposure{Name: "invoke_source", Description: "Invoke a selected source.", Effect: runnablev0.ToolExposure_EFFECT_MUTATION}
-	declared.Recovery = basev0.RunnableExecution_RECOVERY_RECEIPT
+	declared.RequiredScopeSlots = []*runnablev1.ScopeSlot{{Name: "source", RequiredActions: []string{"invoke", "read"}, Lookup: true}}
+	declared.Tool = &runnablev1.ToolExposure{Name: "invoke_source", Description: "Invoke a selected source.", Effect: runnablev1.ToolExposure_EFFECT_MUTATION}
+	declared.Recovery = basev1.RunnableExecution_RECOVERY_RECEIPT
 	return declared
 }
 
-func sourceSelection() *runnablev0.ScopeSelection {
-	return &runnablev0.ScopeSelection{
+func sourceSelection() *runnablev1.ScopeSelection {
+	return &runnablev1.ScopeSelection{
 		Slot:   "source",
-		Invoke: []*basev0.WorkScopeV1{{ResourceKind: "datasource.sources", Actions: []string{"invoke", "read"}, ResourceIds: []string{"source-a"}}},
-		Lookup: []*basev0.WorkScopeV1{{ResourceKind: "datasource.sources", Actions: []string{"read"}, ResourceIds: []string{"source-a"}}},
+		Invoke: []*basev1.WorkScopeV1{{ResourceKind: "datasource.sources", Actions: []string{"invoke", "read"}, ResourceIds: []string{"source-a"}}},
+		Lookup: []*basev1.WorkScopeV1{{ResourceKind: "datasource.sources", Actions: []string{"read"}, ResourceIds: []string{"source-a"}}},
 	}
 }
 
@@ -83,7 +83,7 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 var undeclarableFields = map[protoreflect.FullName]string{
 	// An owner is the authority's to select for an installation (core#845);
 	// TestRunnablesRefusesADeclaredResourceOwner proves the refusal.
-	"codefly.base.v0.WorkScopeV1.resource_owner_id": "never written into an operation",
+	"codefly.base.v1.WorkScopeV1.resource_owner_id": "never written into an operation",
 }
 
 // Descend into every message, including repeated scopes and slots. A future
@@ -128,7 +128,7 @@ func TestRunnablesRefusesADeclaredResourceOwner(t *testing.T) {
 	resetRunnablesFlags(t)
 	err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"})
 	require.ErrorContains(t, err, `selects resource owner "principal-u"`)
-	require.ErrorContains(t, err, undeclarableFields["codefly.base.v0.WorkScopeV1.resource_owner_id"])
+	require.ErrorContains(t, err, undeclarableFields["codefly.base.v1.WorkScopeV1.resource_owner_id"])
 }
 
 func TestOperationDocumentRefusesUnknownNestedCoreFields(t *testing.T) {
@@ -170,7 +170,7 @@ func readPreparedValues(t *testing.T, target string) map[string]string {
 	return values
 }
 
-func verifyResolvedBinding(t *testing.T, value string, tool *runnablev0.ToolExposure) *runnablev0.PreparedBinding {
+func verifyResolvedBinding(t *testing.T, value string, tool *runnablev1.ToolExposure) *runnablev1.PreparedBinding {
 	t.Helper()
 	prepared, err := corerunnable.DecodePrepared([]byte(value))
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func verifyResolvedBinding(t *testing.T, value string, tool *runnablev0.ToolExpo
 		require.True(t, proto.Equal(tool, exposure))
 	}
 	// The host receipt and the caller binding consume the SAME resolution.
-	encoded, err := corerunnable.EncodeResolvedPolicy(&runnablev0.ResolvedPolicy{Operation: prepared.Operation, Policy: prepared.Policy})
+	encoded, err := corerunnable.EncodeResolvedPolicy(&runnablev1.ResolvedPolicy{Operation: prepared.Operation, Policy: prepared.Policy})
 	require.NoError(t, err)
 	receipt, err := corerunnable.DecodeResolvedPolicy(encoded)
 	require.NoError(t, err)
@@ -265,46 +265,46 @@ func TestGenerateRunnableBindingsResolvesThreeOperationFixtures(t *testing.T) {
 func TestRunnableScopeSelectionRefusals(t *testing.T) {
 	tests := []struct {
 		name      string
-		operation *runnablev0.Operation
-		change    func(*runnablev0.Operation, *runnablev0.ScopeSelection) environments.ScopeSelections
+		operation *runnablev1.Operation
+		change    func(*runnablev1.Operation, *runnablev1.ScopeSelection) environments.ScopeSelections
 		want      string
 	}{
-		{"slot-only missing", slotOperation(false), func(_ *runnablev0.Operation, _ *runnablev0.ScopeSelection) environments.ScopeSelections { return nil }, `required scope slot "source" but no ScopeSelection was supplied`},
-		{"slot-plus-fixed missing", slotOperation(true), func(_ *runnablev0.Operation, _ *runnablev0.ScopeSelection) environments.ScopeSelections { return nil }, `required scope slot "source" but no ScopeSelection was supplied`},
-		{"wildcard id", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"slot-only missing", slotOperation(false), func(_ *runnablev1.Operation, _ *runnablev1.ScopeSelection) environments.ScopeSelections { return nil }, `required scope slot "source" but no ScopeSelection was supplied`},
+		{"slot-plus-fixed missing", slotOperation(true), func(_ *runnablev1.Operation, _ *runnablev1.ScopeSelection) environments.ScopeSelections { return nil }, `required scope slot "source" but no ScopeSelection was supplied`},
+		{"wildcard id", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Invoke[0].ResourceIds = []string{"*"}
 			return environments.ScopeSelections{s}
 		}, "not an exact id"},
-		{"wildcard omission", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"wildcard omission", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Invoke[0].ResourceIds = nil
 			return environments.ScopeSelections{s}
 		}, "never a wildcard"},
-		{"wildcard kind", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"wildcard kind", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Invoke[0].ResourceKind = "*"
 			return environments.ScopeSelections{s}
 		}, "not an exact kind"},
-		{"wildcard action", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"wildcard action", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Invoke[0].Actions = []string{"*"}
 			return environments.ScopeSelections{s}
 		}, "not an exact action"},
-		{"fixed kind collision", slotOperation(true), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"fixed kind collision", slotOperation(true), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Invoke[0].ResourceKind = "documents"
 			return environments.ScopeSelections{s}
 		}, "fixed invoke scope already binds"},
-		{"two slots collide", slotOperation(false), func(o *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
-			o.RequiredScopeSlots = append(o.RequiredScopeSlots, &runnablev0.ScopeSlot{Name: "other"})
+		{"two slots collide", slotOperation(false), func(o *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
+			o.RequiredScopeSlots = append(o.RequiredScopeSlots, &runnablev1.ScopeSlot{Name: "other"})
 			second := proto.CloneOf(s)
 			second.Slot = "other"
 			return environments.ScopeSelections{s, second}
 		}, `both select kind "datasource.sources"`},
-		{"undeclared slot", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"undeclared slot", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Slot = "typo"
 			return environments.ScopeSelections{s}
 		}, "does not declare"},
-		{"duplicate slot", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"duplicate slot", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			return environments.ScopeSelections{s, proto.CloneOf(s)}
 		}, "selected twice"},
-		{"lookup required", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
+		{"lookup required", slotOperation(false), func(_ *runnablev1.Operation, s *runnablev1.ScopeSelection) environments.ScopeSelections {
 			s.Lookup = nil
 			return environments.ScopeSelections{s}
 		}, "no lookup scope"},

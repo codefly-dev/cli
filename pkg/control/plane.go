@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/codefly-dev/cli/pkg/gitops"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 )
 
 // Plane is the complete control surface for a codefly workspace. It is the union
@@ -74,7 +74,7 @@ type Introspector interface {
 	// configurations of its dependencies, resolved for the active flow. It
 	// returns the authoritative core protobuf rather than a shadow DTO,
 	// mirroring the per-service leaf contract documented in doc.go.
-	Configurations(ctx context.Context, service string) ([]*basev0.Configuration, error)
+	Configurations(ctx context.Context, service string) ([]*basev1.Configuration, error)
 	// Logs streams log lines for the active session until ctx is done; each
 	// line is delivered to emit. follow keeps the stream open for new lines.
 	Logs(ctx context.Context, opts LogOptions, emit func(LogLine) error) error

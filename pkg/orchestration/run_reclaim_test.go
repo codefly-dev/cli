@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/base"
 	"github.com/codefly-dev/core/runners/dockerrun"
@@ -314,14 +314,14 @@ func TestAPortHeldByAnEarlierRunsOrphanNamesItsRecovery(t *testing.T) {
 	}
 
 	runner := &Runner{}
-	err = runner.checkInitialPortAvailability(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(held))})
+	err = runner.checkInitialPortAvailability(context.Background(), []*basev1.NetworkMapping{nativeMapping("tcp", uint16(held))})
 	require.ErrorContains(t, err, fmt.Sprintf("port %d (tcp)", held))
 	require.ErrorContains(t, err, "in process group 4242 that an earlier codefly run of workspace /work/platform left running")
 	require.ErrorContains(t, err, "`codefly recover process-group 4242 --preview > recovery.json`")
 
 	// Any other holder is reported as before.
 	orphanedProcessGroupOf = func(context.Context, int) (int, string, bool) { return 0, "", false }
-	err = runner.checkInitialPortAvailability(context.Background(), []*basev0.NetworkMapping{nativeMapping("tcp", uint16(held))})
+	err = runner.checkInitialPortAvailability(context.Background(), []*basev1.NetworkMapping{nativeMapping("tcp", uint16(held))})
 	require.ErrorContains(t, err, "already in use")
 	require.NotContains(t, err.Error(), "codefly recover")
 }

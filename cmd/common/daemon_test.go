@@ -6,20 +6,20 @@ import (
 	"net"
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	cliv0 "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	cliv1 "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/codefly-dev/core/network"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type fakeCLIServer struct {
-	cliv0.UnimplementedCLIServer
+	cliv1.UnimplementedCLIServer
 	name string
 }
 
-func (f *fakeCLIServer) GetWorkspaceInventory(context.Context, *emptypb.Empty) (*basev0.Workspace, error) {
-	return &basev0.Workspace{Name: f.name}, nil
+func (f *fakeCLIServer) GetWorkspaceInventory(context.Context, *emptypb.Empty) (*basev1.Workspace, error) {
+	return &basev1.Workspace{Name: f.name}, nil
 }
 
 func startFakeCLIServer(t *testing.T, listenName, reportedName string) {
@@ -30,7 +30,7 @@ func startFakeCLIServer(t *testing.T, listenName, reportedName string) {
 		t.Fatalf("listen %s: %v", addr, err)
 	}
 	s := grpc.NewServer()
-	cliv0.RegisterCLIServer(s, &fakeCLIServer{name: reportedName})
+	cliv1.RegisterCLIServer(s, &fakeCLIServer{name: reportedName})
 	go func() { _ = s.Serve(lis) }()
 	t.Cleanup(s.Stop)
 }

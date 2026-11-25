@@ -24,10 +24,10 @@ import (
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/artifactexecution"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	solutionv1 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,74 +38,74 @@ type renderer struct {
 }
 
 type agentRenderer struct {
-	agentv0.UnimplementedAgentServer
+	agentv1.UnimplementedAgentServer
 	*renderer
 }
 type builderRenderer struct {
-	builderv0.UnimplementedBuilderServer
+	builderv1.UnimplementedBuilderServer
 	*renderer
 }
 type solutionRenderer struct {
-	solutionv0.UnimplementedSolutionServer
+	solutionv1.UnimplementedSolutionServer
 	*renderer
 }
 
-func (r *agentRenderer) GetAgentInformation(context.Context, *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
+func (r *agentRenderer) GetAgentInformation(context.Context, *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
 	declaration := contract.Current()
 	if os.Getenv("RENDER_TEST_MODE") != "missing-provenance" {
 		declaration.Capabilities = append(declaration.Capabilities, contract.DeploymentCompositionProvenance)
 	}
 	if os.Getenv("RENDER_TEST_MODE") == "missing-protocol" {
-		declaration = &agentv0.AgentContract{}
+		declaration = &agentv1.AgentContract{}
 	}
-	return &agentv0.AgentInformation{Contract: declaration}, nil
+	return &agentv1.AgentInformation{Contract: declaration}, nil
 }
 
-func (r *solutionRenderer) GetSolutionInformation(_ context.Context, request *solutionv0.GetSolutionInformationRequest) (*solutionv0.GetSolutionInformationResponse, error) {
+func (r *solutionRenderer) GetSolutionInformation(_ context.Context, request *solutionv1.GetSolutionInformationRequest) (*solutionv1.GetSolutionInformationResponse, error) {
 	if !proto.Equal(request.GetArtifact(), r.solutionIdentity()) && (request.GetArtifact().GetPublisher() != "" || request.GetArtifact().GetName() != "" || request.GetArtifact().GetVersion() != "") {
 		return nil, errors.New("host invented executor coordinates")
 	}
-	return &solutionv0.GetSolutionInformationResponse{Artifact: r.solutionIdentity(), Capabilities: &solutionv0.SolutionCapabilities{SupportsRender: true, ExecutionContracts: []string{r.contract}}}, nil
+	return &solutionv1.GetSolutionInformationResponse{Artifact: r.solutionIdentity(), Capabilities: &solutionv1.SolutionCapabilities{SupportsRender: true, ExecutionContracts: []string{r.contract}}}, nil
 }
 
-func (r *renderer) solutionIdentity() *solutionv0.SolutionArtifact {
-	return &solutionv0.SolutionArtifact{Publisher: "test-owner", Name: "declared-renderer", Version: "test-version", ArtifactDigest: r.digest}
+func (r *renderer) solutionIdentity() *solutionv1.SolutionArtifact {
+	return &solutionv1.SolutionArtifact{Publisher: "test-owner", Name: "declared-renderer", Version: "test-version", ArtifactDigest: r.digest}
 }
 
-func (r *solutionRenderer) Render(ctx context.Context, request *solutionv0.RenderRequest) (*solutionv0.RenderResponse, error) {
+func (r *solutionRenderer) Render(ctx context.Context, request *solutionv1.RenderRequest) (*solutionv1.RenderResponse, error) {
 	if !proto.Equal(request.GetContext().GetArtifact(), r.solutionIdentity()) {
 		return nil, errors.New("returned identity was not carried into render")
 	}
 	receipt, err := r.emit(ctx, request.Execution, artifactexecution.SolutionRender, request.Destination)
-	return &solutionv0.RenderResponse{Execution: receipt}, err
+	return &solutionv1.RenderResponse{Execution: receipt}, err
 }
 
-func (r *builderRenderer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
-	return &builderv0.BuildCapabilitiesResponse{ExecutionContracts: []string{r.contract}}, nil
+func (r *builderRenderer) BuildCapabilities(context.Context, *builderv1.BuildCapabilitiesRequest) (*builderv1.BuildCapabilitiesResponse, error) {
+	return &builderv1.BuildCapabilitiesResponse{ExecutionContracts: []string{r.contract}}, nil
 }
 
-func (r *builderRenderer) Build(ctx context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (r *builderRenderer) Build(ctx context.Context, request *builderv1.BuildRequest) (*builderv1.BuildResponse, error) {
 	receipt, err := r.emit(ctx, request.Execution, artifactexecution.BuilderBuild, request.OutputDirectory)
-	state := builderv0.BuildStatus_SUCCESS
+	state := builderv1.BuildStatus_SUCCESS
 	if os.Getenv("RENDER_TEST_MODE") == "failed" {
-		state = builderv0.BuildStatus_ERROR
+		state = builderv1.BuildStatus_ERROR
 	}
-	return &builderv0.BuildResponse{State: &builderv0.BuildStatus{State: state}, Execution: receipt}, err
+	return &builderv1.BuildResponse{State: &builderv1.BuildStatus{State: state}, Execution: receipt}, err
 }
 
-func (r *builderRenderer) Deploy(ctx context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+func (r *builderRenderer) Deploy(ctx context.Context, request *builderv1.DeploymentRequest) (*builderv1.DeploymentResponse, error) {
 	if request.CompositionProvenance == nil {
 		return nil, errors.New("missing host composition provenance")
 	}
 	receipt, err := r.emit(ctx, request.Execution, artifactexecution.BuilderRender, request.OutputDirectory)
-	state := builderv0.DeploymentStatus_SUCCESS
+	state := builderv1.DeploymentStatus_SUCCESS
 	if os.Getenv("RENDER_TEST_MODE") == "failed" {
-		state = builderv0.DeploymentStatus_ERROR
+		state = builderv1.DeploymentStatus_ERROR
 	}
-	return &builderv0.DeploymentResponse{State: &builderv0.DeploymentStatus{State: state}, Execution: receipt}, err
+	return &builderv1.DeploymentResponse{State: &builderv1.DeploymentStatus{State: state}, Execution: receipt}, err
 }
 
-func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution, protocol, directory string) (*basev0.ArtifactExecutionReceipt, error) {
+func (r *renderer) emit(ctx context.Context, execution *basev1.ArtifactExecution, protocol, directory string) (*basev1.ArtifactExecutionReceipt, error) {
 	if err := artifactexecution.Check(execution, protocol, r.digest, []string{r.contract}); err != nil {
 		return nil, err
 	}
@@ -126,13 +126,13 @@ func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution
 			return nil, err
 		}
 	}
-	receipt := &basev0.ArtifactExecutionReceipt{Identity: execution.Identity}
+	receipt := &basev1.ArtifactExecutionReceipt{Identity: execution.Identity}
 	for _, output := range execution.Outputs {
 		path := output.Name + ".json"
 		if err := os.WriteFile(filepath.Join(directory, path), data, 0o600); err != nil {
 			return nil, err
 		}
-		receipt.Outputs = append(receipt.Outputs, &basev0.ArtifactExecutionOutput{
+		receipt.Outputs = append(receipt.Outputs, &basev1.ArtifactExecutionOutput{
 			Name: output.Name, MediaType: output.MediaType, Path: path, Digest: fmt.Sprintf("sha256:%x", sha256.Sum256(data)),
 		})
 	}
@@ -156,7 +156,7 @@ func (r *renderer) emit(ctx context.Context, execution *basev0.ArtifactExecution
 
 // The test builder performs real packaging of the declared source bytes, not
 // an acknowledgement-only Build implementation.
-func buildSelectedSource(ctx context.Context, execution *basev0.ArtifactExecution) ([]byte, error) {
+func buildSelectedSource(ctx context.Context, execution *basev1.ArtifactExecution) ([]byte, error) {
 	if len(execution.Inputs) != 1 || execution.Inputs[0].Name != "source" {
 		return nil, errors.New("packager requires exactly one declared source")
 	}
@@ -192,7 +192,7 @@ func buildSelectedSource(ctx context.Context, execution *basev0.ArtifactExecutio
 	return output.Bytes(), nil
 }
 
-func fetchBuildSource(ctx context.Context, input *basev0.ArtifactExecutionInput) ([]byte, error) {
+func fetchBuildSource(ctx context.Context, input *basev1.ArtifactExecutionInput) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.Uri, nil)
 	if err != nil {
 		return nil, err
@@ -243,7 +243,7 @@ func main() {
 		panic(err)
 	}
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, &builderRenderer{renderer: r})
+	builderv1.RegisterBuilderServer(server, &builderRenderer{renderer: r})
 	if err := os.WriteFile(*address, []byte(listener.Addr().String()), 0o600); err != nil {
 		panic(err)
 	}

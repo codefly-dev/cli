@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/agents/contract"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
@@ -34,7 +34,7 @@ func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testin
 		{"nix", resources.RuntimeContextNix, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runner := &Runner{runtimeContext: tc.runtime, containerRecoveryIdentity: recoveryscope.Acknowledgement(), instance: &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: tc.ack}}
+			runner := &Runner{runtimeContext: tc.runtime, containerRecoveryIdentity: recoveryscope.Acknowledgement(), instance: &services.Instance{Info: &agentv1.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: tc.ack}}
 			if tc.reject {
 				// No Runtime client or World is installed: the real Init must
 				// return before configuration, port allocation or any agent RPC.
@@ -46,7 +46,7 @@ func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testin
 		})
 	}
 	t.Run("flow projected nothing", func(t *testing.T) {
-		runner := &Runner{runtimeContext: resources.RuntimeContextContainer, instance: &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}}}
+		runner := &Runner{runtimeContext: resources.RuntimeContextContainer, instance: &services.Instance{Info: &agentv1.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}}}
 		require.ErrorContains(t, runner.validateContainerRecovery(), "container recovery requires a resolved scope")
 	})
 }
@@ -54,18 +54,18 @@ func TestContainerRecoveryRequiresAgentAcknowledgementBeforeDockerInit(t *testin
 func TestContainerRecoveryChecksTheDeclaredAPI(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
-		declaration *agentv0.AgentContract
+		declaration *agentv1.AgentContract
 		wantError   string
 	}{
 		{name: "undeclared", wantError: "does not declare a CLI-agent protocol"},
-		{name: "incompatible", declaration: &agentv0.AgentContract{ProtocolVersion: 2}, wantError: "host requires version 1"},
-		{name: "missing capability", declaration: &agentv0.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 2}, wantError: "does not implement required capability"},
+		{name: "incompatible", declaration: &agentv1.AgentContract{ProtocolVersion: 2}, wantError: "host requires version 1"},
+		{name: "missing capability", declaration: &agentv1.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 1}, wantError: "does not implement required capability"},
 		{name: "compatible", declaration: contract.Current()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			instance := &services.Instance{
 				Identity:               &resources.ServiceIdentity{Name: "db", Module: "infra"},
-				Info:                   &agentv0.AgentInformation{Contract: tc.declaration},
+				Info:                   &agentv1.AgentInformation{Contract: tc.declaration},
 				ContainerRecoveryScope: "scope",
 			}
 			runner := &Runner{runtimeContext: resources.RuntimeContextContainer, containerRecoveryIdentity: "scope", instance: instance}
@@ -81,7 +81,7 @@ func TestContainerRecoveryChecksTheDeclaredAPI(t *testing.T) {
 	}
 	for _, runtimeContext := range []string{resources.RuntimeContextNative, resources.RuntimeContextNix} {
 		runner := &Runner{runtimeContext: runtimeContext, instance: &services.Instance{
-			Info: &agentv0.AgentInformation{Contract: &agentv0.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 2}},
+			Info: &agentv1.AgentInformation{Contract: &agentv1.AgentContract{ProtocolVersion: 1, StartupProtocolVersion: 1}},
 		}}
 		require.NoError(t, runner.validateContainerRecovery())
 	}
@@ -212,7 +212,7 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	agent := &Runner{
 		runtimeContext:            resources.RuntimeContextContainer,
 		containerRecoveryIdentity: projected,
-		instance:                  &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: projected},
+		instance:                  &services.Instance{Info: &agentv1.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: projected},
 	}
 	require.NoError(t, agent.validateContainerRecovery())
 
@@ -228,7 +228,7 @@ func TestContainerRecoveryValidatesAgainstTheFlowsOwnProjection(t *testing.T) {
 	foreign := &Runner{
 		runtimeContext:            resources.RuntimeContextContainer,
 		containerRecoveryIdentity: projected,
-		instance:                  &services.Instance{Info: &agentv0.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: recoveryscope.Acknowledgement()},
+		instance:                  &services.Instance{Info: &agentv1.AgentInformation{Contract: contract.Current()}, Identity: &resources.ServiceIdentity{Name: "db", Module: "infra"}, ContainerRecoveryScope: recoveryscope.Acknowledgement()},
 	}
 	require.ErrorContains(t, foreign.validateContainerRecovery(), "did not acknowledge this run's container recovery scope")
 }
@@ -388,7 +388,7 @@ func TestBuilderModesRequireAgentContainerRecoveryAcknowledgement(t *testing.T) 
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					instance := &services.Instance{
-						Info:                   &agentv0.AgentInformation{Contract: contract.Current()},
+						Info:                   &agentv1.AgentInformation{Contract: contract.Current()},
 						Identity:               &resources.ServiceIdentity{Name: "accounts", Module: "billing"},
 						ContainerRecoveryScope: tc.acknowledgement,
 					}

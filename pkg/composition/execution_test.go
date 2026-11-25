@@ -16,8 +16,8 @@ import (
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -153,11 +153,11 @@ func renderFiles(t *testing.T, session *SelectionSession, files *DeploymentFiles
 	files.Executions = nil
 	for _, data := range requests {
 		require.NotContains(t, string(data), "not-for-output")
-		var request basev0.ArtifactExecution
+		var request basev1.ArtifactExecution
 		require.NoError(t, protojson.Unmarshal(data, &request))
 		directory, err := filepath.EvalSymlinks(t.TempDir())
 		require.NoError(t, err)
-		payload := &builderv0.DeploymentRequest{Execution: &request, OutputDirectory: directory}
+		payload := &builderv1.DeploymentRequest{Execution: &request, OutputDirectory: directory}
 		require.NoError(t, session.bindRenderProvenance(t.Context(), []renderInput{{request: payload}}))
 		response, err := client.Deploy(t.Context(), payload)
 		require.NoError(t, err)
@@ -243,11 +243,11 @@ func TestStagedExecutionBindsEveryServiceAndRejectsChangedEvidence(t *testing.T)
 
 	requests, err := session.PrepareRender(t.Context(), files)
 	require.NoError(t, err)
-	var request basev0.ArtifactExecution
+	var request basev1.ArtifactExecution
 	require.NoError(t, protojson.Unmarshal(requests[0], &request))
 	unsupported := executionClient(t, path, "artifact-execution/v2")
 	directory := t.TempDir()
-	_, err = unsupported.Deploy(t.Context(), &builderv0.DeploymentRequest{Execution: &request, OutputDirectory: directory})
+	_, err = unsupported.Deploy(t.Context(), &builderv1.DeploymentRequest{Execution: &request, OutputDirectory: directory})
 	require.ErrorContains(t, err, "does not advertise")
 	entries, err := os.ReadDir(directory)
 	require.NoError(t, err)

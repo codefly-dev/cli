@@ -10,7 +10,7 @@ import (
 
 	agentservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
@@ -130,7 +130,7 @@ func TestTeardownLayersIgnoreHubInsertionOrder(t *testing.T) {
 // flow reaches it exactly as it reaches an out-of-process agent, so the times
 // recorded here are the times a real service would observe.
 type teardownAgent struct {
-	runtimev0.UnimplementedRuntimeServer
+	runtimev1.UnimplementedRuntimeServer
 
 	// drain runs inside Stop before the agent answers, standing in for a
 	// service finishing its in-flight work. destroyDrain does the same for
@@ -145,7 +145,7 @@ type teardownAgent struct {
 	stopEnded    time.Time
 }
 
-func (agent *teardownAgent) Stop(ctx context.Context, _ *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
+func (agent *teardownAgent) Stop(ctx context.Context, _ *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
 	agent.mu.Lock()
 	agent.stopCalls++
 	if agent.stopBegan.IsZero() {
@@ -162,10 +162,10 @@ func (agent *teardownAgent) Stop(ctx context.Context, _ *runtimev0.StopRequest) 
 	agent.mu.Lock()
 	agent.stopEnded = time.Now()
 	agent.mu.Unlock()
-	return &runtimev0.StopResponse{Status: &runtimev0.StopStatus{State: runtimev0.StopStatus_SUCCESS}}, nil
+	return &runtimev1.StopResponse{Status: &runtimev1.StopStatus{State: runtimev1.StopStatus_SUCCESS}}, nil
 }
 
-func (agent *teardownAgent) Destroy(ctx context.Context, _ *runtimev0.DestroyRequest) (*runtimev0.DestroyResponse, error) {
+func (agent *teardownAgent) Destroy(ctx context.Context, _ *runtimev1.DestroyRequest) (*runtimev1.DestroyResponse, error) {
 	agent.mu.Lock()
 	agent.destroyCalls++
 	agent.mu.Unlock()
@@ -174,7 +174,7 @@ func (agent *teardownAgent) Destroy(ctx context.Context, _ *runtimev0.DestroyReq
 			return nil, err
 		}
 	}
-	return &runtimev0.DestroyResponse{Status: &runtimev0.DestroyStatus{State: runtimev0.DestroyStatus_SUCCESS}}, nil
+	return &runtimev1.DestroyResponse{Status: &runtimev1.DestroyStatus{State: runtimev1.DestroyStatus_SUCCESS}}, nil
 }
 
 func (agent *teardownAgent) window() (began, ended time.Time) {
@@ -199,7 +199,7 @@ func serveTeardownAgent(t *testing.T, unique string, agent *teardownAgent) *Mana
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
-	runtimev0.RegisterRuntimeServer(server, agent)
+	runtimev1.RegisterRuntimeServer(server, agent)
 	go func() { _ = server.Serve(listener) }()
 
 	connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))

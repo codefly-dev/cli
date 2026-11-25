@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -16,23 +16,23 @@ import (
 // a live provider. It mirrors the declared reference-only manifests a workspace
 // commits: keys and provider references, never plaintext values.
 type staticConfigurationLoader struct {
-	confs []*basev0.Configuration
+	confs []*basev1.Configuration
 }
 
 func (staticConfigurationLoader) Identity() string { return "static-test-loader" }
 
 func (staticConfigurationLoader) Load(context.Context, *resources.Environment) error { return nil }
 
-func (l staticConfigurationLoader) Configurations() []*basev0.Configuration { return l.confs }
+func (l staticConfigurationLoader) Configurations() []*basev1.Configuration { return l.confs }
 
-func (staticConfigurationLoader) DNS() []*basev0.DNS { return nil }
+func (staticConfigurationLoader) DNS() []*basev1.DNS { return nil }
 
-func declaredSecretConfiguration() *basev0.Configuration {
-	return &basev0.Configuration{
+func declaredSecretConfiguration() *basev1.Configuration {
+	return &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "auth",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "client_secret", Value: "op://dev-vault/auth/client_secret", Secret: true},
 			},
 		}},
@@ -124,7 +124,7 @@ func TestManagerRejectsReferenceOnlySecretWithoutAResolver(t *testing.T) {
 	ctx := context.Background()
 	manager, err := configurations.NewManager(ctx, &resources.Workspace{})
 	require.NoError(t, err)
-	manager.WithLoader(staticConfigurationLoader{confs: []*basev0.Configuration{declaredSecretConfiguration()}})
+	manager.WithLoader(staticConfigurationLoader{confs: []*basev1.Configuration{declaredSecretConfiguration()}})
 
 	err = manager.Load(ctx, &resources.Environment{Name: "staging"})
 	require.ErrorContains(t, err, "requires a backend that is not configured")
@@ -135,7 +135,7 @@ func TestManagerRejectsReferenceOnlySecretWithoutAResolver(t *testing.T) {
 // which promotableConfiguration then discards into a secretKeyRef.
 func TestSnapshotSecretResolverMakesReferenceOnlyRenderValueFree(t *testing.T) {
 	ctx := context.Background()
-	loader := staticConfigurationLoader{confs: []*basev0.Configuration{declaredSecretConfiguration()}}
+	loader := staticConfigurationLoader{confs: []*basev1.Configuration{declaredSecretConfiguration()}}
 	manager, err := configurations.NewManager(ctx, &resources.Workspace{})
 	require.NoError(t, err)
 	manager.WithLoader(loader)
@@ -163,11 +163,11 @@ func TestNewFlowInSnapshotModeIsValueFreeAndPromotable(t *testing.T) {
 	flow := newSnapshotWorkspaceFlow(t, SnapshotMode)
 
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		flow.world.KubernetesOutputProfile)
 
 	flow.ConfigurationManager.WithLoader(staticConfigurationLoader{
-		confs: []*basev0.Configuration{declaredSecretConfiguration()},
+		confs: []*basev1.Configuration{declaredSecretConfiguration()},
 	})
 	require.NoError(t, flow.ConfigurationManager.Load(context.Background(), flow.world.Env.Runtime()))
 }
@@ -178,11 +178,11 @@ func TestNewFlowOutsideSnapshotModeDoesNotRegisterTheResolver(t *testing.T) {
 	flow := newSnapshotWorkspaceFlow(t, RunMode)
 
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_UNSPECIFIED,
 		flow.world.KubernetesOutputProfile)
 
 	flow.ConfigurationManager.WithLoader(staticConfigurationLoader{
-		confs: []*basev0.Configuration{declaredSecretConfiguration()},
+		confs: []*basev1.Configuration{declaredSecretConfiguration()},
 	})
 	require.ErrorContains(t,
 		flow.ConfigurationManager.Load(context.Background(), flow.world.Env.Runtime()),

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/core/architecture"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/tui"
 	"github.com/codefly-dev/core/wool"
 )
@@ -14,14 +14,14 @@ type RuntimeTestPolicy struct {
 	ExecutorManager
 	dependencies   *architecture.ServiceDependencies
 	origin         string
-	dependencyMode agentv0.TestDependencyMode
+	dependencyMode agentv1.TestDependencyMode
 }
 
-func NewRuntimeTestPolicy(_ context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager, origin string, dependencyMode agentv0.TestDependencyMode) (*RuntimeTestPolicy, error) {
+func NewRuntimeTestPolicy(_ context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager, origin string, dependencyMode agentv1.TestDependencyMode) (*RuntimeTestPolicy, error) {
 	switch dependencyMode {
-	case agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
-		agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES,
-		agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK:
+	case agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+		agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES,
+		agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK:
 	default:
 		return nil, fmt.Errorf("unsupported test dependency mode %s", dependencyMode.String())
 	}
@@ -37,7 +37,7 @@ func (policy *RuntimeTestPolicy) Execute(ctx context.Context, action Action) ([]
 	w := wool.Get(ctx).In("RuntimeTestPolicy.Execute", wool.Field("action", action))
 	var executor OutputProcessorFunc
 	var err error
-	barrier := action.Type == RuntimeStart && action.Service == policy.origin && policy.dependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES
+	barrier := action.Type == RuntimeStart && action.Service == policy.origin && policy.dependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES
 	if barrier {
 		// This is a sequencing barrier: dependency RuntimeStart actions in the
 		// same group have completed, but the target process must remain stopped.
@@ -69,17 +69,17 @@ func (policy *RuntimeTestPolicy) Execute(ctx context.Context, action Action) ([]
 
 	switch action.Type {
 	case RuntimeBegin:
-		if policy.dependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+		if policy.dependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 			return []Action{action.Next(RuntimeLoad)}, nil
 		}
 		return policy.BasicNext(ctx, outputProperty, action, RuntimeLoad)
 	case RuntimeLoad:
-		if policy.dependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+		if policy.dependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 			return []Action{action.Next(RuntimeInit)}, nil
 		}
 		return policy.BasicNext(ctx, outputProperty, action, RuntimeInit)
 	case RuntimeInit:
-		if policy.dependencyMode == agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+		if policy.dependencyMode == agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 			return []Action{action.Next(RuntimeTest)}, nil
 		}
 		return policy.BasicNext(ctx, outputProperty, action, RuntimeStart)

@@ -11,7 +11,7 @@ import (
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ import (
 // declares which of them the composition root itself provides run-wide. It lets
 // workspaceConfigurationsFor be exercised against genuine core resolution.
 type staticWorkspaceLoader struct {
-	confs       []*basev0.Configuration
+	confs       []*basev1.Configuration
 	rootConfigs []string
 }
 
@@ -30,27 +30,27 @@ func (staticWorkspaceLoader) Identity() string { return "static-workspace-loader
 
 func (staticWorkspaceLoader) Load(context.Context, *resources.Environment) error { return nil }
 
-func (l staticWorkspaceLoader) Configurations() []*basev0.Configuration { return l.confs }
+func (l staticWorkspaceLoader) Configurations() []*basev1.Configuration { return l.confs }
 
-func (staticWorkspaceLoader) DNS() []*basev0.DNS { return nil }
+func (staticWorkspaceLoader) DNS() []*basev1.DNS { return nil }
 
 func (l staticWorkspaceLoader) CompositionRootWorkspaceConfigurationNames() []string {
 	return l.rootConfigs
 }
 
-func workspaceConfiguration(name, key, value string) *basev0.Configuration {
-	return &basev0.Configuration{
+func workspaceConfiguration(name, key, value string) *basev1.Configuration {
+	return &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: name,
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: key, Value: value},
 			},
 		}},
 	}
 }
 
-func workspaceConfigurationNames(confs []*basev0.Configuration) []string {
+func workspaceConfigurationNames(confs []*basev1.Configuration) []string {
 	names := make([]string, 0, len(confs))
 	for _, conf := range confs {
 		for _, info := range conf.Infos {
@@ -99,7 +99,7 @@ func loadedWorkspaceWorld(t *testing.T, loader staticWorkspaceLoader) *World {
 		// interpolation. Without them the resolution can neither validate a
 		// reference nor notice a dropped value, so it refuses to resolve a
 		// group carrying one at all rather than do either silently.
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return workspaceConfigurationInfos(loader.Configurations())
 		},
 	}
@@ -110,7 +110,7 @@ func loadedWorkspaceWorld(t *testing.T, loader staticWorkspaceLoader) *World {
 // every service.
 func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
 	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
@@ -125,7 +125,7 @@ func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
 // The union of declared dependencies and the composition-root set is returned.
 func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
@@ -143,7 +143,7 @@ func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 // emitted once, not duplicated.
 func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
 	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
@@ -160,7 +160,7 @@ func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
 // and the composition-root sets.
 func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) {
 	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 			workspaceConfiguration("managed-auth", "token", "secret"),
@@ -181,7 +181,7 @@ func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) 
 // in-cluster address.
 func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *testing.T) {
 	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{
+		confs: []*basev1.Configuration{
 			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
 		},
 	})
@@ -208,9 +208,9 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	service, err := loadService(context.Background(), t, world.Workspace, "platform", "relay")
 	require.NoError(t, err)
 	service.WorkspaceConfigurationDependencies = []string{"platform"}
-	mappings := []*basev0.NetworkMapping{{
-		Endpoint: &basev0.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},
-		Instances: []*basev0.NetworkInstance{
+	mappings := []*basev1.NetworkMapping{{
+		Endpoint: &basev1.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},
+		Instances: []*basev1.NetworkInstance{
 			{Address: "localhost:38342", Access: resources.NewNativeNetworkAccess()},
 			{Address: "auth-gateway.platform-acme-saas.svc.cluster.local:8080", Access: resources.NewContainerNetworkAccess()},
 		},
@@ -254,7 +254,7 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 // configurationsCarryKey reports whether any configuration carries name/key at
 // all. resources.GetConfigurationValue answers "" and no error for an absent
 // key, which cannot tell a dropped value from an empty one.
-func configurationsCarryKey(confs []*basev0.Configuration, name, key string) bool {
+func configurationsCarryKey(confs []*basev1.Configuration, name, key string) bool {
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
 			if info.GetName() != name {
@@ -299,11 +299,11 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.NoError(t, err)
 
 	loader := staticWorkspaceLoader{
-		confs: []*basev0.Configuration{{
+		confs: []*basev1.Configuration{{
 			Origin: resources.ConfigurationWorkspace,
-			Infos: []*basev0.ConfigurationInformation{{
+			Infos: []*basev1.ConfigurationInformation{{
 				Name: "platform",
-				ConfigurationValues: []*basev0.ConfigurationValue{
+				ConfigurationValues: []*basev1.ConfigurationValue{
 					{Key: "accounts-endpoint", Value: "${endpoint:saas/accounts/connect}"},
 					{Key: "elsewhere", Value: "${endpoint:platform/warden/rest}"},
 				},
@@ -318,7 +318,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
 		LocalNetworkManager: localNetwork,
 		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return workspaceConfigurationInfos(loader.Configurations())
 		},
 	}
@@ -350,7 +350,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	// And the other case, which is not a drop: a producer the workspace does not
 	// have is refused by core's own verdict rather than left to another gate.
 	absentLoader := staticWorkspaceLoader{
-		confs: []*basev0.Configuration{workspaceConfiguration("platform", "nowhere", "${endpoint:absent/service/http}")},
+		confs: []*basev1.Configuration{workspaceConfiguration("platform", "nowhere", "${endpoint:absent/service/http}")},
 	}
 	// Built fresh rather than copied from `world`: a World carries a sync.Once
 	// for its memoized producer lookup, and copying one is a `go vet` copylocks
@@ -363,7 +363,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 		Dependencies:         dependencies,
 		LocalNetworkManager:  localNetwork,
 		runtimeContextFor:    func(*resources.Service) string { return resources.RuntimeContextNative },
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return workspaceConfigurationInfos(absentLoader.Configurations())
 		},
 	}
@@ -373,7 +373,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.Contains(t, err.Error(), "not a service of this workspace")
 
 	manager = loadedWorkspaceManager(t, staticWorkspaceLoader{
-		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
+		confs: []*basev1.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
 	})
 	world.ConfigurationManager = manager
 	confs, err := world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
@@ -384,9 +384,9 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.Regexp(t, `^http://localhost:\d+$`, derived)
 
 	// Once the producer has initialized, its accepted mappings are what resolves.
-	require.NoError(t, sharedState.RecordNetworkMappings(ctx, accounts, []*basev0.NetworkMapping{{
-		Endpoint: &basev0.Endpoint{Module: "saas", Service: "accounts", Name: "connect", Api: "rest"},
-		Instances: []*basev0.NetworkInstance{{
+	require.NoError(t, sharedState.RecordNetworkMappings(ctx, accounts, []*basev1.NetworkMapping{{
+		Endpoint: &basev1.Endpoint{Module: "saas", Service: "accounts", Name: "connect", Api: "rest"},
+		Instances: []*basev1.NetworkInstance{{
 			Address: "http://localhost:10650",
 			Access:  resources.NewNativeNetworkAccess(),
 		}},
@@ -466,7 +466,7 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	sharedState, err := NewStateManager(ctx, nil, dependencies, workspace)
 	require.NoError(t, err)
 	loader := staticWorkspaceLoader{
-		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
+		confs: []*basev1.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
 	}
 	manager := loadedWorkspaceManager(t, loader)
 	localNetwork, err := network.NewRuntimeManager(ctx, manager)
@@ -476,7 +476,7 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
 		LocalNetworkManager: localNetwork,
 		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return workspaceConfigurationInfos(loader.Configurations())
 		},
 	}

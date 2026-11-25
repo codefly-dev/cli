@@ -9,7 +9,7 @@ import (
 	"sort"
 	"testing"
 
-	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
+	providerv1 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v1"
 	"github.com/codefly-dev/core/provider/manifest"
 	"github.com/stretchr/testify/require"
 )
@@ -55,7 +55,7 @@ func TestGoldenCreateProjection(t *testing.T) {
 	h := newBrokerHarness(t)
 	create := h.createRequest(t)
 	session := h.session(t, createAction(t, create), false)
-	handle := h.mint(t, create, providerv0.HTTPMethod_HTTP_METHOD_POST)
+	handle := h.mint(t, create, providerv1.HTTPMethod_HTTP_METHOD_POST)
 	response, err := session.Execute(context.Background(), h.execute(handle, create))
 	require.NoError(t, err)
 

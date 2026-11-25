@@ -18,7 +18,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -124,7 +124,7 @@ func writeRunDependencyWorkspace(t *testing.T) string {
 	return root
 }
 
-func workspaceConfigurationNames(configs []*basev0.Configuration) []string {
+func workspaceConfigurationNames(configs []*basev1.Configuration) []string {
 	var names []string
 	for _, configuration := range configs {
 		if configuration.GetOrigin() != resources.ConfigurationWorkspace {
@@ -155,7 +155,7 @@ func activeRunFlow(t *testing.T, plane Plane) *orchestration.Flow {
 // connectionStringFrom extracts the "connection" value a dependency agent
 // publishes, the standard codefly key for a dependency's connection string
 // (see core's sdk.WithDependencies).
-func connectionStringFrom(configs []*basev0.Configuration) string {
+func connectionStringFrom(configs []*basev1.Configuration) string {
 	for _, conf := range configs {
 		for _, info := range conf.GetInfos() {
 			for _, val := range info.GetConfigurationValues() {
@@ -279,7 +279,7 @@ func TestRunProfilesThroughProtocolPeers(t *testing.T) {
 				var dsn string
 				for _, config := range configs {
 					if config.GetOrigin() == dependency {
-						dsn = connectionStringFrom([]*basev0.Configuration{config})
+						dsn = connectionStringFrom([]*basev1.Configuration{config})
 					}
 				}
 				address, err := url.Parse(dsn)

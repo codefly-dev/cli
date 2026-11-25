@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
+	codev1 "github.com/codefly-dev/core/generated/go/codefly/services/code/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -57,8 +57,8 @@ func isTransientAgentError(err error) bool {
 }
 
 // ExecuteCode executes a typed Code leaf operation.
-func (s *Service) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
-	var response *codev0.CodeResponse
+func (s *Service) ExecuteCode(ctx context.Context, request *codev1.CodeRequest) (*codev1.CodeResponse, error) {
+	var response *codev1.CodeResponse
 	// Read-only Code inspection runs against the started agent alone. Mutating
 	// operations (write, apply-edit, shell) act on the runtime-managed workspace
 	// and need the runtime lifecycle like Build/Test/Lint/Stop, so they
@@ -78,8 +78,8 @@ func (s *Service) ExecuteCode(ctx context.Context, request *codev0.CodeRequest) 
 }
 
 // Build invokes the service agent's runtime build behavior.
-func (s *Service) Build(ctx context.Context, request *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error) {
-	var response *runtimev0.BuildResponse
+func (s *Service) Build(ctx context.Context, request *runtimev1.BuildRequest) (*runtimev1.BuildResponse, error) {
+	var response *runtimev1.BuildResponse
 	err := s.withSession(ctx, "runtime.Build", true, func(session *AgentSession) error {
 		if err := ensureRuntime(ctx, session); err != nil {
 			return err
@@ -92,8 +92,8 @@ func (s *Service) Build(ctx context.Context, request *runtimev0.BuildRequest) (*
 }
 
 // Test invokes the service agent's runtime test behavior.
-func (s *Service) Test(ctx context.Context, request *runtimev0.TestRequest) (*runtimev0.TestResponse, error) {
-	var response *runtimev0.TestResponse
+func (s *Service) Test(ctx context.Context, request *runtimev1.TestRequest) (*runtimev1.TestResponse, error) {
+	var response *runtimev1.TestResponse
 	err := s.withSession(ctx, "runtime.Test", true, func(session *AgentSession) error {
 		if err := ensureRuntime(ctx, session); err != nil {
 			return err
@@ -105,22 +105,22 @@ func (s *Service) Test(ctx context.Context, request *runtimev0.TestRequest) (*ru
 	var initializationError *agentInitializationError
 	if errors.As(err, &initializationError) {
 		message := "env-blocked (runtime-initialization): " + initializationError.Error()
-		run := &runtimev0.TestRun{Runner: "codefly-agent"}
+		run := &runtimev1.TestRun{Runner: "codefly-agent"}
 		if request != nil && request.GetSelection() != nil {
-			if selection, ok := proto.Clone(request.GetSelection()).(*runtimev0.TestSelection); ok {
+			if selection, ok := proto.Clone(request.GetSelection()).(*runtimev1.TestSelection); ok {
 				run.RequestedSelection = selection
 			}
 			run.SelectionId = request.GetSelectionId()
 		}
 		//nolint:staticcheck // SA1019: the proto keeps the flat fields populated for consumers that have not migrated to the structured tree
-		return &runtimev0.TestResponse{
-			Status: &runtimev0.TestStatus{
-				State: runtimev0.TestStatus_ERROR, Message: message,
+		return &runtimev1.TestResponse{
+			Status: &runtimev1.TestStatus{
+				State: runtimev1.TestStatus_ERROR, Message: message,
 			},
-			Result: &runtimev0.TestRunResult{
-				State: runtimev0.TestRunResult_ERRORED, Message: message,
+			Result: &runtimev1.TestRunResult{
+				State: runtimev1.TestRunResult_ERRORED, Message: message,
 			},
-			Counts: &runtimev0.TestCounts{},
+			Counts: &runtimev1.TestCounts{},
 			Run:    run,
 		}, nil
 	}
@@ -130,8 +130,8 @@ func (s *Service) Test(ctx context.Context, request *runtimev0.TestRequest) (*ru
 // Configure invokes the service agent's builder configuration behavior. The
 // call is not transport-retried: an unavailable response may have persisted
 // the change, so replaying it would make APPEND operations ambiguous.
-func (s *Service) Configure(ctx context.Context, request *builderv0.ConfigureRequest) (*builderv0.ConfigureResponse, error) {
-	var response *builderv0.ConfigureResponse
+func (s *Service) Configure(ctx context.Context, request *builderv1.ConfigureRequest) (*builderv1.ConfigureResponse, error) {
+	var response *builderv1.ConfigureResponse
 	err := s.withSession(ctx, "builder.Configure", false, func(session *AgentSession) error {
 		if err := initializeBuilder(ctx, session); err != nil {
 			return err
@@ -144,8 +144,8 @@ func (s *Service) Configure(ctx context.Context, request *builderv0.ConfigureReq
 }
 
 // Lint invokes the service agent's runtime lint behavior.
-func (s *Service) Lint(ctx context.Context, request *runtimev0.LintRequest) (*runtimev0.LintResponse, error) {
-	var response *runtimev0.LintResponse
+func (s *Service) Lint(ctx context.Context, request *runtimev1.LintRequest) (*runtimev1.LintResponse, error) {
+	var response *runtimev1.LintResponse
 	err := s.withSession(ctx, "runtime.Lint", true, func(session *AgentSession) error {
 		if err := ensureRuntime(ctx, session); err != nil {
 			return err
@@ -161,8 +161,8 @@ func (s *Service) Lint(ctx context.Context, request *runtimev0.LintRequest) (*ru
 // discovery is agent-level and intentionally skips the runtime lifecycle: the
 // registry is populated at agent startup, not by Runtime.Load, and callers such
 // as the gateway's ListAllCommands rely on it staying lazy.
-func (s *Service) ListCommands(ctx context.Context, request *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error) {
-	var response *agentv0.ListCommandsResponse
+func (s *Service) ListCommands(ctx context.Context, request *agentv1.ListCommandsRequest) (*agentv1.ListCommandsResponse, error) {
+	var response *agentv1.ListCommandsResponse
 	err := s.withSession(ctx, "agent.ListCommands", true, func(session *AgentSession) error {
 		var err error
 		response, err = session.agentAPI.ListCommands(ctx, request)
@@ -175,8 +175,8 @@ func (s *Service) ListCommands(ctx context.Context, request *agentv0.ListCommand
 // execute against the service directory, not the runtime environment, so they
 // intentionally skip the runtime lifecycle rather than coupling command
 // execution to toolchain readiness.
-func (s *Service) RunCommand(ctx context.Context, request *agentv0.RunPluginCommandRequest) (*agentv0.RunPluginCommandResponse, error) {
-	var response *agentv0.RunPluginCommandResponse
+func (s *Service) RunCommand(ctx context.Context, request *agentv1.RunPluginCommandRequest) (*agentv1.RunPluginCommandResponse, error) {
+	var response *agentv1.RunPluginCommandResponse
 	err := s.withSession(ctx, "agent.RunPluginCommand", false, func(session *AgentSession) error {
 		var err error
 		response, err = session.agentAPI.RunPluginCommand(ctx, request)
@@ -187,8 +187,8 @@ func (s *Service) RunCommand(ctx context.Context, request *agentv0.RunPluginComm
 
 // Stop asks the service runtime to stop. The supervisor continues owning the
 // agent process so later operations can reuse it.
-func (s *Service) Stop(ctx context.Context, request *runtimev0.StopRequest) (*runtimev0.StopResponse, error) {
-	var response *runtimev0.StopResponse
+func (s *Service) Stop(ctx context.Context, request *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {
+	var response *runtimev1.StopResponse
 	err := s.withSession(ctx, "runtime.Stop", true, func(session *AgentSession) error {
 		if err := ensureRuntime(ctx, session); err != nil {
 			return err
@@ -203,21 +203,21 @@ func (s *Service) Stop(ctx context.Context, request *runtimev0.StopRequest) (*ru
 // codeRequestRetrySafe identifies read-only Code operations. An Unavailable
 // response is ambiguous: a mutating request may already have taken effect, so
 // those requests are evicted but never replayed automatically.
-func codeRequestRetrySafe(request *codev0.CodeRequest) bool {
+func codeRequestRetrySafe(request *codev1.CodeRequest) bool {
 	if request == nil {
 		return false
 	}
 	switch request.GetOperation().(type) {
-	case *codev0.CodeRequest_ListDependencies,
-		*codev0.CodeRequest_GetProjectInfo,
-		*codev0.CodeRequest_GetSourceManifest,
-		*codev0.CodeRequest_ReadFile,
-		*codev0.CodeRequest_ListFiles,
-		*codev0.CodeRequest_Search,
-		*codev0.CodeRequest_GitLog,
-		*codev0.CodeRequest_GitShow,
-		*codev0.CodeRequest_GitBlame,
-		*codev0.CodeRequest_GitDiff:
+	case *codev1.CodeRequest_ListDependencies,
+		*codev1.CodeRequest_GetProjectInfo,
+		*codev1.CodeRequest_GetSourceManifest,
+		*codev1.CodeRequest_ReadFile,
+		*codev1.CodeRequest_ListFiles,
+		*codev1.CodeRequest_Search,
+		*codev1.CodeRequest_GitLog,
+		*codev1.CodeRequest_GitShow,
+		*codev1.CodeRequest_GitBlame,
+		*codev1.CodeRequest_GitDiff:
 		return true
 	default:
 		return false

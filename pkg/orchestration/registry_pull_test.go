@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,7 +52,7 @@ func TestPushReferenceMovesOnlyImagesUnderThePullRepository(t *testing.T) {
 }
 
 func TestRecipeAsBuiltNamesThePushedReferenceAndLeavesThePlanAlone(t *testing.T) {
-	recipe := &builderv0.DockerBuildRecipe{Name: "api", Image: remoteRepository + "/northwind/saas/api:1.2.3", Platforms: []string{"linux/amd64"}}
+	recipe := &builderv1.DockerBuildRecipe{Name: "api", Image: remoteRepository + "/northwind/saas/api:1.2.3", Platforms: []string{"linux/amd64"}}
 	builder := &Builder{world: &World{Env: pullThroughEnv()}}
 	built, err := builder.recipeAsBuilt(recipe, true)
 	require.NoError(t, err)

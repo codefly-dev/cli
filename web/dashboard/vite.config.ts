@@ -16,7 +16,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/codefly.cli.v0.CLI": {
+      "/codefly.cli.v1.CLI": {
         target: CLI_SERVER,
         changeOrigin: true,
       },

@@ -1,4 +1,4 @@
-// Minimal Connect protocol client for the codefly.cli.v0.CLI service.
+// Minimal Connect protocol client for the codefly.cli.v1.CLI service.
 //
 // The CLI exposes its API over the Connect protocol (connect-go). Rather than
 // pull in a proto codegen toolchain, we speak Connect directly over fetch: it
@@ -6,7 +6,7 @@
 // response bodies are proto3 JSON (camelCase field names, enums as strings,
 // timestamps as RFC 3339).
 
-const SERVICE = "/codefly.cli.v0.CLI";
+const SERVICE = "/codefly.cli.v1.CLI";
 
 export class ConnectError extends Error {
   code: string;

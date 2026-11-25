@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 )
 
 const pinnedDeployment = `apiVersion: apps/v1
@@ -113,15 +113,15 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 // admits, and its absence is what admission refuses.
 func TestInventoryKubernetesOutputRequiresTheRestrictedSecurityProperty(t *testing.T) {
 	evidenceFor := func(restricted bool) *KubernetesOutputInventory {
-		return inventoryKubernetesOutput(&builderv0.DeploymentOutput{
-			Kind: &builderv0.DeploymentOutput_Kubernetes{
-				Kubernetes: &builderv0.KubernetesDeploymentOutput{
-					Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
-					Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		return inventoryKubernetesOutput(&builderv1.DeploymentOutput{
+			Kind: &builderv1.DeploymentOutput_Kubernetes{
+				Kubernetes: &builderv1.KubernetesDeploymentOutput{
+					Kind:            builderv1.KubernetesDeploymentOutput_KUSTOMIZE,
+					Profile:         builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 					ContractVersion: coreservices.KubernetesManifestContractVersion,
-					Validation: &builderv0.KubernetesManifestValidation{
-						StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
-						ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
+					Validation: &builderv1.KubernetesManifestValidation{
+						StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED,
+						ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_PASSED,
 						Restricted:           restricted,
 					},
 				},
@@ -159,12 +159,12 @@ func TestInventoryKubernetesOutputRequiresTheRestrictedSecurityProperty(t *testi
 
 func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing.T) {
 	output := &KubernetesOutputInventory{
-		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
+		Kind:            builderv1.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &KubernetesValidationInventory{
-			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
-			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
+			StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
 			Restricted:           true,
 			Violations:           []string{},
 		},
@@ -177,12 +177,12 @@ func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing
 
 func TestValidateInventoryKubernetesOutputRejectsFailedOrMissingValidation(t *testing.T) {
 	output := &KubernetesOutputInventory{
-		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
+		Kind:            builderv1.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &KubernetesValidationInventory{
-			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
-			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_FAILED.String(),
+			StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_FAILED.String(),
 			Restricted:           true,
 			Violations:           []string{},
 		},
@@ -862,12 +862,12 @@ spec:
 // persists it.
 func restrictedRenderEvidence() *InventoryKubernetesOutput {
 	return &InventoryKubernetesOutput{
-		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
+		Kind:            builderv1.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: coreservices.KubernetesManifestContractVersion,
 		Validation: &InventoryKubernetesValidation{
-			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
-			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
+			StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
 			Restricted:           true,
 			Violations:           []string{},
 		},

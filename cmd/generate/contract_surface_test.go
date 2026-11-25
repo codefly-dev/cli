@@ -12,7 +12,7 @@ import (
 
 	"github.com/codefly-dev/core/composition"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func TestContractSurfaceExportAndDerivation(t *testing.T) {
   "invoke": [{"name":"IngestionService","fullName":"documents.ingest.v1.IngestionService","procedures":["/documents.ingest.v1.IngestionService/ApplyText","/documents.ingest.v1.IngestionService/LookupText"]}],
   "receipts": [{"name":"IngestionService","fullName":"documents.ingest.v1.IngestionService","procedures":["/documents.ingest.v1.IngestionService/LookupText"]}]
 }`))
-	endpoints := []*basev0.Endpoint{{Name: "invoke", Api: "connect"}, {Name: "receipts", Api: "grpc"}}
+	endpoints := []*basev1.Endpoint{{Name: "invoke", Api: "connect"}, {Name: "receipts", Api: "grpc"}}
 	surfacePath := fixtureSurfacePath(t, moduleDir, service.Name, "generated/surfaces.json")
 	surfaces, err := loadContractSurfaces(service, endpoints, surfacePath)
 	require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestGenerateContractsRequiresSurfaceBeforeLoadingBuilder(t *testing.T) {
 func TestContractSurfacesRequireCompleteUnambiguousInventory(t *testing.T) {
 	service := &resources.Service{Name: "owner", Endpoints: []*resources.Endpoint{{Name: "grpc"}, {Name: "connect"}}}
 	service.WithDir(t.TempDir())
-	endpoints := []*basev0.Endpoint{{Name: "grpc", Api: "grpc"}, {Name: "connect", Api: "connect"}}
+	endpoints := []*basev1.Endpoint{{Name: "grpc", Api: "grpc"}, {Name: "connect", Api: "connect"}}
 	_, err := loadContractSurfaces(service, endpoints, "")
 	require.ErrorContains(t, err, "exports multiple protobuf endpoints")
 	_, err = loadContractSurfaces(service, endpoints[:1], "")
@@ -140,7 +140,7 @@ func TestContractSurfaceConfigurationIsCLIOwnedAndStrict(t *testing.T) {
 		require.ErrorContains(t, err, tc.want)
 	}
 	service := &resources.Service{Name: "owner", Spec: map[string]any{"api-contract-surfaces": "ignored-agent-setting.json"}}
-	_, err := loadContractSurfaces(service, []*basev0.Endpoint{{Name: "grpc", Api: "grpc"}, {Name: "connect", Api: "connect"}}, "")
+	_, err := loadContractSurfaces(service, []*basev1.Endpoint{{Name: "grpc", Api: "grpc"}, {Name: "connect", Api: "connect"}}, "")
 	require.ErrorContains(t, err, contractSurfacesConfigFile, "agent settings are not CLI configuration")
 }
 
@@ -185,7 +185,7 @@ func TestContractSurfacePublishesImplementedInterfacePackages(t *testing.T) {
 	require.NoError(t, err)
 	dir := filepath.Join(module.Dir(), "contracts/api/accounts/connect")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	endpoint := &basev0.Endpoint{Name: "connect", Api: "connect"}
+	endpoint := &basev1.Endpoint{Name: "connect", Api: "connect"}
 	entry, err := writeBuiltProtobufContract(ctx, module, service, endpoint, surface, dir, dir, data)
 	require.NoError(t, err)
 	require.Empty(t, entry.Package, "there is no single package; fullName carries each service's package")

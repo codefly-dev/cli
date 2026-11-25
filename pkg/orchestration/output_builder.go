@@ -3,7 +3,7 @@ package orchestration
 import (
 	"context"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -11,7 +11,7 @@ import (
 // BuilderLoadOutput looks at:
 // - endpoints
 type BuilderLoadOutput struct {
-	Endpoints []*basev0.Endpoint
+	Endpoints []*basev1.Endpoint
 }
 
 type BuilderLoadManager struct {
@@ -63,7 +63,7 @@ var _ OutputProcessor = &BuilderLoadManager{}
 // BuilderInitOutput looks at:
 // - endpoints
 type BuilderInitOutput struct {
-	Endpoints []*basev0.Endpoint
+	Endpoints []*basev1.Endpoint
 }
 
 type BuilderInitManager struct {

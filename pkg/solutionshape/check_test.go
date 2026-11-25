@@ -29,8 +29,8 @@ interface:
           endpoint: http
           visibility: internal
 `)
-	write(t, filepath.Join(dir, "solution.codefly.yaml"), `schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+	write(t, filepath.Join(dir, "solution.codefly.yaml"), `schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 api:
     exposes:
         - id: http
@@ -334,8 +334,8 @@ contracts:
 // lets it default — so nothing else catches it.
 func TestAConsumedAPIWithNoRouteNameFails(t *testing.T) {
 	dir := conformingSolution(t)
-	write(t, filepath.Join(dir, "solution.codefly.yaml"), `schema_version: codefly.solution-manifest/v0
-protocol_version: codefly.solution/v0
+	write(t, filepath.Join(dir, "solution.codefly.yaml"), `schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v1
 api:
     exposes:
         - id: http

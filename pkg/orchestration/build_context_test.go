@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
 var recipeContextCases = []string{"symlink", "declared override", "sibling override", "unreadable exclusion", "reincluded child"}
 
-func recipeContextFixture(t *testing.T, scenario string) (string, string, *builderv0.DockerBuildRecipe) {
+func recipeContextFixture(t *testing.T, scenario string) (string, string, *builderv1.DockerBuildRecipe) {
 	t.Helper()
 	root := t.TempDir()
 	output := filepath.Join(root, "builder")
@@ -22,7 +22,7 @@ func recipeContextFixture(t *testing.T, scenario string) (string, string, *build
 	require.NoError(t, os.Mkdir(filepath.Join(root, "assets"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "assets/index.html"), []byte("required asset"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(output, "Dockerfile"), []byte("FROM scratch\nCOPY . /\n"), 0o600))
-	recipe := &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile"}
+	recipe := &builderv1.DockerBuildRecipe{Dockerfile: "Dockerfile"}
 	switch scenario {
 	case "symlink":
 		link := filepath.Join(t.TempDir(), "source")
@@ -158,27 +158,27 @@ func TestRecipeContextRootSelectsWhatBuildxReceives(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(recipeRoot, "Dockerfile"), []byte("FROM scratch\nCOPY code/ ./code/\n"), 0o600))
 	require.NoError(t, os.MkdirAll(filepath.Join(serviceRoot, "code"), 0o755))
 
-	recipe := &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile", Context: "."}
+	recipe := &builderv1.DockerBuildRecipe{Dockerfile: "Dockerfile", Context: "."}
 	// An assembled inventory names something the emitter built beyond its own
 	// control files; a control-only inventory names nothing but them.
-	assembled := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: "code/_replace/go.mod"}}
-	controlOnly := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: ".dockerignore"}}
+	assembled := []*builderv1.RecipeFile{{Path: "Dockerfile"}, {Path: "code/_replace/go.mod"}}
+	controlOnly := []*builderv1.RecipeFile{{Path: "Dockerfile"}, {Path: ".dockerignore"}}
 	for _, tc := range []struct {
 		name  string
-		scope builderv0.RecipeInventoryScope
-		files []*builderv0.RecipeFile
+		scope builderv1.RecipeInventoryScope
+		files []*builderv1.RecipeFile
 		root  string
 		carry bool
 	}{
-		{"tree builds the assembled destination", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, assembled, recipeRoot, true},
-		{"emitted builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, controlOnly, serviceRoot, false},
+		{"tree builds the assembled destination", builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, assembled, recipeRoot, true},
+		{"emitted builds the service directory", builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, controlOnly, serviceRoot, false},
 		// The transition: an emitter that declared TREE but assembled nothing
 		// keeps the documented context, the service directory, so the fleet does
 		// not have to be swept before this ships.
-		{"tree that assembled nothing builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, controlOnly, serviceRoot, false},
+		{"tree that assembled nothing builds the service directory", builderv1.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, controlOnly, serviceRoot, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := &builderv0.DockerBuildPlan{Scope: tc.scope, Files: tc.files, Recipes: []*builderv0.DockerBuildRecipe{{Dockerfile: "Dockerfile", Dockerignore: ".dockerignore"}}}
+			plan := &builderv1.DockerBuildPlan{Scope: tc.scope, Files: tc.files, Recipes: []*builderv1.DockerBuildRecipe{{Dockerfile: "Dockerfile", Dockerignore: ".dockerignore"}}}
 			root := recipeContextRoot(serviceRoot, recipeRoot, plan)
 			require.Equal(t, tc.root, root)
 

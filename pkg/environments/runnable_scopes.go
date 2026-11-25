@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
+	runnablev1 "github.com/codefly-dev/core/generated/go/codefly/runnable/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"gopkg.in/yaml.v3"
 )
@@ -20,7 +20,7 @@ import (
 // DeclinesRunnableBinding). The decoder keeps it a non-nil empty slice and the
 // encoder writes a nil one as null, so the three spellings survive the
 // load/save round trip unchanged.
-type ScopeSelections []*runnablev0.ScopeSelection
+type ScopeSelections []*runnablev1.ScopeSelection
 
 func (s *ScopeSelections) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.SequenceNode {
@@ -36,7 +36,7 @@ func (s *ScopeSelections) UnmarshalYAML(node *yaml.Node) error {
 		if err != nil {
 			return err
 		}
-		selection := &runnablev0.ScopeSelection{}
+		selection := &runnablev1.ScopeSelection{}
 		if err := protojson.Unmarshal(data, selection); err != nil {
 			return fmt.Errorf("runnable-scope-selections: %w", err)
 		}

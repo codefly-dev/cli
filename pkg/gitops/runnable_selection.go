@@ -7,7 +7,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -53,11 +53,11 @@ func selectPreparedGrants(grants []preparedGrant, keys runnables.PreparedSelecti
 
 // WorkspaceConfigurationResolver reuses the native flow's actual resolution;
 // render callers use a value-free snapshot with its normal override guard.
-type WorkspaceConfigurationResolver func(context.Context, *resources.Service) ([]*basev0.Configuration, error)
+type WorkspaceConfigurationResolver func(context.Context, *resources.Service) ([]*basev1.Configuration, error)
 
 func selectionResolver(workspace *resources.Workspace, env *environments.Environment, mode orchestration.Mode) WorkspaceConfigurationResolver {
 	var flow *orchestration.Flow
-	return func(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+	return func(ctx context.Context, service *resources.Service) ([]*basev1.Configuration, error) {
 		if flow == nil {
 			var err error
 			flow, err = orchestration.NewFlow(ctx, workspace, nil, nil, env, mode)

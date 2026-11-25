@@ -3,7 +3,7 @@ package orchestration
 import (
 	"testing"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func TestRestrictedRenderClassificationAgreesWithCore(t *testing.T) {
 		"ACCESS_TOKEN_URL", "CLIENT_SECRET_URL", "LOG_LEVEL", "GATEWAY_PATH", "REGION",
 	}
 	for _, key := range keys {
-		value := &basev0.ConfigurationValue{Key: key, Value: "value"}
+		value := &basev1.ConfigurationValue{Key: key, Value: "value"}
 		sensitive := resources.IsSensitiveKey(key)
 
 		require.Equal(t, sensitive, restrictedRenderRejects(value),
@@ -43,9 +43,9 @@ func TestRestrictedRenderClassificationAgreesWithCore(t *testing.T) {
 			require.True(t, sensitive, "%s: the CLI narrows a key core does not classify as sensitive", key)
 		}
 
-		misplaced := misplacedSecretKeys([]*basev0.Configuration{{
+		misplaced := misplacedSecretKeys([]*basev1.Configuration{{
 			Origin: "service",
-			Infos:  []*basev0.ConfigurationInformation{{Name: "example", ConfigurationValues: []*basev0.ConfigurationValue{value}}},
+			Infos:  []*basev1.ConfigurationInformation{{Name: "example", ConfigurationValues: []*basev1.ConfigurationValue{value}}},
 		}})
 		if sensitive {
 			require.True(t, promotesToDeploymentSecret(value) || len(misplaced) == 1,

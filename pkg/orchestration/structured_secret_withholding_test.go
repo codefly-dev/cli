@@ -10,7 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -98,7 +98,7 @@ func TestARenderWithAnUndeclaredRootStructuredSecretSucceeds(t *testing.T) {
 	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
 	require.NoError(t, err)
 
-	_, safe, references, err := promotableDeploymentConfigurations(&basev0.Configuration{}, confs, "secret-worker")
+	_, safe, references, err := promotableDeploymentConfigurations(&basev1.Configuration{}, confs, "secret-worker")
 	require.NoError(t, err,
 		"a root structured secret this service never asked for must not stop it rendering")
 	require.Empty(t, references, "and no secret reference is rendered for it")
@@ -107,7 +107,7 @@ func TestARenderWithAnUndeclaredRootStructuredSecretSucceeds(t *testing.T) {
 
 // structuredSecretData reports whether the named group arrived as a structured
 // secret: an information block whose Data carries the secret flag.
-func structuredSecretData(confs []*basev0.Configuration, group string) bool {
+func structuredSecretData(confs []*basev1.Configuration, group string) bool {
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {
 			if info.GetName() == group && info.GetData().GetSecret() {
@@ -186,14 +186,14 @@ func TestTheResolutionRefusesARootGroupItDidNotPlanFor(t *testing.T) {
 func requireTheResolutionRefusesAnUnnamedRootGroup(t *testing.T, key, content string) {
 	t.Helper()
 	loader := staticWorkspaceLoader{
-		confs:       []*basev0.Configuration{workspaceConfiguration("work-context", key, content)},
+		confs:       []*basev1.Configuration{workspaceConfiguration("work-context", key, content)},
 		rootConfigs: []string{"work-context"},
 	}
 	// The manager knows the group is composition-root; the World cannot name it.
 	// NewFlow binds both from one loader, so this is the inconsistency the guard
 	// exists to refuse rather than ship.
 	world := &World{ConfigurationManager: loadedWorkspaceManager(t, loader)}
-	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
+	world.providedWorkspaceConfigurationInfos = func() []*basev1.ConfigurationInformation {
 		return workspaceConfigurationInfos(loader.Configurations())
 	}
 	require.Empty(t, world.compositionRootWorkspaceConfigurationGroups(),

@@ -11,29 +11,29 @@ import (
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.T) {
-	configuration := &basev0.Configuration{
+	configuration := &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "database",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "host", Value: "postgres.users.svc"},
 				{Key: "password", Value: "own-secret", Secret: true},
 			},
 		}},
 	}
-	dependency := &basev0.Configuration{
+	dependency := &basev1.Configuration{
 		Origin: "infra/postgres",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "postgres",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "connection", Value: "postgres://credential-bearing-value"},
 				{Key: "port", Value: "5432"},
 			},
@@ -44,7 +44,7 @@ func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.
 
 	sanitized, dependencies, references, err := promotableDeploymentConfigurations(
 		configuration,
-		[]*basev0.Configuration{dependency},
+		[]*basev1.Configuration{dependency},
 		"accounts-secrets",
 	)
 	require.NoError(t, err)
@@ -109,11 +109,11 @@ func TestEnvironmentDeclaredSecretsPromoteToReferencesWhenTheServiceShipsNoFile(
 
 	// A key the service declares itself stays its own; only the missing one is added,
 	// and the manager's configuration is left as it was.
-	own := &basev0.Configuration{
+	own := &basev1.Configuration{
 		Origin: "model/store",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "postgres",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "POSTGRES_USER", Value: "user", Secret: true},
 				{Key: "POSTGRES_HOST", Value: "store.model.svc"},
 			},
@@ -139,11 +139,11 @@ func TestEnvironmentDeclaredSecretsPromoteToReferencesWhenTheServiceShipsNoFile(
 }
 
 func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.T) {
-	configuration := &basev0.Configuration{
+	configuration := &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "identity",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
 				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
 				{Key: "IDENTITY_AUTHORIZE_SELECTOR", Value: "primary"},
@@ -169,26 +169,26 @@ func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.
 }
 
 func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t *testing.T) {
-	own := &basev0.Configuration{
+	own := &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "identity",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
 			},
 		}},
 	}
-	dependency := &basev0.Configuration{
+	dependency := &basev1.Configuration{
 		Origin: "infra/postgres",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "connection",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
 			},
 		}},
 	}
 
-	_, _, _, err := promotableDeploymentConfigurations(own, []*basev0.Configuration{dependency}, "accounts-secrets")
+	_, _, _, err := promotableDeploymentConfigurations(own, []*basev1.Configuration{dependency}, "accounts-secrets")
 	require.Error(t, err)
 	// A misplaced key in the service config AND one exposed by a dependency both
 	// surface in a single error, each traceable to its own configuration scope —
@@ -199,11 +199,11 @@ func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t 
 }
 
 func TestPromotableDeploymentInputsPromoteDeclaredSecretEndpointKeys(t *testing.T) {
-	configuration := &basev0.Configuration{
+	configuration := &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "identity",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize", Secret: true},
 				{Key: "IDENTITY_SELECTOR", Value: "primary"},
 			},
@@ -221,17 +221,17 @@ func TestPromotableDeploymentInputsPromoteDeclaredSecretEndpointKeys(t *testing.
 	require.Equal(t, map[string]string{"IDENTITY_SELECTOR": "primary"}, kept)
 
 	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
-	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+	require.Equal(t, map[string]*builderv1.KubernetesSecretKeyReference{
 		prefix + "IDENTITY_AUTHORIZE_URL": {Name: "accounts-secrets", Key: prefix + "IDENTITY_AUTHORIZE_URL"},
 	}, references)
 }
 
 func TestPromotableDeploymentInputsPromoteCredentialURLsAsReferences(t *testing.T) {
-	configuration := &basev0.Configuration{
+	configuration := &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "identity",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "DATABASE_URL", Value: "postgres://credential-bearing-value"},
 				{Key: "SECRET_URL", Value: "credential-bearing-value"},
 				{Key: "PRIVATE_KEY_URL", Value: "credential-bearing-value"},
@@ -245,7 +245,7 @@ func TestPromotableDeploymentInputsPromoteCredentialURLsAsReferences(t *testing.
 	require.Empty(t, sanitized.GetInfos())
 
 	prefix := "CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__IDENTITY__"
-	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+	require.Equal(t, map[string]*builderv1.KubernetesSecretKeyReference{
 		prefix + "DATABASE_URL":    {Name: "accounts-secrets", Key: prefix + "DATABASE_URL"},
 		prefix + "SECRET_URL":      {Name: "accounts-secrets", Key: prefix + "SECRET_URL"},
 		prefix + "PRIVATE_KEY_URL": {Name: "accounts-secrets", Key: prefix + "PRIVATE_KEY_URL"},
@@ -254,11 +254,11 @@ func TestPromotableDeploymentInputsPromoteCredentialURLsAsReferences(t *testing.
 }
 
 func TestPromotableDeploymentInputsRejectSecretStructuredData(t *testing.T) {
-	configuration := &basev0.Configuration{
+	configuration := &basev1.Configuration{
 		Origin: "users/accounts",
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "certificate",
-			Data: &basev0.ConfigurationData{
+			Data: &basev1.ConfigurationData{
 				Kind:    "pem",
 				Content: []byte("secret certificate"),
 				Secret:  true,
@@ -271,11 +271,11 @@ func TestPromotableDeploymentInputsRejectSecretStructuredData(t *testing.T) {
 }
 
 func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecrets(t *testing.T) {
-	workspaceConfiguration := &basev0.Configuration{
+	workspaceConfiguration := &basev1.Configuration{
 		Origin: resources.ConfigurationWorkspace,
-		Infos: []*basev0.ConfigurationInformation{{
+		Infos: []*basev1.ConfigurationInformation{{
 			Name: "idkit",
-			ConfigurationValues: []*basev0.ConfigurationValue{
+			ConfigurationValues: []*basev1.ConfigurationValue{
 				{Key: "MODE", Value: "production"},
 				{Key: "IDKIT_CLIENT_SECRET", Value: "credential-bearing-value", Secret: true},
 			},
@@ -284,7 +284,7 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 
 	_, dependencies, references, err := promotableDeploymentConfigurations(
 		nil,
-		[]*basev0.Configuration{workspaceConfiguration},
+		[]*basev1.Configuration{workspaceConfiguration},
 		"accounts-secrets",
 	)
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 	require.Equal(t, "MODE", values[0].GetKey())
 	require.Equal(t, "production", values[0].GetValue())
 	require.False(t, values[0].GetSecret())
-	require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+	require.Equal(t, map[string]*builderv1.KubernetesSecretKeyReference{
 		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDKIT__IDKIT_CLIENT_SECRET": {
 			Name: "accounts-secrets",
 			Key:  "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDKIT__IDKIT_CLIENT_SECRET",
@@ -303,39 +303,39 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 
 func TestKubernetesOutputProfileReservesEphemeralForDirectLocalApply(t *testing.T) {
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		kubernetesOutputProfile(&World{Env: environments.LocalEnvironment()}),
 	)
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		kubernetesOutputProfile(&World{
 			Env:           environments.LocalEnvironment(),
 			RemoteManager: &deployments.LocalApplyManager{},
 		}),
 	)
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		kubernetesOutputProfile(&World{Env: &environments.Environment{
 			Name:    "aws",
 			Cluster: &environments.EnvironmentCluster{Kind: "eks"},
 		}}),
 	)
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		kubernetesOutputProfile(&World{
 			Env:                     environments.LocalEnvironment(),
-			KubernetesOutputProfile: builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+			KubernetesOutputProfile: builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		}),
 	)
 }
 
 func TestValidateKubernetesDeploymentOutputRejectsProfileMismatch(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 	)
 
 	err := validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"k3d-codefly-local",
 	)
@@ -346,11 +346,11 @@ func TestValidateKubernetesDeploymentOutputRejectsProfileMismatch(t *testing.T) 
 
 func TestValidateKubernetesDeploymentOutputAcceptsPromotableContract(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 	)
 
 	require.NoError(t, validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"k3d-codefly-local",
 	))
@@ -358,11 +358,11 @@ func TestValidateKubernetesDeploymentOutputAcceptsPromotableContract(t *testing.
 
 func TestValidateKubernetesDeploymentOutputRejectsDifferentValidationContext(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 	)
 
 	err := validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"mind-aws",
 	)
@@ -373,14 +373,14 @@ func TestValidateKubernetesDeploymentOutputRejectsDifferentValidationContext(t *
 
 func TestValidateKubernetesDeploymentOutputAcceptsOfflinePromotableContract(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 	)
 	output.GetKubernetes().Validation.ServerSideValidation =
-		builderv0.KubernetesManifestValidation_STATUS_NOT_RUN
+		builderv1.KubernetesManifestValidation_STATUS_NOT_RUN
 	output.GetKubernetes().Validation.ValidatedContext = ""
 
 	require.NoError(t, validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"",
 	))
@@ -389,13 +389,13 @@ func TestValidateKubernetesDeploymentOutputAcceptsOfflinePromotableContract(t *t
 func TestValidateDeploymentOutputAllowsOptionalNoDeploymentResponse(t *testing.T) {
 	require.NoError(t, validateDeploymentOutput(
 		&deployments.RenderManager{},
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		nil,
 		"",
 	))
 	require.EqualError(t, validateDeploymentOutput(
 		requiredDeploymentOutputManager{},
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		nil,
 		"",
 	), "plugin returned no Kubernetes deployment output")
@@ -404,16 +404,16 @@ func TestValidateDeploymentOutputAllowsOptionalNoDeploymentResponse(t *testing.T
 func TestWithContainerReachableAsPublicMirrorsContainerOnlyEndpoint(t *testing.T) {
 	container := resources.NewHTTPNetworkInstance("saas-vault.saas.svc.cluster.local", 8080, false)
 	container.Access = resources.NewContainerNetworkAccess()
-	mappings := []*basev0.NetworkMapping{{
+	mappings := []*basev1.NetworkMapping{{
 		// withContainerReachableAsPublic reads INSTANCES only, so this
 		// endpoint's visibility is incidental to what the test asserts.
 		// `public` says that and authors no allow-list — core#711 derives
 		// allow_modules from consumers' service-dependencies and refuses an
 		// authored one, so a fixture should not name the field unless the
 		// field is what it is testing.
-		Endpoint: &basev0.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http",
+		Endpoint: &basev1.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http",
 			Visibility: resources.VisibilityPublic},
-		Instances: []*basev0.NetworkInstance{container},
+		Instances: []*basev1.NetworkInstance{container},
 	}}
 
 	got := withContainerReachableAsPublic(context.Background(), mappings)
@@ -432,9 +432,9 @@ func TestWithContainerReachableAsPublicLeavesEndpointsWithPublicUntouched(t *tes
 	public.Access = resources.NewPublicNetworkAccess()
 	container := resources.NewHTTPNetworkInstance("frontend.saas.svc.cluster.local", 8080, false)
 	container.Access = resources.NewContainerNetworkAccess()
-	mappings := []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Module: "saas", Service: "frontend", Name: "http", Api: "http", Visibility: resources.VisibilityPublic},
-		Instances: []*basev0.NetworkInstance{public, container},
+	mappings := []*basev1.NetworkMapping{{
+		Endpoint:  &basev1.Endpoint{Module: "saas", Service: "frontend", Name: "http", Api: "http", Visibility: resources.VisibilityPublic},
+		Instances: []*basev1.NetworkInstance{public, container},
 	}}
 
 	got := withContainerReachableAsPublic(context.Background(), mappings)
@@ -453,20 +453,20 @@ func (requiredDeploymentOutputManager) Handle(
 	context.Context,
 	*resources.Service,
 	*resources.Module,
-	*builderv0.DeploymentOutput,
+	*builderv1.DeploymentOutput,
 ) error {
 	return nil
 }
 
-func validKubernetesDeploymentOutput(profile builderv0.KubernetesOutputProfile) *builderv0.DeploymentOutput {
-	return &builderv0.DeploymentOutput{
-		Kind: &builderv0.DeploymentOutput_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeploymentOutput{
+func validKubernetesDeploymentOutput(profile builderv1.KubernetesOutputProfile) *builderv1.DeploymentOutput {
+	return &builderv1.DeploymentOutput{
+		Kind: &builderv1.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv1.KubernetesDeploymentOutput{
 				Profile:         profile,
 				ContractVersion: coreservices.KubernetesManifestContractVersion,
-				Validation: &builderv0.KubernetesManifestValidation{
-					StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
-					ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
+				Validation: &builderv1.KubernetesManifestValidation{
+					StaticValidation:     builderv1.KubernetesManifestValidation_STATUS_PASSED,
+					ServerSideValidation: builderv1.KubernetesManifestValidation_STATUS_PASSED,
 					Restricted:           true,
 					ValidatedContext:     "k3d-codefly-local",
 				},
@@ -475,7 +475,7 @@ func validKubernetesDeploymentOutput(profile builderv0.KubernetesOutputProfile) 
 	}
 }
 
-const promotableProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
+const promotableProfile = builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 
 // clusterValidationWorld is a promotable-render World whose environment is a
 // local k3d cluster with an explicit context and kubeconfig — the shape that
@@ -586,7 +586,7 @@ func TestClusterValidationNeverReachesADirectApplyProfile(t *testing.T) {
 	})
 	validation, err := resolveClusterValidation(
 		context.Background(), world,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		builderv1.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		"platform-example",
 	)
 	require.NoError(t, err)

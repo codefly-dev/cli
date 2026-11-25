@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func declaringEgress(service *resources.Service) *resources.Service {
 
 // runAndRenderGroups resolves service's workspace configurations through the
 // run path and the render path (the Builder a gitops render deploys through).
-func runAndRenderGroups(t *testing.T, runWorld, renderWorld *World, workspace *resources.Workspace, service *resources.Service) (run, render []*basev0.Configuration) {
+func runAndRenderGroups(t *testing.T, runWorld, renderWorld *World, workspace *resources.Workspace, service *resources.Service) (run, render []*basev1.Configuration) {
 	t.Helper()
 	ctx := context.Background()
 	instance := parityInstance(t, workspace, service)
@@ -61,7 +61,7 @@ func TestTheEnvironmentsEgressDeclarationReachesTheServiceOnRunAndRender(t *test
 
 	service := declaringEgress(parityService(t, workspace, "payments", "api"))
 	run, render := runAndRenderGroups(t, runWorld, renderWorld, workspace, service)
-	for path, confs := range map[string][]*basev0.Configuration{"run": run, "render": render} {
+	for path, confs := range map[string][]*basev1.Configuration{"run": run, "render": render} {
 		hosts, delivered := groupValue(confs, environments.EgressConfiguration, environments.EgressHostsKey)
 		require.True(t, delivered, "the %s did not deliver egress/HOSTS", path)
 		require.Equal(t, "api.github.com:8443,identity.example.test:443", hosts, "the %s delivered other hosts than the declaration", path)
@@ -87,7 +87,7 @@ func TestAServiceWithNoEgressDeclarationReceivesItEmpty(t *testing.T) {
 
 	service := declaringEgress(parityService(t, workspace, "payments", "worker"))
 	run, render := runAndRenderGroups(t, runWorld, renderWorld, workspace, service)
-	for path, confs := range map[string][]*basev0.Configuration{"run": run, "render": render} {
+	for path, confs := range map[string][]*basev1.Configuration{"run": run, "render": render} {
 		hosts, delivered := groupValue(confs, environments.EgressConfiguration, environments.EgressHostsKey)
 		require.True(t, delivered, "the %s did not deliver egress/HOSTS", path)
 		require.Empty(t, hosts, "the %s delivered hosts the environment does not declare for payments/worker", path)

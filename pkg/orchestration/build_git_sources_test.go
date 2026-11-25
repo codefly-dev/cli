@@ -15,7 +15,7 @@ import (
 	"time"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,8 +45,8 @@ func recordingGit(calls *[][]string, failOn string) func(context.Context, []stri
 	}
 }
 
-func gitSourceRecipe(downloads ...*builderv0.GitSourceDownload) *builderv0.DockerBuildRecipe {
-	return &builderv0.DockerBuildRecipe{Name: "app", GitSourceDownloads: downloads}
+func gitSourceRecipe(downloads ...*builderv1.GitSourceDownload) *builderv1.DockerBuildRecipe {
+	return &builderv1.DockerBuildRecipe{Name: "app", GitSourceDownloads: downloads}
 }
 
 func verifyCall(gitDir, commit string) []string {
@@ -65,8 +65,8 @@ func TestGitSourcePrefetchFetchesEachCommitOnceIntoOneMirror(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
 
 	recipe := gitSourceRecipe(
-		&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"},
-		&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitTwo, MirrorContext: "gitsources"},
+		&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"},
+		&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commitTwo, MirrorContext: "gitsources"},
 	)
 	mirrors, err := prefetch.mirrorsFor(context.Background(), recipe)
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestGitSourcePrefetchReportsACommitTheSourceLacks(t *testing.T) {
 	prefetch := newGitSourcePrefetch()
 	prefetch.run = recordingGit(&calls, "rev-parse")
 	t.Cleanup(func() { _ = prefetch.Close() })
-	_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
+	_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
 	require.ErrorContains(t, err, "recipe app git source 0")
 	require.ErrorContains(t, err, "commit not available: the declared git source does not hold commit "+commitOne)
 }
@@ -140,7 +140,7 @@ func TestGitSourcePrefetchClassifiesACommitMissingAfterTheFallback(t *testing.T)
 		return "", nil
 	}
 	t.Cleanup(func() { _ = prefetch.Close() })
-	_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
+	_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
 	require.ErrorContains(t, err, "recipe app git source 0")
 	require.ErrorContains(t, err, "commit not available: the declared git source does not hold commit "+commitOne)
 	require.NotContains(t, err.Error(), "git failed")
@@ -342,7 +342,7 @@ func TestGitSourceFailuresAreClassifiedNotEchoed(t *testing.T) {
 			setup(t)
 			prefetch := newGitSourcePrefetch()
 			t.Cleanup(func() { _ = prefetch.Close() })
-			_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv0.GitSourceDownload{
+			_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv1.GitSourceDownload{
 				Repository: unauthorizedGitHost(t), Commit: commitOne, MirrorContext: "gitsources"}))
 			require.Error(t, err)
 			require.NotContains(t, err.Error(), marker)
@@ -440,7 +440,7 @@ func TestGitCommandOutputHasNoURLCredentials(t *testing.T) {
 // TestAGitSourceRecipeIsNotBuiltWithoutItsMirrors pins the refusal that keeps a
 // declared source from silently falling back to a fetch inside the build.
 func TestAGitSourceRecipeIsNotBuiltWithoutItsMirrors(t *testing.T) {
-	recipe := gitSourceRecipe(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"})
+	recipe := gitSourceRecipe(&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"})
 	require.True(t, recipeMissesGitSourceMirrors(recipe, nil))
 	require.True(t, recipeMissesGitSourceMirrors(recipe, map[string]string{"gomodproxy": "/p"}))
 	require.False(t, recipeMissesGitSourceMirrors(recipe, map[string]string{"gitsources": "/m"}))
@@ -451,7 +451,7 @@ func TestAGitSourceRecipeIsNotBuiltWithoutItsMirrors(t *testing.T) {
 // fetched or not yet, reads as the placeholder, so the reuse decision can
 // precede the fetch, and the mirror is passed as a named build context.
 func TestGitSourceMirrorsNormalizeLikeProxies(t *testing.T) {
-	recipe := gitSourceRecipe(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"})
+	recipe := gitSourceRecipe(&builderv1.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"})
 	none := resolvePrivateModuleBuild(func(string) (string, bool) { return "", false })
 	normalized := func(contexts map[string]string) []string {
 		args := append([]string{"buildx", "build"}, none.withProxies(contexts).buildxArgs(nil)...)

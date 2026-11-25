@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/architecture"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
 	"github.com/codefly-dev/core/wool"
@@ -288,7 +288,7 @@ func (flow *Flow) endpointRequirements(service string, consumers []*resources.Se
 
 // endpointReferenceMapping returns the recorded mapping a consumer's endpoint
 // reference selects, or nil when nothing recorded matches it yet.
-func endpointReferenceMapping(mappings []*basev0.NetworkMapping, reference *resources.EndpointReference) *basev0.NetworkMapping {
+func endpointReferenceMapping(mappings []*basev1.NetworkMapping, reference *resources.EndpointReference) *basev1.NetworkMapping {
 	for _, mapping := range mappings {
 		if mapping.GetEndpoint() != nil && endpointMatchesReference(mapping.GetEndpoint(), reference) {
 			return mapping
@@ -300,7 +300,7 @@ func endpointReferenceMapping(mappings []*basev0.NetworkMapping, reference *reso
 // endpointMatchesReference reports whether an endpoint satisfies one declared
 // reference. Name and API are the only keys — an endpoint's owning module and
 // service cross an agent's gRPC boundary and are not required to survive it.
-func endpointMatchesReference(endpoint *basev0.Endpoint, reference *resources.EndpointReference) bool {
+func endpointMatchesReference(endpoint *basev1.Endpoint, reference *resources.EndpointReference) bool {
 	if reference.Name != "" && reference.Name != endpoint.GetName() {
 		return false
 	}
@@ -319,7 +319,7 @@ func endpointReferenceLabel(reference *resources.EndpointReference) string {
 // every recorded endpoint counts. Selection goes through the same helper that
 // decides which mappings the consumer is actually handed, so readiness can
 // never require an endpoint the consumer was never given.
-func endpointConsumed(consumers []*resources.ServiceDependency, endpoint *basev0.Endpoint) bool {
+func endpointConsumed(consumers []*resources.ServiceDependency, endpoint *basev1.Endpoint) bool {
 	if len(consumers) == 0 {
 		return true
 	}
@@ -336,7 +336,7 @@ func endpointConsumed(consumers []*resources.ServiceDependency, endpoint *basev0
 // health check. No equivalent health path is declared for HTTP endpoints yet:
 // probing their root would execute an application page, so HTTP and every
 // other API use transport reachability.
-func endpointRequirement(service string, mapping *basev0.NetworkMapping) readinessRequirement {
+func endpointRequirement(service string, mapping *basev1.NetworkMapping) readinessRequirement {
 	requirement := readinessRequirement{service: service, endpoint: mapping.GetEndpoint().GetName()}
 	instance := reachableNetworkInstance(mapping.GetInstances())
 	if instance == nil {
@@ -367,7 +367,7 @@ func endpointRequirement(service string, mapping *basev0.NetworkMapping) readine
 // endpoint declares, so health is asked about the services actually consumed
 // rather than only about the server-wide status a server may report SERVING
 // while the consumed service is not.
-func declaredGRPCServices(api *basev0.GrpcAPI) []string {
+func declaredGRPCServices(api *basev1.GrpcAPI) []string {
 	var services []string
 	for _, rpc := range api.GetRpcs() {
 		name := rpc.GetServiceName()

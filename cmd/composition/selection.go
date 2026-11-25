@@ -11,7 +11,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	selection "github.com/codefly-dev/cli/pkg/composition"
 	core "github.com/codefly-dev/core/composition"
-	updatev0 "github.com/codefly-dev/core/generated/go/codefly/update/v0"
+	updatev1 "github.com/codefly-dev/core/generated/go/codefly/update/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -73,11 +73,11 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 			if compatibility, ok := value.(*selection.CompatibilityInspection); ok {
-				var result updatev0.UpdateResult
+				var result updatev1.UpdateResult
 				if err := protojson.Unmarshal(compatibility.Result, &result); err != nil {
 					return err
 				}
-				if result.Verdict != updatev0.Verdict_VERDICT_SAFE && result.Verdict != updatev0.Verdict_VERDICT_NEW_CAPABILITY {
+				if result.Verdict != updatev1.Verdict_VERDICT_SAFE && result.Verdict != updatev1.Verdict_VERDICT_NEW_CAPABILITY {
 					return compatibilityRefused{}
 				}
 			}

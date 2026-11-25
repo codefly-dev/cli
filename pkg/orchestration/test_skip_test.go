@@ -4,31 +4,31 @@ import (
 	"context"
 	"testing"
 
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"google.golang.org/grpc"
 )
 
-func noTestSuitesInformation() *agentv0.AgentInformation {
-	return &agentv0.AgentInformation{Validation: &agentv0.ValidationCapabilities{
-		Test: &agentv0.TestValidationCapability{},
+func noTestSuitesInformation() *agentv1.AgentInformation {
+	return &agentv1.AgentInformation{Validation: &agentv1.ValidationCapabilities{
+		Test: &agentv1.TestValidationCapability{},
 	}}
 }
 
 type countingTestRuntimeClient struct {
-	runtimev0.RuntimeClient
+	runtimev1.RuntimeClient
 	testCalls int
 }
 
-func (client *countingTestRuntimeClient) Test(context.Context, *runtimev0.TestRequest, ...grpc.CallOption) (*runtimev0.TestResponse, error) {
+func (client *countingTestRuntimeClient) Test(context.Context, *runtimev1.TestRequest, ...grpc.CallOption) (*runtimev1.TestResponse, error) {
 	client.testCalls++
-	return &runtimev0.TestResponse{
-		Result: &runtimev0.TestRunResult{State: runtimev0.TestRunResult_PASSED},
+	return &runtimev1.TestResponse{
+		Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED},
 	}, nil
 }
 
 func TestResolveTestExecutionSkipsAgentWithoutSuites(t *testing.T) {
-	execution, err := resolveTestExecution(noTestSuitesInformation(), &runtimev0.TestRequest{})
+	execution, err := resolveTestExecution(noTestSuitesInformation(), &runtimev1.TestRequest{})
 	if err != nil {
 		t.Fatalf("unsupported test capability failed resolution: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestResolveTestExecutionSkipsAgentWithoutSuites(t *testing.T) {
 	if execution.legacy {
 		t.Fatal("an explicit unsupported advertisement was treated as a legacy agent")
 	}
-	if execution.DependencyMode != agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
+	if execution.DependencyMode != agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE {
 		t.Fatalf("dependency mode = %s, want NONE so nothing is started for a skip", execution.DependencyMode)
 	}
 }
@@ -70,9 +70,9 @@ func TestRunnerTestStillDispatchesWhenSuitesAreAdvertised(t *testing.T) {
 	client := &countingTestRuntimeClient{}
 	runner := runnerWithRuntimeClient(client)
 	runner.outputPropertyForTest = NewRunnerTestManager(runner.instance.Unique())
-	runner.instance.Info = testInformation(&agentv0.TestSuiteCapability{
+	runner.instance.Info = testInformation(&agentv1.TestSuiteCapability{
 		Name:           "unit",
-		DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
+		DependencyMode: agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE,
 		DefaultSuite:   true,
 	})
 

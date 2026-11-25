@@ -6,7 +6,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/architecture"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ func (recorder *testPolicyRecorder) GetExecutor(_ context.Context, action orches
 	}, nil
 }
 
-func runTestPolicy(t *testing.T, mode agentv0.TestDependencyMode) ([]orchestration.Action, []orchestration.Action) {
+func runTestPolicy(t *testing.T, mode agentv1.TestDependencyMode) ([]orchestration.Action, []orchestration.Action) {
 	t.Helper()
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/module-layout")
@@ -45,13 +45,13 @@ func runTestPolicy(t *testing.T, mode agentv0.TestDependencyMode) ([]orchestrati
 }
 
 func TestRuntimeTestPolicyNoneInitializesOnlyTarget(t *testing.T) {
-	executed, _ := runTestPolicy(t, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE)
+	executed, _ := runTestPolicy(t, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE)
 	want := createActionsWithRound(1, "web/gateway", orchestration.RuntimeLoad, orchestration.RuntimeInit, orchestration.RuntimeTest)
 	require.Equal(t, want, executed)
 }
 
 func TestRuntimeTestPolicyStartsDependenciesWithoutTarget(t *testing.T) {
-	executed, dispatched := runTestPolicy(t, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES)
+	executed, dispatched := runTestPolicy(t, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_DEPENDENCIES)
 	wantExecuted := createCombinedActionsWithRound(
 		1,
 		[]string{"management/organization", "billing/accounts", "web/gateway"},
@@ -69,7 +69,7 @@ func TestRuntimeTestPolicyStartsDependenciesWithoutTarget(t *testing.T) {
 }
 
 func TestRuntimeTestPolicyStartsCompleteStack(t *testing.T) {
-	_, dispatched := runTestPolicy(t, agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
+	_, dispatched := runTestPolicy(t, agentv1.TestDependencyMode_TEST_DEPENDENCY_MODE_START_STACK)
 	assertContainsAction(t, dispatched, orchestration.RuntimeStart, "management/organization")
 	assertContainsAction(t, dispatched, orchestration.RuntimeStart, "billing/accounts")
 	assertContainsAction(t, dispatched, orchestration.RuntimeStart, "web/gateway")

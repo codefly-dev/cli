@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"github.com/codefly-dev/authority/libraries/hop/go/routing"
 	"github.com/codefly-dev/core/composition"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"os"
@@ -71,7 +71,7 @@ func TestWatchReloadRejectsChangedInventoryBeforeStopping(t *testing.T) {
 	runner.markStarted()
 	callbacks := 0
 	runner.callback = func(context.Context, Action) error { callbacks++; return nil }
-	err = runner.handleDesiredState(ctx, runtimev0.DesiredState_START)
+	err = runner.handleDesiredState(ctx, runtimev1.DesiredState_START)
 
 	require.ErrorContains(t, err, "stop and restart")
 	require.Zero(t, client.stopCalls)
@@ -80,7 +80,7 @@ func TestWatchReloadRejectsChangedInventoryBeforeStopping(t *testing.T) {
 	require.NoError(t, os.WriteFile(artifactPath, artifact, 0600))
 	require.NoError(t, os.WriteFile(path, raw, 0600))
 	require.NoError(t, os.WriteFile(manifestPath, manifest, 0600))
-	require.NoError(t, runner.handleDesiredState(ctx, runtimev0.DesiredState_START))
+	require.NoError(t, runner.handleDesiredState(ctx, runtimev1.DesiredState_START))
 	require.Equal(t, 1, client.stopCalls)
 	require.Equal(t, 1, callbacks)
 }

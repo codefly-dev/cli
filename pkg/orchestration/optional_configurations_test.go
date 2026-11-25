@@ -7,7 +7,7 @@ import (
 
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/configurations"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
@@ -22,7 +22,7 @@ import (
 func TestEveryModeDeliversNothingForAnUnprovidedOptionalGroup(t *testing.T) {
 	for _, mode := range []Mode{RunMode, CompileMode, LintMode, TestMode, BuildMode, SyncMode, DeployMode, SnapshotMode} {
 		t.Run(string(mode), func(t *testing.T) {
-			resolve := func(t *testing.T, confs ...*basev0.Configuration) ([]string, []string, *resources.Service) {
+			resolve := func(t *testing.T, confs ...*basev1.Configuration) ([]string, []string, *resources.Service) {
 				t.Helper()
 				world := loadedWorkspaceWorld(t, staticWorkspaceLoader{confs: confs})
 				world.Mode = mode
@@ -30,7 +30,7 @@ func TestEveryModeDeliversNothingForAnUnprovidedOptionalGroup(t *testing.T) {
 				instance := &coreservices.Instance{Service: service}
 				built, err := (&Builder{world: world, instance: instance}).workspaceConfigurations(t.Context(), nil)
 				require.NoError(t, err)
-				ran, err := (&Runner{world: world, instance: instance}).workspaceConfigurations(t.Context(), nil, &basev0.RuntimeContext{})
+				ran, err := (&Runner{world: world, instance: instance}).workspaceConfigurations(t.Context(), nil, &basev1.RuntimeContext{})
 				require.NoError(t, err)
 				return workspaceConfigurationNames(built), workspaceConfigurationNames(ran), service
 			}
@@ -104,7 +104,7 @@ func TestAnAmbiguousOptionalGroupIsStillRefused(t *testing.T) {
 	world := &World{
 		ConfigurationManager:  manager,
 		compositionRootGroups: loader.CompositionRootWorkspaceConfigurationNames,
-		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+		providedWorkspaceConfigurationInfos: func() []*basev1.ConfigurationInformation {
 			return workspaceConfigurationInfos(loader.Configurations())
 		},
 		ambiguousWorkspaceConfigurations: loader.AmbiguousWorkspaceConfigurations,

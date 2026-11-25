@@ -28,15 +28,15 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/agents"
 	"github.com/codefly-dev/core/architecture"
-	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v0"
+	cli "github.com/codefly-dev/core/generated/go/codefly/cli/v1"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/sdk/session"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	observabilityv0 "github.com/codefly-dev/core/generated/go/codefly/observability/v0"
-	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
+	observabilityv1 "github.com/codefly-dev/core/generated/go/codefly/observability/v1"
+	agentv1 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v1"
 
 	"google.golang.org/grpc"
 )
@@ -192,7 +192,7 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	variables := []*basev0.ConfigurationValue{}
+	variables := []*basev1.ConfigurationValue{}
 	runtime := flow.DependencyProcessVariables(svc)
 	keys := make([]string, 0, len(runtime))
 	for key := range runtime {
@@ -200,7 +200,7 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		variables = append(variables, &basev0.ConfigurationValue{Key: key, Value: runtime[key]})
+		variables = append(variables, &basev1.ConfigurationValue{Key: key, Value: runtime[key]})
 	}
 	for _, group := range workspace {
 		for _, secret := range []bool{false, true} {
@@ -209,7 +209,7 @@ func (s *Server) GetConfiguration(ctx context.Context, req *cli.GetConfiguration
 				return nil, status.Error(codes.Internal, err.Error())
 			}
 			for _, variable := range resolved {
-				variables = append(variables, &basev0.ConfigurationValue{Key: variable.Key, Value: variable.ValueAsString(), Secret: secret})
+				variables = append(variables, &basev1.ConfigurationValue{Key: variable.Key, Value: variable.ValueAsString(), Secret: secret})
 			}
 		}
 	}
@@ -287,13 +287,13 @@ func (s *Server) GetActive(_ context.Context, _ *emptypb.Empty) (*cli.ActiveResp
 
 }
 
-func (s *Server) ActiveLogHistory(_ context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
+func (s *Server) ActiveLogHistory(_ context.Context, request *observabilityv1.LogRequest) (*observabilityv1.LogResponse, error) {
 	return s.logHistoryResponse(request), nil
 }
 
 /* Overall information */
 
-func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentInformationRequest) (*agentv0.AgentInformation, error) {
+func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentInformationRequest) (*agentv1.AgentInformation, error) {
 	agent, err := resources.ParseAgent(ctx, resources.ServiceAgent, request.Agent)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -302,11 +302,11 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentI
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return loaded.GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+	return loaded.GetAgentInformation(ctx, &agentv1.AgentInformationRequest{})
 
 }
 
-func (s *Server) GetWorkspaceInventory(ctx context.Context, _ *emptypb.Empty) (*basev0.Workspace, error) {
+func (s *Server) GetWorkspaceInventory(ctx context.Context, _ *emptypb.Empty) (*basev1.Workspace, error) {
 	workspace, err := s.workspaceFor(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -318,7 +318,7 @@ func (s *Server) GetWorkspaceInventory(ctx context.Context, _ *emptypb.Empty) (*
 	return view, nil
 }
 
-func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, _ *emptypb.Empty) (*observabilityv0.GraphResponse, error) {
+func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, _ *emptypb.Empty) (*observabilityv1.GraphResponse, error) {
 	workspace, err := s.workspaceFor(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -334,20 +334,20 @@ func (s *Server) GetWorkspaceServiceDependencyGraph(ctx context.Context, _ *empt
 // GraphNode/GraphEdge shape: one MODULE node per distinct module prefix, one
 // SERVICE node per service, an edge from each module to its services, and an
 // edge for each service dependency. Sorted so output is deterministic.
-func serviceGraphResponse(deps *architecture.ServiceDependencies) *observabilityv0.GraphResponse {
-	resp := &observabilityv0.GraphResponse{}
+func serviceGraphResponse(deps *architecture.ServiceDependencies) *observabilityv1.GraphResponse {
+	resp := &observabilityv1.GraphResponse{}
 	seenModule := make(map[string]bool)
 	for _, svc := range deps.Services() {
 		module, _, _ := strings.Cut(svc.Unique, "/")
 		if !seenModule[module] {
 			seenModule[module] = true
-			resp.Nodes = append(resp.Nodes, &observabilityv0.GraphNode{Id: module, Type: observabilityv0.GraphNode_MODULE})
+			resp.Nodes = append(resp.Nodes, &observabilityv1.GraphNode{Id: module, Type: observabilityv1.GraphNode_MODULE})
 		}
-		resp.Nodes = append(resp.Nodes, &observabilityv0.GraphNode{Id: svc.Unique, Type: observabilityv0.GraphNode_SERVICE})
-		resp.Edges = append(resp.Edges, &observabilityv0.GraphEdge{From: module, To: svc.Unique})
+		resp.Nodes = append(resp.Nodes, &observabilityv1.GraphNode{Id: svc.Unique, Type: observabilityv1.GraphNode_SERVICE})
+		resp.Edges = append(resp.Edges, &observabilityv1.GraphEdge{From: module, To: svc.Unique})
 	}
 	for _, dep := range deps.Dependencies() {
-		resp.Edges = append(resp.Edges, &observabilityv0.GraphEdge{From: dep.From.Unique, To: dep.To.Unique})
+		resp.Edges = append(resp.Edges, &observabilityv1.GraphEdge{From: dep.From.Unique, To: dep.To.Unique})
 	}
 	sort.Slice(resp.Nodes, func(i, j int) bool {
 		if resp.Nodes[i].Type != resp.Nodes[j].Type {
@@ -380,16 +380,16 @@ func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, _
 	return resp, nil
 }
 
-func (s *Server) LogHistory(_ context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
+func (s *Server) LogHistory(_ context.Context, request *observabilityv1.LogRequest) (*observabilityv1.LogResponse, error) {
 	return s.logHistoryResponse(request), nil
 }
 
-func (s *Server) logHistoryResponse(req *observabilityv0.LogRequest) *observabilityv0.LogResponse {
+func (s *Server) logHistoryResponse(req *observabilityv1.LogRequest) *observabilityv1.LogResponse {
 	var from, to *timestamppb.Timestamp
 	if req != nil {
 		from, to = req.From, req.To
 	}
-	return &observabilityv0.LogResponse{Groups: []*observabilityv0.LogSessionGroup{{Logs: s.history.Snapshot(from, to)}}}
+	return &observabilityv1.LogResponse{Groups: []*observabilityv1.LogSessionGroup{{Logs: s.history.Snapshot(from, to)}}}
 }
 
 // removeANSICodes strips ANSI escape codes from the input string.
@@ -412,7 +412,7 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 	if source.Kind != "service" {
 		return
 	}
-	logEntry := &observabilityv0.Log{
+	logEntry := &observabilityv1.Log{
 		At:      timestamppb.New(time.Now()),
 		Module:  service.Module,
 		Service: service.Name,
@@ -424,7 +424,7 @@ func (s *Server) ProcessWithSource(source *wool.Identifier, log *wool.Log) {
 
 // recordLog is split out from ProcessWithSource so tests can inject log
 // entries directly without constructing wool types.
-func (s *Server) recordLog(entry *observabilityv0.Log) {
+func (s *Server) recordLog(entry *observabilityv1.Log) {
 	s.history.Add(entry)
 }
 

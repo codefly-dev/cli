@@ -5,11 +5,11 @@ import (
 	"slices"
 
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
-	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	"google.golang.org/protobuf/proto"
 )
 
-func scopedBuildCache(cache *builderv0.BuildCacheOptions, identity ...string) *builderv0.BuildCacheOptions {
+func scopedBuildCache(cache *builderv1.BuildCacheOptions, identity ...string) *builderv1.BuildCacheOptions {
 	if cache == nil {
 		return nil
 	}
@@ -21,7 +21,7 @@ func scopedBuildCache(cache *builderv0.BuildCacheOptions, identity ...string) *b
 	return result
 }
 
-func cachedBuildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string, cache *builderv0.BuildCacheOptions, private privateModuleBuild) ([]string, error) {
+func cachedBuildxArgs(recipe *builderv1.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string, cache *builderv1.BuildCacheOptions, private privateModuleBuild) ([]string, error) {
 	platforms := recipe.GetPlatforms()
 	if !push && len(platforms) > 1 {
 		platforms = platforms[:1]

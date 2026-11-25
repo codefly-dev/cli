@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	basev1 "github.com/codefly-dev/core/generated/go/codefly/base/v1"
 	corenetwork "github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/standards"
@@ -52,9 +52,9 @@ func (m *RemoteManager) GetNamespace(_ context.Context, env *environments.Enviro
 	return fmt.Sprintf("%s-%s-%s", workspace.Name, service.Module, env.Name), nil
 }
 
-func (m *RemoteManager) KubernetesService(service *resources.ServiceIdentity, endpoint *basev0.Endpoint, namespace string, port uint16) *basev0.NetworkInstance {
+func (m *RemoteManager) KubernetesService(service *resources.ServiceIdentity, endpoint *basev1.Endpoint, namespace string, port uint16) *basev1.NetworkInstance {
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", service.Name, namespace)
-	var instance *basev0.NetworkInstance
+	var instance *basev1.NetworkInstance
 	if standards.IsHTTPBasedAPI(endpoint.Api) {
 		instance = resources.NewHTTPNetworkInstance(host, port, resources.EndpointSecured(endpoint))
 	} else {
@@ -75,7 +75,7 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	env *environments.Environment,
 	workspace *resources.Workspace,
 	service *resources.ServiceIdentity,
-	endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+	endpoints []*basev1.Endpoint) ([]*basev1.NetworkMapping, error) {
 	w := wool.Get(ctx).In("network.Runtime.GenerateNetworkMappings")
 	if m.dnsManager == nil {
 		return nil, w.NewError("RemoteManager: dnsManager is nil — call NewRemoteManager with a non-nil DNSManager")
@@ -88,16 +88,16 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	var out []*basev0.NetworkMapping
+	var out []*basev1.NetworkMapping
 	for _, endpoint := range endpoints {
 		if endpoint == nil {
 			return nil, w.NewError("cannot generate network mapping for nil endpoint")
 		}
-		nm := &basev0.NetworkMapping{
+		nm := &basev1.NetworkMapping{
 			Endpoint: endpoint,
 		}
 		if dns := externalDNS[endpoint]; dns != nil {
-			nm.Instances = []*basev0.NetworkInstance{
+			nm.Instances = []*basev1.NetworkInstance{
 				corenetwork.ExternalInstance(corenetwork.DNS(service, endpoint, dns)),
 			}
 			out = append(out, nm)
@@ -110,7 +110,7 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 		// discovery is synthesized.
 		dns, dnsErr := m.dnsManager.GetDNS(ctx, service, endpoint.Name)
 		if dnsErr == nil && dns != nil {
-			nm.Instances = []*basev0.NetworkInstance{
+			nm.Instances = []*basev1.NetworkInstance{
 				corenetwork.PublicInstance(corenetwork.DNS(service, endpoint, dns)),
 				corenetwork.ContainerInstance(corenetwork.DNS(service, endpoint, dns)),
 			}
@@ -145,7 +145,7 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 func (m *RemoteManager) DeployedPorts(ctx context.Context,
 	env *environments.Environment,
 	service *resources.ServiceIdentity,
-	endpoints []*basev0.Endpoint) (map[string]uint16, error) {
+	endpoints []*basev1.Endpoint) (map[string]uint16, error) {
 	w := wool.Get(ctx).In("network.Runtime.DeployedPorts")
 	if m.dnsManager == nil {
 		return nil, w.NewError("RemoteManager: dnsManager is nil — call NewRemoteManager with a non-nil DNSManager")
@@ -165,7 +165,7 @@ func (m *RemoteManager) DeployedPorts(ctx context.Context,
 func (m *RemoteManager) resolveExternalDNS(ctx context.Context,
 	env *environments.Environment,
 	service *resources.ServiceIdentity,
-	endpoints []*basev0.Endpoint) (map[*basev0.Endpoint]*basev0.DNS, error) {
+	endpoints []*basev1.Endpoint) (map[*basev1.Endpoint]*basev1.DNS, error) {
 	// External endpoints resolve to an environment-specific public host: a
 	// declared dns.codefly.yaml entry wins; otherwise the host is derived from
 	// the environment's declared app host suffix (sourced from the coordinate
@@ -174,7 +174,7 @@ func (m *RemoteManager) resolveExternalDNS(ctx context.Context,
 	// flow still renders in-cluster competes for the canonical port exactly like
 	// an internal endpoint does.
 	w := wool.Get(ctx).In("network.Runtime.resolveExternalDNS")
-	externalDNS := make(map[*basev0.Endpoint]*basev0.DNS)
+	externalDNS := make(map[*basev1.Endpoint]*basev1.DNS)
 	for _, endpoint := range endpoints {
 		if endpoint == nil || !resources.IsExternalEndpoint(endpoint) {
 			continue
@@ -201,8 +201,8 @@ func (m *RemoteManager) resolveExternalDNS(ctx context.Context,
 // inClusterEndpoints is the endpoints the render emits in-cluster: internal
 // ones, and external ones with no public host that the flow renders as a
 // workload anyway.
-func inClusterEndpoints(endpoints []*basev0.Endpoint, externalDNS map[*basev0.Endpoint]*basev0.DNS) []*basev0.Endpoint {
-	inCluster := make([]*basev0.Endpoint, 0, len(endpoints))
+func inClusterEndpoints(endpoints []*basev1.Endpoint, externalDNS map[*basev1.Endpoint]*basev1.DNS) []*basev1.Endpoint {
+	inCluster := make([]*basev1.Endpoint, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		if endpoint != nil && (!resources.IsExternalEndpoint(endpoint) || externalDNS[endpoint] == nil) {
 			inCluster = append(inCluster, endpoint)
@@ -235,7 +235,7 @@ func renderedInCluster(env *environments.Environment, service *resources.Service
 // edge (REST/HTTP/gRPC/Connect/MCP) terminates TLS there. A raw TCP external has
 // no app-edge host, so it is not derived and still requires a declared DNS entry
 // (mirrors the routable-endpoint rule in cmd/expose).
-func DerivedExternalDNS(env *environments.Environment, service *resources.ServiceIdentity, endpoint *basev0.Endpoint) *basev0.DNS {
+func DerivedExternalDNS(env *environments.Environment, service *resources.ServiceIdentity, endpoint *basev1.Endpoint) *basev1.DNS {
 	if endpoint == nil || standards.IsSupportedAPI(endpoint.Api) != nil || endpoint.Api == standards.TCP {
 		return nil
 	}
@@ -243,7 +243,7 @@ func DerivedExternalDNS(env *environments.Environment, service *resources.Servic
 	if host == "" {
 		return nil
 	}
-	return &basev0.DNS{
+	return &basev1.DNS{
 		Module:   service.Module,
 		Service:  service.Name,
 		Endpoint: endpoint.Name,
@@ -254,16 +254,16 @@ func DerivedExternalDNS(env *environments.Environment, service *resources.Servic
 }
 
 type Pairing struct {
-	Local  *basev0.NetworkMapping
-	Remote *basev0.NetworkMapping
+	Local  *basev1.NetworkMapping
+	Remote *basev1.NetworkMapping
 }
 
 func (m *RemoteManager) Expose(ctx context.Context,
 	env *environments.Environment,
 	workspace *resources.Workspace,
 	service *resources.ServiceIdentity,
-	endpoints []*basev0.Endpoint,
-	localNetworkMappings []*basev0.NetworkMapping,
+	endpoints []*basev1.Endpoint,
+	localNetworkMappings []*basev1.NetworkMapping,
 	output wool.LogProcessorWithSource) error {
 	w := wool.Get(ctx).In("expose")
 	remotes, err := m.GenerateNetworkMappings(ctx, env, workspace, service, endpoints)
@@ -273,7 +273,7 @@ func (m *RemoteManager) Expose(ctx context.Context,
 	var pairings []*Pairing
 	for _, mapping := range localNetworkMappings {
 		// Find the equivalent remote network mapping
-		var remoteMapping *basev0.NetworkMapping
+		var remoteMapping *basev1.NetworkMapping
 		for _, r := range remotes {
 			if r.Endpoint.Module == mapping.Endpoint.Module &&
 				r.Endpoint.Service == mapping.Endpoint.Service &&
