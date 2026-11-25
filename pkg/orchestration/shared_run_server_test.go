@@ -163,3 +163,159 @@ func TestSharedRunServerConflictsProposeTheNewestVersion(t *testing.T) {
 	require.Equal(t, "codefly.dev/postgres", conflicts[0].Agent)
 	require.Equal(t, "0.0.152", conflicts[0].Newest())
 }
+
+// admittedStoreWorkspace is a composition whose two modules each own a
+// Postgres store, pinned as the case says, and a Go service that depends on
+// its own module's store alone: a run of evaluation/worker holds one store,
+// and scenarios/api, admitted to it, brings the other.
+func admittedStoreWorkspace(t *testing.T, evaluationPin, scenariosPin string) *resources.Workspace {
+	t.Helper()
+	service := func(module, name, agent, version, rest string) string {
+		return "kind: service\nname: " + name + "\nversion: 0.0.0\nmodule: " + module + "\n" +
+			"agent:\n    kind: codefly:service\n    name: " + agent + "\n    version: " + version + "\n    publisher: codefly.dev\n" + rest
+	}
+	module := func(name, root, pin string) map[string]string {
+		return map[string]string{
+			"modules/" + name + "/module.codefly.yaml":                 "kind: module\nname: " + name + "\nservices:\n    - name: store\n    - name: " + root + "\n",
+			"modules/" + name + "/services/store/service.codefly.yaml": service(name, "store", "postgres", pin, ""),
+			"modules/" + name + "/services/" + root + "/service.codefly.yaml": service(name, root, "go-grpc", "0.0.16",
+				"service-dependencies:\n    - name: store\n      module: "+name+"\n"),
+		}
+	}
+	files := map[string]string{
+		"workspace.codefly.yaml": "name: stores\nlayout: modules\nmodules:\n    - name: evaluation\n    - name: scenarios\n",
+	}
+	for _, manifests := range []map[string]string{module("evaluation", "worker", evaluationPin), module("scenarios", "api", scenariosPin)} {
+		for path, content := range manifests {
+			files[path] = content
+		}
+	}
+	return writeTempWorkspace(t, files)
+}
+
+// runningWorkerFlow is the real Flow `codefly run service evaluation/worker`
+// builds in the given runtime context, as it stands once the run is up: its
+// store and the worker are managed, the playbook is live, and a service
+// admitted later is spawned through the returned record instead of an agent.
+func runningWorkerFlow(t *testing.T, workspace *resources.Workspace, runtimeContext string, manager func(*resources.Service) IManager) (*Flow, *[]string) {
+	t.Helper()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	ctx := context.Background()
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	evaluation, err := workspace.LoadModuleFromName(ctx, "evaluation")
+	require.NoError(t, err)
+	worker, err := evaluation.LoadServiceFromName(ctx, "worker")
+	require.NoError(t, err)
+	flow, err := NewFlow(ctx, workspace, evaluation, worker, env, RunMode, WithRunModuleClosure("evaluation"))
+	require.NoError(t, err)
+	flow.WithRuntimeContext(runtimeContext)
+	order, err := flow.managerDependencies(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"evaluation/store"}, uniques(order), "the run starts with one store")
+	store, err := flow.ServiceFromUnique("evaluation/store")
+	require.NoError(t, err)
+	flow.hub = &Hub{managers: []IManager{manager(store), manager(worker)}}
+	t.Cleanup(func() { flow.hub = &Hub{} })
+	flow.playbook = &Playbook{}
+	flow.policy = &RuntimeStartPolicy{dependencies: flow.world.Dependencies, ExecutorManager: flow}
+	spawned := &[]string{}
+	flow.spawn = func(_ context.Context, _ *resources.Module, service *resources.Service) (IManager, error) {
+		*spawned = append(*spawned, resources.WithUnique(service).Unique())
+		return manager(service), nil
+	}
+	return flow, spawned
+}
+
+func recordedManager(service *resources.Service) IManager {
+	return &phaseRecorder{recordingManager: recordingManager{unique: resources.WithUnique(service).Unique()}}
+}
+
+// The same defect, met late: a nix run holds evaluation/store at one version
+// of the Postgres agent, and a reloaded composition adds a root whose store is
+// pinned at another. Extend judges the admitted services with the ones already
+// running and refuses with the run's own message before one of them is
+// spawned; the run it was asked to extend is left as it was.
+func TestExtendRefusesAnAdmittedStoreAtAnotherVersionOfTheSharedServersAgent(t *testing.T) {
+	workspace := admittedStoreWorkspace(t, "0.0.150", "0.0.152")
+	flow, spawned := runningWorkerFlow(t, workspace, resources.RuntimeContextNix, recordedManager)
+	running := flow.hub.all()
+	ctx := context.Background()
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	require.NoError(t, err)
+
+	added, err := flow.Extend(ctx, reloaded, []string{"scenarios/api"})
+	var refused *SharedRunServerError
+	require.True(t, errors.As(err, &refused), "a store admitted at another version must refuse the extension, got %v", err)
+	require.Empty(t, added)
+	require.Empty(t, *spawned, "nothing may be spawned before the refusal")
+	require.Equal(t, running, flow.hub.all(), "the running services keep their managers")
+	for _, manager := range running {
+		recorder, ok := manager.(*phaseRecorder)
+		require.True(t, ok)
+		require.Empty(t, recorder.phases, recorder.unique+" was running and is left alone")
+	}
+	require.Equal(t, "cannot start the run: "+
+		"evaluation/store runs codefly.dev/postgres 0.0.150, scenarios/store runs codefly.dev/postgres 0.0.152, "+
+		"and they share this run's one Postgres server: every version of the agent keeps its own record of that server, "+
+		"so one version refuses the server another started; "+
+		"run them on one version: add `agent-overrides: {codefly.dev/postgres: 0.0.152}` to workspace.codefly.yaml "+
+		"(`codefly update workspace --agent-override codefly.dev/postgres=0.0.152` writes it), "+
+		"or pin agent version 0.0.152 in each service's service.codefly.yaml", err.Error())
+}
+
+// A store admitted at the version the run's server already runs joins it: the
+// admitted closure is spawned and started, dependencies first.
+func TestExtendAdmitsAStoreAtTheVersionOfTheSharedServersAgent(t *testing.T) {
+	workspace := admittedStoreWorkspace(t, "0.0.152", "0.0.152")
+	flow, spawned := runningWorkerFlow(t, workspace, resources.RuntimeContextNix, recordedManager)
+	ctx := context.Background()
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	require.NoError(t, err)
+
+	added, err := flow.Extend(ctx, reloaded, []string{"scenarios/api"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"scenarios/api"}, added)
+	require.Equal(t, []string{"scenarios/store", "scenarios/api"}, *spawned)
+	for _, manager := range flow.hub.all() {
+		recorder, ok := manager.(*phaseRecorder)
+		require.True(t, ok)
+		if recorder.unique == "scenarios/store" || recorder.unique == "scenarios/api" {
+			require.Equal(t, []ActionType{RuntimeLoad, RuntimeInit, RuntimeStart}, recorder.phases, recorder.unique)
+		}
+	}
+}
+
+// A "free" run shares nothing until its agents have advertised their backends,
+// so an admitted store is spawned; once it resolves to nix beside the store
+// already running there, the extension is refused before the admitted services
+// are loaded, initialized or started.
+func TestExtendRefusesOnceAnAdmittedFreeStoreResolvesToTheSharedServer(t *testing.T) {
+	workspace := admittedStoreWorkspace(t, "0.0.150", "0.0.152")
+	freeStore := func(service *resources.Service) IManager {
+		if service.Name != "store" {
+			return recordedManager(service)
+		}
+		identity, err := service.Identity()
+		require.NoError(t, err)
+		manager := fakeManager(identity.Module, identity.Name, resources.RuntimeContextFree, agentv0.Backend_NIX, agentv0.Backend_DOCKER)
+		manager.service = service
+		return manager
+	}
+	flow, spawned := runningWorkerFlow(t, workspace, resources.RuntimeContextFree, freeStore)
+	flow.dockerProbed = true
+	require.NoError(t, flow.resolveDockerFallback(context.Background()), "the running store fell back to nix")
+	ctx := context.Background()
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	require.NoError(t, err)
+
+	_, err = flow.Extend(ctx, reloaded, []string{"scenarios/api"})
+	var refused *SharedRunServerError
+	require.True(t, errors.As(err, &refused), "an admitted store that resolves to the shared server must refuse the extension, got %v", err)
+	require.Equal(t, []string{"scenarios/store", "scenarios/api"}, *spawned, "the backend is known only once the agents are spawned")
+	for _, manager := range flow.hub.all() {
+		if recorder, ok := manager.(*phaseRecorder); ok {
+			require.Empty(t, recorder.phases, recorder.unique+" is never loaded, initialized or started")
+		}
+	}
+}
