@@ -20,7 +20,9 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -154,8 +156,7 @@ func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 	case err := <-receiveDone:
 		cancel()
 		_ = stream.CloseSend()
-		<-sendDone
-		return err
+		return errors.Join(err, stoppedTerminalSide(sendDone))
 	case err := <-sendDone:
 		cancel()
 		_ = stream.CloseSend()
@@ -164,9 +165,9 @@ func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 	case <-ctx.Done():
 		cancel()
 		_ = stream.CloseSend()
-		<-receiveDone
-		<-sendDone
-		return ctx.Err()
+		receiveErr := stoppedTerminalSide(receiveDone)
+		sendErr := stoppedTerminalSide(sendDone)
+		return errors.Join(ctx.Err(), receiveErr, sendErr)
 	}
 }
 
@@ -252,6 +253,18 @@ func receiveTerminalOutput(stream cliv0.TerminalService_AttachClient, done chan<
 			return
 		}
 	}
+}
+
+// stoppedTerminalSide waits for a side of the session that was stopped by
+// cancelling it and returns what that side failed with beyond the stop: the
+// cancellation, or the end of a stream closed under it, is the stop itself
+// and no failure.
+func stoppedTerminalSide(done <-chan error) error {
+	err := <-done
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || status.Code(err) == codes.Canceled {
+		return nil
+	}
+	return err
 }
 
 // sendTerminalInput reads stdin and sends it to the session, reporting on
