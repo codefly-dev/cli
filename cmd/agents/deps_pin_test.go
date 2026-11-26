@@ -100,6 +100,19 @@ func TestDependencyPinUpdatesOwnedLocksTogetherAndRollsBackFailure(t *testing.T)
 	require.Equal(t, baseSum, templateSum)
 }
 
+func TestPinKeepsReplacementsShippedWithTheAgent(t *testing.T) {
+	agent := t.TempDir()
+	writePinFixture(t, filepath.Join(agent, "third_party", "reader", "go.mod"), "module example.test/reader\n")
+	module := filepath.Join(agent, "base", "code")
+	writePinFixture(t, filepath.Join(module, "go.mod"), `module example.test/consumer
+replace example.test/reader => ../../third_party/reader
+replace example.test/external => ../../../development-checkout
+`)
+	dropped, err := stripLocalReplaces(t.Context(), agent, module, os.Environ())
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.test/external"}, dropped)
+}
+
 func TestDependencyPinsRejectInvalidOrUnmatchedSelections(t *testing.T) {
 	dir := t.TempDir()
 	writePinFixture(t, filepath.Join(dir, "go.mod"), "module example.test/agent\ngo 1.23\nrequire example.test/sdk v0.0.1\n")

@@ -340,12 +340,12 @@ func pinCore(ctx context.Context, dir, version string, dependencies ...string) (
 		}
 	}()
 
-	if err := pinModule(ctx, dir, env, version, "", pins[dir]); err != nil {
+	if err := pinModule(ctx, dir, dir, env, version, "", pins[dir]); err != nil {
 		return err
 	}
 	for _, m := range fixtures {
 		label := relLabel(dir, m)
-		if err := pinModule(ctx, m, env, version, label, pins[m]); err != nil {
+		if err := pinModule(ctx, dir, m, env, version, label, pins[m]); err != nil {
 			return err
 		}
 		if err := regenerateFactoryTemplate(ctx, dir, m); err != nil {
@@ -387,11 +387,9 @@ func labelOrRoot(label string) string {
 // pinModule pins a single Go module to coreModule@version, tidies, and verifies
 // its standalone build. label names the module in progress output ("" for the
 // agent root).
-func pinModule(ctx context.Context, dir string, env []string, version, label string, dependencies []string) error {
-	// Strip committed filesystem `replace => ../path` directives first: those are
-	// local-dev overrides that don't exist in a single-repo CI checkout, so they
-	// break the standalone build. Local builds keep working via the root go.work.
-	if dropped, err := stripLocalReplaces(ctx, dir, env); err != nil {
+func pinModule(ctx context.Context, agentRoot, dir string, env []string, version, label string, dependencies []string) error {
+	// Remove machine-specific paths before checking a standalone build.
+	if dropped, err := stripLocalReplaces(ctx, agentRoot, dir, env); err != nil {
 		return err
 	} else if len(dropped) > 0 {
 		cli.Info("  stripped %d local replace(s): %s", len(dropped), strings.Join(dropped, ", "))
@@ -576,11 +574,14 @@ func relLabel(base, target string) string {
 	return filepath.ToSlash(rel)
 }
 
-// stripLocalReplaces removes every filesystem `replace X => ../path` directive
-// from dir's go.mod (those whose replacement has no version — i.e. a local
-// path, not a module). Returns the module paths dropped. Module-version
-// replaces (replace X => Y v1.2.3) are left untouched.
-func stripLocalReplaces(ctx context.Context, dir string, env []string) ([]string, error) {
+// stripLocalReplaces drops paths unavailable in a standalone agent checkout.
+// Relative replacements for modules shipped by the same agent remain portable.
+func stripLocalReplaces(ctx context.Context, agentRoot, dir string, env []string) ([]string, error) {
+	root, err := os.OpenRoot(agentRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
 	cmd := exec.CommandContext(ctx, "go", "mod", "edit", "-json")
 	cmd.Dir = dir
 	cmd.Env = env
@@ -601,6 +602,15 @@ func stripLocalReplaces(ctx context.Context, dir string, env []string) ([]string
 	for _, r := range mf.Replace {
 		if r.New.Version != "" {
 			continue // a module-version replace, not a local path — keep it
+		}
+		if !filepath.IsAbs(r.New.Path) {
+			replacement := filepath.Join(dir, r.New.Path, "go.mod")
+			relative, err := filepath.Rel(agentRoot, replacement)
+			if err == nil && filepath.IsLocal(relative) {
+				if info, err := root.Stat(relative); err == nil && info.Mode().IsRegular() {
+					continue
+				}
+			}
 		}
 		arg := r.Old.Path
 		if r.Old.Version != "" {
