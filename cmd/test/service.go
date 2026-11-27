@@ -51,7 +51,7 @@ Examples:
 // and `test solution` delegates to it with the resolved solution entry — the
 // same construction `run solution` uses, so a solution is tested exactly the
 // way its entry service is.
-func testServiceCommand(cmd *cobra.Command, args []string) error {
+func testServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	ctx, done := common.NewContext()
 	defer done()
 
@@ -59,7 +59,11 @@ func testServiceCommand(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	cli.Init()
-	defer services.ClearAgents()
+	started := time.Now()
+	var flow *orchestration.Flow
+	defer func() {
+		returnErr = errors.Join(returnErr, finishTestInvocation(ctx, flow, started))
+	}()
 
 	namingScopeExplicit = cmd.Flags().Changed("naming-scope")
 
@@ -108,7 +112,6 @@ func testServiceCommand(cmd *cobra.Command, args []string) error {
 		cli.Info("%s", note.Message)
 	}
 
-	var flow *orchestration.Flow
 	// testErr is the run/RPC error (init failure, crash, non-success exit).
 	// It is the authoritative signal for the exit code.
 	var testErr error
@@ -333,6 +336,15 @@ func testService(ctx context.Context, flow *orchestration.Flow) error {
 	err := flow.Start(ctx)
 	if err != nil {
 		return w.Wrapf(err, "cannot start service")
+	}
+	return nil
+}
+
+// Agents must exit before reclaim can authenticate the state they left behind.
+func finishTestInvocation(ctx context.Context, flow *orchestration.Flow, started time.Time) error {
+	services.ClearAgents()
+	if env := flow.Environment(); env != nil && env.Disposable {
+		return run.ReclaimRun(context.WithoutCancel(ctx), flow, started, false)
 	}
 	return nil
 }

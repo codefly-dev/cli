@@ -3,11 +3,15 @@ package test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/core/runners/runstate"
+	"github.com/stretchr/testify/require"
 )
 
 func TestServiceCommandReturnsErrors(t *testing.T) {
@@ -77,5 +81,41 @@ func TestSelectedTestFixtureUsesEnvironmentAndAllowsOverride(t *testing.T) {
 	}
 	if got := orchestration.SelectedFixture(nil, ""); got != "" {
 		t.Fatalf("selected fixture without environment = %q, want empty", got)
+	}
+}
+
+func TestFinishTestInvocationReclaimsEachIsolatedDatabase(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("CODEFLY_HOME", filepath.Join(home, "codefly"))
+	prepared, err := prepareSourceWorkspace(t.Context(), t.TempDir(), "codefly.dev/go:9.9.9")
+	require.NoError(t, err)
+	defer prepared.Close()
+	root, err := runstate.Root()
+	require.NoError(t, err)
+	state := func(name, scope string, disposable bool) string {
+		dir := filepath.Join(root, "postgres", "run", name)
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		holder, err := runstate.Claim(dir, runstate.Run{Workspace: prepared.Workspace.Dir(), NamingScope: scope, Disposable: disposable})
+		require.NoError(t, err)
+		require.NoError(t, holder.Release())
+		return dir
+	}
+	persistent := state("developer", "dev", false)
+	for range 2 {
+		started := time.Now()
+		env := &environments.Environment{Name: orchestration.LocalEnvironmentName}
+		flow, err := orchestration.NewFlow(t.Context(), prepared.Workspace, prepared.Module, prepared.Service, env, orchestration.TestMode)
+		require.NoError(t, err)
+		flow.WithRuntimeContext("local")
+		scope := flow.WithIsolatedInvocation()
+		require.NotEmpty(t, scope)
+		db := state(scope, scope, true)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.NoError(t, finishTestInvocation(ctx, flow, started))
+		require.NoDirExists(t, db)
+		require.DirExists(t, persistent)
 	}
 }

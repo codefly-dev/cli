@@ -31,5 +31,5 @@ func TestOnlyAFailedRunRemovesItsContainers(t *testing.T) {
 }
 
 func TestReclaimRunWithoutAFlowIsANoop(t *testing.T) {
-	require.NoError(t, reclaimRun(context.Background(), nil, time.Time{}, true))
+	require.NoError(t, ReclaimRun(context.Background(), nil, time.Time{}, true))
 }

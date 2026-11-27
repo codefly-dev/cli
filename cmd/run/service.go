@@ -130,7 +130,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		// Once the agents are gone, what they started and left behind is this
 		// run's to take back, whichever way it ended.
 		if cleanupRun != nil {
-			returnErr = errors.Join(returnErr, reclaimRun(context.WithoutCancel(ctx), cleanupRun.flow, started, runFailed(signalled, returnErr)))
+			returnErr = errors.Join(returnErr, ReclaimRun(context.WithoutCancel(ctx), cleanupRun.flow, started, runFailed(signalled, returnErr)))
 		}
 		var flow *orchestration.Flow
 		if cleanupRun != nil {

@@ -1012,7 +1012,11 @@ behaves differently from `run`:
 
 | Flag | Description |
 |------|-------------|
-| `--temporary-ports` | **On by default here**, where `run` defaults it off. Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state — overriding any scope the environment declares — so two concurrent `codefly test` runs in one workspace cannot collide. Pass `--temporary-ports=false` to keep the declared scope and deterministic names, or `--naming-scope` to name the scope yourself |
+| `--temporary-ports` | **On by default here**, where `run` defaults it off. Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state — overriding any scope the environment declares — so two concurrent `codefly test` runs in one workspace cannot collide. After the agents exit, the CLI reclaims the generated scope’s runtime data on both success and failure. Pass `--temporary-ports=false` to keep the declared scope and deterministic names, or `--naming-scope` to name the scope yourself |
+
+For repeated local test runs, let the CLI generate the scope. Passing a new
+explicit `--naming-scope` on each run leaves a separate persistent database
+for each name. Reuse a stable name when the data should survive between runs.
 
 A suite whose agent advertises `START_DEPENDENCIES` or `NONE` never starts the
 service under test. The fixture and the process override
