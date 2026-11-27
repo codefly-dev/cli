@@ -220,6 +220,21 @@ func TestAStoreServerAgentIsKnownByItsReferenceNotItsName(t *testing.T) {
 		require.Same(t, own, unchanged)
 	}
 	for _, version := range []string{"0.0.128", "0.0.149"} {
-		require.True(t, deploysAStoreServer(&resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres", Version: version}), version)
+		require.True(t, IsPostgresAgent(&resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres", Version: version}), version)
 	}
+}
+
+func TestManagedStoreReaderRequiresScopedAgent(t *testing.T) {
+	world := storeWorkspace(t)
+	world.Env = managedStoreEnvironment()
+	store := &resources.ServiceIdentity{Module: "records", Name: "store"}
+	entry := world.Env.ManagedServices["records/store"]
+	reader := "northwind-aurora-b641b7@northwind-aurora-data.iam.gserviceaccount.com"
+	entry.Carried["read-only-principals"] = yamlScalar(reader)
+	world.Env.ManagedServices["records/store"] = entry
+	config, err := withEnvironmentServiceDeclaration(t.Context(), nil, store, postgresAgent(), world)
+	require.NoError(t, err)
+	values := declarationValues(t, config, ManagedServiceInformation)
+	require.Equal(t, "external-identity-scoped", values["login-mode"])
+	require.Equal(t, reader, values["read-only-principals"])
 }

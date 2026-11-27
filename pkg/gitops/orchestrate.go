@@ -504,6 +504,33 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 	return rendered, nil
 }
 
+// managedPostgresStore captures the store declaration while the resolved module is
+// available. Other managed service kinds do not contribute PostgreSQL databases.
+func managedPostgresStore(service *resources.Service, managed environments.EnvironmentManagedService) (*InventoryPostgresStore, error) {
+	if !orchestration.IsPostgresAgent(service.Agent) {
+		return nil, nil
+	}
+	var spec struct {
+		Database string `yaml:"database-name"`
+	}
+	if err := service.LoadSettingsFromSpec(&spec); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(spec.Database) == "" {
+		return nil, errors.New("managed Postgres store requires spec.database-name")
+	}
+	var instance string
+	if value, ok := managed.Carried["instance-connection-name"]; ok {
+		if err := value.Decode(&instance); err != nil {
+			return nil, fmt.Errorf("instance-connection-name: %w", err)
+		}
+	}
+	if strings.TrimSpace(instance) == "" {
+		return nil, errors.New("managed Postgres store requires instance-connection-name")
+	}
+	return &InventoryPostgresStore{Database: spec.Database, Instance: instance}, nil
+}
+
 // inventoryUnits records every service of the module as a unit of the
 // render: a managed service by the bootstrap bundle it retains, if any; an
 // ordinary one by the tree its agent rendered, with its configuration
@@ -529,6 +556,14 @@ func (r *moduleRender) inventoryUnits(
 		}
 		unique := resources.ServiceUnique(r.module.Name, service.Name)
 		if managed {
+			store, err := managedPostgresStore(service, managedService)
+			if err != nil {
+				return fmt.Errorf("inventory managed store %s: %w", unique, err)
+			}
+			entry.PostgresStore = store
+			if store != nil {
+				r.options.StoreInventoryComplete = true
+			}
 			bootstrap, bundleErr := retainManagedBundleInTree(
 				r.options.renderRoot,
 				filepath.Join(stage, unitDir, service.Name),
@@ -572,6 +607,9 @@ func (r *moduleRender) inventoryUnits(
 			}
 		}
 		r.options.Units = append(r.options.Units, entry)
+	}
+	if r.env.Host != nil {
+		r.options.StoreInventoryComplete = true
 	}
 	sort.Slice(r.options.Units, func(i, j int) bool {
 		return r.options.Units[i].Name < r.options.Units[j].Name

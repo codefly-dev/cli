@@ -47,7 +47,7 @@ var CarriedEnvironmentKeys = []string{"key-service"}
 //     caller's egress policy selects on.
 //   - instance-connection-name: the `project:region:instance` coordinate a
 //     Cloud SQL instance is addressed by, which is not a DNS name.
-var CarriedManagedServiceKeys = []string{"auth-mode", "egress-namespace", "instance-connection-name"}
+var CarriedManagedServiceKeys = []string{"auth-mode", "egress-namespace", "instance-connection-name", "read-only-principals"}
 
 // MarshalJSON writes each carried value as the plain JSON value it spells
 // (`"key-service": "kms"`), never the YAML node that holds it, so a JSON

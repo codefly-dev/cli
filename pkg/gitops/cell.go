@@ -494,10 +494,26 @@ func refuseReservedIdentity(module, unit string, rendered *renderedWorkload, sel
 	return nil
 }
 
+// managedStoreDeclarations preserves absence for old render records. An empty
+// declaration signals that a complete render found no managed Postgres store.
+func managedStoreDeclarations(inventory *Inventory) *[]cellfile.ManagedPostgresStore {
+	if !inventory.StoreInventoryComplete {
+		return nil
+	}
+	stores := []cellfile.ManagedPostgresStore{}
+	for _, unit := range inventory.Units {
+		if store := unit.PostgresStore; store != nil {
+			stores = append(stores, cellfile.ManagedPostgresStore{Service: resources.ServiceUnique(inventory.Module, unit.Name), Database: store.Database, Instance: store.Instance})
+		}
+	}
+	return &stores
+}
+
 // cellNamespace derives one module's namespace entry from its rendered tree
 // and the composition's declarations for it.
 func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory, consumers map[string][]string, paired bool) (cellfile.Namespace, error) {
 	namespace := cellfile.Namespace{Name: inventory.Namespace, Module: inventory.Module}
+	namespace.ManagedPostgresStores = managedStoreDeclarations(inventory)
 	if namespace.Name == "" {
 		return cellfile.Namespace{}, fmt.Errorf("the render of module %s names no namespace", inventory.Module)
 	}
@@ -575,6 +591,23 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 				Release:        release,
 				Bindings:       append([]string(nil), grant.Bindings...),
 				CloudIdentity:  grant.CloudIdentity,
+			}
+			if service != nil && inventory.StoreInventoryComplete && slices.Contains(grant.Bindings, "database") {
+				for _, dep := range service.ServiceDependencies {
+					if dep == nil || dep.Name == "" || !dep.Participates(resources.StageRun) {
+						continue
+					}
+					module := dep.Module
+					if module == "" {
+						module = inventory.Module
+					}
+					target, ok := env.ManagedService(module, dep.Name)
+					if ok && target.Kind == "postgres" && !env.Excludes(module, dep.Name) {
+						workload.PostgresStores = append(workload.PostgresStores, resources.ServiceUnique(module, dep.Name))
+					}
+				}
+				sort.Strings(workload.PostgresStores)
+				workload.PostgresStores = slices.Compact(workload.PostgresStores)
 			}
 			workload.Verifier = isDeliveryVerifier(env, workload.Kind, workload.Service)
 			// Endpoints, their consumers and ingress belong to the workloads

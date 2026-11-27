@@ -46,10 +46,11 @@ const (
 // name the agent reads it under.
 var managedCarriedKeys = map[string]string{
 	"auth-mode":                managedLoginModeKey,
+	"read-only-principals":     "read-only-principals",
 	"instance-connection-name": managedInstanceKey,
 }
 
-// storeServerAgents are the service agents that deploy a database server when
+// The Postgres agent deploys a database server when
 // an environment lets them: the owner's rule (2026-11-12) — "for postgres
 // service in codefly, we should have 'managed' vs non-managed, so when render a
 // managed, we ONLY render and build the migration so we are SURE we don't
@@ -58,27 +59,19 @@ var managedCarriedKeys = map[string]string{
 // service-postgres v0.0.149 renders the server for an environment that says
 // nothing). The reference is the agent's own (agent.codefly.yaml: publisher,
 // kind, name); the version is whatever the module pins.
-var storeServerAgents = []resources.Agent{
-	{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres"},
-}
+var postgresAgentReference = resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "postgres"}
 
-// deploysAStoreServer reports whether the agent is one of storeServerAgents,
-// by its reference — publisher, kind and name — never by what the service or
-// the agent happens to be called.
-func deploysAStoreServer(agent *resources.Agent) bool {
-	if agent == nil {
-		return false
-	}
-	return slices.ContainsFunc(storeServerAgents, func(known resources.Agent) bool {
-		return agent.Publisher == known.Publisher && agent.Kind == known.Kind && agent.Name == known.Name
-	})
+// IsPostgresAgent identifies the managed Postgres store across agent versions.
+func IsPostgresAgent(agent *resources.Agent) bool {
+	return agent != nil && agent.Publisher == postgresAgentReference.Publisher &&
+		agent.Kind == postgresAgentReference.Kind && agent.Name == postgresAgentReference.Name
 }
 
 // withEnvironmentServiceDeclaration returns the service's configuration with
 // the environment's declaration for it appended, or the configuration as it was
 // when the environment declares nothing. The result is a copy.
 //
-// A service whose agent deploys a database server (storeServerAgents) is
+// A service whose agent deploys a Postgres server is
 // refused by name when the environment declares it in neither block: the CLI
 // never lets an environment that forgot to say where the server lives hand the
 // agent a Deploy it might answer with a server. The agent refuses the same
@@ -103,7 +96,7 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 	inCluster := env.InCluster(identity.Module, identity.Name)
 	unique := identity.Unique()
 	if !declared && !inCluster {
-		if deploysAStoreServer(agent) {
+		if IsPostgresAgent(agent) {
 			return nil, fmt.Errorf("environment %q declares %s in neither managed-services nor in-cluster-services, and its agent %s deploys a database server: declare the service under in-cluster-services (the server runs in the cluster, as the module declares it) or under managed-services (the environment owns the server, and the render carries the migration alone) on environment %q in workspace.codefly.yaml — a render never deploys a Postgres server by default", env.Name, unique, agent.Identifier(), env.Name)
 		}
 		return configuration, nil
@@ -137,6 +130,17 @@ func withEnvironmentServiceDeclaration(ctx context.Context, configuration *basev
 		}
 		values[managedCarriedKeys[key]] = text
 		information.ConfigurationValues = append(information.ConfigurationValues, &basev0.ConfigurationValue{Key: managedCarriedKeys[key], Value: text})
+	}
+	if _, restricted := values["read-only-principals"]; restricted {
+		if values[managedLoginModeKey] != managedAuthModeValue || strings.TrimSpace(values["read-only-principals"]) == "" {
+			return nil, fmt.Errorf("read-only-principals requires external-identity and at least one principal")
+		}
+		// Earlier agents reject this mode instead of granting readers writer access.
+		for _, value := range information.ConfigurationValues {
+			if value.Key == managedLoginModeKey {
+				value.Value = "external-identity-scoped"
+			}
+		}
 	}
 	if values[managedLoginModeKey] == managedAuthModeValue {
 		owner := env.WorkloadIdentityFor(identity.Module, identity.Name)

@@ -82,14 +82,15 @@ func unitDirectory(kind string) (string, bool) {
 }
 
 type Inventory struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Module        string `json:"module"`
-	Unit          string `json:"unit,omitempty"`
-	Environment   string `json:"environment"`
-	Namespace     string `json:"namespace,omitempty"`
-	AppProject    string `json:"appProject"`
-	OwnedPath     string `json:"ownedPath"`
-	ModulePath    string `json:"modulePath,omitempty"`
+	StoreInventoryComplete bool   `json:"storeInventoryComplete,omitempty"`
+	SchemaVersion          int    `json:"schemaVersion"`
+	Module                 string `json:"module"`
+	Unit                   string `json:"unit,omitempty"`
+	Environment            string `json:"environment"`
+	Namespace              string `json:"namespace,omitempty"`
+	AppProject             string `json:"appProject"`
+	OwnedPath              string `json:"ownedPath"`
+	ModulePath             string `json:"modulePath,omitempty"`
 	// ModuleManifestPath is the render subdirectory holding the module's
 	// manifest, when this render declared one. Publish points an Argo
 	// Application at its environment overlay and derives the promotion's
@@ -175,14 +176,21 @@ type InventoryPin struct {
 	Commit  string `json:"commit,omitempty"`
 }
 
+// InventoryPostgresStore identifies a logical database requested on a managed server.
+type InventoryPostgresStore struct {
+	Database string `json:"database"`
+	Instance string `json:"instance"`
+}
+
 type InventoryUnit struct {
-	Kind      string                     `json:"kind"`
-	Module    string                     `json:"module"`
-	Name      string                     `json:"name"`
-	Path      string                     `json:"path,omitempty"`
-	Managed   bool                       `json:"managed,omitempty"`
-	Bootstrap bool                       `json:"bootstrap,omitempty"`
-	Output    *InventoryKubernetesOutput `json:"output,omitempty"`
+	PostgresStore *InventoryPostgresStore    `json:"postgresStore,omitempty"`
+	Kind          string                     `json:"kind"`
+	Module        string                     `json:"module"`
+	Name          string                     `json:"name"`
+	Path          string                     `json:"path,omitempty"`
+	Managed       bool                       `json:"managed,omitempty"`
+	Bootstrap     bool                       `json:"bootstrap,omitempty"`
+	Output        *InventoryKubernetesOutput `json:"output,omitempty"`
 	// Contracts are the API contracts this unit exposes (from the module's
 	// contracts/api catalog) and consumes (from the libraries its service
 	// declares in library-dependencies with a sources[] block).
@@ -295,14 +303,15 @@ func (scope unitScope) secretScope(service string) environments.SecretScope {
 }
 
 type RenderOptions struct {
-	Destination string
-	Module      string
-	Unit        string
-	UnitNames   []string
-	Environment string
-	Namespace   string
-	AppProject  string
-	Promotable  bool
+	StoreInventoryComplete bool
+	Destination            string
+	Module                 string
+	Unit                   string
+	UnitNames              []string
+	Environment            string
+	Namespace              string
+	AppProject             string
+	Promotable             bool
 	// CheckUnitDirectories asks validateTree to verify the on-disk unit
 	// directories against Units. It is an explicit intent flag rather than an
 	// inference from a populated field so the trigger and the data (Units)
