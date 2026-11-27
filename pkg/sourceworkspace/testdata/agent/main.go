@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/codefly-dev/core/agents"
@@ -52,16 +53,25 @@ type discoveryBuilder struct {
 
 func (*discoveryBuilder) Load(context.Context, *builderv1.LoadRequest) (*builderv1.LoadResponse, error) {
 	if marker := os.Getenv("TEST_SOURCE_BUILDER_LOADED"); marker != "" {
-		if err := os.WriteFile(marker, []byte("loaded"), 0o600); err != nil {
+		if err := writeMarker(marker, "loaded"); err != nil {
 			return nil, err
 		}
 	}
 	return &builderv1.LoadResponse{State: &builderv1.LoadStatus{State: builderv1.LoadStatus_READY}}, nil
 }
 
+func writeMarker(path, value string) error {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.WriteFile(filepath.Base(path), []byte(value), 0o600)
+}
+
 func main() {
 	if marker := os.Getenv("TEST_SOURCE_STARTED"); marker != "" {
-		if err := os.WriteFile(marker, []byte("started"), 0o600); err != nil {
+		if err := writeMarker(marker, "started"); err != nil {
 			panic(err)
 		}
 	}

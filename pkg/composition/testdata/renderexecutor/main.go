@@ -137,7 +137,7 @@ func (r *renderer) emit(ctx context.Context, execution *basev1.ArtifactExecution
 		})
 	}
 	if control := os.Getenv("RENDER_TEST_CONTROL"); control != "" {
-		if err := controlledRender(ctx, control, filepath.Join(directory, execution.Outputs[0].Name+".json")); err != nil {
+		if err := controlledRender(ctx, control, directory, execution.Outputs[0].Name+".json"); err != nil {
 			return nil, err
 		}
 	}
@@ -252,21 +252,27 @@ func main() {
 	}
 }
 
-func controlledRender(ctx context.Context, control, output string) error {
+func controlledRender(ctx context.Context, control, directory, output string) error {
+	markers, err := os.OpenRoot(control)
+	if err != nil {
+		return err
+	}
+	defer markers.Close()
 	childPID := 0
 	if os.Getenv("RENDER_TEST_MODE") == "child-writer" {
-		path, err := os.Executable()
-		if err != nil {
-			return err
+		path, exeErr := os.Executable()
+		if exeErr != nil {
+			return exeErr
 		}
 		child := exec.Command(path)
+		child.Dir = directory
 		child.Env = append(os.Environ(), "RENDER_TEST_CHILD_OUTPUT="+output)
 		if err = child.Start(); err != nil {
 			return err
 		}
 		childPID = child.Process.Pid
 		go func() { _ = child.Wait() }()
-		if err = waitForFile(ctx, filepath.Join(control, "child-ready")); err != nil {
+		if err = waitForFile(ctx, markers, "child-ready"); err != nil {
 			return err
 		}
 	}
@@ -274,36 +280,45 @@ func controlledRender(ctx context.Context, control, output string) error {
 	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(control, "ready"), data, 0o600); err != nil {
+	if err = markers.WriteFile("ready", data, 0o600); err != nil {
 		return err
 	}
-	return waitForFile(ctx, filepath.Join(control, "release"))
+	return waitForFile(ctx, markers, "release")
 }
 
 func childWriter(output string) error {
 	// Stay in the inherited tracked group but outlive its leader's graceful exit.
 	signal.Ignore(syscall.SIGTERM, os.Interrupt)
-	control := os.Getenv("RENDER_TEST_CONTROL")
-	if err := os.WriteFile(filepath.Join(control, "child-ready"), []byte("ready"), 0o600); err != nil {
+	markers, err := os.OpenRoot(os.Getenv("RENDER_TEST_CONTROL"))
+	if err != nil {
+		return err
+	}
+	defer markers.Close()
+	if err = markers.WriteFile("child-ready", []byte("ready"), 0o600); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := waitForFile(ctx, filepath.Join(control, "mutate")); err != nil {
+	if err = waitForFile(ctx, markers, "mutate"); err != nil {
 		return err
 	}
-	if err := os.WriteFile(output, []byte("surviving child changed output"), 0o600); err != nil {
+	out, err := os.OpenRoot(".")
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if err = out.WriteFile(output, []byte("surviving child changed output"), 0o600); err != nil {
 		return err
 	}
 	<-ctx.Done()
 	return nil
 }
 
-func waitForFile(ctx context.Context, path string) error {
+func waitForFile(ctx context.Context, directory *os.Root, name string) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if _, err := os.Stat(path); err == nil {
+		if _, err := directory.Stat(name); err == nil {
 			return nil
 		} else if !os.IsNotExist(err) {
 			return err

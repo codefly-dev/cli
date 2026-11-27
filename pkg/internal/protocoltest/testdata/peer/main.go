@@ -45,7 +45,7 @@ func (p *peer) record(method string, request proto.Message) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if err := os.MkdirAll(filepath.Join(p.root, ".protocol-test"), 0o700); err != nil {
+	if err = os.MkdirAll(filepath.Join(p.root, ".protocol-test"), 0o700); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(filepath.Join(p.root, ".protocol-test", "calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -65,7 +65,7 @@ type discovery struct {
 	p *peer
 }
 
-func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
+func (d *discovery) GetAgentInformation(_ context.Context, req *agentv1.AgentInformationRequest) (*agentv1.AgentInformation, error) {
 	if err := d.p.record("Agent.GetAgentInformation", req); err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func (r *runtimePeer) Load(ctx context.Context, req *runtimev1.LoadRequest) (*ru
 	if err != nil {
 		return nil, err
 	}
-	if err := r.p.record("Runtime.Load", req); err != nil {
+	if err = r.p.record("Runtime.Load", req); err != nil {
 		return nil, err
 	}
 	service.WithModule(req.GetIdentity().GetModule())
@@ -159,7 +159,7 @@ func (r *runtimePeer) Load(ctx context.Context, req *runtimev1.LoadRequest) (*ru
 	}
 	r.p.mu.Lock()
 	defer r.p.mu.Unlock()
-	r.p.identity = proto.Clone(req.GetIdentity()).(*basev1.ServiceIdentity)
+	r.p.identity = proto.CloneOf(req.GetIdentity())
 	r.p.load = &runtimev1.LoadStatus{State: runtimev1.LoadStatus_READY}
 	return &runtimev1.LoadResponse{Status: r.p.load, Endpoints: endpoints}, nil
 }
@@ -193,7 +193,11 @@ func (r *runtimePeer) Init(_ context.Context, req *runtimev1.InitRequest) (*runt
 				_ = conn.Close()
 			}
 		}()
-		port := uint16(listener.Addr().(*net.TCPAddr).Port)
+		addr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok {
+			return nil, fmt.Errorf("expected TCP listener, got %T", listener.Addr())
+		}
+		port := addr.AddrPort().Port()
 		mappings = append(mappings, &basev1.NetworkMapping{Endpoint: endpoint, Instances: []*basev1.NetworkInstance{network.Native(endpoint, port)}})
 		configs = append(configs, &basev1.Configuration{Origin: identity, Infos: []*basev1.ConfigurationInformation{{Name: "runtime", ConfigurationValues: []*basev1.ConfigurationValue{{Key: "connection", Value: "tcp://" + listener.Addr().String()}}}}})
 	}
@@ -238,12 +242,14 @@ func (r *runtimePeer) Test(_ context.Context, req *runtimev1.TestRequest) (*runt
 	if err := r.p.record("Runtime.Test", req); err != nil {
 		return nil, err
 	}
-	return &runtimev1.TestResponse{
-		Status: &runtimev1.TestStatus{State: runtimev1.TestStatus_SUCCESS},
-		Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED},
-		Counts: &runtimev1.TestCounts{Total: 1, Passed: 1},
-		Run:    &runtimev1.TestRun{Runner: "cli-protocol-test", RequestedSelection: req.GetSelection(), SelectionId: req.GetSelectionId()},
-	}, nil
+	resp, err := new(services.RuntimeWrapper).TestResponse()
+	if err != nil {
+		return nil, err
+	}
+	resp.Result = &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED}
+	resp.Counts = &runtimev1.TestCounts{Total: 1, Passed: 1}
+	resp.Run = &runtimev1.TestRun{Runner: "cli-protocol-test", RequestedSelection: req.GetSelection(), SelectionId: req.GetSelectionId()}
+	return resp, nil
 }
 
 type builderPeer struct {

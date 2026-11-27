@@ -6,14 +6,22 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/codefly-dev/core/agents/services"
 	builderv1 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v1"
 	runtimev1 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v1"
+	"github.com/codefly-dev/core/shared"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func recordCI(method string) error {
-	file, err := os.OpenFile(os.Getenv("TEST_SOURCE_CI_RECORD"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	record := os.Getenv("TEST_SOURCE_CI_RECORD")
+	root, err := os.OpenRoot(filepath.Dir(record))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	file, err := root.OpenFile(filepath.Base(record), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -29,7 +37,7 @@ func recordCI(method string) error {
 // CI tests stop at a deliberate Package refusal after checking that validation
 // and packaging reached the same privately selected executable. Tests that need
 // the later stages point TEST_SOURCE_PACKAGE_EXECUTABLE at the bytes to emit.
-func (*discoveryBuilder) Package(_ context.Context, req *builderv1.PackageRequest) (*builderv1.PackageResponse, error) {
+func (*discoveryBuilder) Package(ctx context.Context, req *builderv1.PackageRequest) (*builderv1.PackageResponse, error) {
 	if err := recordCI("Builder.Package"); err != nil {
 		return nil, err
 	}
@@ -37,7 +45,12 @@ func (*discoveryBuilder) Package(_ context.Context, req *builderv1.PackageReques
 	if template == "" {
 		return nil, status.Error(codes.FailedPrecondition, "CI package boundary reached")
 	}
-	payload, err := os.ReadFile(template)
+	source, err := os.OpenRoot(filepath.Dir(template))
+	if err != nil {
+		return nil, err
+	}
+	defer source.Close()
+	payload, err := source.ReadFile(filepath.Base(template))
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +60,7 @@ func (*discoveryBuilder) Package(_ context.Context, req *builderv1.PackageReques
 		if err := os.MkdirAll(req.GetOutputDirectory(), 0o700); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(path, payload, 0o700); err != nil {
+		if err := shared.WriteFileAtomic(ctx, path, payload, 0o700); err != nil {
 			return nil, err
 		}
 		artifacts = append(artifacts, &builderv1.PackageArtifact{
@@ -101,7 +114,13 @@ func (*ciRuntime) Test(context.Context, *runtimev1.TestRequest) (*runtimev1.Test
 	if err := recordCI("Runtime.Test"); err != nil {
 		return nil, err
 	}
-	return &runtimev1.TestResponse{Status: &runtimev1.TestStatus{State: runtimev1.TestStatus_SUCCESS}, Result: &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED}, Counts: &runtimev1.TestCounts{Total: 1, Passed: 1}}, nil
+	resp, err := new(services.RuntimeWrapper).TestResponse()
+	if err != nil {
+		return nil, err
+	}
+	resp.Result = &runtimev1.TestRunResult{State: runtimev1.TestRunResult_PASSED}
+	resp.Counts = &runtimev1.TestCounts{Total: 1, Passed: 1}
+	return resp, nil
 }
 
 func (*ciRuntime) Stop(context.Context, *runtimev1.StopRequest) (*runtimev1.StopResponse, error) {

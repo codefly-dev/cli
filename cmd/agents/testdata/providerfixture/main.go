@@ -58,10 +58,11 @@ func advertisedCatalog() (*providerv1.RuntimeCatalog, error) {
 		ProtocolVersion:     packaged.ProtocolVersion,
 		StateSchemaVersions: packaged.StateSchemaVersions,
 	}
-	for _, descriptor := range packaged.Requests {
-		digest, err := manifest.RequestDescriptorDigest(descriptor)
-		if err != nil {
-			return nil, err
+	for i := range packaged.Requests {
+		descriptor := &packaged.Requests[i]
+		digest, digestErr := manifest.RequestDescriptorDigest(*descriptor)
+		if digestErr != nil {
+			return nil, digestErr
 		}
 		catalog.Requests = append(catalog.Requests, manifest.CatalogRequest{ID: descriptor.ID, Digest: digest})
 	}
