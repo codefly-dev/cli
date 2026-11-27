@@ -5307,6 +5307,19 @@ meaning changes require a separately versioned contract under the protobuf
 default unless another explicit exception is reviewed. This exception does not
 extend the registry or Docker receipt contracts. There is no MCP effect tool.
 
+### `codefly recover network`
+
+A failed or interrupted run can leave an unused Docker bridge after its containers
+have gone. Select its full Docker network ID and confirm which run owned it.
+
+```bash
+codefly recover network <full-network-id> --preview
+codefly recover network <full-network-id> --remove
+```
+
+Both commands check the Codefly owner and name labels, running endpoints, and
+references from stopped containers. Removal targets the selected immutable ID.
+
 ### `codefly recover container`
 
 Stop one independently selected container by its full lowercase 64-hex Docker ID,

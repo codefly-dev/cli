@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -107,6 +108,22 @@ var otherRunsLive = func(ctx context.Context, world *World) bool {
 // running endpoints, and a stopped container whose network is removed can never
 // start again. A variable so a test can stand in for the engine.
 var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
+	return inspectUnusedNetwork(ctx, name, false, true)
+}
+
+// RecoverUnusedNetwork previews or removes a single explicitly identified,
+// Codefly-owned network that no container, including a stopped one, uses.
+func RecoverUnusedNetwork(ctx context.Context, id string, remove bool) (bool, error) {
+	if len(id) != 64 || id != strings.ToLower(id) {
+		return false, errors.New("expected a full lowercase 64-hex Docker network ID")
+	}
+	if _, err := hex.DecodeString(id); err != nil {
+		return false, errors.New("expected a full lowercase 64-hex Docker network ID")
+	}
+	return inspectUnusedNetwork(ctx, id, true, remove)
+}
+
+func inspectUnusedNetwork(ctx context.Context, ref string, exactID, remove bool) (bool, error) {
 	cli, err := dockerrun.NewClient()
 	if err != nil {
 		return false, err
@@ -114,7 +131,7 @@ var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 	defer cli.Close()
 	removeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	inspected, err := cli.NetworkInspect(removeCtx, name, client.NetworkInspectOptions{})
+	inspected, err := cli.NetworkInspect(removeCtx, ref, client.NetworkInspectOptions{})
 	if errdefs.IsNotFound(err) {
 		return false, nil
 	}
@@ -122,6 +139,9 @@ var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	inspect := inspected.Network
+	if exactID && (inspect.ID != ref || inspect.Name == "" || inspect.Labels[dockerrun.LabelCodeflyName] != inspect.Name) {
+		return false, nil
+	}
 	if inspect.Labels[dockerrun.LabelCodeflyOwner] != ownedLabel || len(inspect.Containers) > 0 {
 		return false, nil
 	}
@@ -133,6 +153,9 @@ var removeRunNetwork = func(ctx context.Context, name string) (bool, error) {
 	}
 	if len(attached.Items) > 0 {
 		return false, nil
+	}
+	if !remove {
+		return true, nil
 	}
 	if _, err = cli.NetworkRemove(removeCtx, inspect.ID, client.NetworkRemoveOptions{}); err != nil && !errdefs.IsNotFound(err) {
 		return false, err

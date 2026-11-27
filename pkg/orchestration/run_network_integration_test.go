@@ -21,7 +21,7 @@ func createTestNetwork(t *testing.T, owned bool) string {
 	name := fmt.Sprintf("codefly-run-network-test-%d", time.Now().UnixNano())
 	args := []string{"network", "create"}
 	if owned {
-		args = append(args, "--label", dockerrun.LabelCodeflyOwner+"=true")
+		args = append(args, "--label", dockerrun.LabelCodeflyOwner+"=true", "--label", dockerrun.LabelCodeflyName+"="+name)
 	}
 	output, err := exec.Command("docker", append(args, name)...).CombinedOutput()
 	require.NoError(t, err, "%s", output)
@@ -77,4 +77,25 @@ func TestRemoveRunNetworkAgainstTheEngine(t *testing.T) {
 	removed, err = removeRunNetwork(ctx, "codefly-run-network-test-absent")
 	require.NoError(t, err)
 	require.False(t, removed)
+}
+
+func TestRecoverUnusedNetworkAgainstTheEngine(t *testing.T) {
+	requireDocker(t)
+	ctx := context.Background()
+	for label, owned := range map[string]bool{"foreign": false, "owned": true} {
+		t.Run(label, func(t *testing.T) {
+			name := createTestNetwork(t, owned)
+			out, err := exec.Command("docker", "network", "inspect", "--format", "{{.Id}}", name).Output()
+			require.NoError(t, err)
+			id := strings.TrimSpace(string(out))
+			eligible, err := RecoverUnusedNetwork(ctx, id, false)
+			require.NoError(t, err)
+			require.Equal(t, owned, eligible)
+			require.True(t, networkExists(name))
+			removed, err := RecoverUnusedNetwork(ctx, id, true)
+			require.NoError(t, err)
+			require.Equal(t, owned, removed)
+			require.Equal(t, !owned, networkExists(name))
+		})
+	}
 }

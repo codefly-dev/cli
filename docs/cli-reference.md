@@ -4623,6 +4623,7 @@ codefly recover <subcommand>
 Subcommands:
 
 - [`codefly recover container`](#codefly-recover-container)
+- [`codefly recover network`](#codefly-recover-network)
 - [`codefly recover process`](#codefly-recover-process)
 - [`codefly recover process-group`](#codefly-recover-process-group)
 
@@ -4651,6 +4652,25 @@ Flags:
 ```
       --expect string          Stop only the exact container matching this reviewed Core JSON receipt
       --preview[=true|false]   Inspect one full container ID and print its receipt without stopping it
+```
+
+## `codefly recover network`
+
+Preview or remove one unused Codefly-owned Docker network
+
+```
+Select an orphaned network by its full lowercase Docker ID. Inspect its ownership and attachments with --preview, then use --remove to repeat those checks and remove that exact network. Networks referenced by stopped containers are preserved.
+```
+
+```
+codefly recover network ID
+```
+
+Flags:
+
+```
+      --preview[=true|false]   Check ownership and attachments without removing the network
+      --remove[=true|false]    Remove only this exact network after checking ownership and attachments
 ```
 
 ## `codefly recover process`
