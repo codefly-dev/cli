@@ -58,7 +58,7 @@ func containerPresent(id string) bool {
 
 // endedRun is a run of the fixture workspace that ended the way end ends the
 // run command's context, taken back exactly as the command takes it back: the
-// deferred reclaimRun, on a context that outlives the cancellation, told
+// deferred ReclaimRun, on a context that outlives the cancellation, told
 // whether the run failed.
 func endedRun(t *testing.T, disposable bool, end func(t *testing.T, ctx context.Context) (context.Context, func())) (string, string) {
 	t.Helper()
@@ -90,7 +90,7 @@ func endedRun(t *testing.T, disposable bool, end func(t *testing.T, ctx context.
 	case <-time.After(10 * time.Second):
 		t.Fatal("the run was not asked to stop")
 	}
-	require.NoError(t, reclaimRun(context.WithoutCancel(ctx), flow, started, runFailed(signalled, nil)))
+	require.NoError(t, ReclaimRun(context.WithoutCancel(ctx), flow, started, runFailed(signalled, nil)))
 	return id, data
 }
 

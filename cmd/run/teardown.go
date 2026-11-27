@@ -36,12 +36,12 @@ func removesContainers(failed bool, runtimeContexts []string) bool {
 	return failed && slices.ContainsFunc(runtimeContexts, shouldSweepStaleContainers)
 }
 
-// reclaimRun takes back what the run's agents started and left behind once
+// ReclaimRun takes back what the run's agents started and left behind once
 // they have exited: whichever way the run ended, their orphaned process
 // groups, the native state directories and the containers of a disposable run
 // and the networks its containers left empty, and, for a failed run, the
 // containers they created.
-func reclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time, failed bool) error {
+func ReclaimRun(ctx context.Context, flow *orchestration.Flow, started time.Time, failed bool) error {
 	if flow == nil {
 		return nil
 	}
