@@ -189,7 +189,7 @@ func preparePublish(
 	}
 	rendered := moduleRenderDestination(workspace, request.Environment, request.Module)
 	var inventory Inventory
-	if restoreRevision == "" {
+	if restoreRevision == "" && !request.RefreshTelemetry {
 		if inventory, err = loadRenderedPublication(ctx, workspace, request, env, rendered, pathRoot); err != nil {
 			return nil, err
 		}
@@ -197,7 +197,11 @@ func preparePublish(
 
 	promotionBranch := request.PromotionBranch
 	if promotionBranch == "" {
-		promotionBranch = "codefly/promote-" + sanitizeRef(request.Module) + "-" + sanitizeRef(request.Environment)
+		prefix := "codefly/promote-"
+		if request.RefreshTelemetry {
+			prefix = "codefly/refresh-telemetry-"
+		}
+		promotionBranch = prefix + sanitizeRef(request.Module) + "-" + sanitizeRef(request.Environment)
 	}
 	selfPromotes := publication.selfPromotes(env)
 	source, bound, err := publication.bindRepository(ctx, config.RepoURL, selfPromotes, expected)
@@ -217,6 +221,12 @@ func preparePublish(
 	if err != nil {
 		return fail(err)
 	}
+	if request.RefreshTelemetry {
+		if restoreRevision != "" || len(request.AllowCellRemovals) != 0 || len(request.Advance) != 0 || request.Resign {
+			return fail(errors.New("telemetry refresh cannot be combined with another publication operation"))
+		}
+		restoreRevision = baseRevision
+	}
 	cell, owned, publishedPaths, carriedCell, err := publicationCellPaths(workspace, env, pathRoot, targetPath, restoreRevision)
 	if err != nil {
 		return fail(err)
@@ -228,6 +238,9 @@ func preparePublish(
 	baseCell, claim, removals, err := judgeCompositionRemovals(ctx, workspace, env, cell, base)
 	if err != nil {
 		return fail(err)
+	}
+	if request.RefreshTelemetry && (len(removals.removed) > 0 || len(removals.withdraw) > 0) {
+		return fail(errors.New("telemetry refresh would withdraw another delivery"))
 	}
 	publishedPaths = append(publishedPaths, removals.removed...)
 	publication.options.Withdraw = removals.withdraw
@@ -727,6 +740,17 @@ func stageRollbackPublication(
 	inventory, err := LoadInventory(restored)
 	if err != nil {
 		return "", Inventory{}, err
+	}
+	if request.RefreshTelemetry {
+		if inventory.Module != request.Module || inventory.OwnedPath != clone.targetPath {
+			return "", Inventory{}, fmt.Errorf("delivered inventory for %s at %s does not match module %s at %s", inventory.Module, inventory.OwnedPath, request.Module, clone.targetPath)
+		}
+		if err = validatePublicationPermissions(ctx, workspace, request.Module, env, inventory.Units); err != nil {
+			return "", Inventory{}, err
+		}
+		if err = refreshDeliveredTelemetry(ctx, restored, env, &inventory); err != nil {
+			return "", Inventory{}, err
+		}
 	}
 	// A restored tree is held to the groups as they are now exactly as a
 	// render is: a rollback that would resurrect configuration the

@@ -199,6 +199,9 @@ var gitOpsPublishCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		if gitOpsPublishAll && gitOpsRefreshTelemetry {
+			return fmt.Errorf("refresh telemetry one reviewed module at a time")
+		}
 		if gitOpsPublishAll {
 			if len(args) > 0 {
 				return fmt.Errorf("--all publishes every composed module; name no module with it")
@@ -522,6 +525,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		Resign:                   gitOpsResign,
 		Advance:                  gitOpsAdvance,
 		AllowCellRemovals:        gitOpsAllowCellRemovals,
+		RefreshTelemetry:         gitOpsRefreshTelemetry,
 	}
 }
 
@@ -681,6 +685,7 @@ var (
 	gitOpsAdvance                  []string
 	gitOpsAllowCellRemovals        []string
 	gitOpsValidateCluster          bool
+	gitOpsRefreshTelemetry         bool
 	gitOpsRebuild                  bool
 )
 
@@ -722,6 +727,7 @@ func init() {
 			"Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied")
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd} {
+		command.Flags().BoolVar(&gitOpsRefreshTelemetry, "refresh-telemetry", false, "Reproject existing exporter settings on the delivered module revision and sign the resulting snapshot")
 		command.Flags().StringSliceVar(&gitOpsAdvance, "advance", nil,
 			"Binding to settle at the next generation although its content is unchanged (repeatable), after the host refused its delivered generation as a history conflict naming it; deliberate, never implied")
 		command.Flags().StringSliceVar(&gitOpsAllowCellRemovals, "allow-cell-removal", nil,

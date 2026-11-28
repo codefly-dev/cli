@@ -39,6 +39,23 @@ after the images are built. Every flag of every verb is in
 
 ---
 
+## Moving a delivered module to a different telemetry receiver
+
+After importing the environment's new telemetry declaration, plan the change
+against the module's current delivery branch. The module can stay at its
+delivered source pin even if the composition has already advanced.
+
+```sh
+codefly deploy gitops plan <module> --env <env> --refresh-telemetry
+codefly deploy gitops publish <module> --env <env> --refresh-telemetry
+```
+
+Review each module separately. The CLI verifies its delivered inventory,
+updates the existing SDK exporter endpoints and their workload rollout
+annotations, and uses the ordinary snapshot and signing process. A module
+whose exporters already match reports no changes. Services without a
+previously delivered exporter require a normal render to enable telemetry.
+
 ## Local container runtime images
 
 After selecting the container backend, the CLI loads and initializes the agent's
