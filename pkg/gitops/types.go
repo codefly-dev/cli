@@ -490,6 +490,8 @@ type PublishRequest struct {
 	Title           string
 	Body            string
 	Local           bool
+	// RefreshTelemetry reprojects only existing telemetry carriers in the delivered snapshot.
+	RefreshTelemetry bool `json:"refreshTelemetry,omitempty"`
 	// AllowUnresolvedContracts downgrades a consumed-contract violation whose
 	// exposing module is not yet deployed in the target GitOps tree from a
 	// violation to a skipped check, for bootstrap ordering.
