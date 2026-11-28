@@ -222,7 +222,7 @@ func preparePublish(
 		return fail(err)
 	}
 	if request.RefreshTelemetry {
-		if err := holdTelemetryPromotionBranch(baseRevision, branchRevision, replacesRevision); err != nil {
+		if err = holdTelemetryPromotionBranch(baseRevision, branchRevision, replacesRevision); err != nil {
 			return fail(fmt.Errorf("promotion branch %s: %w", promotionBranch, err))
 		}
 		if restoreRevision != "" || len(request.AllowCellRemovals) != 0 || len(request.Advance) != 0 || request.Resign {
@@ -309,7 +309,7 @@ func preparePublish(
 		RemovedModules:         removals.removed,
 		HostWithdrawals:        withdrawnByHost(inventory.Delivery, removals.withdraw),
 		CellFile:               carriedCell,
-		CellNotice:             cellNotice(env, cell, restoreRevision, request.Module),
+		CellNotice:             cellNotice(env, cell, restoreRevision, request.Module, request.RefreshTelemetry),
 		Carriers:               publication.options.Carriers,
 		SelfPromotes:           selfPromotes,
 		LocalRepository:        bound,

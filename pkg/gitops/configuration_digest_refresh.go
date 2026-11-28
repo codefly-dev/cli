@@ -14,7 +14,7 @@ import (
 func splitDeliveredDigests(manifests []manifest) (map[[2]string]string, []podTemplateAnnotation, error) {
 	recorded := make(map[[2]string]string)
 	for _, item := range manifests {
-		if item.group != "apps" || !servingKind(item.kind) {
+		if item.group != deploymentGroup || !servingKind(item.kind) {
 			continue
 		}
 		annotations := mapField(mapField(podTemplate(item), keyMetadata), "annotations")
@@ -71,13 +71,13 @@ func refreshConfigurationDigest(tree *renderRoot, unitDir, environment string, p
 	}
 	var path string
 	for _, candidate := range []string{kustomizationFile, kustomizationFileAlt, kindKustomization} {
-		if _, err := tree.stat(overlay, candidate); err == nil {
+		if _, statErr := tree.stat(overlay, candidate); statErr == nil {
 			if path != "" {
 				return fmt.Errorf("ambiguous overlay kustomization")
 			}
 			path = candidate
-		} else if !os.IsNotExist(err) {
-			return err
+		} else if !os.IsNotExist(statErr) {
+			return statErr
 		}
 	}
 	if path == "" {
@@ -105,9 +105,9 @@ func refreshConfigurationDigest(tree *renderRoot, unitDir, environment string, p
 			return fmt.Errorf("configuration stamp changed unexpectedly for %s/%s", old.kind, old.name)
 		}
 		delete(desired, key)
-		expected, err := old.patch()
-		if err != nil {
-			return err
+		expected, patchErr := old.patch()
+		if patchErr != nil {
+			return patchErr
 		}
 		index := -1
 		for i, patch := range patches {

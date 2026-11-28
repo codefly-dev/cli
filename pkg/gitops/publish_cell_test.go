@@ -691,22 +691,26 @@ func TestOnlyAPromotionThatDerivedTheCellFileCarriesIt(t *testing.T) {
 		delivered: deliveryCellPath("environments", "production"),
 	}
 
-	if notice := cellNotice(hosted, carried, "", "payments"); notice != "" {
+	if notice := cellNotice(hosted, carried, "", "payments", false); notice != "" {
 		t.Fatalf("a forward publication carrying the file reports %q", notice)
 	}
-	rollback := cellNotice(hosted, carried, "0123456789abcdef0123456789abcdef01234567", "payments")
+	telemetry := cellNotice(hosted, carried, "0123456789abcdef0123456789abcdef01234567", "payments", true)
+	if !strings.Contains(telemetry, "keeps payments at its delivered build") || strings.Contains(telemetry, "rollback") {
+		t.Fatalf("unexpected telemetry refresh notice: %s", telemetry)
+	}
+	rollback := cellNotice(hosted, carried, "0123456789abcdef0123456789abcdef01234567", "payments", false)
 	for _, want := range []string{"this rollback restores payments's delivered tree and moves no cell file", "publish it forward"} {
 		if !strings.Contains(rollback, want) {
 			t.Fatalf("the rollback notice does not say %q: %s", want, rollback)
 		}
 	}
-	unrendered := cellNotice(hosted, nil, "", "payments")
+	unrendered := cellNotice(hosted, nil, "", "payments", false)
 	for _, want := range []string{"holds no cell file", "render --all --env production"} {
 		if !strings.Contains(unrendered, want) {
 			t.Fatalf("the unrendered notice does not say %q: %s", want, unrendered)
 		}
 	}
-	if notice := cellNotice(&environments.Environment{Name: "staging"}, nil, "", "payments"); notice != "" {
+	if notice := cellNotice(&environments.Environment{Name: "staging"}, nil, "", "payments", false); notice != "" {
 		t.Fatalf("an environment with no host has no cell to report: %q", notice)
 	}
 }

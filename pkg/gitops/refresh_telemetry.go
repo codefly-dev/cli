@@ -28,14 +28,15 @@ func refreshDeliveredTelemetry(ctx context.Context, root string, env *environmen
 	}
 	defer tree.Close()
 	changed := false
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Kind != UnitKindService || unit.Path == "" {
 			continue
 		}
 		unitDir := filepath.Join(tree.path, filepath.FromSlash(unit.Path))
-		updated, err := refreshServiceTelemetry(ctx, tree, unitDir, env, unit.Module, unit.Name)
-		if err != nil {
-			return fmt.Errorf("refresh telemetry for %s/%s: %w", unit.Module, unit.Name, err)
+		updated, refreshErr := refreshServiceTelemetry(ctx, tree, unitDir, env, unit.Module, unit.Name)
+		if refreshErr != nil {
+			return fmt.Errorf("refresh telemetry for %s/%s: %w", unit.Module, unit.Name, refreshErr)
 		}
 		changed = changed || updated
 	}

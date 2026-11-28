@@ -154,11 +154,13 @@ func (cell *publicationCell) carryInto(repo string) error {
 
 // cellNotice says why a publication to a hosted environment moves no
 // approved-build list, so a promotion that cannot move it says so instead of
-// looking complete. There are two such publications, and neither is a cell
-// file left behind silently.
-func cellNotice(env *environments.Environment, cell *publicationCell, restoreRevision, module string) string {
+// looking complete. The notice identifies the operation and its effect on the cell file.
+func cellNotice(env *environments.Environment, cell *publicationCell, restoreRevision, module string, refreshTelemetry bool) string {
 	if env == nil || env.Host == nil || (restoreRevision == "" && cell != nil) {
 		return ""
+	}
+	if refreshTelemetry {
+		return fmt.Sprintf("Telemetry refresh keeps %s at its delivered build and preserves the approved-build list in the cell file.", module)
 	}
 	if restoreRevision != "" {
 		// A rollback restores the module's delivered tree from a revision; the
