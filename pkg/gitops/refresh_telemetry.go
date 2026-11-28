@@ -112,3 +112,12 @@ func refreshServiceTelemetry(ctx context.Context, tree *renderRoot, unitDir stri
 	}
 	return true, nil
 }
+
+// A receiver-only change cannot replace someone else's in-flight delivery,
+// even one changing only paths inside the module it is publishing.
+func holdTelemetryPromotionBranch(base, existing, replaces string) error {
+	if replaces != "" || (existing != "" && existing != base) {
+		return errors.New("already carries a separate change; review its open promotion or use a fresh promotion branch")
+	}
+	return nil
+}

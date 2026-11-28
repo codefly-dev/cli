@@ -67,3 +67,10 @@ func TestRefreshRefusesChangingAnotherServiceIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, before, after)
 }
+
+func TestRefreshProtectsAnotherPromotionOfTheSameModule(t *testing.T) {
+	require.NoError(t, holdTelemetryPromotionBranch("base", "", ""))
+	require.NoError(t, holdTelemetryPromotionBranch("base", "base", ""))
+	require.ErrorContains(t, holdTelemetryPromotionBranch("base", "another-commit", ""), "already carries")
+	require.ErrorContains(t, holdTelemetryPromotionBranch("base", "", "divergent"), "already carries")
+}

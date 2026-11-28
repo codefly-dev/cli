@@ -222,6 +222,9 @@ func preparePublish(
 		return fail(err)
 	}
 	if request.RefreshTelemetry {
+		if err := holdTelemetryPromotionBranch(baseRevision, branchRevision, replacesRevision); err != nil {
+			return fail(fmt.Errorf("promotion branch %s: %w", promotionBranch, err))
+		}
 		if restoreRevision != "" || len(request.AllowCellRemovals) != 0 || len(request.Advance) != 0 || request.Resign {
 			return fail(errors.New("telemetry refresh cannot be combined with another publication operation"))
 		}
