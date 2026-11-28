@@ -2301,6 +2301,7 @@ Flags:
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote, for a local k3d cluster (codefly run cluster)
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
+      --refresh-telemetry                                                                 Reproject existing exporter settings on the delivered module revision and sign the resulting snapshot
       --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
 ```
@@ -2326,6 +2327,7 @@ Flags:
       --merge-timeout duration                                                            With --all, how long to wait for one promotion's required checks (or merge queue) before stopping (default 30m0s)
       --message string                                                                    Signed commit message
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
+      --refresh-telemetry                                                                 Reproject existing exporter settings on the delivered module revision and sign the resulting snapshot
       --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
       --title string                                                                      Promotion pull request title
