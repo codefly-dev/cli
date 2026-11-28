@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -271,12 +272,15 @@ func TestDeliveryScriptBoundsEveryRequestAndSleepToTheBudget(t *testing.T) {
 		hits[string(body)]++
 		mu.Unlock()
 		if string(body) == "slow" {
-			time.Sleep(5 * time.Second)
+			<-r.Context().Done()
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server.Close()
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
 	dir := t.TempDir()
 	documents := filepath.Join(dir, "documents")
 	if err := os.MkdirAll(documents, 0o755); err != nil {
@@ -291,7 +295,10 @@ func TestDeliveryScriptBoundsEveryRequestAndSleepToTheBudget(t *testing.T) {
 	if err := os.WriteFile(identity, []byte("t"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-ec", deliveryScript)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-ec", deliveryScript)
+	cmd.WaitDelay = time.Second
 	cmd.Env = append(os.Environ(),
 		"DELIVERY_URL="+server.URL, "DELIVERY_PATH=/deliver", "DELIVERY_DOCUMENTS="+documents, "DELIVERY_IDENTITY_FILE="+identity,
 		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_REQUEST_SECONDS=1", "DELIVERY_MAX_PAUSE_SECONDS=60")

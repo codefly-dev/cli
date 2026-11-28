@@ -291,7 +291,27 @@ jobs:
             exit 1
           fi
           echo "shard ${{ matrix.shard }}/$SHARDS: ${args[*]}"
-          go test -failfast -v -race -count=1 -timeout=4m -coverprofile=cover.out -covermode=atomic "${args[@]}"
+          go test -failfast -v -json -race -count=1 -parallel=4 -timeout=4m -coverprofile=cover.out -covermode=atomic "${args[@]}" \
+            | tee test.json \
+            | jq -rj --unbuffered 'select(.Action == "output" or .Action == "build-output") | .Output'
+
+      - name: Report test timings
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -s test.json ]; then exit 0; fi
+          jq -c '
+            select(.Action == "pass" or .Action == "fail" or .Action == "skip") | del(.Output) |
+            if .Test then
+              .Test |= gsub("(?<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@"; "\(.scheme)[redacted]@")
+            else . end
+          ' test.json > test-timings.jsonl
+          {
+            echo "### Slowest tests"
+            echo '| Seconds | Package | Test |'
+            echo '| ---: | --- | --- |'
+            jq -s -r '[.[] | select(.Test and .Elapsed)] | sort_by(-.Elapsed) | .[:20][] | [.Elapsed, .Package, .Test] | "| " + (map(tostring) | join(" | ")) + " |"' test-timings.jsonl
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the shard's profile and receipts
         if: always()
@@ -300,6 +320,7 @@ jobs:
           name: test-shard-${{ matrix.shard }}
           path: |
             cover.out
+            test-timings.jsonl
             conformance-receipts/
           if-no-files-found: warn
           retention-days: 3

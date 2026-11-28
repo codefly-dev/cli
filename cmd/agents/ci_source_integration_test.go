@@ -2,10 +2,12 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,19 +17,11 @@ import (
 )
 
 func TestAgentCIKeepsOnePrivateSourceSelection(t *testing.T) {
-	binDir := t.TempDir()
-	cli := filepath.Join(binDir, "codefly")
-	peer := filepath.Join(binDir, "peer")
-	for output, source := range map[string]string{cli: "../codefly", peer: "../../pkg/sourceworkspace/testdata/agent"} {
-		command := exec.CommandContext(t.Context(), "go", "build", "-o", output, source)
-		command.Env = append(os.Environ(), "GOWORK=off")
-		data, err := command.CombinedOutput()
-		require.NoError(t, err, "%s", data)
-	}
-	peerBytes, err := os.ReadFile(peer)
-	require.NoError(t, err)
+	cli, peer, peerBytes := buildAgentCIFixtures(t)
 	for _, selection := range []string{"implicit", "older", "latest", "self"} {
 		t.Run(selection, func(t *testing.T) {
+			// The child owns its workspace, installation, and logs.
+			t.Parallel()
 			root, home := t.TempDir(), t.TempDir()
 			manifest := "publisher: example.test\nkind: codefly:service\nname: candidate\nversion: 9.0.0\n"
 			selected := "packager__1.0.0"
@@ -97,22 +91,52 @@ func TestAgentCIKeepsOnePrivateSourceSelection(t *testing.T) {
 	}
 }
 
-// buildAgentCIFixtures builds the CLI under test and the recording source agent
-// that stands in for a real packager.
+type agentCIFixtures struct {
+	cli, peer string
+	peerBytes []byte
+}
+
+var fixtureBuildDir string
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if fixtureBuildDir != "" {
+		_ = os.RemoveAll(fixtureBuildDir)
+	}
+	os.Exit(code)
+}
+
+// The helpers are read-only across child processes. Each case creates its own
+// private runtime directories and installs a separate copy of the peer.
+var agentCIBinaries = sync.OnceValues(func() (agentCIFixtures, error) {
+	dir, err := os.MkdirTemp("", "codefly-agent-ci-build-*")
+	if err != nil {
+		return agentCIFixtures{}, err
+	}
+	fixtureBuildDir = dir
+	fixtures := agentCIFixtures{
+		cli:  filepath.Join(dir, "codefly"),
+		peer: filepath.Join(dir, "peer"),
+	}
+	for _, build := range []struct{ output, source string }{
+		{fixtures.cli, "../codefly"},
+		{fixtures.peer, "../../pkg/sourceworkspace/testdata/agent"},
+	} {
+		command := exec.Command("go", "build", "-o", build.output, build.source)
+		command.Env = append(os.Environ(), "GOWORK=off")
+		if output, err := command.CombinedOutput(); err != nil {
+			return agentCIFixtures{}, fmt.Errorf("build %s: %w: %s", build.source, err, output)
+		}
+	}
+	fixtures.peerBytes, err = os.ReadFile(fixtures.peer)
+	return fixtures, err
+})
+
 func buildAgentCIFixtures(t *testing.T) (string, string, []byte) {
 	t.Helper()
-	binDir := t.TempDir()
-	cli := filepath.Join(binDir, "codefly")
-	peer := filepath.Join(binDir, "peer")
-	for output, source := range map[string]string{cli: "../codefly", peer: "../../pkg/sourceworkspace/testdata/agent"} {
-		command := exec.CommandContext(t.Context(), "go", "build", "-o", output, source)
-		command.Env = append(os.Environ(), "GOWORK=off")
-		data, err := command.CombinedOutput()
-		require.NoError(t, err, "%s", data)
-	}
-	peerBytes, err := os.ReadFile(peer)
+	fixtures, err := agentCIBinaries()
 	require.NoError(t, err)
-	return cli, peer, peerBytes
+	return fixtures.cli, fixtures.peer, fixtures.peerBytes
 }
 
 // writeAgentCICandidate lays out a candidate repository whose manifest selects
@@ -200,6 +224,8 @@ func TestAgentCIAuditStage(t *testing.T) {
 	cli, peer, peerBytes := buildAgentCIFixtures(t)
 	for _, selection := range []string{"implicit", "older", "latest", "self"} {
 		t.Run(selection, func(t *testing.T) {
+			// The child owns its workspace, installation, and logs.
+			t.Parallel()
 			root, home := t.TempDir(), t.TempDir()
 			selected := writeAgentCICandidate(t, root, home, peerBytes, selection)
 			report, calls, err := runAgentCIFixture(t, cli, root, home, peer, agentSourceFor(selection))
@@ -220,6 +246,7 @@ func TestAgentCIAuditStage(t *testing.T) {
 		})
 	}
 	t.Run("gates on actionable vulnerabilities", func(t *testing.T) {
+		t.Parallel()
 		root, home := t.TempDir(), t.TempDir()
 		writeAgentCICandidate(t, root, home, peerBytes, "older")
 		report, calls, err := runAgentCIFixture(t, cli, root, home, peer, agentSourceFor("older"), "TEST_SOURCE_AUDIT_VULNERABLE=1")

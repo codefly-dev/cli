@@ -109,7 +109,7 @@ func TestTheSuiteRunsOnceUnderRaceAndCoverageWithTimeoutDiagnostics(t *testing.T
 		if packageBudget < 3*time.Minute || jobBudget-packageBudget < 4*time.Minute {
 			t.Fatalf("test budgets do not fit measured tests and diagnostic headroom: package=%s job=%s", packageBudget, jobBudget)
 		}
-		for _, flag := range []string{"-v", "-failfast", "-race", "-coverprofile=cover.out", "-covermode=atomic"} {
+		for _, flag := range []string{"-v", "-json", "-failfast", "-race", "-coverprofile=cover.out", "-covermode=atomic"} {
 			if !flags[flag] {
 				t.Errorf("the suite's command lost %s", flag)
 			}
