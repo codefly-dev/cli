@@ -33,6 +33,17 @@ type dockerStub struct {
 
 func installDockerStub(t *testing.T, registryServes bool) *dockerStub {
 	t.Helper()
+	stub := newDockerStub(t, registryServes)
+	t.Setenv("PATH", stub.path())
+	return stub
+}
+
+func (stub *dockerStub) path() string {
+	return stub.dir + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+func newDockerStub(t *testing.T, registryServes bool) *dockerStub {
+	t.Helper()
 	dir := t.TempDir()
 	missing := ""
 	if !registryServes {
@@ -85,7 +96,6 @@ exit 1
 `
 	path := filepath.Join(dir, "docker")
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return &dockerStub{dir: dir}
 }
 

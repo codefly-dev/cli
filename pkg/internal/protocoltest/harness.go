@@ -5,11 +5,13 @@ package protocoltest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/codefly-dev/core/agents/manager"
@@ -25,23 +27,41 @@ type Call struct {
 	PID     int             `json:"pid"`
 }
 
-// Install builds the CLI-owned protocol peer into a disposable host profile.
+// Keep the executable bytes for the lifetime of the test binary. Each
+// installation still owns its executable and the mutable state of its peers.
+var peerExecutable = sync.OnceValues(func() ([]byte, error) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		return nil, errors.New("resolve protocol peer build directory")
+	}
+	dir, err := os.MkdirTemp("", "codefly-protocol-build-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	binary := filepath.Join(dir, "protocol-peer")
+	command := exec.Command("go", peerBuildArgs(binary)...) //nolint:gosec // G204: internal build arguments and a temporary output path
+	command.Dir = filepath.Dir(source)
+	command.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := command.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("build protocol peer: %w: %s", err, output)
+	}
+	return os.ReadFile(binary)
+})
+
+// Install stages the CLI-owned protocol peer into a disposable host profile.
 // The peer is a local build under test names no release stands for, so the
 // test runs it as one deliberately (CODEFLY_AGENT_SOURCE=local): under remote
 // resolution core fetches a cached agent's release over it.
 func Install(t *testing.T, names ...string) []string {
 	t.Helper()
+	executable, err := peerExecutable()
+	require.NoError(t, err)
 	t.Setenv(manager.AgentSourceEnv, "local")
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv("CODEFLY_TEST_PEER_ROOT", t.TempDir())
-	_, source, _, ok := runtime.Caller(0)
-	require.True(t, ok)
 	binary := filepath.Join(t.TempDir(), "protocol-peer")
-	command := exec.CommandContext(t.Context(), "go", peerBuildArgs(binary)...) //nolint:gosec // G204: go build with internally constructed arguments and a temp-dir output path
-	command.Dir = filepath.Dir(source)
-	command.Env = append(os.Environ(), "GOWORK=off")
-	output, err := command.CombinedOutput()
-	require.NoError(t, err, "%s", output)
+	require.NoError(t, os.WriteFile(binary, executable, 0o700))
 	identifiers := make([]string, 0, len(names))
 	for _, name := range names {
 		selection := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: name, Version: "0.0.1"}

@@ -18,8 +18,9 @@ All five required contexts — `bootstrap-audit`, `control-integration`,
 (`.github/workflows/go.yml`). `bootstrap-audit` and `control-integration` are
 `matrix.gate` legs of `quality`. The suite runs once, under the race detector
 and with coverage, split across the `test (N)` shards by
-`scripts/test-shard.sh`; `coverage` merges their profiles and verifies their
-conformance receipts, and `race` (`if: always()`) fails unless every shard
+`scripts/test-shard.sh`. Each shard uploads structured test timings and reports
+its slowest cases in the job summary. Go caps in-package parallelism at four.
+`coverage` merges the profiles and verifies the conformance receipts, and `race` (`if: always()`) fails unless every shard
 succeeded, so the shards themselves are not required by name. `lint` is deliberately **not**
 required: it lints the whole repository (no baseline; the rule is that the
 full run is clean at the head) and runs only on `pull_request` events, so a `merge_group` run never reports a

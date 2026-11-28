@@ -3,7 +3,7 @@
 #
 #   go test -race ... $(./scripts/test-shard.sh 3 9)
 #
-# The suite's four slowest packages take two to four minutes each under the
+# The suite's three slowest split packages can take multiple minutes under the
 # race detector, longer than the whole budget for a shard, so they are split by
 # test name: each SPLITS line below is a shard of its own, running one package
 # with a -run pattern, and a package's patterns together match every test it
@@ -38,18 +38,23 @@ pkg/composition ^Test[A-R]
 pkg/composition ^Test[^A-R]
 '
 
-# Seconds per package under -race (same run), for packing the rest.
+# Approximate Linux race package seconds from Go CLI run 46052117185,
+# adjusted for the shared agent CI executables and per-case isolation.
 WEIGHTS='
-cmd/agents 72
-cmd 37
-cmd/generate 26
-cmd/ci 25
-cmd/publish 23
-pkg/conformance 20
-pkg/engine 17
+cmd/agents 48
+pkg/processgroup 32
+pkg/deployments 30
+cmd 27
+pkg/sourceworkspace 19
+cmd/generate 18
+pkg/conformance 15
+cmd/publish 15
+cmd/common 14
+cmd/ci 13
+pkg/engine 10
+cmd/run 10
 pkg/librarystore 9
-cmd/run 7
-cmd/common 6
+pkg/generators 7
 pkg/control 6
 pkg/solutionrun 5
 '

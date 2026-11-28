@@ -62,7 +62,7 @@ func disposableCommandDeclaration(name string) string {
 // only architecture and scoped digest responses. It has no real-engine fallback.
 func disposableCommandDocker(t *testing.T) *dockerStub {
 	t.Helper()
-	stub := installDockerStub(t, true)
+	stub := newDockerStub(t, true)
 	path := filepath.Join(stub.dir, "docker")
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -108,13 +108,14 @@ func TestDisposableCommandsUseSelectedManagersAndArtifactBuilder(t *testing.T) {
 	binary := disposableCommandCLI(t)
 	for _, phase := range []string{"lint", "compile", "test", "build", "build-error", "sbom-error"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			stub := disposableCommandDocker(t)
 			root := disposableCommandWorkspace(t)
 			actualPhase := phase
-			var env []string
+			env := []string{"PATH=" + stub.path(), "CODEFLY_TEST_PEER_ROOT=" + t.TempDir()}
 			if phase == "sbom-error" {
 				actualPhase = "build"
-				env = []string{"CODEFLY_TEST_PEER_SBOM_ERROR=1"}
+				env = append(env, "CODEFLY_TEST_PEER_SBOM_ERROR=1")
 			}
 			if phase == "build-error" {
 				actualPhase = "build"
