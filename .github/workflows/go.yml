@@ -269,7 +269,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/go-build
-          key: cli-go-build-v3-test-${{ matrix.shard }}-${{ runner.os }}-${{ hashFiles('go.sum', 'scripts/test-shard.sh') }}
+          key: cli-go-build-v3-test-${{ matrix.shard }}-${{ runner.os }}-${{ hashFiles('go.sum') }}
           restore-keys: |
             cli-go-build-v3-test-${{ matrix.shard }}-${{ runner.os }}-
 
@@ -300,7 +300,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -s test.json ]; then exit 0; fi
-          jq -c 'select(.Action == "pass" or .Action == "fail" or .Action == "skip") | del(.Output)' test.json > test-timings.jsonl
+          jq -c '
+            select(.Action == "pass" or .Action == "fail" or .Action == "skip") | del(.Output) |
+            if .Test then
+              .Test |= gsub("(?<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@"; "\(.scheme)[redacted]@")
+            else . end
+          ' test.json > test-timings.jsonl
           {
             echo "### Slowest tests"
             echo '| Seconds | Package | Test |'

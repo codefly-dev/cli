@@ -61,7 +61,7 @@ func Install(t *testing.T, names ...string) []string {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	t.Setenv("CODEFLY_TEST_PEER_ROOT", t.TempDir())
 	binary := filepath.Join(t.TempDir(), "protocol-peer")
-	require.NoError(t, os.WriteFile(binary, executable, 0o700))
+	require.NoError(t, os.WriteFile(binary, executable, 0o700)) //nolint:gosec // G306: the test subprocess needs owner-only execute permission
 	identifiers := make([]string, 0, len(names))
 	for _, name := range names {
 		selection := &resources.Agent{Kind: resources.ServiceAgent, Publisher: "example.test", Name: name, Version: "0.0.1"}
